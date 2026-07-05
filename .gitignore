@@ -1,0 +1,56 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# ── 虚拟环境 ──
+.venv/
+venv/
+env/
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── 操作系统 ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── AstrBot / Quill 插件用户数据（含隐私） ──
+imports/
+
+# ── MCP 配置（可能含 API Key） ──
+.mcp.json
+.mcp/
+
+# ── 环境变量 / 密钥 ──
+.env
+.env.*
+*.pem
+*.key
+
+# ── 临时/备份文件 ──
+*.tmp
+*.bak
+*.log
+logs/
+
+# ── 排除 __pycache__ 下的 .pyc（双重保险） ──
+*.pyc
+
+# ── 测试产物 ──
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/

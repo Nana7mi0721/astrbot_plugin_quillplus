@@ -1,0 +1,1663 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quill 管理面板</title>
+<style>
+/* ── Design Tokens (100% 不透明实色) ── */
+:root, [data-theme="light"] {
+  --primary: #6366f1;
+  --primary-hover: #4f46e5;
+  --primary-light: rgba(99,102,241,.15);
+  --accent: #059669;
+  --danger: #dc2626;
+  --danger-light: rgba(220,38,38,.12);
+  --success: #16a34a;
+  --success-light: rgba(22,163,74,.12);
+  --warning: #d97706;
+  --warning-light: rgba(217,119,6,.12);
+
+  --bg: #eef1f5;
+  --card: #ffffff;
+  --surface: #f1f5f9;
+  --text: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --border: #e2e8f0;
+  --border-light: #edf0f4;
+
+  --radius: 10px;
+  --radius-sm: 8px;
+  --radius-lg: 14px;
+  --radius-pill: 20px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.06);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.08);
+  --shadow-lg: 0 12px 28px rgba(0,0,0,.12);
+  --transition: 150ms ease;
+}
+
+[data-theme="dark"] {
+  --primary: #818cf8;
+  --primary-hover: #6366f1;
+  --primary-light: rgba(129,140,248,.18);
+  --accent: #34d399;
+  --danger: #f87171;
+  --danger-light: rgba(248,113,113,.14);
+  --success: #4ade80;
+  --success-light: rgba(74,222,128,.14);
+  --warning: #fbbf24;
+  --warning-light: rgba(251,191,36,.14);
+
+  --bg: #0f1117;
+  --card: #1a1f2e;
+  --surface: #222838;
+  --text: #e1e5ee;
+  --text-secondary: #9ca3b8;
+  --text-muted: #6b7280;
+  --border: #2d3548;
+  --border-light: #262d3d;
+
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.4);
+  --shadow-lg: 0 12px 28px rgba(0,0,0,.5);
+  --transition: 150ms ease;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+input[type="checkbox"] { accent-color: var(--primary); width: 16px; height: 16px; cursor: pointer; }
+input[type="range"] { accent-color: var(--primary); width: 100%; height: 6px; cursor: pointer; }
+
+html, body { height: 100%; }
+body { font-family: -apple-system, "Noto Sans SC", sans-serif; background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.6; overflow: hidden; }
+
+/* ── Header ── */
+header { display: flex; align-items: center; gap: 14px; padding: 14px 28px; background: var(--card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 50; height: 56px; flex-shrink: 0; }
+header h1 { font-size: 20px; font-weight: 700; }
+header .sub { color: var(--text-muted); font-size: 13px; }
+header .spacer { flex: 1; }
+.theme-toggle { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; cursor: pointer; color: var(--text-secondary); font-size: 16px; }
+
+/* ── Layout (抄 omnidraw: 外层 flex + 内层独立滚动) ── */
+.layout {
+  display: flex;
+  height: calc(100dvh - 56px);
+  overflow: hidden;
+}
+.sidebar {
+  width: 200px; flex-shrink: 0;
+  display: flex; flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--card);
+  height: 100%; min-height: 0;
+  overflow: visible;
+}
+.nav-menu {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 12px 8px;
+}
+.nav-item {
+  display: flex; align-items: center;
+  padding: 10px 12px; border: none; border-radius: var(--radius);
+  background: none; color: var(--text-secondary); font-size: 14px;
+  cursor: pointer; text-align: left; width: 100%;
+  transition: background .15s, color .15s;
+}
+.nav-item:hover { background: var(--primary-light); color: var(--text); }
+.nav-item.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
+
+/* ── 保存按钮 margin-top:auto 贴底 ── */
+.save-panel {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border-top: 1px solid var(--border);
+  margin-top: auto; flex-shrink: 0;
+}
+.save-state { font-size: 12px; color: var(--text-muted); text-align: center; }
+.btn-save {
+  width: 100%; padding: 10px; border: none; border-radius: var(--radius);
+  background: var(--primary); color: #fff; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: background .15s;
+}
+.btn-save:hover { background: var(--primary-hover); }
+.btn-save:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── 右侧内容区（唯一可滚动区域）── */
+.content {
+  flex: 1; min-width: 0; height: 100%; overflow-y: auto;
+  padding: 24px 28px;
+}
+
+/* ── Tab ── */
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* ── Cards ── */
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 20px; }
+.card h3 { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+
+/* ── KB Grid ── */
+.kb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.kb-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; transition: box-shadow var(--transition), border-color var(--transition); }
+.kb-card:hover { box-shadow: var(--shadow-md); border-color: var(--primary-light); }
+.kb-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; gap: 12px; cursor: pointer; }
+.kb-card.expanded { border-color: var(--primary-light); }
+.kb-card-title { font-size: 15px; font-weight: 600; color: var(--text); word-break: break-word; }
+.kb-card-id { font-size: 12px; color: var(--text-muted); font-family: "SFMono-Regular", Consolas, monospace; margin-top: 3px; }
+.kb-card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.kb-card-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.kb-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-light); margin-top: 8px; }
+.kb-card-actions { display: flex; gap: 6px; }
+.kb-expanded { animation: fadeIn 200ms ease; padding-top: 8px; border-top: 1px solid var(--border-light); margin-top: 8px; }
+.kb-expanded .form-group { margin-bottom: 8px; }
+.kb-expanded .form-group label { font-size: 12px; margin-bottom: 3px; }
+
+/* ── Toolbar ── */
+.toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+.kb-filter-bar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+
+/* ── Buttons ── */
+.btn { padding: 8px 18px; border: none; border-radius: var(--radius-sm); font-size: 14px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: all var(--transition); font-family: inherit; }
+.btn:hover:not(:disabled) { transform: scale(1.02); }
+.btn:active { transform: scale(.97); }
+.btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: #b91c1c; }
+.btn-outline { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+.btn-outline:hover:not(:disabled) { border-color: var(--text-muted); }
+.btn-sm { padding: 6px 14px; font-size: 13px; }
+.btn-icon { padding: 6px 10px; font-size: 15px; }
+
+/* ── Toggle ── */
+.toggle { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider { position: absolute; inset: 0; background: var(--border); border-radius: 11px; cursor: pointer; transition: background var(--transition); }
+.toggle-slider::before { content: ''; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: transform var(--transition); box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+.toggle input:checked + .toggle-slider { background: var(--primary); }
+.toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
+
+/* ── Badges / Chips / Tags ── */
+.badge { display: inline-block; padding: 3px 12px; border-radius: var(--radius-pill); font-size: 12px; font-weight: 600; }
+.badge-enabled { background: var(--success-light); color: var(--success); }
+.badge-disabled { background: var(--danger-light); color: var(--danger); }
+.badge-constant { background: var(--warning-light); color: var(--warning); }
+.cat-chip { display: inline-block; padding: 2px 12px; border-radius: var(--radius-pill); font-size: 12px; font-weight: 500; color: #fff; }
+.tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; background: var(--primary-light); border-radius: var(--radius-sm); font-size: 12px; color: var(--primary); }
+.tag-del { cursor: pointer; font-size: 14px; line-height: 1; margin-left: 2px; opacity: .6; }
+
+/* ── Empty / Loading ── */
+.empty { text-align: center; padding: 48px 24px; color: var(--text-muted); font-size: 15px; }
+.loading { text-align: center; padding: 24px; color: var(--text-muted); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+.skeleton { display: inline-block; background: var(--surface); border-radius: var(--radius-sm); animation: pulse 1.5s ease-in-out infinite; }
+
+/* ── 统一表单组件（抄 omnidraw .input-modern）── */
+select, input:not([type="checkbox"]):not([type="range"]), textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+select:focus, input:focus, textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-light);
+}
+select { cursor: pointer; appearance: auto; }
+.form-group { margin-bottom: 16px; }
+.form-group label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; color: var(--text-secondary); }
+.form-group textarea { min-height: 100px; resize: vertical; }
+.form-row { display: flex; gap: 14px; }
+.form-row .form-group { flex: 1; }
+.form-check { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.form-check label { font-size: 14px; color: var(--text-secondary); cursor: pointer; }
+
+/* ── Tag Input ── */
+.tag-input-wrap { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; cursor: text; background: var(--surface); min-height: 40px; }
+.tag-input-wrap:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+.tag-input-wrap .tag { margin: 0; }
+.tag-input-field { border: none !important; outline: none !important; flex: 1; min-width: 80px; padding: 4px !important; font-size: 14px; font-family: inherit; background: transparent !important; color: var(--text); box-shadow: none !important; }
+
+/* ── Range ── */
+.range-wrap { display: flex; align-items: center; gap: 12px; }
+.range-wrap input[type="range"] { flex: 1; height: 6px; }
+.range-value { min-width: 28px; text-align: center; font-size: 15px; font-weight: 600; color: var(--primary); }
+
+/* ── Pagination ── */
+.pagination { display: flex; gap: 6px; align-items: center; justify-content: center; margin: 20px 0; }
+.pagination button { padding: 8px 16px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--card); cursor: pointer; font-size: 13px; color: var(--text); }
+.pagination button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.pagination span { font-size: 13px; color: var(--text-muted); }
+
+/* ── Toast ── */
+.toast-container { position: fixed; top: 20px; right: 20px; z-index: 999; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+.toast { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-radius: var(--radius-sm); font-size: 14px; color: #fff; box-shadow: var(--shadow-lg); animation: toastIn 250ms ease; pointer-events: auto; max-width: 400px; }
+.toast-success { background: var(--success); }
+.toast-error { background: var(--danger); }
+@keyframes toastIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── Code ── */
+code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; }
+pre { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; overflow-x: auto; font-size: 13px; max-height: 350px; color: var(--text); }
+
+/* ── Worldbook ── */
+.wb-item { margin-bottom: 12px; }
+.wb-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; }
+.wb-header-left { display: flex; align-items: center; gap: 10px; flex: 1; }
+.wb-header-left .arrow { transition: transform var(--transition); font-size: 12px; color: var(--text-muted); }
+.wb-header.open .arrow { transform: rotate(90deg); }
+.wb-header .wb-name { font-weight: 600; font-size: 15px; }
+.wb-desc { color: var(--text-muted); font-size: 13px; margin-left: 8px; }
+.wb-meta { color: var(--text-muted); font-size: 13px; }
+.wb-body { overflow: hidden; max-height: 0; transition: max-height 300ms ease; }
+.wb-body.open { max-height: none; }
+.wb-inner { padding: 12px 0 0 0; }
+.wb-inner .toolbar { margin-bottom: 12px; }
+.wb-entry-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 8px; }
+.wb-entry-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.wb-entry-title { font-weight: 600; font-size: 14px; }
+.wb-entry-id { font-size: 12px; color: var(--text-muted); font-family: "SFMono-Regular", Consolas, monospace; }
+.wb-entry-meta { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.wb-entry-content { font-size: 13px; color: var(--text-secondary); margin-top: 6px; line-height: 1.5; }
+.wb-entry-keys { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+
+.wb-ms-trigger { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; cursor: pointer; background: var(--surface); display: flex; justify-content: space-between; align-items: center; }
+.wb-ms-dropdown { position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow-lg); max-height: 220px; overflow-y: auto; z-index: 200; background: var(--card); }
+.wb-ms-option { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
+.wb-ms-option:hover { background: var(--surface); }
+.wb-ms-actions { margin-top: 12px; display: flex; gap: 8px; margin-left: auto; justify-content: flex-end; }
+
+/* ── Modal（唯一弹窗系统，100% 不透明）── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 300; display: none; align-items: center; justify-content: center; }
+.modal-overlay.open { display: flex; }
+.modal-dialog {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 80%; max-width: 800px; max-height: 85vh;
+  display: flex; flex-direction: column;
+  z-index: 301;
+}
+.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--border); }
+.modal-header h2 { font-size: 17px; font-weight: 600; }
+.modal-close { background: none; border: none; font-size: 22px; cursor: pointer; color: var(--text-muted); padding: 4px; line-height: 1; }
+.modal-body { flex: 1; overflow-y: auto; padding: 24px; }
+.modal-body textarea { min-height: 300px; resize: vertical; }
+.modal-footer { padding: 16px 24px; border-top: 1px solid var(--border); display: flex; gap: 10px; justify-content: flex-end; }
+
+/* ── Select 美化：干掉原生箭头 + 自定义 SVG ── */
+select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' stroke='%2364748b' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px;
+  padding-right: 36px !important;
+}
+[data-theme="dark"] select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' stroke='%2394a3b8' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+select option {
+  background-color: var(--card);
+  color: var(--text);
+}
+
+/* ── Memory 面板 ── */
+.memory-subnav { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.memory-subnav-item { padding: 8px 16px; border: none; background: none; color: var(--text-muted); font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.memory-subnav-item.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.mem-sub-pane { display: none; }
+.mem-sub-pane.active { display: block; }
+.mem-dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.mem-dash-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; text-align: center; }
+.mem-dash-value { font-size: 28px; font-weight: 700; color: var(--primary); }
+.mem-dash-label { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.mem-provider-info { font-size: 13px; line-height: 1.8; }
+.mem-provider-info .prov-row { display: flex; gap: 8px; margin-bottom: 4px; }
+.mem-provider-info .prov-key { color: var(--text-muted); min-width: 100px; }
+.table-wrap { overflow-x: auto; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-weight: 600; font-size: 12px; white-space: nowrap; }
+.data-table td { padding: 10px 12px; border-bottom: 1px solid var(--border-light); vertical-align: top; }
+.data-table .cell-session { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; color: var(--text-secondary); }
+.data-table .cell-summary { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Persona ── */
+.persona-card { cursor: pointer; transition: box-shadow var(--transition); }
+.persona-card.expanded { border-color: var(--primary-light); }
+.persona-expanded { padding-top: 12px; border-top: 1px solid var(--border-light); margin-top: 12px; }
+
+/* ── RAG ── */
+.rag-search-layout { display: flex; gap: 16px; align-items: stretch; margin-bottom: 16px; }
+.rag-search-main { flex: 1; display: flex; flex-direction: column; }
+.rag-search-main textarea { flex: 1; width: 100%; resize: vertical; min-height: 100px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font-family: inherit; font-size: 14px; outline: none; transition: border-color var(--transition); }
+.rag-search-main textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+.rag-search-side { width: 220px; flex-shrink: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; display: flex; flex-direction: column; justify-content: space-between; }
+.rag-result-card { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 16px; background: var(--card); overflow: hidden; box-shadow: var(--shadow-sm); }
+.rag-result-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border-light); }
+.rag-result-meta { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; color: var(--text); }
+.rag-result-badge { background: #e0f2fe; color: #0284c7; padding: 2px 8px; border-radius: var(--radius-pill); font-size: 12px; font-weight: bold; }
+[data-theme="dark"] .rag-result-badge { background: rgba(2,132,199,0.2); color: #38bdf8; }
+.rag-result-score { color: #b91c1c; font-size: 12px; background: #fee2e2; padding: 3px 10px; border-radius: var(--radius-pill); font-weight: 600; }
+[data-theme="dark"] .rag-result-score { background: rgba(220,38,38,0.15); color: #f87171; }
+.rag-result-content { padding: 16px; font-size: 13px; line-height: 1.6; color: var(--text-secondary); max-height: 250px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; }
+.rag-result-content::-webkit-scrollbar { width: 6px; }
+.rag-result-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+@media (max-width: 600px) { .rag-search-layout { flex-direction: column; } .rag-search-side { width: 100%; flex-direction: row; gap: 12px; align-items: flex-end; } .rag-search-side .form-group { margin-bottom: 0; flex: 1; } }
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+  .layout { flex-direction: column; height: auto; }
+  .sidebar { width: 100%; height: auto; flex-direction: row; border-right: none; border-bottom: 1px solid var(--border); }
+  .nav-menu { flex-direction: row; flex: none; padding: 8px; overflow-x: auto; }
+  .nav-item { white-space: nowrap; }
+  .kb-grid { grid-template-columns: 1fr; }
+  .form-row { flex-direction: column; gap: 0; }
+}
+
+/* ── 轻量级对话框专属样式 ── */
+.dialog-sm {
+  width: 90%;
+  max-width: 420px; /* 比表单 Modal 窄得多，视觉更集中 */
+  max-height: none;
+}
+.dialog-sm .modal-body {
+  padding: 24px 32px;
+  font-size: 15px;
+  text-align: center;
+}
+.dialog-sm input {
+  margin-top: 12px;
+}
+
+/* ── 规范化底部分页悬浮样式 ── */
+.kb-pagination-wrapper {
+  position: sticky;
+  bottom: -24px;
+  background: var(--bg);
+  padding: 16px 0;
+  z-index: 10;
+  border-top: 1px solid var(--border);
+  margin-top: auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+}
+.kb-jump-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 16px;
+  border-left: 1px solid var(--border);
+  padding-left: 16px;
+}
+
+/* ── 写作素材库专属 Flex 布局 ── */
+#tab-kb.active {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+#kb-grid {
+  flex: 1;
+  align-content: start;
+  padding-bottom: 20px;
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Quill</h1>
+  <span class="sub">管理面板</span>
+  <span class="spacer"></span>
+  <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="切换深色模式">🌙</button>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <nav class="nav-menu">
+      <button class="nav-item active" data-tab="kb">写作素材库</button>
+      <button class="nav-item" data-tab="wb">世界书</button>
+      <button class="nav-item" data-tab="rag">文档知识库</button>
+      <button class="nav-item" data-tab="memory">动态记忆</button>
+      <button class="nav-item" data-tab="persona">角色卡</button>
+      <button class="nav-item" data-tab="config">配置</button>
+    </nav>
+    <div class="save-panel">
+      <div class="save-state" id="save-state">配置已同步</div>
+      <button class="btn-save" onclick="saveAllChanges()">保存更改</button>
+    </div>
+  </aside>
+  <main class="content">
+
+  <!-- KB Tab -->
+  <div class="tab-content active" id="tab-kb">
+    <h2 style="margin-bottom:16px">写作素材库</h2>
+    <!-- 顶部筛选器（原"匹配测试"移到此）-->
+    <div class="kb-filter-bar">
+      <input type="text" id="kb-filter-input" placeholder="全局检索：输入关键词、分类、内容..." style="flex:1;max-width:400px" oninput="onKBSearchInput()">
+      <select id="kb-cat-filter" onchange="loadKB()" style="width:auto"><option value="">全部分类</option></select>
+      <label style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:0 12px;border:1px solid var(--border);border-radius:var(--radius-sm);height:36px;cursor:pointer;margin:0;">
+        <div class="toggle" style="transform:scale(0.8);margin:0;"><input type="checkbox" id="kb-constant-filter" onchange="onKBSearchInput()"><span class="toggle-slider"></span></div>
+        <span style="font-size:13px;font-weight:500;user-select:none;">仅常驻</span>
+      </label>
+      <button class="btn btn-primary" onclick="openKBModal(null)">+ 新建条目</button>
+      <button class="btn btn-outline" onclick="exportKB()">导出</button>
+      <label class="btn btn-outline" style="cursor:pointer">导入<input type="file" accept=".json" hidden onchange="importKB(this)"></label>
+    </div>
+    <div class="kb-grid" id="kb-grid">
+      <div class="loading" style="grid-column:1/-1"><span class="skeleton" style="width:200px">&nbsp;</span></div>
+    </div>
+    <div class="pagination" id="kb-pagination"></div>
+  </div>
+
+  <!-- WB Tab -->
+  <div class="tab-content" id="tab-wb">
+    <h2 style="margin-bottom:16px">世界书</h2>
+    <div class="card" style="margin-bottom:16px">
+      <h3>活跃世界书</h3>
+      <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">选择当前对话要激活的世界书。取消勾选=停用。</p>
+      <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
+        <div style="position:relative;flex:1;max-width:400px;min-width:200px">
+          <div id="wb-multi-select-trigger" class="wb-ms-trigger" onclick="toggleWBMultiSelect()">
+            <span id="wb-multi-select-label" style="color:var(--text-muted)">点击选择世界书...</span>
+            <span>▼</span>
+          </div>
+          <div id="wb-multi-select-dropdown" class="wb-ms-dropdown" style="display:none">
+            <div id="wb-multi-select-options"><span class="skeleton" style="width:150px">&nbsp;</span></div>
+          </div>
+        </div>
+        <div class="wb-ms-actions">
+          <button class="btn btn-primary btn-sm" onclick="saveActiveWorldbooks()">保存</button>
+          <button class="btn btn-outline btn-sm" onclick="selectAllActiveWB(true)">全选</button>
+          <button class="btn btn-outline btn-sm" onclick="selectAllActiveWB(false)">全不选</button>
+        </div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="openWBCreateModal()">+ 新建世界书</button>
+      <label style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:0 12px;border:1px solid var(--border);border-radius:var(--radius-sm);height:36px;cursor:pointer;margin:0;">
+        <div class="toggle" style="transform:scale(0.8);margin:0;"><input type="checkbox" id="wb-constant-filter" onchange="toggleWBConstantFilter()"><span class="toggle-slider"></span></div>
+        <span style="font-size:13px;font-weight:500;user-select:none;">仅常驻</span>
+      </label>
+      <label class="btn btn-outline" style="cursor:pointer">导入 (原生/ST)<input type="file" accept=".json" hidden onchange="importWB_ST(this)"></label>
+      <button class="btn btn-outline" onclick="refreshWB()" id="btn-refresh-wb">⟳ 刷新</button>
+    </div>
+    <div id="wb-list"><div class="loading"><span class="skeleton" style="width:240px">&nbsp;</span></div></div>
+  </div>
+
+  <!-- Persona Tab (信息引导页) -->
+  <div class="tab-content" id="tab-persona">
+    <h2 style="margin-bottom:16px">角色卡</h2>
+    <div class="card" style="text-align:center;padding:48px 32px">
+      <div style="font-size:48px;margin-bottom:12px">🎭</div>
+      <h3 style="margin-bottom:8px">原生人格联动已就绪</h3>
+      <p style="color:var(--text-muted);font-size:13px;line-height:1.6;margin:0">
+        Quill 会自动读取并注入 AstrBot 系统原生的【人格设定】。<br>
+        请直接在左侧主菜单的『人格设定』中管理您的角色卡。
+      </p>
+    </div>
+  </div>
+
+  <!-- RAG Tab -->
+  <div class="tab-content" id="tab-rag">
+    <h2 style="margin-bottom:16px">文档知识库</h2>
+    <div class="card" id="rag-model-info-card" style="margin-bottom:16px">
+      <h3>RAG 模型配置</h3>
+      <div class="mem-provider-info" id="rag-model-info"><span class="skeleton" style="width:200px">&nbsp;</span></div>
+    </div>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">
+      分块策略与模型等配置，请前往侧边栏的【全局设置】。
+    </p>
+    <div class="card">
+      <h3>上传文档</h3>
+      <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">支持 .txt / .md / .pdf 格式。</p>
+      <div id="rag-upload-zone" style="border:2px dashed var(--border);border-radius:var(--radius);padding:32px;text-align:center;cursor:pointer;color:var(--text-muted)"
+           ondragover="this.style.borderColor='var(--primary)'" ondragleave="this.style.borderColor=''" ondrop="handleRAGDrop(event)" onclick="qs('#rag-file-input').click()">
+        <div style="font-size:32px;margin-bottom:8px">📄</div>
+        <div>拖拽文件到此处，或点击选择文件</div>
+        <input type="file" id="rag-file-input" hidden accept=".txt,.md,.pdf" onchange="handleRAGFileSelect(this)">
+      </div>
+      <div id="rag-upload-status" style="margin-top:10px;text-align:center;font-size:13px"></div>
+    </div>
+    <div class="card">
+      <h3>已上传文档</h3>
+      <div id="rag-doc-list"><span class="skeleton" style="width:200px">&nbsp;</span></div>
+    </div>
+    <div class="card" style="background:var(--bg);border:none;">
+      <h3 style="margin-bottom:16px;">知识库检索</h3>
+      <div class="rag-search-layout">
+        <div class="rag-search-main">
+          <textarea id="rag-test-input" placeholder="输入查询测试知识库内容..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();testRAGSearch();}"></textarea>
+        </div>
+        <div class="rag-search-side">
+          <div class="form-group" style="margin-bottom:0;">
+            <label style="font-size:12px;">返回结果数量</label>
+            <input type="number" id="rag-test-topk" value="5" min="1" max="20" style="background:var(--card);">
+          </div>
+          <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:12px;" onclick="testRAGSearch()">检索</button>
+        </div>
+      </div>
+      <div id="rag-test-results"></div>
+    </div>
+  </div>
+
+  <!-- Memory Tab -->
+  <div class="tab-content" id="tab-memory">
+    <h2 style="margin-bottom:16px">动态记忆</h2>
+    <div class="memory-subnav">
+      <button class="memory-subnav-item active" data-mem-sub="overview">系统总览</button>
+      <button class="memory-subnav-item" data-mem-sub="browser">记忆浏览</button>
+      <button class="memory-subnav-item" data-mem-sub="vector">向量检索</button>
+      <button class="memory-subnav-item" data-mem-sub="io">导入导出</button>
+    </div>
+    <div class="mem-sub-pane active" id="mem-sub-overview">
+      <div class="mem-dashboard">
+        <div class="mem-dash-card"><div class="mem-dash-value" id="dash-total">—</div><div class="mem-dash-label">记忆总数</div></div>
+        <div class="mem-dash-card"><div class="mem-dash-value" id="dash-sessions">—</div><div class="mem-dash-label">活跃会话</div></div>
+        <div class="mem-dash-card"><div class="mem-dash-value" id="dash-index">—</div><div class="mem-dash-label">向量索引</div></div>
+        <div class="mem-dash-card"><div class="mem-dash-value" id="dash-today">—</div><div class="mem-dash-label">今日新增</div></div>
+      </div>
+      <div class="card"><h3>提供商配置</h3><div class="mem-provider-info" id="mem-provider-info"><span class="skeleton" style="width:200px">&nbsp;</span></div></div>
+    </div>
+    <div class="mem-sub-pane" id="mem-sub-browser">
+      <div class="card"><h3>记忆浏览</h3>
+        <div class="form-group"><input type="text" id="mem-search" placeholder="搜索 session_id 或关键词..." oninput="handleMemSearch()"></div>
+        <div class="table-wrap"><table class="data-table" id="mem-table"><thead><tr><th>Session ID</th><th>摘要</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="mem-table-body"></tbody></table></div>
+      </div>
+    </div>
+    <div class="mem-sub-pane" id="mem-sub-io">
+      <div class="card"><h3>备份记忆库</h3><button class="btn btn-primary" onclick="exportMemories()">导出 JSON</button></div>
+      <div class="card"><h3>恢复记忆库</h3><label class="btn btn-outline" style="cursor:pointer">选择 JSON 文件<input type="file" accept=".json" hidden onchange="importMemories(this)"></label></div>
+    </div>
+    <div class="mem-sub-pane" id="mem-sub-vector">
+      <div class="card"><h3>向量检索 (Debug)</h3>
+        <div style="display:flex;gap:8px"><input type="text" id="mem-vector-input" placeholder="输入查询文本..." style="flex:1" onkeydown="if(event.key==='Enter')testMemoryVectorSearch()"><button class="btn btn-primary" onclick="testMemoryVectorSearch()">检索</button></div>
+        <pre id="mem-vector-raw" style="display:none"></pre>
+        <div id="mem-vector-results"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config Tab -->
+  <div class="tab-content" id="tab-config">
+    <h2 style="margin-bottom:16px">全局核心设置</h2>
+
+    <div class="card">
+      <h3>RAG 与动态记忆 <span style="font-weight:normal;font-size:13px;color:var(--text-muted);margin-left:8px">(依赖底层向量库引擎)</span></h3>
+      <div style="border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:16px;background:var(--surface);">
+        <div class="form-row">
+          <div class="form-group"><label>Embedding 模型</label><select id="c-rag-emb"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">用于文本向量化。留空使用本地 bge-small。</span></div>
+          <div class="form-group"><label>Rerank 重排模型</label><select id="c-rag-rerank"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">二次打分，极大提升检准率。建议配置。</span></div>
+          <div class="form-group"><label>摘要 LLM 模型</label><select id="c-rag-llm"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">用于后台将长对话压缩为记忆摘要。</span></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>文档分块大小</label><input type="number" id="c-rag-chunk" value="500"></div>
+          <div class="form-group"><label>分块重叠字数</label><input type="number" id="c-rag-overlap" value="50"></div>
+          <div class="form-group"><label>最终注入条数 (Top K)</label><input type="number" id="c-rag-topk" value="3"></div>
+        </div>
+        <div class="form-check" style="margin-top:10px;">
+          <label class="toggle"><input type="checkbox" id="c-rag-memory"><span class="toggle-slider"></span></label>
+          <div><span style="font-weight:500">启用动态记忆</span><span style="font-size:12px;color:var(--text-muted);margin-left:8px">后台自动提取历史并跨会话保留。</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <div class="card" style="height:100%">
+          <h3>世界书注入策略</h3>
+          <div class="form-check" style="margin-bottom:16px;">
+            <label class="toggle"><input type="checkbox" id="c-wb-enabled"><span class="toggle-slider"></span></label>
+            <span style="font-weight:500">启用世界书匹配</span>
+          </div>
+          <div class="form-group"><label>注入 Token 估算上限</label><input type="number" id="c-wb-token" value="4000"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">建议 3000-4000。太高会导致忘掉状态栏。</span></div>
+          <div class="form-group"><label>单次触发条目上限</label><input type="number" id="c-wb-max" value="4"></div>
+          <div class="form-group"><label>提示词注入位置</label><select id="c-wb-pos"><option value="user_prefix">贴脸输出 (user_prefix) - 推荐</option><option value="system_end">系统末尾 (system_end)</option></select></div>
+          <div class="form-group"><label>匹配灵敏度</label><div class="range-wrap"><input type="range" id="c-wb-sens" min="0" max="1" step="0.1" value="0.7" oninput="this.nextElementSibling.textContent=this.value"><span class="range-value">0.7</span></div></div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <div class="card" style="height:100%">
+          <h3>写作素材库控制</h3>
+          <div class="form-check" style="margin-bottom:16px;">
+            <label class="toggle"><input type="checkbox" id="c-kb-enabled"><span class="toggle-slider"></span></label>
+            <span style="font-weight:500">启用素材库指引</span>
+          </div>
+          <div class="form-group"><label>最大注入条数</label><input type="number" id="c-kb-max" value="4"></div>
+          <div class="form-group"><label>无匹配时保底回退条数</label><input type="number" id="c-kb-fallback" value="2"></div>
+          <div class="form-group"><label>同分类去重上限</label><input type="number" id="c-kb-dedup" value="3"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-row" style="margin-bottom:30px;">
+      <div class="form-group">
+        <div class="card" style="height:100%">
+          <h3>表现与状态栏</h3>
+          <div class="form-group"><label>强制回复最低字数</label><input type="number" id="c-perf-min" value="400"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">建议400-800，防大模型变短聊。</span></div>
+          <div class="form-check" style="margin:16px 0 10px;">
+            <label class="toggle"><input type="checkbox" id="c-sb-enabled"><span class="toggle-slider"></span></label>
+            <span style="font-weight:500">启用 [LOVE_DATA] 状态栏</span>
+          </div>
+          <div class="form-group"><label>状态栏字段 (6个, 用|隔开)</label><input type="text" id="c-sb-fields" value="好感度|关系阶段|心情|位置|穿着|当前想法"></div>
+          <div class="form-group"><label>渲染 Markdown 模板</label><textarea id="c-sb-tpl" rows="3"></textarea></div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <div class="card" style="height:100%">
+          <h3>应急反拒绝协议</h3>
+          <div class="form-check" style="margin-bottom:16px;">
+            <label class="toggle"><input type="checkbox" id="c-ref-enabled"><span class="toggle-slider"></span></label>
+            <span style="font-weight:500">启用拒绝阻断检测</span>
+          </div>
+          <div class="form-group"><label>触发拦截词 (每行一个)</label><textarea id="c-ref-pat" rows="6"></textarea></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="text-align:center;margin-bottom:40px;">
+      <button class="btn btn-primary" id="btn-save-all" style="padding:12px 40px;font-size:16px;border-radius:20px;" onclick="saveAllChanges()">保存全局设置 (保存后需重启对话生效)</button>
+    </div>
+  </div>
+
+  </main>
+</div><!-- .layout -->
+
+<!-- 唯一 Modal 系统 -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal()">
+  <div class="modal-dialog" onclick="event.stopPropagation()">
+    <div class="modal-header"><h2 id="modalTitle">编辑</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal()">取消</button><button class="btn btn-primary" id="modalSaveBtn" onclick="saveModal()">保存</button></div>
+  </div>
+</div>
+
+<script>
+const PLUGIN_NAME = "astrbot_plugin_quillplus";
+function getBridge() { return window.AstrBotPluginPage || null; }
+async function waitForBridge(timeoutMs = 5000) { const s = Date.now(); while (Date.now() - s < timeoutMs) { if (window.AstrBotPluginPage) return window.AstrBotPluginPage; await new Promise(r => setTimeout(r, 100)); } return null; }
+
+let kbState = { entries: [], total: 0, page: 1, perPage: 9 };
+let wbCache = {};
+let modalState = null;
+let modalMode = null;
+let _kbTagInput = null;   // 写作素材库标签输入
+let _wbEntryTagInput = null;  // 世界书条目标签输入
+
+// ── utilities ──
+let debounceTimer;
+function debounce(fn, ms) { return (...args) => { clearTimeout(debounceTimer); debounceTimer = setTimeout(() => fn(...args), ms); }; }
+const handleMemSearch = debounce(loadMemoryBrowser, 300);  // 全局共享防抖实例
+function qs(s) { return document.querySelector(s); }
+function qsa(s) { return document.querySelectorAll(s); }
+function esc(s) { return s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function escAttr(s) { return esc(s); }
+function catColor(name) { if (!name) return '#6366f1'; let h = 0; for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h); return `hsl(${(h % 360 + 360) % 360}, 55%, 50%)`; }
+function showToast(msg, type = 'error') {
+  const container = qs('#toast-container');
+  const icon = type === 'success' ? '✓' : '✕';
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.innerHTML = `<span class="toast-icon">${icon}</span><span>${esc(msg)}</span><button class="toast-close" onclick="this.parentElement.remove()">×</button>`;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+// ── API ──
+async function api(path, opts = {}) {
+  const np = path.replace(/^\/+/, '');
+  const hasQ = np.includes('?');
+  const [bp, qs_str] = np.split('?');
+  const bridge = getBridge() || await waitForBridge(5000);
+
+  // 1. 如果桥接器可用，且不是文件流或表单上传，优先走安全的桥接器
+  if (bridge && !opts.isFormData && !opts.isBlob) {
+    const method = (opts.method || 'GET').toUpperCase();
+    let result;
+    if (method === 'GET') {
+      const params = { '_t': Date.now() };
+      if (qs_str) new URLSearchParams(qs_str).forEach((v, k) => { params[k] = v; });
+      result = await bridge.apiGet(bp, params);
+    } else {
+      result = await bridge.apiPost(bp, opts.body ? JSON.parse(opts.body) : {});
+    }
+    if (result && typeof result === 'object' && 'status' in result) {
+      if (result.status === 'error') throw new Error(result.message || 'API error');
+      return result.data;
+    }
+    return result;
+  }
+
+  // 2. 原生 Fetch 降级（处理 FormData, Blob 导出，或桌面独立端）
+  const cfg = window.__QUILL_CONFIG__ || {};
+  const po = window.location?.origin || '';
+  let origin = (cfg.astrbotOrigin || (po && po !== 'null' ? po : '')).replace(/\/+$/, '');
+  // 沙盒 iframe 中 origin 为 null 时，使用父页面来源
+  if (!origin && document.referrer) {
+      try { origin = new URL(document.referrer).origin; } catch (_) {}
+  }
+  const isPost = (opts.method || 'GET').toUpperCase() === 'POST';
+
+  const headers = { ...opts.headers };
+  // 如果是 FormData，绝对不能手动设置 Content-Type，让浏览器自动补全 boundary
+  if (!opts.isFormData) {
+      headers['Content-Type'] = 'application/json';
+  }
+  // 安全拦截沙盒 iframe 中的 SecurityError
+  let token = null;
+  try {
+      token = localStorage.getItem('token');
+  } catch (e) {
+      /* 忽略 iframe 沙盒安全拦截，依赖 credentials Cookie 鉴权 */
+  }
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const sep = np.includes('?') ? '&' : '?';
+  const cacheBust = isPost ? '' : `${sep}_t=${Date.now()}`;
+  const arg = PLUGIN_NAME + '/' + np;
+  const candidates = [
+      `${origin}/api/plug/${arg}${cacheBust}`,
+      `${origin}/api/v1/plugins/extensions/${arg}${cacheBust}`
+  ];
+  if (cfg.desktopServer) candidates.push(`${origin}/api/${np}`);
+
+  console.log('[Quill API] origin=' + origin + ' isFormData=' + !!opts.isFormData + ' urls=' + JSON.stringify(candidates));
+
+  const errors = [];
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, { method: isPost ? 'POST' : 'GET', headers, body: opts.body || undefined, credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      // 拦截文件流下载
+      if (opts.isBlob) return await res.blob();
+
+      let json = await res.json();
+      // 核心 Bug 7 修复：剥离 AstrBot 外层 Envelope
+      if (json && json.code === 200 && json.data !== undefined) json = json.data;
+
+      if (json && typeof json === 'object' && 'status' in json) {
+        if (json.status === 'error') throw new Error(json.message || 'API error');
+        return json.data !== undefined ? json.data : json;
+      }
+      return json;
+    } catch (e) {
+      errors.push(e.message);
+    }
+  }
+  throw new Error(`[Quill] API 失败: ` + errors.join('; '));
+}
+
+// ── Theme ──
+function toggleTheme() {
+  const html = document.documentElement;
+  const btn = qs('#themeToggle');
+  const isDark = html.getAttribute('data-theme') === 'dark';
+  html.setAttribute('data-theme', isDark ? 'light' : 'dark');
+  btn.textContent = isDark ? '🌙' : '☀️';
+  try {
+      localStorage.setItem('quill-theme', isDark ? 'light' : 'dark');
+  } catch (e) { /* 忽略沙盒写入限制 */ }
+}
+try { const saved = localStorage.getItem('quill-theme'); if (saved === 'dark') { document.documentElement.setAttribute('data-theme', 'dark'); qs('#themeToggle').textContent = '☀️'; } } catch (_) {}
+
+// ── Modal（唯一弹窗系统）──
+function openModal() { qs('#modalOverlay').classList.add('open'); }
+function closeModal() { qs('#modalOverlay').classList.remove('open'); modalMode = null; modalState = null; }
+
+// ── 轻量级弹窗（沙盒安全，替代 confirm/prompt）──
+function closeDialog() {
+  qs('#dialogOverlay').classList.remove('open');
+}
+
+window.sandboxConfirm = function(msg, callback, isDanger = false) {
+  qs('#dialogTitle').textContent = '操作确认';
+  qs('#dialogBody').innerHTML = `<div style="color:${isDanger ? 'var(--danger)' : 'var(--text)'}">${esc(msg)}</div>`;
+
+  const btn = qs('#dialogConfirmBtn');
+  btn.className = `btn ${isDanger ? 'btn-danger' : 'btn-primary'}`;
+  btn.textContent = isDanger ? '删除' : '确定';
+
+  btn.onclick = () => {
+    closeDialog();
+    if (callback) callback();
+  };
+  qs('#dialogOverlay').classList.add('open');
+};
+
+window.sandboxPrompt = function(msg, def, callback) {
+  qs('#dialogTitle').textContent = '请输入信息';
+  qs('#dialogBody').innerHTML = `
+    <div style="text-align:left;margin-bottom:8px;">${esc(msg)}</div>
+    <input id="sandbox-prompt-val" class="tag-input-field" style="border:1px solid var(--border)!important;padding:8px!important;" value="${esc(def)}">
+  `;
+
+  const btn = qs('#dialogConfirmBtn');
+  btn.className = 'btn btn-primary';
+  btn.textContent = '确认';
+
+  btn.onclick = () => {
+    const val = qs('#sandbox-prompt-val').value.trim();
+    closeDialog();
+    if (callback) callback(val);
+  };
+  qs('#dialogOverlay').classList.add('open');
+  setTimeout(() => qs('#sandbox-prompt-val').focus(), 50);
+};
+
+// ── Tabs ──
+qsa('.nav-item').forEach(btn => {
+  btn.addEventListener('click', () => {
+    qsa('.nav-item').forEach(b => b.classList.remove('active'));
+    qsa('.tab-content').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    qs('#tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'kb') loadKB();
+    if (btn.dataset.tab === 'wb') { loadWB(); loadActiveWorldbooks(); }
+    if (btn.dataset.tab === 'rag') { loadRAG(); loadRAGModelInfo(); }
+    if (btn.dataset.tab === 'memory') switchMemSub('overview');
+    // persona tab: no JS needed (static info page)
+    if (btn.dataset.tab === 'config') loadGlobalSettings();
+  });
+});
+qsa('.memory-subnav-item').forEach(btn => { btn.addEventListener('click', () => switchMemSub(btn.dataset.memSub)); });
+
+// ── Tag Input ──
+function createTagInput(containerId, initialTags, placeholder) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'tag-input-wrap';
+  const input = document.createElement('input');
+  input.className = 'tag-input-field';
+  input.placeholder = placeholder || '输入关键词，回车/逗号添加';
+  const tags = [...(initialTags || [])];
+  function render() {
+    wrap.innerHTML = '';
+    tags.forEach((t, i) => { const tag = document.createElement('span'); tag.className = 'tag'; tag.innerHTML = `${esc(t)}<span class="tag-del" data-idx="${i}">×</span>`; wrap.appendChild(tag); });
+    wrap.appendChild(input);
+    wrap.querySelectorAll('.tag-del').forEach(el => { el.addEventListener('click', (e) => { tags.splice(parseInt(e.target.dataset.idx), 1); render(); input.focus(); container.dispatchEvent(new CustomEvent('tagschange', { detail: [...tags] })); }); });
+  }
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ',' || e.key === '，') { e.preventDefault(); const v = input.value.trim().replace(/[,，]/g, ''); if (v && !tags.includes(v)) { tags.push(v); render(); input.focus(); container.dispatchEvent(new CustomEvent('tagschange', { detail: [...tags] })); } input.value = ''; }
+    if (e.key === 'Backspace' && !input.value && tags.length) { tags.pop(); render(); input.focus(); container.dispatchEvent(new CustomEvent('tagschange', { detail: [...tags] })); }
+  });
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) input.focus(); });
+  container.appendChild(wrap);
+  render();
+  return { getTags: () => [...tags], setTags: (nt) => { tags.length = 0; tags.push(...nt); render(); }, input };
+}
+
+// ── KB 动态计算每页数量 ──
+function calcDynamicPerPage() {
+  const grid = qs('#kb-grid');
+  if (!grid) return 9;
+  const gridWidth = grid.clientWidth || (window.innerWidth - 256);
+  const cols = Math.max(1, Math.floor(gridWidth / 374));
+  const availableHeight = window.innerHeight - 220;
+  const rows = Math.max(2, Math.floor(availableHeight / 190));
+  let newPerPage = cols * rows;
+  if (newPerPage < 6) newPerPage = 6;
+  if (newPerPage > 36) newPerPage = 36;
+  return newPerPage;
+}
+
+// 监听窗口大小改变，动态调整分页数量
+window.addEventListener('resize', debounce(() => {
+  const newPerPage = calcDynamicPerPage();
+  if (kbState.perPage !== newPerPage && qs('#tab-kb').classList.contains('active')) {
+    kbState.perPage = newPerPage;
+    kbState.page = 1;
+    loadKB();
+  }
+}, 300));
+
+// 统一的全局搜索触发器 (防抖触发)
+const handleKBSearch = debounce(loadKB, 300);
+function onKBSearchInput() {
+  kbState.page = 1;
+  handleKBSearch();
+}
+
+// ── Knowledge Base ──
+async function loadKB() {
+  const search = qs('#kb-filter-input')?.value || '';
+  const category = qs('#kb-cat-filter').value;
+  const isConstant = qs('#kb-constant-filter')?.checked;
+  kbState.perPage = calcDynamicPerPage();
+  const page = kbState.page;
+  try {
+    const params = new URLSearchParams({ page, per_page: kbState.perPage });
+    if (search) params.set('search', search);
+    if (category) params.set('category', category);
+    if (isConstant) params.set('is_constant', 'true');
+    const data = await api('/kb/list?' + params.toString());
+    kbState.entries = data.items;
+    kbState.total = data.total;
+    renderKBGrid();
+    renderKBPagination();
+  } catch (e) { showToast(e.message); }
+}
+
+let _kbExpandedId = null;
+
+function renderKBGrid() {
+  const grid = qs('#kb-grid');
+  if (!kbState.entries.length) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1">没有条目</div>'; return; }
+  grid.innerHTML = kbState.entries.map((e) => {
+    const escId = esc(e.entry_id);
+    const kw = (e.keywords || []).slice(0, 6).map(k => `<span class="tag">${esc(k)}</span>`).join('');
+    const more = (e.keywords || []).length > 6 ? ` <span style="color:var(--text-muted);font-size:11px">+${(e.keywords || []).length - 6}</span>` : '';
+    const isOpen = _kbExpandedId === e.entry_id;
+    return `<div class="kb-card${isOpen ? ' expanded' : ''}" data-eid="${escId}">
+      <div class="kb-card-header" onclick="${isOpen ? '' : "toggleKBExpand('" + escId + "')"}">
+        <div><div class="kb-card-title">${esc(e.name || e.entry_id)}</div><div class="kb-card-id">${escId}</div></div>
+        <div class="kb-card-meta">
+          <span class="cat-chip" style="background:${catColor(e.category)}">${esc(e.category)}</span>
+          <span style="font-size:13px;color:var(--text-muted)">P${e.priority != null ? e.priority : '-'}</span>
+        </div>
+      </div>
+      ${isOpen ? renderKBExpanded(e) : (kw || more) ? `<div class="kb-card-tags">${kw}${more}</div>` : ''}
+      <div class="kb-card-footer">
+        <label class="toggle"><input type="checkbox" ${e.enabled !== false ? 'checked' : ''} onchange="toggleKBEntry('${escId}', this.checked)"><span class="toggle-slider"></span></label>
+        <div class="kb-card-actions">
+          ${isOpen ? `<button class="btn btn-sm btn-outline btn-icon" onclick="saveKBInline('${escId}')">✓</button>` : ''}
+          <button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openKBModal('${escId}')" title="编辑">✎</button>
+          <button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteKBEntry('${escId}')" title="删除">×</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderKBExpanded(e) {
+  const escId = esc(e.entry_id);
+  const kwTags = (e.keywords || []).map(k => `<span class="tag" style="margin:0 2px 2px 0">${esc(k)} <span class="tag-del" onclick="removeKBInlineTag('${escId}',${JSON.stringify(k)})">×</span></span>`).join('');
+  return `<div class="kb-expanded" onclick="event.stopPropagation()">
+    <div class="form-row">
+      <div class="form-group"><label>分类</label><input value="${esc(e.category||'')}" onchange="kbInlineDirty=true"></div>
+      <div class="form-group" style="flex:0 0 120px"><label>权重</label><div class="range-wrap"><input type="range" min="1" max="10" value="${e.priority||5}" oninput="this.nextElementSibling.textContent=this.value"><span class="range-value">${e.priority||5}</span></div></div>
+    </div>
+    <div class="form-group"><label>关键词</label><div>${kwTags || '<span style="color:var(--text-muted)">无</span>'}</div>
+      <input style="flex:1" placeholder="添加关键词" onkeydown="if(event.key==='Enter'){addKBInlineTag('${escId}',this.value);this.value=''}"></div>
+    <div class="form-group"><label>内容</label><textarea rows="4">${esc(e.content||'')}</textarea></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <label class="form-check" style="margin-bottom:0"><input type="checkbox" class="kb-inline-const-cb" ${e.is_constant?'checked':''}> 常驻</label>
+      <button class="btn btn-sm btn-primary" onclick="saveKBInline('${escId}')" style="margin-left:auto">保存</button>
+      <button class="btn btn-sm btn-outline" onclick="toggleKBExpand('${escId}')">收起</button>
+    </div>
+  </div>`;
+}
+
+let kbInlineDirty = false;
+let _kbInlineTagCache = {};
+
+function toggleKBExpand(eid) {
+  if (_kbExpandedId === eid) { _kbExpandedId = null; renderKBGrid(); return; }
+  _kbExpandedId = eid;
+  _kbInlineTagCache[eid] = [...(kbState.entries.find(e => e.entry_id === eid)?.keywords || [])];
+  renderKBGrid();
+}
+
+function addKBInlineTag(eid, val) { val = val.trim().replace(/,/g, ''); if (!val) return; if (!_kbInlineTagCache[eid]) _kbInlineTagCache[eid] = []; if (!_kbInlineTagCache[eid].includes(val)) _kbInlineTagCache[eid].push(val); const entry = kbState.entries.find(e => e.entry_id === eid); if (entry) entry.keywords = [..._kbInlineTagCache[eid]]; renderKBGrid(); }
+function removeKBInlineTag(eid, val) { if (_kbInlineTagCache[eid]) _kbInlineTagCache[eid] = _kbInlineTagCache[eid].filter(t => t !== val); const entry = kbState.entries.find(e => e.entry_id === eid); if (entry) entry.keywords = [..._kbInlineTagCache[eid]]; renderKBGrid(); }
+
+async function saveKBInline(eid) {
+  const card = document.querySelector(`[data-eid="${CSS.escape(eid)}"]`);
+  if (!card) return;
+  const entry = kbState.entries.find(e => e.entry_id === eid);
+  const is_const = card.querySelector('.kb-inline-const-cb')?.checked || false;
+  const priority = parseInt(card.querySelector('input[type="range"]')?.value) || entry.priority || 5;
+  const body = { entry_id: eid, category: card.querySelector('input')?.value || entry.category, name: card.querySelector('.kb-card-title')?.textContent, keywords: _kbInlineTagCache[eid] || entry.keywords, content: card.querySelector('textarea')?.value || '', priority: priority, is_constant: is_const, enabled: entry.enabled };
+  try { await api('/kb/update', { method: 'POST', body: JSON.stringify(body) }); showToast('已保存', 'success'); _kbExpandedId = null; loadKB(); } catch (e) { showToast(e.message); }
+}
+
+function renderKBPagination() {
+  const el = qs('#kb-pagination');
+  const { page, perPage, total } = kbState;
+  const tp = Math.ceil(total / perPage) || 1;
+  el.className = 'kb-pagination-wrapper';
+  el.innerHTML = `
+    <button class="btn btn-outline btn-sm" ${page<=1?'disabled':''} onclick="goKBPage(1)">首页</button>
+    <button class="btn btn-outline btn-sm" ${page<=1?'disabled':''} onclick="goKBPage(${page-1})">上一页</button>
+    <span style="font-size:13px;color:var(--text-muted);margin:0 8px;">${page} / ${tp} (共${total})</span>
+    <button class="btn btn-outline btn-sm" ${page>=tp?'disabled':''} onclick="goKBPage(${page+1})">下一页</button>
+    <button class="btn btn-outline btn-sm" ${page>=tp?'disabled':''} onclick="goKBPage(${tp})">尾页</button>
+    <div class="kb-jump-box">
+      <span style="font-size:13px;color:var(--text-muted)">跳至</span>
+      <input type="number" id="kb-page-jump" min="1" max="${tp}" value="${page}" class="tag-input-field" style="width:50px;text-align:center;border:1px solid var(--border)!important;padding:4px!important;" onkeydown="if(event.key==='Enter')goKBPage(parseInt(this.value)||1)">
+      <button class="btn btn-outline btn-sm" onclick="goKBPage(parseInt(qs('#kb-page-jump').value)||1)">GO</button>
+    </div>
+  `;
+}
+
+function goKBPage(p) {
+  const tp = Math.ceil(kbState.total / kbState.perPage) || 1;
+  if (isNaN(p) || p < 1) p = 1;
+  if (p > tp) p = tp;
+  if (p === kbState.page) return;
+  kbState.page = p;
+  loadKB();
+  qs('.content').scrollTop = 0;
+}
+
+async function loadKBCategories() {
+  try { const data = await api('/kb/categories'); const sel = qs('#kb-cat-filter'); sel.innerHTML = '<option value="">全部分类</option>' + (data.categories || []).map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join(''); } catch (_) {}
+}
+
+// ── KB Modal ──
+async function openKBModal(entryId) {
+  modalMode = entryId ? 'edit' : 'create';
+  let data = { category: '', entry_id: '', name: '', keywords: [], content: '', priority: 5, is_constant: false, enabled: true };
+  if (entryId) { try { data = await api('/kb/get', { method: 'POST', body: JSON.stringify({ entry_id: entryId }) }); if (typeof data.keywords === 'string') data.keywords = data.keywords.split(/[,，\s]+/).filter(Boolean); } catch (e) { showToast(e.message); return; } }
+  qs('#modalTitle').textContent = modalMode === 'create' ? '新建条目' : '编辑条目';
+  qs('#modalBody').innerHTML = `
+    <div class="form-row"><div class="form-group" style="flex:2"><label>条目ID</label><input id="f-eid" value="${esc(data.entry_id||'')}" ${modalMode==='edit'?'readonly':''} placeholder="唯一标识"></div><div class="form-group"><label>分类</label><input id="f-cat" value="${esc(data.category||'')}"></div></div>
+    <div class="form-row"><div class="form-group"><label>名称（可选）</label><input id="f-name" value="${esc(data.name||'')}"></div><div class="form-group"><label>权重</label><div class="range-wrap"><input type="range" id="f-prio" min="1" max="10" value="${data.priority||5}" oninput="qs('#prio-val').textContent=this.value"><span class="range-value" id="prio-val">${data.priority||5}</span></div></div></div>
+    <div class="form-group"><label>关键词</label><div id="tag-input-container"></div></div>
+    <div class="form-group"><label>内容</label><textarea id="f-content" rows="5">${esc(data.content||'')}</textarea></div>
+    <div class="form-check"><input type="checkbox" id="f-const" ${data.is_constant?'checked':''}><label for="f-const">常驻</label></div>
+    <div class="form-check"><input type="checkbox" id="f-enabled" ${data.enabled!==false?'checked':''}><label for="f-enabled">启用</label></div>
+  `;
+  openModal();
+  setTimeout(() => { _kbTagInput = createTagInput('tag-input-container', data.keywords || [], '输入关键词，回车添加'); }, 50);
+}
+
+async function saveModal() {
+  // 世界书条目保存
+  if (modalState && modalState.type === 'wb-entry') {
+    const name = qs('#f-we-wbname').value;
+    const title = qs('#f-we-title').value.trim();
+    const id = qs('#f-we-id').value.trim() || Math.random().toString(36).slice(2, 10);
+    const keys = _wbEntryTagInput ? _wbEntryTagInput.getTags() : [];
+    const content = qs('#f-we-content').value;
+    const is_const = qs('#f-we-const')?.checked || false;
+    const enabled = qs('#f-we-enabled')?.checked !== false;
+    const entry = { id, title, keys, content, is_constant: is_const, enabled };
+    try {
+      if (modalState.mode === 'create') await api('/wb/entry/create', { method: 'POST', body: JSON.stringify({ name, entry }) });
+      else await api('/wb/entry/update', { method: 'POST', body: JSON.stringify({ name, entry_id: id, entry }) });
+      showToast('条目已保存', 'success');
+      closeModal();
+      await reloadSingleWB(name);  // 局部刷新保持展开状态
+      return;
+    } catch (e) { showToast(e.message); }
+    return;
+  }
+  // 世界书创建保存
+  if (modalState && modalState.type === 'wb-create') {
+    const name = qs('#f-wb-name').value.trim();
+    const desc = qs('#f-wb-desc').value.trim();
+    if (!name) { showToast('请输入名称'); return; }
+    try { await api('/wb/create', { method: 'POST', body: JSON.stringify({ name, description: desc }) }); showToast('世界书已创建', 'success'); closeModal(); await loadWB(name); } catch (e) { showToast(e.message); }
+    return;
+  }
+  // KB 保存
+  if (modalMode !== 'create' && modalMode !== 'edit') return;
+  const entry_id = qs('#f-eid').value.trim();
+  const category = qs('#f-cat').value.trim();
+  const name = qs('#f-name').value.trim() || undefined;
+  const content = qs('#f-content').value.trim();
+  const priority = parseInt(qs('#f-prio').value) || 5;
+  const is_constant = qs('#f-const')?.checked || false;
+  const enabled = qs('#f-enabled')?.checked !== false;
+  const keywords = _kbTagInput ? _kbTagInput.getTags() : [];
+  if (!entry_id || !category || !content) { showToast('请填写条目ID、分类和内容'); return; }
+  try {
+    const body = { entry_id, category, name, keywords, content, priority, is_constant, enabled };
+    if (modalMode === 'create') { await api('/kb/create', { method: 'POST', body: JSON.stringify(body) }); showToast('条目已创建', 'success'); }
+    else { await api('/kb/update', { method: 'POST', body: JSON.stringify(body) }); showToast('条目已更新', 'success'); }
+    closeModal();
+    loadKB();
+  } catch (e) { showToast(e.message); }
+}
+
+function deleteKBEntry(entryId) {
+  sandboxConfirm(`确定删除 "${entryId}" 吗？`, async () => {
+    try { await api('/kb/delete', { method: 'POST', body: JSON.stringify({ entry_id: entryId }) }); showToast('已删除', 'success'); loadKB(); } catch (e) { showToast(e.message); }
+  }, true);
+}
+async function toggleKBEntry(entryId, enabled) { try { await api('/kb/toggle', { method: 'POST', body: JSON.stringify({ entry_id: entryId, enabled }) }); loadKB(); } catch (e) { showToast(e.message); } }
+async function exportKB() {
+  try {
+    const data = await api('/kb/export');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'quill_kb_export.json'; a.click();
+    URL.revokeObjectURL(url);
+    showToast('导出成功', 'success');
+  } catch (e) { showToast('导出失败: ' + e.message); }
+}
+async function importKB(input) {
+  const file = input.files[0]; if (!file) return;
+  try {
+    const text = await file.text(); const data = JSON.parse(text);
+    const entries = data.entries || data.data?.entries || (Array.isArray(data) ? data : (data.data ? [data.data] : [data]));
+    if (!entries || !entries.length || typeof entries[0] !== 'object' || !entries[0].content) {
+      throw new Error("JSON 格式错误，缺少有效的条目信息 (必须包含 content 字段)。");
+    }
+    entries.forEach((e, i) => { if(!e.entry_id) e.entry_id = 'import_' + Date.now() + '_' + i; });
+    const res = await api('/kb/import', { method: 'POST', body: JSON.stringify({ entries }) });
+    showToast(`导入完成：${res.imported} 成功`, res.failed ? 'error' : 'success');
+    input.value = ''; loadKB();
+  } catch (e) { showToast(e.message); input.value = ''; }
+}
+
+// ── Worldbook ──
+async function loadWB(forceOpenName = null) {
+  const el = qs('#wb-list');
+  let currentOpenName = forceOpenName;
+  if (!currentOpenName && _wbOpenItem) {
+     const header = _wbOpenItem.querySelector('.wb-header');
+     if (header) currentOpenName = header.getAttribute('data-wb-name');
+  }
+  try { const data = await api('/wb/list'); const wbs = data.worldbooks || []; wbCache = {};
+    if (!wbs.length) { el.innerHTML = '<div class="empty">没有世界书</div>'; _wbOpenItem = null; return; }
+    el.innerHTML = wbs.map(wb => { wbCache[wb.name] = wb; const ne = wb.entries?.length || 0;
+      return `<div class="wb-item"><div class="wb-header" data-wb-name="${esc(wb.name)}" onclick="toggleWB('${esc(wb.name)}')"><div class="wb-header-left"><span class="arrow">▶</span><span class="wb-name">${esc(wb.name)}</span>${wb.description ? `<span class="wb-desc">${esc(wb.description)}</span>` : ''}</div><div style="display:flex;align-items:center;gap:12px"><span class="wb-meta">${ne} 条</span><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWB('${esc(wb.name)}')">删除</button></div></div><div class="wb-body"><div class="wb-inner"><div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${esc(wb.name)}', null)">+ 新建条目</button><span style="color:var(--text-muted)">点击上方展开</span></div></div></div></div>`;
+    }).join('');
+    _wbOpenItem = null;
+    if (currentOpenName && wbs.some(w => w.name === currentOpenName)) {
+        toggleWB(currentOpenName);
+    }
+    // 删除强制展开第一本逻辑：默认全部收起
+  } catch (e) { el.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`; }
+}
+
+async function refreshWB() { try { await api('/wb/reload', { method: 'POST' }); await loadWB(); qs('#btn-refresh-wb').textContent = '✓'; setTimeout(() => { qs('#btn-refresh-wb').textContent = '⟳ 刷新'; }, 1500); } catch (e) { showToast(e.message); } }
+
+// 精准局部刷新：仅更新单本世界书的 .wb-inner 容器
+// 世界书常驻过滤
+let wbShowConstantOnly = false;
+function toggleWBConstantFilter() {
+  wbShowConstantOnly = qs('#wb-constant-filter')?.checked || false;
+  if (_wbOpenItem) {
+    const header = _wbOpenItem.querySelector('.wb-header');
+    if (header) reloadSingleWB(header.getAttribute('data-wb-name'));
+  }
+  // 清除未展开面板的缓存，下次展开时应用过滤
+  qsa('.wb-inner').forEach(inner => {
+    if (inner.closest('.wb-item') !== _wbOpenItem) delete inner.dataset.loaded;
+  });
+}
+
+async function reloadSingleWB(wbName) {
+  try {
+    const data = await api('/wb/get', { method: 'POST', body: JSON.stringify({ name: wbName }) });
+    const wb = data;
+    if (!wb) return;
+    wbCache[wbName] = wb;
+    const header = qs(`.wb-header[data-wb-name="${CSS.escape(wbName)}"]`);
+    if (!header) return;
+    const item = header.closest('.wb-item');
+    const inner = item.querySelector('.wb-inner');
+    const metaCount = header.querySelector('.wb-meta');
+    const entries = wb.entries || [];
+    const displayEntries = wbShowConstantOnly ? entries.filter(e => e.is_constant) : entries;
+    if (metaCount) metaCount.textContent = wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻` : `${entries.length} 条`;
+    if (inner) {
+      inner.innerHTML = `
+        <div class="toolbar">
+          <button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${esc(wbName)}', null)">+ 新建条目</button>
+          <span style="color:var(--text-muted)">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span>
+        </div>
+        ${displayEntries.length === 0 ? '<div class="empty">没有条目</div>' : displayEntries.map(e => `
+        <div class="wb-entry-card">
+          <div class="wb-entry-header">
+            <div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
+            <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${esc(wbName)}','${esc(e.id||'')}')">✎</button><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWBEntry('${esc(wbName)}','${esc(e.id||'')}')">×</button></div>
+          </div>
+          ${(e.keys||[]).length ? `<div class="wb-entry-keys">${e.keys.map(k => '<span class="tag">' + esc(k) + '</span>').join('')}</div>` : ''}
+          ${e.content ? '<div class="wb-entry-content">' + esc(e.content.substring(0,200)) + (e.content.length>200?'…':'') + '</div>' : ''}
+        </div>`).join('')}
+      `;
+    }
+  } catch (e) { showToast('刷新失败: ' + e.message); }
+}
+
+let _wbOpenItem = null; // 当前打开的 DOM 元素引用
+async function toggleWB(name) {
+  // 通过 data-name 属性查找 DOM（避免 ID 转义问题）
+  const header = qs(`.wb-header[data-wb-name="${CSS.escape(name)}"]`);
+  if (!header) return;
+  const item = header.closest('.wb-item');
+  if (!item) return;
+  const body = item.querySelector('.wb-body');
+  const inner = item.querySelector('.wb-inner');
+  const wb = wbCache[name]; if (!wb) return;
+
+  // 关闭其他
+  if (_wbOpenItem && _wbOpenItem !== item) {
+    _wbOpenItem.querySelector('.wb-body')?.classList.remove('open');
+    _wbOpenItem.querySelector('.wb-header')?.classList.remove('open');
+  }
+  const isOpen = body.classList.contains('open');
+  if (isOpen) { body.classList.remove('open'); header.classList.remove('open'); _wbOpenItem = null; return; }
+
+  body.classList.add('open'); header.classList.add('open'); _wbOpenItem = item;
+  if (inner && !inner.dataset.loaded) {
+    inner.dataset.loaded = '1';
+    const entries = wb.entries || [];
+    const displayEntries = wbShowConstantOnly ? entries.filter(e => e.is_constant) : entries;
+    inner.innerHTML = `<div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${esc(name)}', null)">+ 新建条目</button><span style="color:var(--text-muted)">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span></div>` +
+      (displayEntries.length === 0 ? '<div class="empty">没有条目</div>' : displayEntries.map(e => `
+      <div class="wb-entry-card">
+        <div class="wb-entry-header"><div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
+          <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${esc(name)}','${esc(e.id||'')}')">✎</button><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWBEntry('${esc(name)}','${esc(e.id||'')}')">×</button></div>
+        </div>
+        ${(e.keys||[]).length ? `<div class="wb-entry-keys">${e.keys.map(k => `<span class="tag">${esc(k)}</span>`).join('')}</div>` : ''}
+        ${e.content ? `<div class="wb-entry-content">${esc(e.content.substring(0,200))}${e.content.length>200?'…':''}</div>` : ''}
+      </div>`).join(''));
+  }
+}
+
+function deleteWB(name) {
+  sandboxConfirm(`确定删除世界书 "${name}"？此操作不可逆！`, async () => {
+    try { await api('/wb/delete', { method: 'POST', body: JSON.stringify({ name }) }); showToast('已删除', 'success'); await loadWB(); } catch (e) { showToast(e.message); }
+  }, true);
+}
+function importWB_ST(input) {
+  const file = input.files[0]; if (!file) return;
+  const defaultName = file.name.replace('.json', '');
+  sandboxPrompt("请输入世界书名称（纯英文/下划线）", defaultName, async (name) => {
+    if (!name) { input.value = ''; return; }
+    try {
+      // 读取为文本通过 JSON 发送（绕过沙盒 FormData 限制）
+      const text = await file.text();
+      await api('/wb/import_json', { method: 'POST', body: JSON.stringify({ name, data: text }) });
+
+      showToast('导入成功', 'success'); await loadWB(name);
+    } catch(e) { showToast('导入失败: ' + e.message); }
+    input.value = '';
+  });
+}
+
+function deleteWBEntry(wbName, entryId) {
+  sandboxConfirm('确定删除此条目？', async () => {
+    try {
+      await api('/wb/entry/delete', { method: 'POST', body: JSON.stringify({ name: wbName, entry_id: entryId }) });
+      showToast('已删除', 'success');
+      await reloadSingleWB(wbName);
+    } catch (e) { showToast(e.message); }
+  }, true);
+}
+
+
+// ── 世界书 Modal（使用统一 Modal 系统）──
+function openWBCreateModal() {
+  modalState = { type: 'wb-create' };
+  qs('#modalTitle').textContent = '新建世界书';
+  qs('#modalBody').innerHTML = `
+    <div class="form-group"><label>名称（英文、数字、下划线）</label><input id="f-wb-name" placeholder="my_world"></div>
+    <div class="form-group"><label>描述（可选）</label><input id="f-wb-desc" placeholder="世界书简要描述"></div>
+  `;
+  openModal();
+}
+
+function openWBEntryModal(wbName, entryId) {
+  const wb = wbCache[wbName];
+  if (!wb) return;
+  const entry = entryId ? (wb.entries || []).find(e => e.id === entryId) : null;
+  const isNew = !entry;
+  modalState = { type: 'wb-entry', mode: isNew ? 'create' : 'edit' };
+  qs('#modalTitle').textContent = isNew ? `新建条目 - ${wbName}` : `编辑条目 - ${wbName}`;
+  qs('#modalBody').innerHTML = `
+    <div class="form-group"><label>标题</label><input id="f-we-title" value="${esc(entry?.title || '')}"></div>
+    <div class="form-group"><label>ID${isNew ? '（留空自动生成）' : ''}</label><input id="f-we-id" value="${esc(entry?.id || '')}" ${!isNew ? 'readonly style="background:var(--surface)"' : ''} placeholder="${isNew ? '唯一标识' : ''}"></div>
+    <div class="form-group"><label>触发关键词</label><div id="wb-keyword-container"></div></div>
+    <div class="form-group"><label>内容</label><textarea id="f-we-content" rows="5">${esc(entry?.content || '')}</textarea></div>
+    <div class="form-check"><input type="checkbox" id="f-we-const" ${entry?.is_constant ? 'checked' : ''}><label for="f-we-const">常驻</label></div>
+    <div class="form-check"><input type="checkbox" id="f-we-enabled" ${(entry ? entry.enabled : true) !== false ? 'checked' : ''}><label for="f-we-enabled">启用</label></div>
+    <input type="hidden" id="f-we-wbname" value="${esc(wbName)}">
+  `;
+  openModal();
+  setTimeout(() => { _wbEntryTagInput = createTagInput('wb-keyword-container', entry?.keys || [], '输入关键词，回车添加'); }, 50);
+}
+
+// ── 活跃世界书 ──
+let _allWorldbooks = [];
+let _activeWorldbooks = [];
+let _wbDropdownOpen = false;
+
+async function loadActiveWorldbooks() {
+  try { const data = await api('/info'); _allWorldbooks = data.available_worldbooks || []; _activeWorldbooks = data.active_worldbooks || []; renderWBMultiSelect(); } catch (_) { qs('#wb-multi-select-options').innerHTML = '<div style="padding:12px;color:var(--text-muted)">加载失败</div>'; }
+}
+
+function renderWBMultiSelect() {
+  const container = qs('#wb-multi-select-options');
+  const label = qs('#wb-multi-select-label');
+  if (!_allWorldbooks.length) { container.innerHTML = '<div style="padding:12px;color:var(--text-muted)">暂无世界书</div>'; label.textContent = '暂无'; return; }
+  // 标签基于 _activeWorldbooks 计算（而非 DOM checkbox，因为此时 checkbox 尚未渲染）
+  const activeCount = _activeWorldbooks.length;
+  const totalCount = _allWorldbooks.length;
+  const allActive = activeCount === 0 || activeCount === totalCount;
+  label.textContent = allActive ? `全部激活 (${totalCount} 个)` : `已选 ${activeCount}/${totalCount} 个`;
+  container.innerHTML = _allWorldbooks.map(n => `<label class="wb-ms-option"><input type="checkbox" class="wb-ms-check" value="${esc(n)}" ${(_activeWorldbooks.length === 0 || _activeWorldbooks.includes(n)) ? 'checked' : ''} onchange="updateWBLabel()"><span>${esc(n)}</span></label>`).join('');
+}
+
+function getSelectedWB() { return Array.from(qsa('.wb-ms-check')).filter(c => c.checked).map(c => c.value); }
+function updateWBLabel() {
+  const s = getSelectedWB().length;
+  qs('#wb-multi-select-label').textContent = s === 0 || s === _allWorldbooks.length ? `全部激活 (${_allWorldbooks.length})` : `已选 ${s}/${_allWorldbooks.length}`;
+}
+function toggleWBMultiSelect() { _wbDropdownOpen = !_wbDropdownOpen; qs('#wb-multi-select-dropdown').style.display = _wbDropdownOpen ? 'block' : 'none'; }
+function selectAllActiveWB(sel) { qsa('.wb-ms-check').forEach(c => c.checked = sel); updateWBLabel(); }
+
+async function saveActiveWorldbooks() {
+  const selected = getSelectedWB();
+  const payload = selected.length === _allWorldbooks.length ? [] : selected;
+  try { await api('/config/save', { method: 'POST', body: JSON.stringify({ group: 'worldbook', key: 'active_worldbooks', value: payload }) }); showToast('已保存', 'success'); } catch (e) { showToast('保存失败: ' + e.message); }
+}
+
+document.addEventListener('click', (e) => { if (_wbDropdownOpen && !e.target.closest('#wb-multi-select-trigger') && !e.target.closest('#wb-multi-select-dropdown')) { _wbDropdownOpen = false; qs('#wb-multi-select-dropdown').style.display = 'none'; } });
+
+// ── Persona（已改为信息引导页，不再有增删改查 UI）──
+
+// ── RAG ──
+async function loadRAG() {
+  try { const data = await api('/rag/documents'); const docs = data.documents || []; const c = qs('#rag-doc-list'); c.innerHTML = docs.length ? docs.map(d => `<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-light)"><div><strong>${esc(d.source)}</strong><div style="font-size:12px;color:var(--text-muted)">${d.chunk_count} 分块</div></div><button class="btn btn-outline btn-sm" onclick="deleteRAGDocument('${esc(d.source)}')">删除</button></div>`).join('') : '<div style="color:var(--text-muted)">暂无文档</div>'; } catch (e) { qs('#rag-doc-list').innerHTML = `<div style="color:var(--text-muted)">加载失败</div>`; }
+}
+
+async function loadRAGModelInfo() {
+  try {
+    const cfg = await api('/rag/config');
+    qs('#rag-model-info').innerHTML = `<div class="prov-row"><span class="prov-key">Embedding</span><span>${cfg.embedding?.type||'local'} (${cfg.embedding?.provider_id||'BAAI/bge-small-zh-v1.5'})</span></div><div class="prov-row"><span class="prov-key">Rerank</span><span>${cfg.rerank?.has_rerank_provider ? cfg.rerank.rerank_provider_id : '未配置'}</span></div>`;
+  } catch (_) {}
+}
+
+async function handleRAGDrop(e) { e.preventDefault(); if (e.dataTransfer.files.length) await uploadRAGFile(e.dataTransfer.files[0]); }
+async function handleRAGFileSelect(input) { if (input.files.length) await uploadRAGFile(input.files[0]); input.value = ''; }
+
+async function uploadRAGFile(file) {
+  const status = qs('#rag-upload-status'); status.textContent = '读取文件中...';
+  try {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const base64Data = e.target.result.split(',')[1];
+        status.textContent = '上传并向量化中（可能需要几分钟，请勿刷新页面）...';
+        const result = await api('/rag/upload_base64', {
+          method: 'POST',
+          body: JSON.stringify({ source: file.name, b64_data: base64Data })
+        });
+        const count = result.chunk_count || 0;
+        status.innerHTML = `<span style="color:var(--success)">✓ 成功生成 ${count} 块向量</span>`;
+        loadRAG();
+      } catch (err) {
+        status.innerHTML = `<span style="color:var(--danger)">✗ ${err.message}</span>`;
+      }
+    };
+    reader.onerror = () => { status.innerHTML = `<span style="color:var(--danger)">✗ 文件读取失败</span>`; };
+    reader.readAsDataURL(file);
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--danger)">✗ ${e.message}</span>`;
+  }
+}
+
+function deleteRAGDocument(source) {
+  sandboxConfirm(`确定删除文档 "${source}"？`, async () => {
+    try { await api('/rag/delete', { method: 'POST', body: JSON.stringify({ source }) }); showToast('已删除', 'success'); loadRAG(); } catch (e) { showToast(e.message); }
+  }, true);
+}
+
+async function testRAGSearch() {
+  const q = qs('#rag-test-input').value.trim();
+  const topK = parseInt(qs('#rag-test-topk').value) || 5;
+  const r = qs('#rag-test-results');
+  if (!q) { r.innerHTML = '<span style="color:var(--text-muted)">请输入查询</span>'; return; }
+  r.innerHTML = '<div class="loading"><span class="skeleton" style="width:120px">&nbsp;</span></div>';
+  try {
+    const data = await api('/rag/search', { method: 'POST', body: JSON.stringify({ query: q, top_k: topK }) });
+    const items = data.results || [];
+    r.innerHTML = items.length ? items.map((it, i) => `
+      <div class="rag-result-card">
+        <div class="rag-result-header">
+          <div class="rag-result-meta">
+            <span class="rag-result-badge">#${i+1}</span>
+            <span title="${esc(it.source)}">${esc(it.source)}</span>
+            <span style="color:var(--text-muted);font-weight:normal;font-size:12px;background:var(--bg);padding:2px 8px;border-radius:10px;">块 #${it.chunk_index} · ${esc(it.content).length} 字符</span>
+          </div>
+          <div class="rag-result-score">相关度: ${it.score.toFixed(4)}${it.rerank_score !== undefined ? ` (重排: ${it.rerank_score.toFixed(4)})` : ''}</div>
+        </div>
+        <div class="rag-result-content">${esc(it.content)}</div>
+      </div>
+    `).join('') : '<div class="empty">无匹配结果</div>';
+  } catch (e) {
+    r.innerHTML = `<span style="color:var(--danger)">${e.message}</span>`;
+  }
+}
+
+// ── Memory ──
+let _memCurrentSub = 'overview';
+function switchMemSub(sub) {
+  _memCurrentSub = sub;
+  qsa('.memory-subnav-item').forEach(b => b.classList.toggle('active', b.dataset.memSub === sub));
+  qsa('.mem-sub-pane').forEach(p => p.classList.toggle('active', p.id === 'mem-sub-' + sub));
+  if (sub === 'overview') loadMemoryOverview();
+  if (sub === 'browser') loadMemoryBrowser();
+}
+
+async function loadMemoryOverview() {
+  try {
+    const data = await api('/memory/list_all?limit=1');
+    const total = data.total || 0;
+    qs('#dash-total').textContent = total;
+    qs('#dash-sessions').textContent = 'SQLite';
+    qs('#dash-index').textContent = 'NumPy';
+    qs('#dash-today').textContent = '—';
+    try { const cfg = await api('/rag/config'); qs('#mem-provider-info').innerHTML = `<div class="prov-row"><span class="prov-key">Embedding</span><span>${cfg.embedding?.type||'local'} (${cfg.embedding?.provider_id||'BAAI/bge-small-zh-v1.5'})</span></div><div class="prov-row"><span class="prov-key">Rerank</span><span>${cfg.rerank?.has_rerank_provider ? cfg.rerank.rerank_provider_id : '未配置'}</span></div>`; } catch (_) {}
+  } catch (e) { qs('#dash-total').textContent = '—'; }
+}
+
+async function loadMemoryBrowser() {
+  const search = qs('#mem-search')?.value?.trim() || '';
+  const tbody = qs('#mem-table-body');
+  tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>';
+  try {
+    const data = search ? await api('/memory/list?session_id=' + encodeURIComponent(search)) : await api('/memory/list_all?limit=200');
+    const memories = data.memories || [];
+    if (!memories.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">暂无记忆</td></tr>'; return; }
+    tbody.innerHTML = memories.map(m => `<tr><td><span class="cell-session">${esc(m.session_id||'')}</span></td><td><span class="cell-summary">${esc(m.summary||'')}</span></td><td>${esc(m.timestamp||'')}</td><td><button class="btn btn-outline btn-sm" onclick="deleteMemory(${m.id})">删除</button></td></tr>`).join('');
+  } catch (e) { tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--danger)">${esc(e.message)}</td></tr>`; }
+}
+
+function deleteMemory(id) {
+  sandboxConfirm('确定删除此记忆？', async () => {
+    try { await api('/memory/delete', { method: 'POST', body: JSON.stringify({ memory_id: id }) }); showToast('已删除', 'success'); loadMemoryBrowser(); } catch (e) { showToast(e.message); }
+  }, true);
+}
+async function exportMemories() {
+  try {
+    const data = await api('/memory/export');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'quill_memories_export.json'; a.click();
+    URL.revokeObjectURL(url);
+    showToast('导出成功', 'success');
+  } catch (e) { showToast('导出失败: ' + e.message); }
+}
+async function importMemories(input) { const file = input.files[0]; if (!file) return; try { const text = await file.text(); const data = JSON.parse(text); const res = await api('/memory/import', { method: 'POST', body: JSON.stringify(data) }); showToast('导入完成: ' + (res.message || ''), 'success'); loadMemoryBrowser(); } catch (e) { showToast('导入失败: ' + e.message); } input.value = ''; }
+
+async function testMemoryVectorSearch() {
+  const q = qs('#mem-vector-input').value.trim();
+  const rawPre = qs('#mem-vector-raw');
+  const resultsDiv = qs('#mem-vector-results');
+  if (!q) { resultsDiv.innerHTML = '<span style="color:var(--text-muted)">请输入查询</span>'; return; }
+  resultsDiv.innerHTML = '<span style="color:var(--text-muted)">检索中...</span>';
+  try { const data = await api('/memory/vector_search', { method: 'POST', body: JSON.stringify({ query: q, top_k: 5 }) }); rawPre.style.display = 'block'; rawPre.textContent = JSON.stringify(data, null, 2); const items = data.results || []; resultsDiv.innerHTML = items.length ? items.map((r, i) => `<div style="padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px"><strong>#${i+1}</strong> ${esc(r.summary?.substring(0,60)||'')} <span style="color:var(--primary)">score:${r.score.toFixed(4)}</span></div>`).join('') : '<span style="color:var(--text-muted)">无结果</span>'; } catch (e) { resultsDiv.innerHTML = `<span style="color:var(--danger)">${e.message}</span>`; }
+}
+
+// ── Provider Config ──
+// 全局配置中心：加载所有设置
+let _rawConfig = {};
+async function loadGlobalSettings() {
+  try {
+    // 1. 加载提供商列表
+    const p = await api('/provider/list');
+    const mkOpt = (arr, def) => '<option value="">' + def + '</option>' + (arr || []).map(x => '<option value="' + esc(x.id) + '">' + esc(x.id) + (x.model ? ' - ' + esc(x.model) : '') + '</option>').join('');
+    qs('#c-rag-emb').innerHTML = mkOpt(p.embedding, '（默认本地模型）');
+    qs('#c-rag-rerank').innerHTML = mkOpt(p.rerank, '（不使用重排）');
+    qs('#c-rag-llm').innerHTML = mkOpt(p.llm, '（使用文本截断）');
+
+    // 2. 加载底层全量配置
+    const cfg = await api('/config/all');
+    _rawConfig = cfg || {};
+    const safeGet = (g, k, d) => (cfg[g] && cfg[g][k] !== undefined) ? cfg[g][k] : d;
+
+    // RAG
+    qs('#c-rag-emb').value = safeGet('rag', 'embedding_provider_id', '');
+    qs('#c-rag-rerank').value = safeGet('rag', 'rerank_provider_id', '');
+    qs('#c-rag-llm').value = safeGet('rag', 'llm_provider_id', '');
+    qs('#c-rag-chunk').value = safeGet('rag', 'chunk_size', 500);
+    qs('#c-rag-overlap').value = safeGet('rag', 'chunk_overlap', 50);
+    qs('#c-rag-topk').value = safeGet('rag', 'top_k', 3);
+    qs('#c-rag-memory').checked = safeGet('rag', 'enable_memory', false);
+
+    // 世界书
+    qs('#c-wb-enabled').checked = safeGet('worldbook', 'enabled', true);
+    qs('#c-wb-token').value = safeGet('worldbook', 'max_token_limit', 4000);
+    qs('#c-wb-max').value = safeGet('worldbook', 'max_dynamic_entries', 4);
+    qs('#c-wb-pos').value = safeGet('worldbook', 'injection_position', 'user_prefix');
+    const sens = safeGet('worldbook', 'match_sensitivity', 0.7);
+    qs('#c-wb-sens').value = sens;
+    const sensEl = qs('#c-wb-sens');
+    if (sensEl && sensEl.nextElementSibling) sensEl.nextElementSibling.textContent = sens;
+
+    // 素材库
+    qs('#c-kb-enabled').checked = safeGet('knowledge_base', 'enabled', true);
+    qs('#c-kb-max').value = safeGet('knowledge_base', 'max_entries', 4);
+    qs('#c-kb-fallback').value = safeGet('knowledge_base', 'fallback_top_count', 2);
+    qs('#c-kb-dedup').value = safeGet('knowledge_base', 'category_dedup_limit', 3);
+
+    // 性能与状态栏
+    qs('#c-perf-min').value = safeGet('performance', 'min_output_length', 400);
+    qs('#c-sb-enabled').checked = safeGet('status_bar', 'enabled', true);
+    qs('#c-sb-fields').value = safeGet('status_bar', 'fields', '好感度|关系阶段|心情|位置|穿着|当前想法');
+    qs('#c-sb-tpl').value = safeGet('status_bar', 'format_template', '**状态栏**\n```\n{content}\n```');
+
+    // 反拒绝
+    qs('#c-ref-enabled').checked = safeGet('refusal', 'enabled', true);
+    qs('#c-ref-pat').value = safeGet('refusal', 'patterns', '我不能\n我无法\n这违反\n我不应该\n这不合适\n我拒绝');
+
+  } catch (e) { showToast('读取配置失败: ' + e.message); }
+}
+
+// 全局配置中心：差异保存（只提交变更项）
+// ── 全局保存（统一处理侧边栏按钮与底栏按钮） ──
+async function saveAllChanges() {
+  const btnSidebar = qs('.btn-save');
+  const btnGlobal = qs('#btn-save-all');
+
+  const origText1 = btnSidebar ? btnSidebar.textContent : '';
+  const origText2 = btnGlobal ? btnGlobal.textContent : '';
+
+  if (btnSidebar) { btnSidebar.textContent = '保存中...'; btnSidebar.disabled = true; }
+  if (btnGlobal) { btnGlobal.textContent = '保存中...'; btnGlobal.disabled = true; }
+
+  try {
+    let changedCount = 0;
+
+    // 1. 保存活跃世界书状态
+    if (typeof getSelectedWB === 'function' && _allWorldbooks.length > 0) {
+      const sel = getSelectedWB();
+      await api('/config/save', { method: 'POST', body: JSON.stringify({ group: 'worldbook', key: 'active_worldbooks', value: sel.length === _allWorldbooks.length ? [] : sel }) });
+      changedCount++;
+    }
+
+    // 2. 保存全局模型与核心配置
+    const updates = [];
+    const add = (g, k, v) => {
+      const old = (_rawConfig[g] && _rawConfig[g][k] !== undefined) ? _rawConfig[g][k] : null;
+      if (JSON.stringify(old) !== JSON.stringify(v)) updates.push({ group: g, key: k, value: v });
+    };
+
+    // 确保配置页面已渲染再进行读取
+    if (qs('#c-rag-emb')) {
+      add('rag', 'embedding_provider_id', qs('#c-rag-emb').value);
+      add('rag', 'rerank_provider_id', qs('#c-rag-rerank').value);
+      add('rag', 'llm_provider_id', qs('#c-rag-llm').value);
+      add('rag', 'chunk_size', parseInt(qs('#c-rag-chunk').value) || 500);
+      add('rag', 'chunk_overlap', parseInt(qs('#c-rag-overlap').value) || 50);
+      add('rag', 'top_k', parseInt(qs('#c-rag-topk').value) || 3);
+      add('rag', 'enable_memory', qs('#c-rag-memory').checked);
+
+      add('worldbook', 'enabled', qs('#c-wb-enabled').checked);
+      add('worldbook', 'max_token_limit', parseInt(qs('#c-wb-token').value) || 4000);
+      add('worldbook', 'max_dynamic_entries', parseInt(qs('#c-wb-max').value) || 4);
+      add('worldbook', 'injection_position', qs('#c-wb-pos').value);
+      add('worldbook', 'match_sensitivity', parseFloat(qs('#c-wb-sens').value) || 0.7);
+
+      add('knowledge_base', 'enabled', qs('#c-kb-enabled').checked);
+      add('knowledge_base', 'max_entries', parseInt(qs('#c-kb-max').value) || 4);
+      add('knowledge_base', 'fallback_top_count', parseInt(qs('#c-kb-fallback').value) || 2);
+      add('knowledge_base', 'category_dedup_limit', parseInt(qs('#c-kb-dedup').value) || 3);
+
+      add('performance', 'min_output_length', parseInt(qs('#c-perf-min').value) || 400);
+      add('status_bar', 'enabled', qs('#c-sb-enabled').checked);
+      add('status_bar', 'fields', qs('#c-sb-fields').value);
+      add('status_bar', 'format_template', qs('#c-sb-tpl').value);
+
+      add('refusal', 'enabled', qs('#c-ref-enabled').checked);
+      add('refusal', 'patterns', qs('#c-ref-pat').value);
+    }
+
+    for (const u of updates) {
+      await api('/config/save', { method: 'POST', body: JSON.stringify(u) });
+      changedCount++;
+    }
+
+    if (updates.length > 0) {
+      await loadGlobalSettings();
+    }
+
+    if (changedCount > 0) {
+      showToast('全部配置已保存（部分设置需重启对话生效）', 'success');
+    } else {
+      showToast('没有修改任何配置', 'success');
+    }
+  } catch (e) {
+    showToast('保存失败: ' + e.message);
+  } finally {
+    if (btnSidebar) { btnSidebar.textContent = origText1; btnSidebar.disabled = false; }
+    if (btnGlobal) { btnGlobal.textContent = origText2; btnGlobal.disabled = false; }
+  }
+}
+
+// ── Init ──
+function quillInit() { loadKBCategories(); loadKB(); loadGlobalSettings(); }
+if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', quillInit); } else { quillInit(); }
+</script>
+
+<!-- 专属轻量级 Confirm / Prompt 对话框 -->
+<div class="modal-overlay" id="dialogOverlay">
+  <div class="modal-dialog dialog-sm" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2 id="dialogTitle">提示</h2>
+      <button class="modal-close" onclick="closeDialog()">×</button>
+    </div>
+    <div class="modal-body" id="dialogBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeDialog()">取消</button>
+      <button class="btn btn-primary" id="dialogConfirmBtn">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 预置的全局 Toast 提示容器 -->
+<div class="toast-container" id="toast-container"></div>
+</body>
+</html>
