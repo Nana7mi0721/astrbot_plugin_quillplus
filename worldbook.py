@@ -102,6 +102,11 @@ class WorldbookManager:
         path = os.path.join(self.worldbooks_dir, 'bindings.json')
         _save_json_atomic(path, self.bindings)
 
+    def reload_all(self):
+        """重新从磁盘加载全部世界书与绑定。供 /wb reload 使用。"""
+        with self._lock:
+            self._load_all()
+
     # ── query ────────────────────────────────────────────────────────────
 
     def get_available_worldbooks(self) -> List[str]:

@@ -99,6 +99,29 @@ class QuillRetriever:
         except Exception as e:
             logger.warning(f"[Quill Memory] 记忆存储失败: {e}")
 
+    async def store_memory_direct(self, session_id: str, content: str):
+        """直接存储一条用户提供的记忆内容（无需 user_input/ai_response 配对）。
+        用于 /memory learn 命令手动添加记忆。"""
+        if not self.memory_store or not self.enable_memory or not session_id or not content:
+            return
+        try:
+            summary = content.strip()
+            if self.summarizer:
+                summary = await self.summarizer.summarize(content, "")
+                if not summary:
+                    summary = content.strip()
+            summary = summary[:200]
+
+            vector = await self.embedding.embed([summary])
+            if vector:
+                await asyncio.to_thread(
+                    self.memory_store.add, session_id, summary, vector[0], content[:100]
+                )
+                logger.info(f"[Quill Memory] 直接记忆存储: session={session_id} summary={summary[:30]}...")
+        except Exception as e:
+            logger.warning(f"[Quill Memory] 直接记忆存储失败: {e}")
+            raise
+
     def format_for_prompt(self, doc_results: list[dict], memory_results: list[dict]) -> str:
         """将检索结果格式化为注入 prompt 的文本。"""
         parts = []

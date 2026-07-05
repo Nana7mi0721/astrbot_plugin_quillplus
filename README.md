@@ -4,42 +4,56 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
+[![Version](https://img.shields.io/badge/version-5.0.0-green.svg)]()
+[![License](https://img.shields.io/badge/license-MIT-orange.svg)]()
 
 ---
 
-## ✨ 核心特性
+## 🎯 简介
 
-### 📖 世界书系统 (WHERE)
+**QuillPlus（羽笔）** 是一个专为沉浸式角色扮演（RP）和跑团（TRPG）设计的 AstrBot 增强插件。它通过五大核心系统的协同联动，让 AI 角色真正"活"起来——拥有自己的记忆、知识、世界设定和灵魂。
 
-解决复杂角色扮演中 System Prompt 容量受限的痛点——不可能把大量设定全部塞进 prompt。
+无论是手机聊天窗口的快捷指令，还是 PC 端 Web 面板的深度管理，QuillPlus 都能让你在任意终端掌控全局。
+
+---
+
+## ✨ 核心特性 (Key Features)
+
+### 👤 角色卡系统 (Character Card V2)
+
+**全面支持 Character Card V2 标准**，实现真正的"一次导出，到处使用"。
+
+- **V2 标准兼容**：完整支持 PNG / JPG / JSON 三种 V2 卡片格式
+- **万能文本导入**：内置强大的正则解析引擎，支持 W++、Raw Text 等社区常见纯文本格式一键粘贴解析
+- **沙盒穿透前端**：首创"全链路 Base64"交互方案，完美突破 WebUI iframe 沙箱的跨域与下载限制
+- **Avatar 内嵌**：头像以 Base64 DataURL 直接嵌入 API 响应，彻底告别 CORS 问题
+- **双向导入/导出**：支持从 Character.AI / Chub / SVG 等平台导入卡片，也能导出为标准 V2 PNG
+
+### 📖 世界书系统 (Worldbook)
+
+复杂角色扮演的基石——不可能把大量设定全部塞进 prompt，世界书让设定"按需唤醒"。
 
 - **常驻注入**：核心世界观时刻陪伴，构建沉浸式基底
-- **按需触发**：关键词模糊匹配，细节设定按需提取，杜绝 Token 爆炸
-- **智能去重**：同 category 条目自动上限控制，避免某一类内容过多
-- **Token 安全上限**：硬性截断保护，永远挤占不了主对话空间
-- **灵敏度可调**：从精确匹配到宽松匹配，滑动条一键控制
-- **注入位置可选**：系统提示词末尾 / 用户消息之前，两种"服从度"模式
+- **智能触发**：关键词模糊匹配 + 灵敏度可调，细节设定按需提取
+- **贴脸输出**：支持注入到用户消息之前（"贴脸"模式），强制 AI 遵守
+- **多角色切换**：每个角色可绑定专属世界书，切换自动挂载/卸载
 
-### 📝 写作素材库 (HOW)
+### 📝 写作素材库 (Knowledge Base)
 
-145 条预设写作指引，覆盖用词规范、节奏控制、感官描写、角色动作等。
+145+ 条预设写作指引，覆盖用词规范、节奏控制、感官描写、角色动作等。
 
 - **SQLite + FTS5**：全文检索，毫秒级关键词命中
 - **四层 Prompt 装配**：协议层 → 素材层 → 触发层 → 安全层，智能截断
+- **分类绑定**：不同角色可绑定不同的素材库分类，避免设定串味
 - **反拒绝协议**：检测 LLM 拒绝行为，自动注入应急协议
-- **状态栏持久化**：`[LOVE_DATA]` 单行状态追踪，跨轮次记忆好感度、关系阶段等
-
-### 👤 角色卡 (WHO)
-
-一键切换 AstrBot 人格列表中的角色卡，自动绑定对应世界书。
 
 ### 📄 文档知识库 (Doc RAG)
 
-上传外部文档，语义检索后注入写作 prompt。
+上传外部文档（规则书、设定集、小说原文），AI 检索后注入 prompt。
 
 - **多格式支持**：.txt / .md / .pdf
 - **智能分块**：段落优先 + 固定长度兜底，overlap 保持上下文连贯
-- **向量化检索**：支持 API Embedding（如 SiliconFlow）或本地模型 fallback
+- **向量检索**：支持 API Embedding（如 SiliconFlow）或本地模型 fallback
 - **重排精排**：独立 Rerank Provider，提升检索精准度
 
 ### 🧠 动态记忆 (Vector Memory)
@@ -47,56 +61,81 @@
 自动摘要对话，向量化存储，跨会话检索注入。
 
 - **Session 隔离**：`event.unified_msg_origin` 天然分组，绝无串群风险
-- **LLM 摘要**：调用配置的 LLM 将对话精炼为短文本（支持规则摘要 fallback）
+- **LLM 摘要**：调用配置的 LLM 将对话精炼为短文本
 - **NumPy 余弦相似度**：SQLite BLOB 存储向量，矩阵运算极速检索
-- **二级管理面板**：系统总览 + 记忆浏览 + 导入导出
+- **聊天指令管理**：`/memory list/del/clear/learn/search` 全程掌控记忆
 
 ---
 
-## 🚀 快速开始
+## 🎮 指令说明
 
-### 安装
-
-将插件目录放入 AstrBot 的 `data/plugins/`：
-
-```bash
-cd data/plugins
-git clone <repository-url> astrbot_plugin_quillplus
-```
-
-### 激活
-
-1. 启动 AstrBot
-2. 进入 WebUI → 插件管理 → 找到"羽笔"
-3. 点击"重载"启用插件
-
-### 使用
-
-发送激活词（如"继续"、"开写"、"进入剧情"等），Quill 自动检测并注入写作协议和素材。
-
----
-
-## 🎮 指令
+### 角色卡管理 (`/char`)
 
 | 指令 | 说明 |
 |------|------|
-| `/wb` | 世界书列表 |
-| `/wb <名字\|序号>` | 绑定世界书 |
-| `/wb off` | 解绑全部 |
-| `/wb info <名字>` | 查看世界书详情 |
-| `/char` | 角色卡列表 |
-| `/char <名字\|序号>` | 切换角色卡 |
-| `/char unset` | 取消角色卡 |
-| `/quill` | 查看 Quill 状态 |
-| `/quill test <文字>` | 测试素材库匹配 |
-| `/stream on\|off\|auto` | 控制流式输出 |
-| `/reinject` | 重置注入状态 |
+| `/char` | 列出所有可用角色卡 |
+| `/char <序号\|名字>` | 切换到指定角色卡 |
+| `/char info [序号\|名字]` | 查看角色卡详情及绑定信息 |
+| `/char export [序号\|名字]` | 导出角色卡 JSON（可复制复用） |
+| `/char import <JSON>` | 从 JSON 文本导入角色卡 |
+| `/char unset` | 取消当前角色卡 |
+
+### 世界书管理 (`/wb`)
+
+| 指令 | 说明 |
+|------|------|
+| `/wb` | 列出世界书（区分角色自带/玩家挂载） |
+| `/wb <序号\|名字>` | 绑定世界书到当前用户 |
+| `/wb off` | 解绑全部世界书 |
+| `/wb info <序号\|名字>` | 查看世界书详情 |
+| `/wb reload` | 从磁盘重载全部世界书 |
+
+### 系统状态 (`/quill`)
+
+| 指令 | 说明 |
+|------|------|
+| `/quill` | 查看五大系统状态总览 |
+| `/quill test kb <文字>` | 测试写作素材库匹配 |
+| `/quill test wb <文字>` | 测试世界书命中 |
+| `/quill test mem <文字>` | 测试记忆检索 |
+
+### 动态记忆 (`/memory`)
+
+| 指令 | 说明 |
+|------|------|
+| `/memory` | 查看记忆统计 |
+| `/memory list [页码]` | 分页列出当前会话记忆 |
+| `/memory del <序号>` | 删除指定记忆 |
+| `/memory clear` | 清空当前会话所有记忆 |
+| `/memory learn <内容>` | 手动添加一条新记忆 |
+| `/memory search <关键词>` | 关键词搜索记忆 |
+
+### 文档知识库 (`/doc`)
+
+| 指令 | 说明 |
+|------|------|
+| `/doc list` | 列出已加载的外部文档 |
+| `/doc search <关键词>` | RAG 检索返回原文片段 |
+
+### 其他控制
+
+| 指令 | 说明 |
+|------|------|
+| `/stream on\|off\|auto` | 控制流式输出模式 |
+| `/reinject` / `/重新注入` | 重置注入状态，下次触发重新注入全部常驻内容 |
 
 ---
 
 ## 🖥️ 管理面板
 
-进入 **插件 → Pages / 插件配置**，左侧导航栏包含：
+进入 **AstrBot WebUI → 插件 → Pages / 插件配置**，左侧导航栏包含：
+
+### 角色卡管理
+- 网格化卡片展示，一键切换
+- 新建/编辑/删除角色卡（含人设、开场白、对话示例子面板）
+- V2 卡片导入（PNG/JPG/JSON 拖拽上传）
+- 纯文本粘贴自动解析（W++ / Raw Text）
+- 头像上传与预览
 
 ### 写作素材库
 - 全文搜索 + 分类筛选
@@ -112,18 +151,46 @@ git clone <repository-url> astrbot_plugin_quillplus
 - ST 格式导入/导出
 
 ### 文档知识库
-- 拖拽上传文档
+- 拖拽上传文档（.txt / .md / .pdf）
 - 已上传文档管理
 - 语义检索测试
+- 链接触发器管理
 
 ### 动态记忆
 - **系统总览**：记忆总数、活跃会话、向量索引状态
-- **记忆浏览**：搜索过滤 + 数据表格 + 单条删除
+- **记忆浏览**：搜索过滤 + 数据表格 + 单条/批量删除
 - **导入导出**：JSON 备份与恢复
+- **链接触发器触发历史**
 
 ---
 
-## ⚙️ 配置
+## 🚀 安装说明
+
+### 依赖安装
+
+```bash
+# 核心必需（V2 角色卡图片解析）
+pip install Pillow>=10.0.0
+
+# Web 服务（通常由 AstrBot 自带，缺失时手动安装）
+pip install fastapi quart
+
+# 向量检索 + 本地嵌入 + SQLite 异步
+pip install faiss-cpu>=1.8.0 numpy>=1.24.0 aiosqlite>=0.19.0
+```
+
+### 插件安装
+
+1. 将插件目录放入 AstrBot 的 `data/plugins/`
+2. 启动 AstrBot
+3. 进入 WebUI → 插件管理 → 找到"羽笔"
+4. 点击"重载"启用插件
+
+> 如果 `Pillow` 未安装，角色卡的 PNG/JPG 导入导出功能将不可用，但 JSON 格式仍然可用。
+
+---
+
+## ⚙️ 配置推荐
 
 通过 AstrBot WebUI 可视化配置，主要分组：
 
@@ -149,18 +216,19 @@ git clone <repository-url> astrbot_plugin_quillplus
 
 ```
 astrbot_plugin_quillplus/
-├── main.py                  # 插件主类 + LLM hooks
-├── web_routes.py            # Web API 路由注册
-├── _route_core.py           # 业务 handler
+├── main.py                  # 插件主类 + LLM hooks + 指令注册
+├── web_routes.py            # Web API 路由注册（persona/kb/wb/rag/memory）
+├── _route_core.py           # 业务 handler 实现
 ├── config.py                # 配置解析层
-├── worldbook.py             # 世界书 JSON 管理
+├── persona_manager.py       # 角色卡 JSON CRUD + V2 导入导出
+├── worldbook.py             # 世界书 JSON 管理 + 绑定系统
 ├── kb.py                    # 写作素材库 SQLite
 ├── prompt_builder.py        # 四层 Prompt 装配
 ├── encryption.py            # Base64 [B:...] 编解码
 ├── state.py                 # 用户状态管理
 ├── activation.py            # 激活检测
-├── commands.py              # 指令业务逻辑
-├── quill_desktop.py         # 独立桌面启动器
+├── commands.py              # 指令业务逻辑（19 个 dispatch 函数）
+├── quill_desktop.py         # 独立桌面启动器（Quart 服务端）
 ├── quill_rag/               # RAG + 记忆共享模块
 │   ├── embedding.py         # Embedding Provider 封装
 │   ├── vector_store.py      # FAISS 向量存储 (Doc RAG)
@@ -169,7 +237,7 @@ astrbot_plugin_quillplus/
 │   ├── reranker.py          # Rerank Provider 封装
 │   ├── llm_summarizer.py    # LLM 摘要生成
 │   └── retrieval.py         # 统一检索入口
-├── pages/panel/index.html   # 管理面板
+├── pages/panel/index.html   # 管理面板（沙盒穿透全链路 Base64）
 ├── knowledge/               # 数据目录（gitignore）
 └── worldbooks/              # 世界书目录（gitignore）
 ```
@@ -179,10 +247,13 @@ astrbot_plugin_quillplus/
 ## ❓ FAQ
 
 **Q: 为什么不直接用市场上的世界书插件？**
-A: 大多数世界书是关键词提示器，AI 不会主动调用。Quill 是世界书+知识库+角色卡三合一，AI 会主动模糊匹配并读取 AstrBot 人格列表。
+A: 大多数世界书是关键词提示器，AI 不会主动调用。QuillPlus 是世界书+知识库+角色卡+文档RAG+动态记忆五合一，AI 主动模糊匹配并注入 prompt。
 
-**Q: 145 条素材库条目太多怎么办？**
-A: 在管理面板按需禁用/删除，或通过 `knowledge_base.max_entries` 控制最大注入条数（默认 7 条）。
+**Q: 可以在手机端使用吗？**
+A: 可以！通过发送指令（`/char`、`/wb`、`/memory`、`/quill` 等）在手机聊天窗口直接管理全部功能，无需打开 Web 面板。
+
+**Q: 角色卡和其他插件冲突吗？**
+A: 不会。QuillPlus 完全脱离 AstrBot 原生的 persona 系统，使用独立的 JSON 存储，不会影响其他插件的数据。
 
 **Q: Embedding 和 Rerank 模型选什么？**
 A: 推荐 SiliconFlow 的 `Qwen3-Embedding-8B` 和 `bge-reranker-v2-m3`。不配置时自动使用本地模型 `BAAI/bge-small-zh-v1.5`。
@@ -195,3 +266,21 @@ A: 不会。使用 `event.unified_msg_origin` 作为 session_id，SQL `WHERE ses
 ## 📄 License
 
 本插件遵循 AstrBot 生态惯例，请遵守所使用 LLM 服务商的相关条款。
+
+---
+
+## 鸣谢与声明 (Acknowledgments)
+
+**本项目是对原版 Quill 插件的深度二次开发与增强。** 感谢原作者 Quill 提供优秀的底层框架！
+
+Plus 版本新增了以下功能：
+
+- 🎭 **Character Card V2 全量支持**（PNG/JPG/JSON 双向导入导出、Avatar 内嵌、沙盒穿透前端）
+- 🔍 **万能文本解析引擎**（W++、Raw Text 一键粘贴解析）
+- 📱 **手机端指令系统**（完整覆盖五大系统，聊天窗口即是指令台）
+- 🧠 **动态记忆聊天管理**（`/memory learn/list/del/clear/search`）
+- 📄 **文档 RAG 聊天检索**（`/doc list/search`）
+- 🔧 **世界书重载**（`/wb reload`）
+- 🎨 **管理面板 UI 全面升级**
+
+🥂 **世界因创作而美好，角色因记忆而鲜活。**
