@@ -140,6 +140,29 @@ class PromptBuilder:
                 priority=0,
             ))
 
+        # --- Persona card injection (stable, priority=0) ---
+        persona_data = extra_info.get("persona_data")
+        if persona_data:
+            parts = []
+            p_name = persona_data.get("name", persona_data.get("id", ""))
+            cp = persona_data.get("core_prompts", {})
+            personality = (cp.get("personality") or "").strip()
+            scenario = (cp.get("scenario") or "").strip()
+            examples = (cp.get("examples_of_dialogue") or "").strip()
+            if personality:
+                parts.append(f"### 人格/外貌\n{personality}")
+            if scenario:
+                parts.append(f"### 世界观/场景\n{scenario}")
+            if examples:
+                parts.append(f"### 对话范例\n{examples}")
+            if parts:
+                card_text = f"## [角色卡] {p_name}\n\n" + "\n\n".join(parts)
+                stable_sections.append(PromptSection(
+                    name="persona_card",
+                    content=card_text,
+                    priority=0,
+                ))
+
         # --- Layer 1 + Layer 2: content retrieval ---
         layer1_parts, layer2_parts, layer1_random_parts = await self.retrieve_content_layers(
             kb_manager, wb_manager, extra_info
@@ -242,11 +265,19 @@ class PromptBuilder:
         user_input = extra_info.get("user_input", "")
         seen_ids: set = set()
 
+        # === 提取角色卡绑定的知识库分类 ===
+        bound_kbs: List[str] = []
+        if extra_info.get("persona_data"):
+            bound_kbs = extra_info["persona_data"].get("quill_extensions", {}).get("bound_knowledge_base", [])
+
         # === Layer 1: constants + random pool (skip on consecutive turns) ===
         skip_constants = extra_info.get("skip_constants", False)
         if not skip_constants and kb_manager:
             try:
                 constant_entries = await kb_manager.get_constant_entries()
+                # 过滤被绑定的分类
+                if bound_kbs:
+                    constant_entries = [e for e in constant_entries if e.get("category") in bound_kbs]
                 pools: Dict[str, List[str]] = {
                     "random_sensory": [],
                     "random_fluid": [],
@@ -298,7 +329,14 @@ class PromptBuilder:
         if matching_text and kb_manager:
             try:
                 max_entries = extra_info.get("kb_max_entries", 5)
-                matched = await kb_manager.match(matching_text, top_k=max_entries)
+                # 取多一点候选池，防止过滤后不够
+                fetch_count = max_entries * 4 if bound_kbs else max_entries
+                matched = await kb_manager.match(matching_text, top_k=fetch_count)
+
+                # 过滤被绑定的分类
+                if bound_kbs:
+                    matched = [e for e in matched if e.get("category") in bound_kbs]
+
                 match_count = 0
                 for entry in matched:
                     eid = entry.get("entry_id", "")
@@ -314,6 +352,9 @@ class PromptBuilder:
                     try:
                         fallback_limit = extra_info.get("kb_fallback_top_count", 2)
                         top_entries = await kb_manager.get_top_entries_by_match_count(limit=fallback_limit)
+                        # 过滤被绑定的分类
+                        if bound_kbs:
+                            top_entries = [e for e in top_entries if e.get("category") in bound_kbs]
                         for entry in top_entries:
                             eid = entry.get("entry_id", "")
                             if eid not in seen_ids:

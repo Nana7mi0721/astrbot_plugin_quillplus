@@ -37,6 +37,7 @@ from .prompt_builder import PromptBuilder
 from . import commands as _cmds
 from .web_routes import QuillRoutes
 from .encryption import decrypt_output
+from .persona_manager import QuillPersonaManager
 
 
 # ── Markdown stripper ──────────────────────────────────────────────
@@ -127,6 +128,11 @@ class QuillPlugin(Star):
 
         self.wb_max_entries = self.config.worldbook_max_dynamic
 
+        # --- Persona Manager (独立 JSON 角色卡) ---
+        self.persona_manager = QuillPersonaManager(
+            os.path.join(self.plugin_dir, "data", "quill_personas")
+        )
+
         # --- Prompt builder ---
         self.prompt_builder = PromptBuilder(self.config)
 
@@ -189,7 +195,8 @@ class QuillPlugin(Star):
         }
         try:
             QuillRoutes(self.kb_manager, self.wb_manager, self.context, self.config,
-                        rag_components=rag_components, plugin=self).register_all()
+                        rag_components=rag_components, plugin=self,
+                        persona_manager=self.persona_manager).register_all()
             logger.info("[Quill] 已注册全部 Web API 路由 (register_web_api)")
         except Exception as e:
             logger.warning(f"[Quill] Web 路由注册失败: {e}")
@@ -481,9 +488,25 @@ class QuillPlugin(Star):
             user_input = req.prompt or ""
             user_id = str(event.get_sender_id())
 
-            persona_id = None
+            # 从 Quill 自身状态读取角色 ID（而非 AstrBot 原生）
+            persona_id = await self.state_manager.get_persona_id(user_id)
+            # 切断 AstrBot 原生人格注入，防止双重 Prompt 污染
             if req.conversation:
-                persona_id = getattr(req.conversation, "persona_id", None)
+                req.conversation.persona_id = "[%None]"
+
+            # 注入开场白 (first_message) 作为首条伪造历史记录
+            persona_data = None
+            if persona_id and self.persona_manager:
+                persona_data = await self.persona_manager.get_persona(persona_id)
+                if persona_data:
+                    fm = persona_data.get("core_prompts", {}).get("first_message", "").strip()
+                    if fm:
+                        state = await self.state_manager.get_state(user_id)
+                        if not state.first_message_injected:
+                            if hasattr(req, 'contexts') and isinstance(req.contexts, list):
+                                req.contexts.insert(0, {"role": "assistant", "content": fm})
+                                logger.info(f"[Quill] 已注入 {persona_data.get('name', persona_id)} 的开场白 (first_message)")
+                            await self.state_manager.mark_first_message_injected(user_id)
 
             # Build multi-turn context for KB matching
             context_text = user_input
@@ -504,7 +527,18 @@ class QuillPlugin(Star):
             kb_activated = False
             if not (activated or has_bracket) and self.kb_manager:
                 try:
-                    matched = await self.kb_manager.match(context_text, top_k=3, log_match=False)
+                    # 获取角色绑定的知识库分类
+                    bound_kbs = []
+                    if persona_data:
+                        bound_kbs = persona_data.get("quill_extensions", {}).get("bound_knowledge_base", [])
+
+                    # 取多一点候选池，防止过滤后不够
+                    fetch_count = 15 if bound_kbs else 3
+                    matched = await self.kb_manager.match(context_text, top_k=fetch_count, log_match=False)
+
+                    if bound_kbs:
+                        matched = [m for m in matched if m.get("category") in bound_kbs]
+
                     kb_activated = len(matched) > 0
                     if kb_activated:
                         logger.info(f"[Quill] 写作素材库关键词触发激活: {len(matched)} 条匹配 (context)")
@@ -552,6 +586,7 @@ class QuillPlugin(Star):
                 "user_input": user_input,
                 "context_text": context_text,
                 "persona_id": persona_id,
+                "persona_data": persona_data,
                 "user_id": user_id,
                 "kb_max_entries": self.kb_max_entries,
                 "kb_fallback_top_count": self.kb_fallback_top_count,

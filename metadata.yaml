@@ -1,6 +1,6 @@
 name: astrbot_plugin_quillplus
 display_name: 羽笔
-description: "世界书+写作素材库+角色卡三合一 RP 注入系统 — 反拒绝协议、持久化状态栏、按需模糊匹配、Token 安全上限"
+description: "世界书+写作素材库+角色卡三合一 RP 注入系统"
 author: Quill
 version: 5.0.0
 repo: ""

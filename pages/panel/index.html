@@ -331,10 +331,40 @@ select option {
 .data-table .cell-session { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; color: var(--text-secondary); }
 .data-table .cell-summary { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ── Persona ── */
-.persona-card { cursor: pointer; transition: box-shadow var(--transition); }
-.persona-card.expanded { border-color: var(--primary-light); }
-.persona-expanded { padding-top: 12px; border-top: 1px solid var(--border-light); margin-top: 12px; }
+/* ── Persona 角色卡 (独立 CRUD) ── */
+.persona-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 14px; }
+.persona-card { display: flex; align-items: center; gap: 14px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; transition: box-shadow var(--transition), border-color var(--transition); }
+.persona-card:hover { box-shadow: var(--shadow-md); border-color: var(--primary-light); }
+.persona-card-left { flex-shrink: 0; }
+.persona-avatar-img { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; border: 2px solid var(--border); }
+.persona-avatar-letter { width: 48px; height: 48px; border-radius: 50%; background: var(--primary-light); color: var(--primary); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; }
+.persona-card-body { flex: 1; min-width: 0; }
+.persona-card-name { font-weight: 600; font-size: 15px; color: var(--text); }
+.persona-card-summary { font-size: 13px; color: var(--text-muted); margin-top: 3px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.persona-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* ── Persona 表单 Tab ── */
+.persona-form-tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.persona-form-tab { padding: 8px 20px; border: none; background: none; color: var(--text-muted); font-size: 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color var(--transition), border-color var(--transition); }
+.persona-form-tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.persona-form-tab:hover { color: var(--text); }
+.persona-form-tab-content { display: none; }
+.persona-form-tab-content.active { display: block; }
+
+/* ── 头像上传区 ── */
+.avatar-upload-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 16px; text-align: center; cursor: pointer; transition: border-color var(--transition); background: var(--surface); }
+.avatar-upload-zone:hover { border-color: var(--primary); }
+
+/* ── 角色卡扩展多选区 ── */
+.checkbox-group-scroll {
+  max-height: 140px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  background: var(--surface);
+}
+.checkbox-group-scroll .form-check { margin-bottom: 8px; }
 
 /* ── RAG ── */
 .rag-search-layout { display: flex; gap: 16px; align-items: stretch; margin-bottom: 16px; }
@@ -496,17 +526,16 @@ select option {
     <div id="wb-list"><div class="loading"><span class="skeleton" style="width:240px">&nbsp;</span></div></div>
   </div>
 
-  <!-- Persona Tab (信息引导页) -->
+  <!-- Persona Tab (独立角色卡管理 + V2 兼容) -->
   <div class="tab-content" id="tab-persona">
     <h2 style="margin-bottom:16px">角色卡</h2>
-    <div class="card" style="text-align:center;padding:48px 32px">
-      <div style="font-size:48px;margin-bottom:12px">🎭</div>
-      <h3 style="margin-bottom:8px">原生人格联动已就绪</h3>
-      <p style="color:var(--text-muted);font-size:13px;line-height:1.6;margin:0">
-        Quill 会自动读取并注入 AstrBot 系统原生的【人格设定】。<br>
-        请直接在左侧主菜单的『人格设定』中管理您的角色卡。
-      </p>
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="openPersonaModal(null)">+ 新建角色卡</button>
+      <button class="btn btn-outline" onclick="loadPersonas()">⟳ 刷新</button>
+      <label class="btn btn-outline" style="cursor:pointer">导入 V2 角色卡<input type="file" accept=".png,.jpg,.jpeg,.json" hidden onchange="importPersona(this)"></label>
+      <button class="btn btn-outline" onclick="openImportTextModal()">文本粘贴导入</button>
     </div>
+    <div id="persona-list"><div class="loading"><span class="skeleton" style="width:200px">&nbsp;</span></div></div>
   </div>
 
   <!-- RAG Tab -->
@@ -685,8 +714,45 @@ select option {
   </div>
 </div>
 
+<!-- 文本粘贴导入 Modal -->
+<div class="modal-overlay" id="importTextOverlay" onclick="closeImportTextModal()">
+  <div class="modal-dialog" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>📋 文本粘贴导入</h2>
+      <button class="modal-close" onclick="closeImportTextModal()">×</button>
+    </div>
+    <div class="modal-body" style="padding:24px;">
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
+        粘贴角色设定文本（支持 V2 JSON 或 W++ / Raw Text 标签格式）
+      </p>
+      <textarea id="import-textarea" rows="16"
+        placeholder='例如：&#10;Name = "白芷"&#10;Personality: 傲娇、外冷内热&#10;Scenario: 现代校园，同桌关系&#10;First Message: "哼，你来干什么？"...'
+        style="width:100%;min-height:280px;resize:vertical;padding:12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-size:14px;font-family:inherit;outline:none;transition:border-color var(--transition);"
+        onfocus="this.style.borderColor='var(--primary)'" onblur="this.style.borderColor='var(--border)'"></textarea>
+      <div style="display:flex;gap:8px;margin-top:12px;color:var(--text-muted);font-size:12px">
+        <span>✓ V2 JSON 格式</span><span>✓ W++ 标签格式</span><span>✓ 正则智能匹配</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeImportTextModal()">取消</button>
+      <button class="btn btn-primary" onclick="importFromText()">解析并导入</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const PLUGIN_NAME = "astrbot_plugin_quillplus";
+
+function getAvatarUrl(avatarPath) {
+  if (!avatarPath) return '';
+  const fname = avatarPath.replace('quill_avatars/', '');
+  if (getBridge()) {
+    const token = new URLSearchParams(window.location.search).get('asset_token') || '';
+    return `/api/v1/plugins/extensions/${PLUGIN_NAME}/avatar/${encodeURIComponent(fname)}?asset_token=${token}`;
+  }
+  return `/api/avatar/${encodeURIComponent(fname)}`;
+}
+
 function getBridge() { return window.AstrBotPluginPage || null; }
 async function waitForBridge(timeoutMs = 5000) { const s = Date.now(); while (Date.now() - s < timeoutMs) { if (window.AstrBotPluginPage) return window.AstrBotPluginPage; await new Promise(r => setTimeout(r, 100)); } return null; }
 
@@ -870,6 +936,7 @@ qsa('.nav-item').forEach(btn => {
     if (btn.dataset.tab === 'rag') { loadRAG(); loadRAGModelInfo(); }
     if (btn.dataset.tab === 'memory') switchMemSub('overview');
     // persona tab: no JS needed (static info page)
+    if (btn.dataset.tab === 'persona') loadPersonas();
     if (btn.dataset.tab === 'config') loadGlobalSettings();
   });
 });
@@ -1078,6 +1145,11 @@ async function openKBModal(entryId) {
 }
 
 async function saveModal() {
+  // 角色卡保存
+  if (modalState && modalState.type === 'persona') {
+    await savePersona();
+    return;
+  }
   // 世界书条目保存
   if (modalState && modalState.type === 'wb-entry') {
     const name = qs('#f-we-wbname').value;
@@ -1365,7 +1437,339 @@ async function saveActiveWorldbooks() {
 
 document.addEventListener('click', (e) => { if (_wbDropdownOpen && !e.target.closest('#wb-multi-select-trigger') && !e.target.closest('#wb-multi-select-dropdown')) { _wbDropdownOpen = false; qs('#wb-multi-select-dropdown').style.display = 'none'; } });
 
-// ── Persona（已改为信息引导页，不再有增删改查 UI）──
+// ── Persona 角色卡（独立 CRUD）──────────────────────────────
+
+let _personaData = null;  // 当前编辑中的角色卡数据
+let _personaMode = null;  // 'create' | 'edit'
+let state_personas = [];  // 全局角色卡列表缓存
+
+async function loadPersonas() {
+  const container = qs('#persona-list');
+  try {
+    const personas = await api('/persona/list');
+    state_personas = personas || [];
+    if (!state_personas.length) {
+      container.innerHTML = '<div class="empty">暂无角色卡，点击上方「+ 新建角色卡」创建</div>';
+      return;
+    }
+
+    // 第一步：渲染基础骨架（不含超长 Base64，避免 innerHTML 解析崩溃）
+    container.innerHTML = '<div class="persona-grid">' + personas.map((p, index) => {
+      const pid = esc(p.id);
+      const name = esc(p.name || pid);
+      const summary = esc((p.summary || '').substring(0, 80));
+      return `<div class="persona-card">
+        <div class="persona-card-left">
+          <img id="avatar-img-${index}" class="persona-avatar-img" style="display:none" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div id="avatar-letter-${index}" class="persona-avatar-letter">${esc((p.name || '?').charAt(0))}</div>
+        </div>
+        <div class="persona-card-body">
+          <div class="persona-card-name">${name}</div>
+          ${summary ? `<div class="persona-card-summary">${summary}${(p.summary||'').length>80?'…':''}</div>` : ''}
+        </div>
+        <div class="persona-card-actions">
+          <button class="btn btn-sm btn-outline" onclick="openPersonaModal('${pid}')">编辑</button>
+          <button class="btn btn-sm btn-outline" onclick="exportPersona('${pid}')">导出</button>
+          <button class="btn btn-sm btn-danger" onclick="deletePersona('${pid}')">删除</button>
+        </div>
+      </div>`;
+    }).join('') + '</div>';
+
+    // 第二步：通过原生 DOM 赋值，安全挂载 MB 级别的 Base64 数据
+    personas.forEach((p, index) => {
+      if (p.avatar_url) {
+        const img = document.getElementById(`avatar-img-${index}`);
+        const letter = document.getElementById(`avatar-letter-${index}`);
+        if (img && letter) {
+          img.src = p.avatar_url;
+          img.style.display = 'block';
+          letter.style.display = 'none';
+        }
+      }
+    });
+
+  } catch (e) {
+    container.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
+  }
+}
+
+async function openPersonaModal(personaId) {
+  _personaMode = personaId ? 'edit' : 'create';
+  _personaData = null;
+  let data = { id: '', name: '', avatar_path: '', summary: '', core_prompts: { personality: '', scenario: '', examples_of_dialogue: '', first_message: '' }, quill_extensions: { bound_worldbooks: [], bound_knowledge_base: [] } };
+
+  if (personaId) {
+    try { data = await api('/persona/list'); data = data.find(p => p.id === personaId) || data; } catch (e) { showToast(e.message); return; }
+    _personaData = { ...data };
+  }
+
+  // 获取当前可用的世界书与知识库分类
+  const dataInfo = await api('/info').catch(()=>({}));
+  const allWbs = dataInfo.available_worldbooks || [];
+  const catsData = await api('/kb/categories').catch(()=>({categories:[]}));
+  const kbCats = catsData.categories || [];
+
+  const boundWbs = data.quill_extensions?.bound_worldbooks || [];
+  const boundKbs = data.quill_extensions?.bound_knowledge_base || [];
+
+  qs('#modalTitle').textContent = _personaMode === 'create' ? '新建角色卡' : '编辑角色卡';
+  qs('#modalBody').innerHTML = `
+    <div class="persona-form-tabs">
+      <button class="persona-form-tab active" data-ptab="basic">基础信息</button>
+      <button class="persona-form-tab" data-ptab="core">核心设定</button>
+      <button class="persona-form-tab" data-ptab="ext">高级扩展</button>
+    </div>
+    <div class="persona-form-tab-content active" id="ptab-basic">
+      <div class="form-group"><label>角色名称 *</label><input id="pf-name" value="${esc(data.name||'')}" placeholder="必填，如：白芷"></div>
+      <div class="form-group"><label>头像</label>
+        <div class="avatar-upload-zone" id="avatar-upload-zone" onclick="qs('#pf-avatar-file').click()">
+          <input type="file" id="pf-avatar-file" accept="image/*" hidden onchange="uploadAvatarFile(this)">
+          <div id="avatar-preview-placeholder">
+            <div style="font-size:24px;margin-bottom:4px">📷</div>
+            <div>点击上传头像</div>
+          </div>
+          <img id="avatar-preview-img" style="display:none;max-width:120px;max-height:120px;border-radius:50%;object-fit:cover;">
+        </div>
+        <input type="hidden" id="pf-avatar" value="${esc(data.avatar_path||'')}">
+      </div>
+      <div class="form-group"><label>简介</label><input id="pf-summary" value="${esc(data.summary||'')}" placeholder="简短介绍，显示在卡片上"></div>
+    </div>
+    <div class="persona-form-tab-content" id="ptab-core">
+      <div class="form-group"><label>人格/外貌设定</label><textarea id="pf-personality" rows="5" placeholder="角色的性格、外貌、语气等核心设定">${esc(data.core_prompts?.personality||'')}</textarea></div>
+      <div class="form-group"><label>世界观/场景</label><textarea id="pf-scenario" rows="4" placeholder="当前场景、世界背景">${esc(data.core_prompts?.scenario||'')}</textarea></div>
+      <div class="form-group"><label>对话范例</label><textarea id="pf-examples" rows="4" placeholder="几组对话示例，帮助 AI 掌握角色语气">${esc(data.core_prompts?.examples_of_dialogue||'')}</textarea></div>
+      <div class="form-group"><label>开场白 (first_message)</label><textarea id="pf-first" rows="3" placeholder="切换角色后自动注入到对话历史的第一条">${esc(data.core_prompts?.first_message||'')}</textarea></div>
+    </div>
+    <div class="persona-form-tab-content" id="ptab-ext">
+      <div class="form-group">
+        <label>绑定世界书 (角色专属)</label>
+        <div class="checkbox-group-scroll">
+          ${allWbs.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用世界书</div>' :
+            allWbs.map(w => `<label class="form-check"><input type="checkbox" class="cb-wb-bind" value="${esc(w)}" ${boundWbs.includes(w)?'checked':''}> ${esc(w)}</label>`).join('')}
+        </div>
+        <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">切换到此角色时，将自动激活并关联勾选的世界书。</span>
+      </div>
+      <div class="form-group">
+        <label>绑定知识库分类 (角色专属)</label>
+        <div class="checkbox-group-scroll">
+          ${kbCats.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用知识库分类</div>' :
+            kbCats.map(c => `<label class="form-check"><input type="checkbox" class="cb-kb-bind" value="${esc(c)}" ${boundKbs.includes(c)?'checked':''}> ${esc(c)}</label>`).join('')}
+        </div>
+        <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">留空则匹配全部；勾选后，写作素材库将仅从选中分类中提取常驻和触发规则。</span>
+      </div>
+    </div>
+  `;
+
+  // 绑定表单 Tab 切换
+  qsa('.persona-form-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      qsa('.persona-form-tab').forEach(b => b.classList.remove('active'));
+      qsa('.persona-form-tab-content').forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      qs('#ptab-' + btn.dataset.ptab).classList.add('active');
+    });
+  });
+
+  if (_personaMode === 'edit' && data.avatar_url) {
+    const avatarImg = qs('#avatar-preview-img');
+    const placeholder = qs('#avatar-preview-placeholder');
+    if (avatarImg && placeholder) {
+      avatarImg.src = data.avatar_url;
+      avatarImg.style.display = 'block';
+      placeholder.style.display = 'none';
+    }
+  }
+
+  openModal();
+  modalState = { type: 'persona' };
+}
+async function savePersona() {
+  const name = qs('#pf-name').value.trim();
+  if (!name) { showToast('角色名称不能为空'); return; }
+
+  // 提取高级扩展的选项
+  const boundWbs = Array.from(document.querySelectorAll('.cb-wb-bind:checked')).map(cb => cb.value);
+  const boundKbs = Array.from(document.querySelectorAll('.cb-kb-bind:checked')).map(cb => cb.value);
+
+  const body = {
+    id: _personaMode === 'edit' ? _personaData.id : name,
+    name: name,
+    avatar_path: qs('#pf-avatar').value.trim(),
+    summary: qs('#pf-summary').value.trim(),
+    core_prompts: {
+      personality: qs('#pf-personality').value.trim(),
+      scenario: qs('#pf-scenario').value.trim(),
+      examples_of_dialogue: qs('#pf-examples').value.trim(),
+      first_message: qs('#pf-first').value.trim(),
+    },
+    quill_extensions: {
+      bound_worldbooks: boundWbs,
+      bound_knowledge_base: boundKbs,
+    },
+  };
+  try {
+    if (_personaMode === 'create') {
+      await api('/persona/create', { method: 'POST', body: JSON.stringify(body) });
+      showToast('角色卡已创建', 'success');
+    } else {
+      await api('/persona/update', { method: 'POST', body: JSON.stringify(body) });
+      showToast('角色卡已更新', 'success');
+    }
+    closeModal();
+    loadPersonas();
+  } catch (e) { showToast(e.message); }
+}
+
+function deletePersona(personaId) {
+  sandboxConfirm('确定删除此角色卡？此操作不可逆！', async () => {
+    try { await api('/persona/delete', { method: 'POST', body: JSON.stringify({ id: personaId }) }); showToast('已删除', 'success'); loadPersonas(); } catch (e) { showToast(e.message); }
+  }, true);
+}
+
+// ── Persona 扩展功能 ──────────────────────────────────────
+
+async function uploadAvatarFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['png','jpg','jpeg','webp','gif'].includes(ext)) { showToast('不支持的图片格式'); return; }
+  if (file.size > 5 * 1024 * 1024) { showToast('图片文件过大（最大 5MB）'); return; }
+
+  const placeholder = qs('#avatar-preview-placeholder');
+  placeholder.innerHTML = '<div>上传中...</div>';
+
+  try {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const base64 = e.target.result.split(',')[1];
+        const result = await api('/upload_avatar_base64', {
+          method: 'POST',
+          body: JSON.stringify({ filename: file.name, b64_data: base64 })
+        });
+        qs('#pf-avatar').value = result.path;
+        // 显示预览（使用原始 data URL）
+        const img = qs('#avatar-preview-img');
+        img.src = e.target.result;
+        img.style.display = 'block';
+        placeholder.style.display = 'none';
+        showToast('头像上传成功', 'success');
+      } catch (err) {
+        showToast('上传失败: ' + err.message);
+        placeholder.innerHTML = '<div style="font-size:24px;margin-bottom:4px">📷</div><div>点击上传头像</div>';
+      }
+    };
+    reader.readAsDataURL(file);
+  } catch (e) {
+    showToast('读取文件失败: ' + e.message);
+    placeholder.innerHTML = '<div style="font-size:24px;margin-bottom:4px">📷</div><div>点击上传头像</div>';
+  }
+}
+
+async function importPersona(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['png','jpg','jpeg','json'].includes(ext)) { showToast('不支持的文件格式（支持 PNG/JPG/JSON）'); return; }
+  if (file.size > 5 * 1024 * 1024) { showToast('文件过大（最大 5MB）'); return; }
+
+  const container = qs('#persona-list');
+  container.innerHTML = '<div class="loading"><span class="skeleton" style="width:200px">&nbsp;</span></div>';
+
+  try {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const base64 = e.target.result.split(',')[1];
+        const result = await api('/persona/import_base64', {
+          method: 'POST',
+          body: JSON.stringify({ filename: file.name, b64_data: base64 })
+        });
+        showToast(`角色卡 "${result.name}" 导入成功`, 'success');
+        loadPersonas();
+      } catch (err) {
+        showToast('导入失败: ' + err.message);
+        loadPersonas();
+      }
+    };
+    reader.readAsDataURL(file);
+  } catch (e) {
+    showToast('读取文件失败: ' + e.message);
+    loadPersonas();
+  }
+  input.value = '';
+}
+
+async function exportPersona(personaId) {
+  try {
+    const persona = (state_personas || []).find(p => p.id === personaId);
+    const hasAvatar = persona && persona.avatar_path;
+    const filename = persona ? (hasAvatar ? `${persona.name}_v2.png` : `${persona.name}_v2.json`) : `${personaId}_v2.png`;
+
+    showToast('正在生成导出文件...', 'success');
+    const resp = await api('/persona/export_base64', {
+      method: 'POST',
+      body: JSON.stringify({ id: personaId })
+    });
+
+    // Base64 → Uint8Array → Blob → ObjectURL → Download
+    const binary = atob(resp.b64_data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes]);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = resp.filename || filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast('导出成功', 'success');
+  } catch (e) {
+    showToast('导出失败: ' + e.message);
+  }
+}
+
+// ── 文本粘贴导入 ──────────────────────────────────────────
+
+function openImportTextModal() {
+  qs('#importTextOverlay').classList.add('open');
+  setTimeout(() => qs('#import-textarea').focus(), 50);
+}
+
+function closeImportTextModal() {
+  qs('#importTextOverlay').classList.remove('open');
+  qs('#import-textarea').value = '';
+}
+
+async function importFromText() {
+  const text = qs('#import-textarea').value.trim();
+  if (!text) { showToast('请输入或粘贴角色设定文本'); return; }
+
+  const btn = qs('#importTextOverlay').querySelector('.btn-primary');
+  const origText = btn.textContent;
+  btn.textContent = '解析中...';
+  btn.disabled = true;
+
+  try {
+    // Base64 编码绕过沙盒
+    const b64 = btoa(unescape(encodeURIComponent(text)));
+    const result = await api('/persona/import_text_base64', {
+      method: 'POST',
+      body: JSON.stringify({ b64_text: b64 })
+    });
+    closeImportTextModal();
+    showToast(`角色卡 "${result.name}" 导入成功`, 'success');
+    loadPersonas();
+  } catch (e) {
+    showToast('导入失败: ' + e.message);
+  } finally {
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
+}
 
 // ── RAG ──
 async function loadRAG() {
@@ -1638,7 +2042,13 @@ async function saveAllChanges() {
 }
 
 // ── Init ──
-function quillInit() { loadKBCategories(); loadKB(); loadGlobalSettings(); }
+async function quillInit() {
+  await waitForBridge(1500);
+  loadKBCategories();
+  loadKB();
+  loadGlobalSettings();
+  loadPersonas();
+}
 if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', quillInit); } else { quillInit(); }
 </script>
 
@@ -1661,3 +2071,4 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
 <div class="toast-container" id="toast-container"></div>
 </body>
 </html>
+
