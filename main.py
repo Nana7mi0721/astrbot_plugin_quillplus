@@ -85,13 +85,13 @@ def strip_markdown(text: str) -> str:
 
 @register(
     "astrbot_plugin_quillplus",
-    "Quill",
-    "羽笔 - 世界书+写作素材库+角色卡 RP 注入系统",
+    "Quill (Mod by Nana7mi0721)",
+    "世界书+写作素材库+角色卡三合一 RP 注入系统",
     "5.0.0",
     "",
 )
 class QuillPlugin(Star):
-    """羽笔 — 世界书+写作素材库+角色卡三合一 RP 注入系统"""
+    """QuillPlus — 世界书+写作素材库+角色卡+文档RAG+动态记忆，五合一 RP 注入系统"""
 
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
@@ -759,12 +759,12 @@ class QuillPlugin(Star):
 
     @filter.command("wb")
     async def cmd_wb(self, event: AstrMessageEvent, arg1: str = "", arg2: str = ""):
-        """世界书管理。用法：/wb | /wb <名字> | /wb off | /wb info <名字>"""
+        """世界书管理。用法：/wb | /wb <名字> | /wb off | /wb info <名字> | /wb reload"""
         await _cmds.wb_dispatch(self, event, arg1, arg2)
 
     @filter.command("char")
     async def cmd_char(self, event: AstrMessageEvent, arg: str = ""):
-        """角色卡切换。用法：/char | /char <名字> | /char unset"""
+        """角色卡管理。用法：/char | /char <名字> | /char unset | /char info | /char export | /char import"""
         await _cmds.char_dispatch(self, event, arg)
 
     @filter.command("quill")
@@ -772,16 +772,34 @@ class QuillPlugin(Star):
         self, event: AstrMessageEvent,
         arg1: str = "", rest: GreedyStr = ""
     ):
-        """Quill 状态 / KB 匹配测试。用法：/quill | /quill test <文字>"""
+        """Quill 系统总览与测试。用法：/quill | /quill test <kb|wb|mem> <文字>"""
         if (arg1 or "").strip().lower() == "test":
             text = (rest or "").strip()
-            if not text:
+            # 解析: /quill test kb <文字> 或 /quill test <文字>
+            parts = text.split(None, 1) if text else []
+            if len(parts) >= 2 and parts[0].lower() in ("kb", "wb", "mem"):
+                system = parts[0]
+                test_text = parts[1]
+            else:
+                system = "kb"
+                test_text = text
+            if not test_text:
                 from astrbot.core.message.message_event_result import MessageEventResult
-                event.set_result(MessageEventResult().message("用法: /quill test <文字>"))
+                event.set_result(MessageEventResult().message("用法: /quill test <kb|wb|mem> <文字>"))
                 return
-            await _cmds.quill_test(self, event, text)
+            await _cmds.quill_test(self, event, system, test_text)
             return
         await _cmds.quill_status(self, event)
+
+    @filter.command("memory")
+    async def cmd_memory(self, event: AstrMessageEvent, arg1: str = "", arg2: str = ""):
+        """动态记忆管理。用法：/memory | /memory list | /memory del <序号> | /memory clear | /memory learn <内容> | /memory search <关键词>"""
+        await _cmds.memory_dispatch(self, event, arg1, arg2)
+
+    @filter.command("doc")
+    async def cmd_doc(self, event: AstrMessageEvent, arg1: str = "", arg2: str = ""):
+        """外部文档 RAG 管理。用法：/doc list | /doc search <关键词>"""
+        await _cmds.doc_dispatch(self, event, arg1, arg2)
 
     @filter.command("stream")
     async def cmd_stream(self, event: AstrMessageEvent, arg: str = ""):
