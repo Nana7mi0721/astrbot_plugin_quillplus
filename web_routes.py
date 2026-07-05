@@ -85,12 +85,13 @@ class QuillRoutes:
     """
 
     def __init__(self, kb_manager, wb_manager, context, config=None,
-                 rag_components=None, plugin=None):
+                 rag_components=None, plugin=None, persona_manager=None):
         self.kb_manager = kb_manager
         self.wb_manager = wb_manager
         self.context = context
         self.config = config
         self.plugin = plugin  # 直接引用插件实例，避免反射查找
+        self.persona_manager = persona_manager
         # rag_components: dict with keys: embedding, vector_store, reranker, memory_store, summarizer
         self.rag = rag_components or {}
 
@@ -132,10 +133,20 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/wb/bind",         self.wb_bind,        ["POST"],   "绑定世界书")
         _r(f"/{PLUGIN_NAME}/wb/unbind",       self.wb_unbind,      ["POST"],   "解绑世界书")
 
-        # ── Persona 人格 (仅保留 list/update/delete，不再支持独立创建) ──
-        _r(f"/{PLUGIN_NAME}/persona/list",    self.persona_list,   ["GET"],    "列出人格列表")
-        _r(f"/{PLUGIN_NAME}/persona/update",  self.persona_update, ["POST"],   "更新人格")
-        _r(f"/{PLUGIN_NAME}/persona/delete",  self.persona_delete, ["POST"],   "删除人格")
+        # ── Persona 角色卡 (独立 Quill 管理 + V2 兼容) ──
+        _r(f"/{PLUGIN_NAME}/persona/list",          self.persona_list,   ["GET"],    "列出角色卡")
+        _r(f"/{PLUGIN_NAME}/persona/create",        self.persona_create, ["POST"],   "创建角色卡")
+        _r(f"/{PLUGIN_NAME}/persona/update",        self.persona_update, ["POST"],   "更新角色卡")
+        _r(f"/{PLUGIN_NAME}/persona/delete",        self.persona_delete, ["POST"],   "删除角色卡")
+        _r(f"/{PLUGIN_NAME}/upload_avatar",         self.upload_avatar,  ["POST"],   "上传头像(文件)")
+        _r(f"/{PLUGIN_NAME}/upload_avatar_base64",  self.upload_avatar_base64, ["POST"], "上传头像(Base64)")
+        _r(f"/{PLUGIN_NAME}/persona/import",        self.persona_import, ["POST"],   "导入V2角色卡(文件)")
+        _r(f"/{PLUGIN_NAME}/persona/import_base64", self.persona_import_base64, ["POST"], "导入V2角色卡(Base64)")
+        _r(f"/{PLUGIN_NAME}/persona/export",        self.persona_export, ["GET"],    "导出V2角色卡")
+        _r(f"/{PLUGIN_NAME}/persona/export_base64",     self.persona_export_base64, ["POST"], "导出V2角色卡(Base64)")
+        _r(f"/{PLUGIN_NAME}/persona/import_text",        self.persona_import_text, ["POST"], "文本导入角色卡")
+        _r(f"/{PLUGIN_NAME}/persona/import_text_base64", self.persona_import_text_base64, ["POST"], "文本导入角色卡(Base64)")
+        _r(f"/{PLUGIN_NAME}/avatar/<path:filename>", self.serve_avatar,  ["GET"],    "获取头像文件")
 
         # ── Info (世界书列表 + 触发日志) ──
         _r(f"/{PLUGIN_NAME}/info",             self.info,           ["GET"],    "插件状态信息")
@@ -171,14 +182,17 @@ class QuillRoutes:
     async def info(self):
         """返回插件状态：可用世界书、活跃列表、触发日志。"""
         from ._route_core import handle_info
-        # 从 config 读取活跃世界书和触发日志开关
         active = None
         show_log = False
         if self.config is not None:
             active = getattr(self.config, 'worldbook_active', None)
             show_log = getattr(self.config, 'worldbook_show_log', False)
+        pc = 0
+        if self.persona_manager:
+            pc = await self.persona_manager.get_persona_count()
         return await handle_info(
             self.kb_manager, self.wb_manager,
+            persona_count=pc,
             active_worldbooks=active,
             show_trigger_log=show_log,
         )
@@ -663,58 +677,374 @@ class QuillRoutes:
             pass  # 即使 reload 失败也返回当前列表
         return json_response(await handle_wb_list(self.wb_manager))
 
-    # ── Persona ───────────────────────────────────────────────
+    # ── Persona 角色卡 (Quill 独立管理) ──────────────────────────
 
     @_api_handler
     async def persona_list(self):
-        """返回完整人格列表（含 system_prompt / begin_dialogs / tools 供前端渲染）。"""
-        persona_mgr = self.context.persona_manager
-        personas = getattr(persona_mgr, "personas", []) or []
-        result = []
+        """返回所有角色卡（完整 JSON 结构，含头像 base64 data URL）。"""
+        if not self.persona_manager:
+            return json_response([])
+        personas = await self.persona_manager.load_all()
+        # 为每个有头像的角色卡嵌入 base64 data URL，避免 <img> 跨域请求
         for p in personas:
-            tools = getattr(p, "tools", None)
-            result.append({
-                "persona_id": p.persona_id,
-                "system_prompt": getattr(p, "system_prompt", "") or "",
-                "begin_dialogs": getattr(p, "begin_dialogs", None) or [],
-                "tools": tools,
-                # skills 是前端 AstrBot 新字段，Persona 数据模型不一定有；
-                # 用 getattr 兜底返回空列表，避免前端 JS 读 undefined 报错。
-                "skills": getattr(p, "skills", None) or [],
-            })
-        return json_response(result)
+            avatar_path = p.get("avatar_path", "")
+            if avatar_path and avatar_path.startswith("quill_avatars/"):
+                fname = avatar_path[len("quill_avatars/"):]
+                data = await self.persona_manager.read_avatar(fname)
+                if data:
+                    import base64
+                    ext = os.path.splitext(fname)[1].lower()
+                    mime_map = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif'}
+                    mime = mime_map.get(ext, 'image/png')
+                    p["avatar_url"] = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+                else:
+                    p["avatar_url"] = ""
+            else:
+                p["avatar_url"] = ""
+        return json_response(personas)
+
+    @_api_handler
+    async def persona_create(self):
+        """创建角色卡。"""
+        data = await request.json(default={})
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
+        try:
+            result = await self.persona_manager.create_persona(data)
+            # 同步世界书绑定
+            if self.wb_manager:
+                persona_id = result.get("id")
+                bound_wbs = data.get("quill_extensions", {}).get("bound_worldbooks", [])
+                for wb in bound_wbs:
+                    self.wb_manager.bind_persona(persona_id, wb)
+            return json_response(result)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
 
     @_api_handler
     async def persona_update(self):
+        """更新角色卡（支持部分更新）。"""
         data = await request.json(default={})
-        persona_id = (data.get("persona_id") or "").strip()
+        persona_id = (data.get("id") or "").strip()
         if not persona_id:
-            return error_response("persona_id is required", status_code=400)
-        persona_mgr = self.context.persona_manager
-        # 只传前端提供的字段（update_persona 支持 partial update）
-        kwargs = {}
-        if "system_prompt" in data:
-            kwargs["system_prompt"] = data["system_prompt"]
-        if "begin_dialogs" in data:
-            kwargs["begin_dialogs"] = data["begin_dialogs"]
-        if "tools" in data:
-            kwargs["tools"] = data["tools"]
-        if not kwargs:
-            return error_response("Nothing to update", status_code=400)
+            return error_response("id is required", status_code=400)
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
         try:
-            await persona_mgr.update_persona(persona_id=persona_id, **kwargs)
+            result = await self.persona_manager.update_persona(persona_id, data)
+            # 同步世界书绑定
+            if self.wb_manager:
+                bound_wbs = data.get("quill_extensions", {}).get("bound_worldbooks", [])
+                for wb in self.wb_manager.list_worldbooks():
+                    if wb in bound_wbs:
+                        self.wb_manager.bind_persona(persona_id, wb)
+                    else:
+                        self.wb_manager.unbind_persona(persona_id, wb)
+            return json_response(result)
         except ValueError as e:
-            return error_response(str(e), status_code=404)
-        return json_response({"persona_id": persona_id, "message": "Persona updated"})
+            return error_response(str(e), status_code=400)
 
     @_api_handler
     async def persona_delete(self):
+        """删除角色卡。"""
         data = await request.json(default={})
-        persona_id = (data.get("persona_id") or "").strip()
+        persona_id = (data.get("id") or "").strip()
         if not persona_id:
-            return error_response("persona_id is required", status_code=400)
+            return error_response("id is required", status_code=400)
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
         try:
-            await self.context.persona_manager.delete_persona(persona_id=persona_id)
+            await self.persona_manager.delete_persona(persona_id)
+            return json_response({"id": persona_id, "message": "Persona deleted"})
         except ValueError as e:
             return error_response(str(e), status_code=404)
-        return json_response({"persona_id": persona_id, "message": "Persona deleted"})
+
+    # ── Persona 扩展功能：头像上传 / V2 导入导出 ──────────────────
+
+    @_api_handler
+    async def upload_avatar(self):
+        """上传头像图片（multipart/form-data）。"""
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
+
+        from astrbot.api.web import PluginUploadFile
+        files = await request.files()
+        upload = files.get("file")
+        if not isinstance(upload, PluginUploadFile):
+            return error_response("未收到文件", status_code=400)
+
+        data = await upload.read()
+        filename = getattr(upload, 'name', 'avatar.png')
+
+        # 验证文件大小 (最大 10MB)
+        if len(data) > 5 * 1024 * 1024:
+            return error_response("图片文件过大（最大 5MB）", status_code=413)
+
+        try:
+            rel_path = await self.persona_manager.save_avatar(filename, data)
+            url = f"/{PLUGIN_NAME}/avatar/{os.path.basename(rel_path)}"
+            return json_response({"url": url, "path": rel_path, "message": "Avatar uploaded"})
+        except Exception as e:
+            return error_response(f"保存失败: {e}", status_code=500)
+
+    @_api_handler
+    async def upload_avatar_base64(self):
+        """上传头像图片（Base64 模式，绕过沙盒 FormData 拦截）。"""
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
+
+        import base64
+        data = await request.json(default={})
+        filename = (data.get("filename") or "avatar.png").strip()
+        b64_data = (data.get("b64_data") or "").strip()
+
+        if not b64_data:
+            return error_response("未收到文件数据", status_code=400)
+
+        try:
+            file_bytes = base64.b64decode(b64_data)
+        except Exception as e:
+            return error_response(f"Base64 解码失败: {e}", status_code=400)
+
+        # 验证文件大小 (最大 10MB，Base64 膨胀约 33%)
+        if len(file_bytes) > 10 * 1024 * 1024:
+            return error_response("图片文件过大（最大 10MB）", status_code=413)
+
+        try:
+            rel_path = await self.persona_manager.save_avatar(filename, file_bytes)
+            url = f"/{PLUGIN_NAME}/avatar/{os.path.basename(rel_path)}"
+            return json_response({"url": url, "path": rel_path, "message": "Avatar uploaded"})
+        except Exception as e:
+            return error_response(f"保存失败: {e}", status_code=500)
+
+    @_api_handler
+    async def persona_import(self):
+        """导入 V2 角色卡（multipart/form-data，支持 PNG/JPG/JSON）。"""
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
+
+        from astrbot.api.web import PluginUploadFile
+        files = await request.files()
+        upload = files.get("file")
+        if not isinstance(upload, PluginUploadFile):
+            return error_response("未收到文件", status_code=400)
+
+        file_data = await upload.read()
+        filename = getattr(upload, 'name', 'card.png').lower()
+        ext = os.path.splitext(filename)[1].lower()
+        # 处理 .card.png 等特殊扩展名
+        if filename.lower().endswith('.card.png'):
+            ext = '.png'
+        elif ext not in ('.png', '.jpg', '.jpeg', '.json'):
+            return error_response("不支持的文件格式（支持 PNG/JPG/JSON）", status_code=400)
+
+        if len(file_data) > 5 * 1024 * 1024:
+            return error_response("文件过大（最大 5MB）", status_code=413)
+
+        try:
+            is_image = ext in ('.png', '.jpg', '.jpeg')
+            persona_data = self.persona_manager.parse_v2_card(file_data, is_image)
+
+            # 如果是图片，保存为头像
+            if is_image:
+                avatar_filename = f"{persona_data['name']}{ext}"
+                avatar_path = await self.persona_manager.save_avatar(avatar_filename, file_data)
+                persona_data["avatar_path"] = avatar_path
+
+            result = await self.persona_manager.create_persona(persona_data)
+            return json_response(result)
+
+        except ImportError as e:
+            return error_response(str(e), status_code=501)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
+        except Exception as e:
+            return error_response(f"导入失败: {e}", status_code=500)
+
+    @_api_handler
+    async def persona_import_base64(self):
+        """导入 V2 角色卡（Base64 模式，绕过沙盒 FormData 拦截）。"""
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
+
+        import base64
+        data = await request.json(default={})
+        filename = (data.get("filename") or "card.png").strip().lower()
+        b64_data = (data.get("b64_data") or "").strip()
+
+        if not b64_data:
+            return error_response("未收到文件数据", status_code=400)
+
+        try:
+            file_bytes = base64.b64decode(b64_data)
+        except Exception as e:
+            return error_response(f"Base64 解码失败: {e}", status_code=400)
+
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in ('.png', '.jpg', '.jpeg', '.json'):
+            return error_response("不支持的文件格式（支持 PNG/JPG/JSON）", status_code=400)
+
+        if len(file_bytes) > 5 * 1024 * 1024:
+            return error_response("文件过大（最大 5MB）", status_code=413)
+
+        try:
+            is_image = ext in ('.png', '.jpg', '.jpeg')
+            persona_data = self.persona_manager.parse_v2_card(file_bytes, is_image)
+
+            # 如果是图片，保存为头像
+            if is_image:
+                avatar_filename = f"{persona_data['name']}{ext}"
+                avatar_path = await self.persona_manager.save_avatar(avatar_filename, file_bytes)
+                persona_data["avatar_path"] = avatar_path
+
+            result = await self.persona_manager.create_persona(persona_data)
+            return json_response(result)
+
+        except ImportError as e:
+            return error_response(str(e), status_code=501)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
+        except Exception as e:
+            return error_response(f"导入失败: {e}", status_code=500)
+
+    @_api_handler
+    async def persona_export(self):
+        """导出 V2 角色卡。"""
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
+
+        persona_id = request.args.get("id", "").strip()
+        if not persona_id:
+            return error_response("缺少角色 ID", status_code=400)
+
+        persona = await self.persona_manager.get_persona(persona_id)
+        if not persona:
+            return error_response("角色卡不存在", status_code=404)
+
+        try:
+            # 尝试读取头像
+            avatar_data = None
+            avatar_path = persona.get("avatar_path", "")
+            if avatar_path and avatar_path.startswith("quill_avatars/"):
+                avatar_filename = os.path.basename(avatar_path)
+                avatar_data = await self.persona_manager.read_avatar(avatar_filename)
+
+            # 导出为 V2
+            export_data = self.persona_manager.export_v2_card(persona, avatar_data)
+
+            # 返回文件下载
+            if avatar_data:
+                from astrbot.api.web import file_response
+                return file_response(
+                    export_data,
+                    filename=f"{persona['name']}_v2.png",
+                    content_type="image/png"
+                )
+            else:
+                from astrbot.api.web import file_response
+                return file_response(
+                    export_data,
+                    filename=f"{persona['name']}_v2.json",
+                    content_type="application/json"
+                )
+
+        except ImportError as e:
+            return error_response(str(e), status_code=501)
+        except Exception as e:
+            return error_response(f"导出失败: {e}", status_code=500)
+
+    async def serve_avatar(self, filename: str):
+        """提供头像文件静态服务。"""
+        if not self.persona_manager:
+            return error_response("Not available", status_code=500)
+
+        # 安全检查
+        if not filename or '..' in filename or '/' in filename or '\\' in filename:
+            return error_response("Invalid filename", status_code=400)
+
+        data = await self.persona_manager.read_avatar(filename)
+        if not data:
+            return error_response("File not found", status_code=404)
+
+        # 根据扩展名设置 MIME 类型
+        ext = os.path.splitext(filename)[1].lower()
+        mime_map = {
+            '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp', '.gif': 'image/gif'
+        }
+        mime = mime_map.get(ext, 'application/octet-stream')
+
+        from starlette.responses import Response
+        return Response(
+            data,
+            media_type=mime,
+            headers={"Cache-Control": "public, max-age=86400"}
+        )
+
+    @_api_handler
+    async def persona_import_text(self):
+        """从剪贴板文本导入角色卡"""
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
+        data = await request.json(default={})
+        text = (data.get("text") or "").strip()
+        if not text:
+            return error_response("text is required", status_code=400)
+        try:
+            persona_data = self.persona_manager.parse_clipboard_text(text)
+            result = await self.persona_manager.create_persona(persona_data)
+            return json_response(result)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
+        except Exception as e:
+            return error_response(f"解析失败: {e}", status_code=400)
+
+    @_api_handler
+    async def persona_import_text_base64(self):
+        """从剪贴板文本导入角色卡（Base64 绕过沙盒）"""
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
+        data = await request.json(default={})
+        b64_text = (data.get("b64_text") or "").strip()
+        if not b64_text:
+            return error_response("b64_text is required", status_code=400)
+        import base64
+        try:
+            text = base64.b64decode(b64_text).decode('utf-8')
+        except Exception as e:
+            return error_response(f"Base64 解码失败: {e}", status_code=400)
+        try:
+            persona_data = self.persona_manager.parse_clipboard_text(text)
+            result = await self.persona_manager.create_persona(persona_data)
+            return json_response(result)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
+        except Exception as e:
+            return error_response(f"解析失败: {e}", status_code=400)
+
+    @_api_handler
+    async def persona_export_base64(self):
+        """导出 V2 角色卡（Base64 编码，突破沙盒下载限制）。"""
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
+        data = await request.json(default={})
+        persona_id = (data.get("id") or "").strip()
+        if not persona_id:
+            return error_response("缺少角色 ID", status_code=400)
+        persona = await self.persona_manager.get_persona(persona_id)
+        if not persona:
+            return error_response("角色卡不存在", status_code=404)
+        try:
+            import os
+            import base64
+            avatar_data = None
+            avatar_path = persona.get("avatar_path", "")
+            if avatar_path and avatar_path.startswith("quill_avatars/"):
+                avatar_filename = os.path.basename(avatar_path)
+                avatar_data = await self.persona_manager.read_avatar(avatar_filename)
+            export_data = self.persona_manager.export_v2_card(persona, avatar_data)
+            filename = f"{persona['name']}_v2.png" if avatar_data else f"{persona['name']}_v2.json"
+            b64_str = base64.b64encode(export_data).decode('ascii')
+            return json_response({"filename": filename, "b64_data": b64_str})
+        except Exception as e:
+            return error_response(f"导出失败: {e}", status_code=500)

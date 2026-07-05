@@ -132,15 +132,19 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
     /char unset       取消角色卡
     """
     sub = (arg or "").strip().lower()
+    persona_mgr = plugin.persona_manager
 
     if not arg:
-        personas = plugin.context.persona_manager.personas
+        personas = await persona_mgr.load_all()
         if not personas:
             event.set_result(MessageEventResult().message("没有可用的角色卡"))
             return
         lines = ["可用角色卡："]
         for i, p in enumerate(personas, 1):
-            lines.append(f"  {i}. {p.persona_id}")
+            name = p.get("name", p.get("id", "?"))
+            summary = p.get("summary", "")
+            suffix = f" — {summary[:30]}" if summary else ""
+            lines.append(f"  {i}. {name}{suffix}")
         lines.append("")
         lines.append("使用: /char <序号>   快速切换（如 /char 1）")
         lines.append("     /char <名字>   按名字切换")
@@ -149,10 +153,8 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
         return
 
     if sub == "unset":
-        umo = event.unified_msg_origin
-        await plugin.context.conversation_manager.update_conversation_persona_id(
-            umo, "[%None]"
-        )
+        user_id = str(event.get_sender_id())
+        await plugin.state_manager.set_persona_id(user_id, "")
         event.set_result(MessageEventResult().message("已取消角色卡，将使用默认人设。"))
         return
 
@@ -161,27 +163,34 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
         return
 
     # /char <序号|名字> → 切换
-    personas = plugin.context.persona_manager.personas
+    personas = await persona_mgr.load_all()
     name = arg.strip()
     # 序号解析
     if name.isdigit():
         idx = int(name) - 1
         if 0 <= idx < len(personas):
-            name = personas[idx].persona_id
+            name = personas[idx].get("id", personas[idx].get("name", ""))
         else:
             event.set_result(MessageEventResult().message(
                 f"序号超出范围: {arg}\n发送 /char 查看列表"
             ))
             return
-    if not any(p.persona_id == name for p in personas):
+    # 按 id 或 name 匹配
+    matched = None
+    for p in personas:
+        if p.get("id") == name or p.get("name") == name:
+            matched = p
+            break
+    if not matched:
         event.set_result(MessageEventResult().message(
             f"角色卡不存在: {arg}\n发送 /char 查看列表"
         ))
         return
-    umo = event.unified_msg_origin
-    await plugin.context.conversation_manager.update_conversation_persona_id(umo, name)
+    pid = matched.get("id", name)
+    user_id = str(event.get_sender_id())
+    await plugin.state_manager.set_persona_id(user_id, pid)
     event.set_result(MessageEventResult().message(
-        f"已切换到: {name}\n建议使用 /reset 清空上下文，防止旧对话影响新角色。"
+        f"已切换到: {matched.get('name', pid)}\n建议使用 /reset 清空上下文，防止旧对话影响新角色。"
     ))
 
 

@@ -57,7 +57,6 @@ for _p in _candidates:
 
 # ── 导入依赖 ──────────────────────────────────────────────────
 try:
-    import aiosqlite
     import yaml
     from quart import Quart, request, jsonify, Response as QResponse
 except ImportError as e:
@@ -77,6 +76,7 @@ if _SCRIPT_DIR not in sys.path:
 
 from kb import KnowledgeBaseManager
 from worldbook import WorldbookManager
+from persona_manager import QuillPersonaManager
 from _route_core import (
     ok,
     handle_kb_list,
@@ -171,118 +171,17 @@ def _resolve_wb_dir(plugin_dir: str, _config: dict, cli_arg: Optional[str]) -> s
     return os.path.join(plugin_dir, "worldbooks")
 
 
-def _resolve_db_path(plugin_dir: str, cli_arg: Optional[str]) -> Optional[str]:
-    """自动发现 AstrBot data_v4.db（从插件目录向上推断）。"""
-    if cli_arg:
-        return cli_arg
-    candidates = [
-        os.path.abspath(os.path.join(plugin_dir, "..", "..", "data_v4.db")),
-        os.path.abspath(os.path.join(plugin_dir, "..", "..", "..", "data_v4.db")),
-    ]
-    for p in candidates:
-        if os.path.isfile(p):
-            return p
-    return None
-
-
-# ── Persona 管理器（直读 AstrBot data_v4.db）───────────────
-class PersonaDB:
-    """直接通过 aiosqlite 读写 AstrBot data_v4.db 的 personas 表。"""
-
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-
-    async def list_all(self) -> list[dict]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT id, persona_id, system_prompt, begin_dialogs, tools, skills, "
-                "custom_error_message, folder_id, sort_order, created_at, updated_at "
-                "FROM personas ORDER BY sort_order, id"
-            ) as cur:
-                return [self._row_to_dict(r) for r in await cur.fetchall()]
-
-    async def get_by_id(self, persona_id: str) -> Optional[dict]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT id, persona_id, system_prompt, begin_dialogs, tools, skills, "
-                "custom_error_message, folder_id, sort_order, created_at, updated_at "
-                "FROM personas WHERE persona_id = ?", (persona_id,)
-            ) as cur:
-                r = await cur.fetchone()
-                return self._row_to_dict(r) if r else None
-
-    async def create(self, persona_id: str, system_prompt: str,
-                     begin_dialogs: list[str] | None = None,
-                     tools=None, skills=None,
-                     custom_error_message: str | None = None,
-                     folder_id: str | None = None,
-                     sort_order: int = 0) -> dict:
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT 1 FROM personas WHERE persona_id = ?", (persona_id,)) as cur:
-                if await cur.fetchone():
-                    raise ValueError(f"Persona '{persona_id}' 已存在")
-            import datetime
-            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            await db.execute(
-                "INSERT INTO personas (persona_id, system_prompt, begin_dialogs, tools, skills, "
-                "custom_error_message, folder_id, sort_order, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (persona_id, system_prompt,
-                 json.dumps(begin_dialogs) if begin_dialogs else None,
-                 json.dumps(tools) if tools is not None else None,
-                 json.dumps(skills) if skills is not None else None,
-                 custom_error_message, folder_id, sort_order, now, now))
-            await db.commit()
-        return await self.get_by_id(persona_id)
-
-    async def update(self, persona_id: str, **kwargs) -> Optional[dict]:
-        allowed = {"system_prompt", "begin_dialogs", "tools", "skills",
-                   "custom_error_message", "folder_id", "sort_order"}
-        updates = {k: v for k, v in kwargs.items() if k in allowed}
-        if not updates:
-            return await self.get_by_id(persona_id)
-        for k in ("begin_dialogs", "tools", "skills"):
-            if k in updates and isinstance(updates[k], (list, dict)):
-                updates[k] = json.dumps(updates[k])
-        import datetime
-        updates["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [persona_id]
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(f"UPDATE personas SET {set_clause} WHERE persona_id = ?", values)
-            await db.commit()
-        return await self.get_by_id(persona_id)
-
-    async def delete(self, persona_id: str) -> bool:
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM personas WHERE persona_id = ?", (persona_id,))
-            await db.commit()
-            return True
-
-    @staticmethod
-    def _row_to_dict(r) -> dict:
-        d = dict(r)
-        for k in ("begin_dialogs", "tools", "skills"):
-            if d.get(k) and isinstance(d[k], str):
-                try:
-                    d[k] = json.loads(d[k])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        return d
-
-
 # ── 创建 Quart App ──────────────────────────────────────────
 def create_app(
     kb_manager,
     wb_manager,
-    persona_db: PersonaDB | None = None,
+    persona_manager=None,
     *,
     port: int = 18425,
 ) -> Quart:
     app = Quart(__name__)
     plugin_dir = _SCRIPT_DIR
+    persona_db = persona_manager  # 别名，与路由内部变量名一致
 
     # ── KB 路由 ────────────────────────────────────────────
     @app.route("/api/kb/list")
@@ -449,84 +348,306 @@ def create_app(
         wb_name = (data or {}).get("worldbook_name")
         return _wrap(await handle_wb_unbind(wb_manager, bind_type, target_id, wb_name))
 
-    # ── Persona 路由 ──────────────────────────────────────────
+    # ── Persona 角色卡 (独立 Quill 管理) ──────────────────────
+
     @app.route("/api/persona/list")
     @_api
     async def persona_list():
         if not persona_db:
-            return jsonify(SimpleResponse().error("AstrBot 数据库未配置").__dict__)
-        return jsonify(SimpleResponse().ok({"personas": await persona_db.list_all()}).__dict__)
-
-    @app.route("/api/persona/get", methods=["POST"])
-    @_api
-    async def persona_get():
-        if not persona_db:
-            return jsonify(SimpleResponse().error("AstrBot 数据库未配置").__dict__)
-        data = await request.json
-        pid = (data or {}).get("persona_id")
-        if not pid:
-            return jsonify(SimpleResponse().error("persona_id is required").__dict__)
-        p = await persona_db.get_by_id(pid)
-        if not p:
-            return jsonify(SimpleResponse().error("Persona not found").__dict__)
-        return jsonify(SimpleResponse().ok(p).__dict__)
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
+        personas = await persona_db.load_all()
+        # 为每个有头像的角色卡嵌入 base64 data URL
+        for p in personas:
+            avatar_path = p.get("avatar_path", "")
+            if avatar_path and avatar_path.startswith("quill_avatars/"):
+                try:
+                    fname = avatar_path[len("quill_avatars/"):]
+                    data = await persona_db.read_avatar(fname)
+                    if data:
+                        import base64, os
+                        ext = os.path.splitext(fname)[1].lower()
+                        mime_map = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif'}
+                        mime = mime_map.get(ext, 'image/png')
+                        p["avatar_url"] = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+                    else:
+                        p["avatar_url"] = ""
+                except Exception:
+                    p["avatar_url"] = ""
+            else:
+                p["avatar_url"] = ""
+        return jsonify(SimpleResponse().ok(personas).__dict__)
 
     @app.route("/api/persona/create", methods=["POST"])
     @_api
     async def persona_create():
         if not persona_db:
-            return jsonify(SimpleResponse().error("AstrBot 数据库未配置").__dict__)
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
         data = await request.json
-        if not data or "persona_id" not in data or "system_prompt" not in data:
-            return jsonify(SimpleResponse().error("persona_id and system_prompt are required").__dict__)
-        p = await persona_db.create(
-            persona_id=data["persona_id"],
-            system_prompt=data["system_prompt"],
-            begin_dialogs=data.get("begin_dialogs"),
-            tools=data.get("tools"),
-            skills=data.get("skills"),
-            custom_error_message=data.get("custom_error_message"),
-            folder_id=data.get("folder_id"),
-            sort_order=data.get("sort_order", 0),
-        )
-        return jsonify(SimpleResponse().ok(p, message="Persona created").__dict__)
+        try:
+            result = await persona_db.create_persona(data)
+            return jsonify(SimpleResponse().ok(result).__dict__)
+        except ValueError as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
 
     @app.route("/api/persona/update", methods=["POST"])
     @_api
     async def persona_update():
         if not persona_db:
-            return jsonify(SimpleResponse().error("AstrBot 数据库未配置").__dict__)
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
         data = await request.json
-        if not data or "persona_id" not in data:
-            return jsonify(SimpleResponse().error("persona_id is required").__dict__)
-        pid = data["persona_id"]
-        kwargs = {k: data[k] for k in (
-            "system_prompt", "begin_dialogs", "tools", "skills",
-            "custom_error_message", "folder_id", "sort_order",
-        ) if k in data}
-        p = await persona_db.update(pid, **kwargs)
-        if not p:
-            return jsonify(SimpleResponse().error("Persona not found").__dict__)
-        return jsonify(SimpleResponse().ok(p, message="Persona updated").__dict__)
+        pid = (data.get("id") or "").strip()
+        if not pid:
+            return jsonify(SimpleResponse().error("id is required").__dict__)
+        try:
+            result = await persona_db.update_persona(pid, data)
+            return jsonify(SimpleResponse().ok(result).__dict__)
+        except ValueError as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
 
     @app.route("/api/persona/delete", methods=["POST"])
     @_api
     async def persona_delete():
         if not persona_db:
-            return jsonify(SimpleResponse().error("AstrBot 数据库未配置").__dict__)
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
         data = await request.json
-        pid = (data or {}).get("persona_id")
+        pid = (data.get("id") or "").strip()
         if not pid:
-            return jsonify(SimpleResponse().error("persona_id is required").__dict__)
-        await persona_db.delete(pid)
-        return jsonify(SimpleResponse().ok({"persona_id": pid}, message="Persona deleted").__dict__)
+            return jsonify(SimpleResponse().error("id is required").__dict__)
+        try:
+            await persona_db.delete_persona(pid)
+            return jsonify(SimpleResponse().ok({"id": pid}).__dict__)
+        except ValueError as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
+
+    @app.route("/api/upload_avatar", methods=["POST"])
+    @_api
+    async def upload_avatar():
+        if not persona_db:
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
+        files = await request.files
+        upload = files.get("file")
+        if not upload:
+            return jsonify(SimpleResponse().error("未收到文件").__dict__)
+        data = await upload.read()
+        filename = getattr(upload, 'name', 'avatar.png')
+        if len(data) > 5 * 1024 * 1024:
+            return jsonify(SimpleResponse().error("图片文件过大（最大 5MB）").__dict__)
+        try:
+            rel_path = await persona_db.save_avatar(filename, data)
+            url = f"/api/avatar/{os.path.basename(rel_path)}"
+            return jsonify(SimpleResponse().ok({"url": url, "path": rel_path}).__dict__)
+        except Exception as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
+
+    @app.route("/api/upload_avatar_base64", methods=["POST"])
+    @_api
+    async def upload_avatar_base64():
+        if not persona_db:
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
+        import base64
+        data = await request.json
+        filename = (data.get("filename") or "avatar.png").strip()
+        b64_data = (data.get("b64_data") or "").strip()
+        if not b64_data:
+            return jsonify(SimpleResponse().error("未收到文件数据").__dict__)
+        try:
+            file_bytes = base64.b64decode(b64_data)
+        except Exception as e:
+            return jsonify(SimpleResponse().error(f"Base64 解码失败: {e}").__dict__)
+        if len(file_bytes) > 10 * 1024 * 1024:
+            return jsonify(SimpleResponse().error("图片文件过大（最大 10MB）").__dict__)
+        try:
+            rel_path = await persona_db.save_avatar(filename, file_bytes)
+            url = f"/api/avatar/{os.path.basename(rel_path)}"
+            return jsonify(SimpleResponse().ok({"url": url, "path": rel_path}).__dict__)
+        except Exception as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
+
+    @app.route("/api/avatar/<path:filename>")
+    @_api
+    async def serve_avatar(filename):
+        if not persona_db:
+            return jsonify(SimpleResponse().error("Not available").__dict__)
+        if '..' in filename or '/' in filename or '\\' in filename:
+            return jsonify(SimpleResponse().error("Invalid filename").__dict__)
+        data = await persona_db.read_avatar(filename)
+        if not data:
+            return jsonify(SimpleResponse().error("File not found").__dict__)
+        ext = os.path.splitext(filename)[1].lower()
+        mime_map = {'.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif'}
+        mime = mime_map.get(ext, 'application/octet-stream')
+        return QResponse(data, content_type=mime)
+
+    @app.route("/api/persona/import", methods=["POST"])
+    @_api
+    async def persona_import():
+        if not persona_db:
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
+        files = await request.files
+        upload = files.get("file")
+        if not upload:
+            return jsonify(SimpleResponse().error("未收到文件").__dict__)
+        file_data = await upload.read()
+        filename = getattr(upload, 'name', 'card.png').lower()
+        ext = os.path.splitext(filename)[1].lower()
+        # 处理 .card.png 等特殊扩展名
+        if filename.lower().endswith('.card.png'):
+            ext = '.png'
+        if ext not in ('.png', '.jpg', '.jpeg', '.json'):
+            return jsonify(SimpleResponse().error("不支持的文件格式").__dict__)
+        try:
+            is_image = ext in ('.png', '.jpg', '.jpeg')
+            persona_data = persona_db.parse_v2_card(file_data, is_image)
+            if is_image:
+                avatar_filename = f"{persona_data['name']}{ext}"
+                avatar_path = await persona_db.save_avatar(avatar_filename, file_data)
+                persona_data["avatar_path"] = avatar_path
+            result = await persona_db.create_persona(persona_data)
+            return jsonify(SimpleResponse().ok(result).__dict__)
+        except ImportError as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
+        except ValueError as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
+        except Exception as e:
+            return jsonify(SimpleResponse().error(f"导入失败: {e}").__dict__)
+
+    @app.route("/api/persona/import_base64", methods=["POST"])
+    @_api
+    async def persona_import_base64():
+        if not persona_db:
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
+        import base64
+        data = await request.json
+        filename = (data.get("filename") or "card.png").strip().lower()
+        b64_data = (data.get("b64_data") or "").strip()
+        if not b64_data:
+            return jsonify(SimpleResponse().error("未收到文件数据").__dict__)
+        try:
+            file_bytes = base64.b64decode(b64_data)
+        except Exception as e:
+            return jsonify(SimpleResponse().error(f"Base64 解码失败: {e}").__dict__)
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in ('.png', '.jpg', '.jpeg', '.json'):
+            return jsonify(SimpleResponse().error("不支持的文件格式").__dict__)
+        try:
+            is_image = ext in ('.png', '.jpg', '.jpeg')
+            persona_data = persona_db.parse_v2_card(file_bytes, is_image)
+            if is_image:
+                avatar_filename = f"{persona_data['name']}{ext}"
+                avatar_path = await persona_db.save_avatar(avatar_filename, file_bytes)
+                persona_data["avatar_path"] = avatar_path
+            result = await persona_db.create_persona(persona_data)
+            return jsonify(SimpleResponse().ok(result).__dict__)
+        except ImportError as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
+        except ValueError as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
+        except Exception as e:
+            return jsonify(SimpleResponse().error(f"导入失败: {e}").__dict__)
+
+    @app.route("/api/persona/export")
+    @_api
+    async def persona_export():
+        if not persona_db:
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
+        pid = request.args.get("id", "").strip()
+        if not pid:
+            return jsonify(SimpleResponse().error("缺少角色 ID").__dict__)
+        persona = await persona_db.get_persona(pid)
+        if not persona:
+            return jsonify(SimpleResponse().error("角色卡不存在").__dict__)
+        try:
+            avatar_data = None
+            avatar_path = persona.get("avatar_path", "")
+            if avatar_path and avatar_path.startswith("quill_avatars/"):
+                avatar_data = await persona_db.read_avatar(os.path.basename(avatar_path))
+            export_data = persona_db.export_v2_card(persona, avatar_data)
+            if avatar_data:
+                return QResponse(export_data, content_type="image/png", headers={
+                    "Content-Disposition": f'attachment; filename="{persona["name"]}_v2.png"'
+                })
+            else:
+                return QResponse(export_data, content_type="application/json", headers={
+                    "Content-Disposition": f'attachment; filename="{persona["name"]}_v2.json"'
+                })
+        except ImportError as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
+        except Exception as e:
+            return jsonify(SimpleResponse().error(f"导出失败: {e}").__dict__)
+
+    @app.route("/api/persona/export_base64", methods=["POST"])
+    @_api
+    async def persona_export_base64():
+        if not persona_db:
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
+        data = await request.json
+        persona_id = (data.get("id") or "").strip()
+        if not persona_id:
+            return jsonify(SimpleResponse().error("缺少角色 ID").__dict__)
+        persona = await persona_db.get_persona(persona_id)
+        if not persona:
+            return jsonify(SimpleResponse().error("角色卡不存在").__dict__)
+        try:
+            import os
+            import base64
+            avatar_data = None
+            avatar_path = persona.get("avatar_path", "")
+            if avatar_path and avatar_path.startswith("quill_avatars/"):
+                avatar_filename = os.path.basename(avatar_path)
+                avatar_data = await persona_db.read_avatar(avatar_filename)
+            export_data = persona_db.export_v2_card(persona, avatar_data)
+            filename = f"{persona['name']}_v2.png" if avatar_data else f"{persona['name']}_v2.json"
+            b64_str = base64.b64encode(export_data).decode('ascii')
+            return jsonify(SimpleResponse().ok({"filename": filename, "b64_data": b64_str}).__dict__)
+        except Exception as e:
+            return jsonify(SimpleResponse().error(f"导出失败: {e}").__dict__)
+
+    @app.route("/api/persona/import_text", methods=["POST"])
+    @_api
+    async def persona_import_text():
+        if not persona_db:
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
+        data = await request.json
+        text = (data.get("text") or "").strip()
+        if not text:
+            return jsonify(SimpleResponse().error("text is required").__dict__)
+        try:
+            persona_data = persona_db.parse_clipboard_text(text)
+            result = await persona_db.create_persona(persona_data)
+            return jsonify(SimpleResponse().ok(result).__dict__)
+        except ValueError as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
+        except Exception as e:
+            return jsonify(SimpleResponse().error(f"解析失败: {e}").__dict__)
+
+    @app.route("/api/persona/import_text_base64", methods=["POST"])
+    @_api
+    async def persona_import_text_base64():
+        if not persona_db:
+            return jsonify(SimpleResponse().error("Persona manager not available").__dict__)
+        import base64
+        data = await request.json
+        b64_text = (data.get("b64_text") or "").strip()
+        if not b64_text:
+            return jsonify(SimpleResponse().error("b64_text is required").__dict__)
+        try:
+            text = base64.b64decode(b64_text).decode('utf-8')
+        except Exception as e:
+            return jsonify(SimpleResponse().error(f"Base64 解码失败: {e}").__dict__)
+        try:
+            persona_data = persona_db.parse_clipboard_text(text)
+            result = await persona_db.create_persona(persona_data)
+            return jsonify(SimpleResponse().ok(result).__dict__)
+        except ValueError as e:
+            return jsonify(SimpleResponse().error(str(e)).__dict__)
+        except Exception as e:
+            return jsonify(SimpleResponse().error(f"解析失败: {e}").__dict__)
 
     # ── 信息路由 ────────────────────────────────────────────
     @app.route("/api/info")
     @_api
     async def info():
-        persona_count = len(await persona_db.list_all()) if persona_db else 0
-        return _wrap(await handle_info(kb_manager, wb_manager, persona_count))
+        return _wrap(await handle_info(kb_manager, wb_manager))
 
     # ── 前端页面 ────────────────────────────────────────────
     # serve 新面板 pages/panel/index.html；quill_desktop 独立后端不走 AstrBot
@@ -582,7 +703,6 @@ def main():
     parser.add_argument("--port", type=int, default=18425, help="监听端口（默认 18425）")
     parser.add_argument("--kb-path", help="写作素材库数据库路径")
     parser.add_argument("--wb-path", help="世界书目录路径")
-    parser.add_argument("--db-path", help="AstrBot data_v4.db 路径（角色卡数据）")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     args = parser.parse_args()
 
@@ -591,15 +711,10 @@ def main():
 
     kb_path = _resolve_kb_path(plugin_dir, config, args.kb_path)
     wb_dir = _resolve_wb_dir(plugin_dir, config, args.wb_path)
-    db_path = _resolve_db_path(plugin_dir, args.db_path)
 
     print(f"[Quill Desktop] 插件目录: {plugin_dir}")
     print(f"[Quill Desktop] 写作素材库: {kb_path}")
     print(f"[Quill Desktop] 世界书: {wb_dir}")
-    if db_path:
-        print(f"[Quill Desktop] AstrBot 数据库: {db_path}")
-    else:
-        print("[Quill Desktop] AstrBot 数据库: 未找到（角色卡功能不可用）")
 
     async def _start():
         kb = None
@@ -624,16 +739,14 @@ def main():
         except Exception as e:
             print(f"[Quill Desktop] 世界书加载失败: {e}")
 
-        pd = PersonaDB(db_path) if db_path else None
-        if pd:
-            try:
-                count = len(await pd.list_all())
-                print(f"[Quill Desktop] 角色卡加载: {count} 个")
-            except Exception as e:
-                print(f"[Quill Desktop] 角色卡加载失败: {e}")
-                pd = None
+        pm = QuillPersonaManager(os.path.join(plugin_dir, "data", "quill_personas"))
+        try:
+            count = await pm.get_persona_count()
+            print(f"[Quill Desktop] 角色卡加载: {count} 个")
+        except Exception as e:
+            print(f"[Quill Desktop] 角色卡加载失败: {e}")
 
-        app = create_app(kb, wb, persona_db=pd, port=args.port)
+        app = create_app(kb, wb, persona_manager=pm, port=args.port)
         url = f"http://127.0.0.1:{args.port}"
 
         if not args.no_browser:

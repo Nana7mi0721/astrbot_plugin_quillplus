@@ -19,6 +19,8 @@ class UserState:
     quill_rounds: int = 0
     stream_mode: str = "auto"
     session_vars: dict = field(default_factory=dict)
+    persona_id: str = ""
+    first_message_injected: bool = False
 
 
 class StateManager:
@@ -102,6 +104,39 @@ class StateManager:
             if st is None:
                 return {}
             return dict(st.session_vars)
+
+    async def set_persona_id(self, user_id: str, persona_id: str) -> None:
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None:
+                st = UserState(user_id=user_id)
+                self._states[user_id] = st
+                self._evict()
+            st.persona_id = persona_id
+            st.first_message_injected = False  # 切换角色时重置注入标记
+
+    async def get_persona_id(self, user_id: str) -> str:
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None:
+                return ""
+            return st.persona_id
+
+    async def is_first_message_injected(self, user_id: str) -> bool:
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None:
+                return False
+            return st.first_message_injected
+
+    async def mark_first_message_injected(self, user_id: str) -> None:
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None:
+                st = UserState(user_id=user_id)
+                self._states[user_id] = st
+                self._evict()
+            st.first_message_injected = True
 
     def _evict(self) -> None:
         """Drop oldest entries when capacity exceeded. Caller must hold lock."""
