@@ -1,0 +1,223 @@
+{
+  "rag": {
+    "type": "object",
+    "description": "[RAG] 文档知识库与动态记忆",
+    "hint": "上传大段文档进行语义检索，或自动压缩并提取长期对话记忆。",
+    "items": {
+      "llm_provider_id": {
+        "type": "string",
+        "description": "摘要 LLM 提供商",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "用于将聊天对话自动压缩为极简记忆摘要。留空则使用简单的文本截断。"
+      },
+      "embedding_provider_id": {
+        "type": "string",
+        "description": "Embedding 提供商",
+        "_special": "select_provider_embedding",
+        "default": "",
+        "hint": "用于文档与记忆的文本向量化。留空使用本地模型 BAAI/bge-small-zh-v1.5。"
+      },
+      "rerank_provider_id": {
+        "type": "string",
+        "description": "重排(Rerank) 提供商",
+        "_special": "select_provider_rerank",
+        "default": "",
+        "hint": "可选。对向量初筛的候选进行二次打分，极大提升检索精准度。"
+      },
+      "enable_local_embedding": {
+        "type": "bool",
+        "description": "启用本地嵌入模型",
+        "default": true,
+        "hint": "开启后，若 API 提供商失效或未配置，将自动回退到本地模型运行。"
+      },
+      "chunk_size": {
+        "type": "int",
+        "description": "文档分块大小 (字符)",
+        "default": 500,
+        "hint": "每个文本块的字符数。建议 300-800。"
+      },
+      "chunk_overlap": {
+        "type": "int",
+        "description": "分块重叠 (字符)",
+        "default": 50,
+        "hint": "相邻块的重叠字数，保证语义连贯。建议 30-100。"
+      },
+      "top_k": {
+        "type": "int",
+        "description": "检索最终注入数量",
+        "default": 3,
+        "hint": "每次最终注入到系统提示词的片段数。建议 2-4。"
+      },
+      "dense_top_k": {
+        "type": "int",
+        "description": "FAISS 粗排数量",
+        "default": 5,
+        "hint": "向量库初步召回的数量，随后由重排模型精筛。建议为最终注入量的 2-3 倍。"
+      },
+      "enable_memory": {
+        "type": "bool",
+        "description": "启用动态记忆",
+        "default": false,
+        "hint": "开启后，在后台自动进行内容压缩与特征提取，跨会话保留长期记忆（不会阻塞聊天）。"
+      }
+    }
+  },
+  "worldbook": {
+    "type": "object",
+    "description": "[世界书] 设定按需注入",
+    "hint": "通过关键词触发，将设定按需注入 LLM，避免一次性塞入全部设定导致大模型注意力稀释。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用世界书",
+        "default": true,
+        "hint": "关闭后停用世界书系统。"
+      },
+      "active_worldbooks": {
+        "type": "list",
+        "description": "活跃世界书（多选）",
+        "default": [],
+        "hint": "也可直接在 Quill 独立 Web 面板中快捷勾选与管理。"
+      },
+      "max_dynamic_entries": {
+        "type": "int",
+        "description": "触发条目上限",
+        "default": 4,
+        "hint": "防止一次命中过多关键词导致提示词爆炸。建议 2-6。"
+      },
+      "max_token_limit": {
+        "type": "int",
+        "description": "注入 Token 估算上限",
+        "default": 4000,
+        "hint": "[重要] 建议控制在 3000-4000 左右，太高会导致大模型看了前面忘后面，丢失输出格式的能力。"
+      },
+      "match_sensitivity": {
+        "type": "float",
+        "description": "模糊匹配灵敏度",
+        "default": 0.7,
+        "hint": "0.0 = 极其严格，1.0 = 极其宽松。默认 0.7 平衡。",
+        "slider": {"min": 0, "max": 1, "step": 0.1}
+      },
+      "injection_position": {
+        "type": "string",
+        "description": "提示词注入位置",
+        "default": "user_prefix",
+        "hint": "[强烈推荐 user_prefix] 将强制协议贴脸输出在用户消息之前，能极大提升大模型对状态栏和工具调用的服从度！",
+        "options": ["system_end", "user_prefix"]
+      },
+      "show_trigger_log": {
+        "type": "bool",
+        "description": "显示触发日志",
+        "default": false,
+        "hint": "调试用。可在发送 /info 时顺带查看最新一轮命中了哪些词条。"
+      }
+    }
+  },
+  "knowledge_base": {
+    "type": "object",
+    "description": "[写作素材库] 风格指引注入",
+    "hint": "管理写作风格、动作控制。通过关键词匹配按需注入。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用素材库",
+        "default": true,
+        "hint": "关闭后停用素材库系统。"
+      },
+      "max_entries": {
+        "type": "int",
+        "description": "最大注入条数",
+        "default": 4,
+        "hint": "单次注入素材上限。建议 3-5 条，避免稀释大模型注意力。"
+      },
+      "fallback_top_count": {
+        "type": "int",
+        "description": "无匹配时回退条数",
+        "default": 2,
+        "hint": "未命中时注入历史命中率最高的风格作为兜底。"
+      },
+      "category_dedup_limit": {
+        "type": "int",
+        "description": "同类去重上限",
+        "default": 3,
+        "hint": "同分类素材最多注入条数，避免某一类内容过多。"
+      }
+    }
+  },
+  "performance": {
+    "type": "object",
+    "description": "[表现控制] 字数与截断",
+    "hint": "控制 Prompt 的强硬限制与底层安全门槛。",
+    "items": {
+      "max_prompt_length": {
+        "type": "int",
+        "description": "提示词硬截断上限 (字符)",
+        "default": 50000,
+        "hint": "总字符数极限保护，超出按优先级强行丢弃次要内容。"
+      },
+      "min_output_length": {
+        "type": "int",
+        "description": "要求回复最低字数",
+        "default": 400,
+        "hint": "[重要] 要求 LLM 写长文。建议 400-800。字数要求过低会导致大模型进入短聊模式忽略一切格式。"
+      }
+    }
+  },
+  "status_bar": {
+    "type": "object",
+    "description": "[状态栏] 沉浸式属性追踪",
+    "hint": "底层自动截获 LLM 输出并渲染为精美 UI 面板。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用状态栏",
+        "default": true,
+        "hint": "[核心开关] 开启后，大模型将在工具调用时自动打包输出状态栏。关闭则仅输出纯剧情。"
+      },
+      "fields": {
+        "type": "text",
+        "description": "状态栏字段（管道分隔）",
+        "default": "好感度|关系阶段|心情|位置|穿着|当前想法",
+        "hint": "请严格保持 6 个字段名，用 | 隔开。可自由替换词汇如：服从度|发情度 等。"
+      },
+      "format_template": {
+        "type": "text",
+        "description": "UI 渲染模板",
+        "default": "**状态栏**\n```\n{content}\n```",
+        "hint": "控制状态栏在聊天窗口中的最终 Markdown 渲染样式。"
+      }
+    }
+  },
+  "refusal": {
+    "type": "object",
+    "description": "[反拒绝] 兜底应急协议",
+    "hint": "一旦检测到大模型道德审查拒答，下次强制注入最高权重越狱指令。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用拒绝检测",
+        "default": true,
+        "hint": "关闭后不再检测拒绝行为。"
+      },
+      "patterns": {
+        "type": "text",
+        "description": "拒绝匹配模式（每行一条）",
+        "default": "我不能\n我无法\n这违反\n我不应该\n这不合适\n我拒绝",
+        "hint": "大模型回复中包含任一模式即判定为触发了安全审查。"
+      }
+    }
+  },
+  "debug": {
+    "type": "object",
+    "description": "[调试]",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用调试日志",
+        "default": false,
+        "hint": "开启后在控制台打印极其详细的匹配详情（会刷屏，非开发排错勿开）。"
+      }
+    }
+  }
+}

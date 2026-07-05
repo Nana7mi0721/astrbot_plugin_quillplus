@@ -1,0 +1,23 @@
+# QuillPlus 本地嵌入模型支持（可选）
+#
+# 安装此文件以启用本地嵌入模型（完全离线运行，无需 API）
+# 说明：
+# - 默认模型 BAAI/bge-small-zh-v1.5 约 96MB
+# - 首次启用会自动下载模型权重
+# - 不安装时需配置 API Embedding Provider（如 SiliconFlow）方可使用向量检索
+#
+# 使用方法：
+# pip install -r requirements-local.txt
+#
+# 或通过配置自动安装：
+# 在插件配置中设置 enable_local_embedding: true
+
+# PyTorch CPU 版本（轻量级，无 GPU 依赖）
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=1.11.0
+
+# Sentence Transformers（会复用上面的 CPU 版 torch）
+sentence-transformers>=2.2.0
+
+# PyYAML（YAML 解析，通常 AstrBot 已内置）
+PyYAML>=6.0
