@@ -134,38 +134,52 @@ class FaissVectorStore:
         finally:
             conn.close()
 
-    def search(self, query_embedding: list[float], top_k: int = 9) -> list[dict]:
-        """FAISS 检索，返回候选列表。"""
+    def search(self, query_embedding: list[float], top_k: int = 9, allowed_sources: list[str] = None) -> list[dict]:
+        """FAISS 检索，支持通过 allowed_sources 按文档 source 过滤。"""
         if self._index is None or self._index.ntotal == 0:
             return []
         try:
             query = np.array([query_embedding], dtype=np.float32)
-            # 多召回一些以补偿幽灵向量（SQLite 中已删除的条目）
+
+            # 多召回一些以补偿幽灵向量。如果有文档过滤限制，大幅放大召回池以防被过滤空。
             recall_k = min(top_k * 3, self._index.ntotal)
-            with self._lock:  # 【保护 FAISS 读操作】
+            if allowed_sources:
+                recall_k = min(max(top_k * 10, 100), self._index.ntotal)
+
+            with self._lock:
                 scores, ids = self._index.search(query, recall_k)
+
             results = []
             conn = self._get_conn()
             try:
                 for score, idx in zip(scores[0], ids[0]):
                     if idx < 0:
                         continue
-                    # 联表校验：确认该 faiss_id 在 SQLite 中仍然存在
+                    # 联表校验，并执行文档过滤
                     row = conn.execute(
                         "SELECT content, source, chunk_index FROM chunks WHERE faiss_id = ?",
                         (int(idx),)
                     ).fetchone()
+
                     if row:
+                        doc_source = row[1]
+                        # 【核心过滤逻辑】如果指定了允许的文档，且当前块不属于这些文档，则跳过
+                        if allowed_sources and doc_source not in allowed_sources:
+                            continue
+
                         results.append({
                             "content": row[0],
-                            "source": row[1],
+                            "source": doc_source,
                             "chunk_index": row[2],
                             "score": float(score),
                         })
+
+                        # 满载返回
+                        if len(results) >= top_k:
+                            break
             finally:
                 conn.close()
-            # 二次截断：防止幽灵槽位导致返回数量不足 top_k
-            return results[:top_k]
+            return results
         except Exception as e:
             logger.warning(f"[Quill RAG] FAISS 检索失败: {e}")
             return []

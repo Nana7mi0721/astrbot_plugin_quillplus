@@ -253,19 +253,19 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
 
     # 统计联动信息
     wbs = []
-    kbs = []
+    rag_docs = []
     if plugin.wb_manager:
         active = plugin.wb_manager.get_active_worldbooks(persona_id=pid)
         wbs = [w.get("name", "?") for w in active]
     if matched.get("quill_extensions"):
-        kbs = matched["quill_extensions"].get("bound_knowledge_base", [])
+        rag_docs = matched["quill_extensions"].get("bound_rag_docs", [])
 
     msg_parts = [f"已切换到: {matched.get('name', pid)}"]
     link_info = []
     if wbs:
         link_info.append(f"{len(wbs)} 本世界书: {', '.join(wbs)}")
-    if kbs:
-        link_info.append(f"{len(kbs)} 个知识库分类: {', '.join(kbs)}")
+    if rag_docs:
+        link_info.append(f"{len(rag_docs)} 个文档知识库: {', '.join(rag_docs)}")
     if link_info:
         msg_parts.append("已自动挂载：")
         msg_parts.append("；".join(link_info))
@@ -332,14 +332,14 @@ async def _char_info(plugin, event: AstrMessageEvent, persona_id: str):
     # 联动信息
     ext = pdata.get("quill_extensions", {})
     wb_names = ext.get("bound_worldbooks", []) if ext else []
-    kb_cats = ext.get("bound_knowledge_base", []) if ext else []
+    rag_docs = ext.get("bound_rag_docs", []) if ext else []
 
-    if wb_names or kb_cats:
+    if wb_names or rag_docs:
         lines.append("\n[联动拓展]")
         if wb_names:
             lines.append(f"专属世界书：{', '.join(wb_names)}")
-        if kb_cats:
-            lines.append(f"专属知识库：{', '.join(kb_cats)}")
+        if rag_docs:
+            lines.append(f"专属文档知识库：{', '.join(rag_docs)}")
 
     # 活跃世界书（包含全局 + 角色自带）
     if plugin.wb_manager:

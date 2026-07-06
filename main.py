@@ -605,8 +605,17 @@ class QuillPlugin(Star):
             if self.rag_retriever and self.rag_retriever.embedding:
                 try:
                     session_id = str(event.unified_msg_origin) if hasattr(event, 'unified_msg_origin') else user_id
-                    doc_results = await self.rag_retriever.search_documents(user_input)
+
+                    # 获取当前角色绑定的 RAG 文档
+                    bound_rag_docs = None
+                    if persona_data:
+                        bound_rag_docs = persona_data.get("quill_extensions", {}).get("bound_rag_docs", [])
+                        if not bound_rag_docs:
+                            bound_rag_docs = None
+
+                    doc_results = await self.rag_retriever.search_documents(user_input, allowed_sources=bound_rag_docs)
                     mem_results = await self.rag_retriever.search_memories(session_id, user_input)
+
                     rag_context = self.rag_retriever.format_for_prompt(doc_results, mem_results)
                     if rag_context:
                         dynamic_prompt += "\n\n" + rag_context

@@ -37,21 +37,23 @@ class QuillRetriever:
         self.enable_memory = enable_memory
         self.config = config
 
-    async def search_documents(self, query: str) -> list[dict]:
-        """Doc RAG 检索：FAISS 召回 + Rerank 重排（在线程池中执行同步IO）。"""
+    async def search_documents(self, query: str, allowed_sources: list[str] = None) -> list[dict]:
+        """Doc RAG 检索：FAISS 召回 + Rerank 重排（支持按源文档过滤）。"""
         if not self.vector_store or not query:
             return []
         try:
             query_emb = await self.embedding.embed([query])
             if not query_emb:
                 return []
-            # 直接从 config._raw 底层字典中读取真实配置值，用 or {} 防止 NoneType
+
             rag_config = getattr(self, 'config', None) and getattr(self.config, '_raw', None) or {}
             dense_top_k = int(rag_config.get('rag', {}).get('dense_top_k', self.top_k))
-            # 将同步 FAISS 检索放入线程池，避免阻塞主事件循环
+
+            # 传递 allowed_sources 给 vector_store 过滤
             raw_results = await asyncio.to_thread(
-                self.vector_store.search, query_emb[0], dense_top_k * 3
+                self.vector_store.search, query_emb[0], dense_top_k * 3, allowed_sources
             )
+
             if not raw_results:
                 return []
             if self.reranker:

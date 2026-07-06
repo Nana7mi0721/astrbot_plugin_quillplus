@@ -1496,21 +1496,21 @@ async function loadPersonas() {
 async function openPersonaModal(personaId) {
   _personaMode = personaId ? 'edit' : 'create';
   _personaData = null;
-  let data = { id: '', name: '', avatar_path: '', summary: '', core_prompts: { personality: '', scenario: '', examples_of_dialogue: '', first_message: '' }, quill_extensions: { bound_worldbooks: [], bound_knowledge_base: [] } };
+  let data = { id: '', name: '', avatar_path: '', summary: '', core_prompts: { personality: '', scenario: '', examples_of_dialogue: '', first_message: '' }, quill_extensions: { bound_worldbooks: [], bound_rag_docs: [] } };
 
   if (personaId) {
     try { data = await api('/persona/list'); data = data.find(p => p.id === personaId) || data; } catch (e) { showToast(e.message); return; }
     _personaData = { ...data };
   }
 
-  // 获取当前可用的世界书与写作素材库分类
+  // 获取世界书列表 和 RAG 文档列表
   const dataInfo = await api('/info').catch(()=>({}));
   const allWbs = dataInfo.available_worldbooks || [];
-  const catsData = await api('/kb/categories').catch(()=>({categories:[]}));
-  const kbCats = catsData.categories || [];
+  const ragData = await api('/rag/documents').catch(()=>({documents:[]}));
+  const ragDocs = ragData.documents || [];
 
   const boundWbs = data.quill_extensions?.bound_worldbooks || [];
-  const boundKbs = data.quill_extensions?.bound_knowledge_base || [];
+  const boundRagDocs = data.quill_extensions?.bound_rag_docs || [];
 
   qs('#modalTitle').textContent = _personaMode === 'create' ? '新建角色卡' : '编辑角色卡';
   qs('#modalBody').innerHTML = `
@@ -1550,17 +1550,16 @@ async function openPersonaModal(personaId) {
         <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">切换到此角色时，将自动激活并关联勾选的世界书。</span>
       </div>
       <div class="form-group">
-        <label>绑定写作素材库分类 (角色专属)</label>
+        <label>绑定文档知识库 (角色专属 Doc RAG)</label>
         <div class="checkbox-group-scroll">
-          ${kbCats.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用写作素材库分类</div>' :
-            kbCats.map(c => `<label class="form-check"><input type="checkbox" class="cb-kb-bind" value="${esc(c)}" ${boundKbs.includes(c)?'checked':''}> ${esc(c)}</label>`).join('')}
+          ${ragDocs.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无已上传的外部文档</div>' :
+            ragDocs.map(d => `<label class="form-check"><input type="checkbox" class="cb-rag-bind" value="${esc(d.source)}" ${boundRagDocs.includes(d.source)?'checked':''}> ${esc(d.source)}</label>`).join('')}
         </div>
-        <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">留空则匹配全部；勾选后，写作素材库将仅从选中分类中提取常驻和触发规则。</span>
+        <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">留空则匹配全部文档库；勾选后，AI 语义检索时将仅检索勾选的特定文档。</span>
       </div>
     </div>
   `;
 
-  // 绑定表单 Tab 切换
   qsa('.persona-form-tab').forEach(btn => {
     btn.addEventListener('click', () => {
       qsa('.persona-form-tab').forEach(b => b.classList.remove('active'));
@@ -1586,10 +1585,9 @@ async function openPersonaModal(personaId) {
 async function savePersona() {
   const name = qs('#pf-name').value.trim();
   if (!name) { showToast('角色名称不能为空'); return; }
-
-  // 提取高级扩展的选项
+  
   const boundWbs = Array.from(document.querySelectorAll('.cb-wb-bind:checked')).map(cb => cb.value);
-  const boundKbs = Array.from(document.querySelectorAll('.cb-kb-bind:checked')).map(cb => cb.value);
+  const boundRagDocs = Array.from(document.querySelectorAll('.cb-rag-bind:checked')).map(cb => cb.value);
 
   const body = {
     id: _personaMode === 'edit' ? _personaData.id : name,
@@ -1604,7 +1602,7 @@ async function savePersona() {
     },
     quill_extensions: {
       bound_worldbooks: boundWbs,
-      bound_knowledge_base: boundKbs,
+      bound_rag_docs: boundRagDocs,
     },
   };
   try {
