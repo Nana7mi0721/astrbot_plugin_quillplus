@@ -148,7 +148,7 @@ class QuillPersonaManager:
             },
             "quill_extensions": {
                 "bound_worldbooks": data.get("quill_extensions", {}).get("bound_worldbooks", []),
-                "bound_knowledge_base": data.get("quill_extensions", {}).get("bound_knowledge_base", []),
+                "bound_rag_docs": data.get("quill_extensions", {}).get("bound_rag_docs", []),
             },
         }
         path = self._persona_path(persona_id)
@@ -183,7 +183,7 @@ class QuillPersonaManager:
 
         if "quill_extensions" in data and isinstance(data["quill_extensions"], dict):
             qe = existing.setdefault("quill_extensions", {})
-            for field in ("bound_worldbooks", "bound_knowledge_base"):
+            for field in ("bound_worldbooks", "bound_rag_docs"):
                 if field in data["quill_extensions"]:
                     qe[field] = data["quill_extensions"][field] or []
 
