@@ -44,6 +44,17 @@ class MemoryStore:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS chat_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_session ON chat_logs(session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_ts ON chat_logs(timestamp)")
             conn.commit()
         finally:
             conn.close()
@@ -209,6 +220,115 @@ class MemoryStore:
         finally:
             conn.close()
 
+    def get_recent_chat_logs(self, session_id: str, limit: int = 8) -> list[dict]:
+        """获取最近聊天记录（正序返回，供上下文恢复用）"""
+        if not session_id:
+            return []
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT role, content FROM chat_logs "
+                "WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?",
+                (session_id, limit)
+            ).fetchall()
+            result = [{"role": r[0], "content": r[1]} for r in rows]
+            result.reverse()
+            return result
+        except Exception as e:
+            logger.warning(f"[Quill Memory] 获取聊天日志失败: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def log_message(self, session_id: str, role: str, content: str):
+        """记录一条原始对话"""
+        if not session_id or not content or not content.strip():
+            return
+        if role not in ("user", "assistant"):
+            return
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO chat_logs (session_id, role, content) VALUES (?, ?, ?)",
+                (session_id, role, content[:2000])
+            )
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"[Quill Memory] 聊天日志记录失败: {e}")
+        finally:
+            conn.close()
+
+    def list_chat_logs(self, session_id: str, limit: int = 200) -> list[dict]:
+        """按 session 查询原始对话日志"""
+        if not session_id:
+            return []
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, role, content, timestamp FROM chat_logs "
+                "WHERE session_id = ? ORDER BY timestamp ASC LIMIT ?",
+                (session_id, limit)
+            ).fetchall()
+            return [
+                {"id": r[0], "role": r[1], "content": r[2], "timestamp": r[3]}
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def export_chat_logs(self, session_id: str, format: str = "markdown") -> str:
+        """导出对话日志为文本格式"""
+        if not session_id:
+            return ""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT role, content, timestamp FROM chat_logs "
+                "WHERE session_id = ? ORDER BY timestamp ASC",
+                (session_id,)
+            ).fetchall()
+        finally:
+            conn.close()
+
+        if format == "txt":
+            lines = [f"[{r[2]}] {r[0]}: {r[1]}" for r in rows]
+            return "\n\n".join(lines)
+        lines = [f"# 对话记录 — `{session_id}`\n"]
+        for r in rows:
+            role_label = "**用户**" if r[0] == "user" else "**AI**"
+            lines.append(f"{role_label}: {r[1]}\n")
+        return "\n".join(lines)
+
+    def cleanup_chat_logs(self, retention_days: int) -> int:
+        """清理超过保留天数的对话日志"""
+        if retention_days <= 0:
+            return 0
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM chat_logs WHERE timestamp < datetime('now', ?)",
+                (f"-{retention_days} days",)
+            )
+            conn.commit()
+            return cursor.rowcount
+        except Exception as e:
+            logger.warning(f"[Quill Memory] 对话日志清理失败: {e}")
+            return 0
+        finally:
+            conn.close()
+
+    def delete_session_chat_logs(self, session_id: str) -> int:
+        """删除某 session 的所有对话日志"""
+        if not session_id:
+            return 0
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute("DELETE FROM chat_logs WHERE session_id = ?", (session_id,))
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
     def delete_memory(self, memory_id: int) -> bool:
         """删除单条记忆。"""
         conn = self._get_conn()
@@ -261,7 +381,7 @@ class MemoryStore:
         try:
             rows = conn.execute(
                 "SELECT id, session_id, summary, chat_summary, vector, dim, timestamp FROM memories "
-                "ORDER BY timestamp DESC LIMIT 500"
+                "ORDER BY timestamp DESC LIMIT 2000"
             ).fetchall()
         except Exception as e:
             logger.warning(f"[Quill Memory] 向量检索查询失败: {e}")

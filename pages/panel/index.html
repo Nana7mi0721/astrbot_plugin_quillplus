@@ -269,11 +269,7 @@ pre { background: var(--surface); border: 1px solid var(--border); border-radius
 .wb-entry-content { font-size: 13px; color: var(--text-secondary); margin-top: 6px; line-height: 1.5; }
 .wb-entry-keys { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 
-.wb-ms-trigger { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; cursor: pointer; background: var(--surface); display: flex; justify-content: space-between; align-items: center; }
-.wb-ms-dropdown { position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow-lg); max-height: 220px; overflow-y: auto; z-index: 200; background: var(--card); }
-.wb-ms-option { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
-.wb-ms-option:hover { background: var(--surface); }
-.wb-ms-actions { margin-top: 12px; display: flex; gap: 8px; margin-left: auto; justify-content: flex-end; }
+
 
 /* ── Modal（唯一弹窗系统，100% 不透明）── */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 300; display: none; align-items: center; justify-content: center; }
@@ -341,6 +337,11 @@ select option {
 .persona-card-body { flex: 1; min-width: 0; }
 .persona-card-name { font-weight: 600; font-size: 15px; color: var(--text); }
 .persona-card-summary { font-size: 13px; color: var(--text-muted); margin-top: 3px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.persona-card-modes { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.mode-badge { font-size: 11px; padding: 2px 6px; border-radius: 3px; background: var(--bg-secondary, #2a2a2a); color: var(--text-muted, #888); }
+.mode-badge.mode-auto { background: rgba(59,130,246,0.15); color: #3b82f6; }
+.mode-badge.mode-custom { background: rgba(168,85,247,0.15); color: #a855f7; }
+.mode-badge.mode-disabled { background: rgba(239,68,68,0.12); color: #ef4444; }
 .persona-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
 /* ── Persona 表单 Tab ── */
@@ -494,26 +495,6 @@ select option {
   <!-- WB Tab -->
   <div class="tab-content" id="tab-wb">
     <h2 style="margin-bottom:16px">世界书</h2>
-    <div class="card" style="margin-bottom:16px">
-      <h3>活跃世界书</h3>
-      <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">选择当前对话要激活的世界书。取消勾选=停用。</p>
-      <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
-        <div style="position:relative;flex:1;max-width:400px;min-width:200px">
-          <div id="wb-multi-select-trigger" class="wb-ms-trigger" onclick="toggleWBMultiSelect()">
-            <span id="wb-multi-select-label" style="color:var(--text-muted)">点击选择世界书...</span>
-            <span>▼</span>
-          </div>
-          <div id="wb-multi-select-dropdown" class="wb-ms-dropdown" style="display:none">
-            <div id="wb-multi-select-options"><span class="skeleton" style="width:150px">&nbsp;</span></div>
-          </div>
-        </div>
-        <div class="wb-ms-actions">
-          <button class="btn btn-primary btn-sm" onclick="saveActiveWorldbooks()">保存</button>
-          <button class="btn btn-outline btn-sm" onclick="selectAllActiveWB(true)">全选</button>
-          <button class="btn btn-outline btn-sm" onclick="selectAllActiveWB(false)">全不选</button>
-        </div>
-      </div>
-    </div>
     <div class="toolbar">
       <button class="btn btn-primary" onclick="openWBCreateModal()">+ 新建世界书</button>
       <label style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:0 12px;border:1px solid var(--border);border-radius:var(--radius-sm);height:36px;cursor:pointer;margin:0;">
@@ -532,7 +513,7 @@ select option {
     <div class="toolbar">
       <button class="btn btn-primary" onclick="openPersonaModal(null)">+ 新建角色卡</button>
       <button class="btn btn-outline" onclick="loadPersonas()">⟳ 刷新</button>
-      <label class="btn btn-outline" style="cursor:pointer">导入 V2 角色卡<input type="file" accept=".png,.jpg,.jpeg,.json" hidden onchange="importPersona(this)"></label>
+      <label class="btn btn-outline" style="cursor:pointer">导入 V2 角色卡<input type="file" accept=".png,.jpg,.jpeg,.webp,.json" hidden onchange="importPersona(this)"></label>
       <button class="btn btn-outline" onclick="openImportTextModal()">文本粘贴导入</button>
     </div>
     <div id="persona-list"><div class="loading"><span class="skeleton" style="width:200px">&nbsp;</span></div></div>
@@ -554,8 +535,8 @@ select option {
       <div id="rag-upload-zone" style="border:2px dashed var(--border);border-radius:var(--radius);padding:32px;text-align:center;cursor:pointer;color:var(--text-muted)"
            ondragover="this.style.borderColor='var(--primary)'" ondragleave="this.style.borderColor=''" ondrop="handleRAGDrop(event)" onclick="qs('#rag-file-input').click()">
         <div style="font-size:32px;margin-bottom:8px">📄</div>
-        <div>拖拽文件到此处，或点击选择文件</div>
-        <input type="file" id="rag-file-input" hidden accept=".txt,.md,.pdf" onchange="handleRAGFileSelect(this)">
+        <div>拖拽文件到此处，或点击选择多份文件</div>
+        <input type="file" id="rag-file-input" hidden accept=".txt,.md,.pdf" multiple onchange="handleRAGFileSelect(this)">
       </div>
       <div id="rag-upload-status" style="margin-top:10px;text-align:center;font-size:13px"></div>
     </div>
@@ -697,6 +678,19 @@ select option {
       </div>
     </div>
 
+    <div class="form-row" style="margin-bottom:30px;">
+      <div class="form-group">
+        <div class="card" style="height:100%">
+          <h3>🛡️ 安全与权限控制</h3>
+          <div class="form-group">
+            <label>管理员白名单 (QQ号/用户ID)</label>
+            <textarea id="c-perm-admins" rows="4" placeholder="例如:&#10;123456789&#10;987654321"></textarea>
+            <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">支持多行、逗号或竖线分隔。留空则所有人均可操作；填写后，仅名单内的用户可执行切卡、清空记忆等操作。</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div style="text-align:center;margin-bottom:40px;">
       <button class="btn btn-primary" id="btn-save-all" style="padding:12px 40px;font-size:16px;border-radius:20px;" onclick="saveAllChanges()">保存全局设置 (保存后需重启对话生效)</button>
     </div>
@@ -771,6 +765,7 @@ function qs(s) { return document.querySelector(s); }
 function qsa(s) { return document.querySelectorAll(s); }
 function esc(s) { return s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function escAttr(s) { return esc(s); }
+function jsesc(s) { return s == null ? '' : String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"').replace(/\n/g,'\\n').replace(/\r/g,'\\r'); }
 function catColor(name) { if (!name) return '#6366f1'; let h = 0; for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h); return `hsl(${(h % 360 + 360) % 360}, 55%, 50%)`; }
 function showToast(msg, type = 'error') {
   const container = qs('#toast-container');
@@ -932,7 +927,7 @@ qsa('.nav-item').forEach(btn => {
     btn.classList.add('active');
     qs('#tab-' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'kb') loadKB();
-    if (btn.dataset.tab === 'wb') { loadWB(); loadActiveWorldbooks(); }
+    if (btn.dataset.tab === 'wb') { loadWB(); }
     if (btn.dataset.tab === 'rag') { loadRAG(); loadRAGModelInfo(); }
     if (btn.dataset.tab === 'memory') switchMemSub('overview');
     // persona tab: no JS needed (static info page)
@@ -1400,43 +1395,6 @@ function openWBEntryModal(wbName, entryId) {
   setTimeout(() => { _wbEntryTagInput = createTagInput('wb-keyword-container', entry?.keys || [], '输入关键词，回车添加'); }, 50);
 }
 
-// ── 活跃世界书 ──
-let _allWorldbooks = [];
-let _activeWorldbooks = [];
-let _wbDropdownOpen = false;
-
-async function loadActiveWorldbooks() {
-  try { const data = await api('/info'); _allWorldbooks = data.available_worldbooks || []; _activeWorldbooks = data.active_worldbooks || []; renderWBMultiSelect(); } catch (_) { qs('#wb-multi-select-options').innerHTML = '<div style="padding:12px;color:var(--text-muted)">加载失败</div>'; }
-}
-
-function renderWBMultiSelect() {
-  const container = qs('#wb-multi-select-options');
-  const label = qs('#wb-multi-select-label');
-  if (!_allWorldbooks.length) { container.innerHTML = '<div style="padding:12px;color:var(--text-muted)">暂无世界书</div>'; label.textContent = '暂无'; return; }
-  // 标签基于 _activeWorldbooks 计算（而非 DOM checkbox，因为此时 checkbox 尚未渲染）
-  const activeCount = _activeWorldbooks.length;
-  const totalCount = _allWorldbooks.length;
-  const allActive = activeCount === 0 || activeCount === totalCount;
-  label.textContent = allActive ? `全部激活 (${totalCount} 个)` : `已选 ${activeCount}/${totalCount} 个`;
-  container.innerHTML = _allWorldbooks.map(n => `<label class="wb-ms-option"><input type="checkbox" class="wb-ms-check" value="${esc(n)}" ${(_activeWorldbooks.length === 0 || _activeWorldbooks.includes(n)) ? 'checked' : ''} onchange="updateWBLabel()"><span>${esc(n)}</span></label>`).join('');
-}
-
-function getSelectedWB() { return Array.from(qsa('.wb-ms-check')).filter(c => c.checked).map(c => c.value); }
-function updateWBLabel() {
-  const s = getSelectedWB().length;
-  qs('#wb-multi-select-label').textContent = s === 0 || s === _allWorldbooks.length ? `全部激活 (${_allWorldbooks.length})` : `已选 ${s}/${_allWorldbooks.length}`;
-}
-function toggleWBMultiSelect() { _wbDropdownOpen = !_wbDropdownOpen; qs('#wb-multi-select-dropdown').style.display = _wbDropdownOpen ? 'block' : 'none'; }
-function selectAllActiveWB(sel) { qsa('.wb-ms-check').forEach(c => c.checked = sel); updateWBLabel(); }
-
-async function saveActiveWorldbooks() {
-  const selected = getSelectedWB();
-  const payload = selected.length === _allWorldbooks.length ? [] : selected;
-  try { await api('/config/save', { method: 'POST', body: JSON.stringify({ group: 'worldbook', key: 'active_worldbooks', value: payload }) }); showToast('已保存', 'success'); } catch (e) { showToast('保存失败: ' + e.message); }
-}
-
-document.addEventListener('click', (e) => { if (_wbDropdownOpen && !e.target.closest('#wb-multi-select-trigger') && !e.target.closest('#wb-multi-select-dropdown')) { _wbDropdownOpen = false; qs('#wb-multi-select-dropdown').style.display = 'none'; } });
-
 // ── Persona 角色卡（独立 CRUD）──────────────────────────────
 
 let _personaData = null;  // 当前编辑中的角色卡数据
@@ -1454,10 +1412,18 @@ async function loadPersonas() {
     }
 
     // 第一步：渲染基础骨架（不含超长 Base64，避免 innerHTML 解析崩溃）
+    // 用全局注册表按序号保存 pid，避免把含特殊字符的 id 直接写进 onclick 属性
+    window.__quillPids = window.__quillPids || {};
     container.innerHTML = '<div class="persona-grid">' + personas.map((p, index) => {
-      const pid = esc(p.id);
+      const pid = p.id;
+      window.__quillPids[index] = pid;
       const name = esc(p.name || pid);
       const summary = esc((p.summary || '').substring(0, 80));
+      const ext = p.quill_extensions || {};
+      const wbMode = ext.wb_mode || 'disabled';
+      const ragMode = ext.rag_mode || 'disabled';
+      const kbMode = ext.kb_mode || 'disabled';
+      const modeLabels = { 'auto': 'Auto', 'custom': 'Custom', 'disabled': 'Off' };
       return `<div class="persona-card">
         <div class="persona-card-left">
           <img id="avatar-img-${index}" class="persona-avatar-img" style="display:none" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
@@ -1466,11 +1432,16 @@ async function loadPersonas() {
         <div class="persona-card-body">
           <div class="persona-card-name">${name}</div>
           ${summary ? `<div class="persona-card-summary">${summary}${(p.summary||'').length>80?'…':''}</div>` : ''}
+          <div class="persona-card-modes">
+            <span class="mode-badge mode-wb mode-${wbMode}" title="世界书">世界书: ${modeLabels[wbMode]}</span>
+            <span class="mode-badge mode-rag mode-${ragMode}" title="文档库">文档: ${modeLabels[ragMode]}</span>
+            <span class="mode-badge mode-kb mode-${kbMode}" title="素材库">素材: ${modeLabels[kbMode]}</span>
+          </div>
         </div>
         <div class="persona-card-actions">
-          <button class="btn btn-sm btn-outline" onclick="openPersonaModal('${pid}')">编辑</button>
-          <button class="btn btn-sm btn-outline" onclick="exportPersona('${pid}')">导出</button>
-          <button class="btn btn-sm btn-danger" onclick="deletePersona('${pid}')">删除</button>
+          <button class="btn btn-sm btn-outline" onclick="openPersonaModal(window.__quillPids[${index}])">编辑</button>
+          <button class="btn btn-sm btn-outline" onclick="exportPersona(window.__quillPids[${index}])">导出</button>
+          <button class="btn btn-sm btn-danger" onclick="deletePersona(window.__quillPids[${index}])">删除</button>
         </div>
       </div>`;
     }).join('') + '</div>';
@@ -1493,24 +1464,44 @@ async function loadPersonas() {
   }
 }
 
+// 三态模式切换视觉联动
+window.toggleExtList = function(sys) {
+  const mode = qs('#pf-' + sys + '-mode').value;
+  const list = qs('#pf-' + sys + '-list');
+  if (mode === 'disabled') {
+    list.style.opacity = '0.4';
+    list.style.pointerEvents = 'none';
+  } else {
+    list.style.opacity = '1';
+    list.style.pointerEvents = 'auto';
+  }
+};
+
 async function openPersonaModal(personaId) {
   _personaMode = personaId ? 'edit' : 'create';
   _personaData = null;
-  let data = { id: '', name: '', avatar_path: '', summary: '', core_prompts: { personality: '', scenario: '', examples_of_dialogue: '', first_message: '' }, quill_extensions: { bound_worldbooks: [], bound_rag_docs: [] } };
+  let data = { id: '', name: '', avatar_path: '', summary: '', core_prompts: { personality: '', scenario: '', examples_of_dialogue: '', first_message: '' }, quill_extensions: { wb_mode: 'disabled', bound_worldbooks: [], rag_mode: 'disabled', bound_rag_docs: [], kb_mode: 'disabled', bound_knowledge_base: [] } };
 
   if (personaId) {
     try { data = await api('/persona/list'); data = data.find(p => p.id === personaId) || data; } catch (e) { showToast(e.message); return; }
     _personaData = { ...data };
   }
 
-  // 获取世界书列表 和 RAG 文档列表
+  // 获取世界书列表、RAG 文档列表和素材库分类
   const dataInfo = await api('/info').catch(()=>({}));
   const allWbs = dataInfo.available_worldbooks || [];
   const ragData = await api('/rag/documents').catch(()=>({documents:[]}));
   const ragDocs = ragData.documents || [];
+  const catsData = await api('/kb/categories').catch(()=>({categories:[]}));
+  const kbCats = catsData.categories || [];
 
-  const boundWbs = data.quill_extensions?.bound_worldbooks || [];
-  const boundRagDocs = data.quill_extensions?.bound_rag_docs || [];
+  const ext = data.quill_extensions || {};
+  const wbMode = ext.wb_mode || 'disabled';
+  const ragMode = ext.rag_mode || 'disabled';
+  const kbMode = ext.kb_mode || 'disabled';
+  const boundWbs = ext.bound_worldbooks || [];
+  const boundRagDocs = ext.bound_rag_docs || [];
+  const boundKbs = ext.bound_knowledge_base || [];
 
   qs('#modalTitle').textContent = _personaMode === 'create' ? '新建角色卡' : '编辑角色卡';
   qs('#modalBody').innerHTML = `
@@ -1542,20 +1533,51 @@ async function openPersonaModal(personaId) {
     </div>
     <div class="persona-form-tab-content" id="ptab-ext">
       <div class="form-group">
-        <label>绑定世界书 (角色专属)</label>
-        <div class="checkbox-group-scroll">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <label style="margin:0">世界书 (Worldbook)</label>
+          <select id="pf-wb-mode" style="width:170px;padding:4px 8px" onchange="toggleExtList('wb')">
+            <option value="auto" ${wbMode==='auto'?'selected':''}>全库激活 (Auto)</option>
+            <option value="custom" ${wbMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
+            <option value="disabled" ${wbMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
+          </select>
+        </div>
+        <div id="pf-wb-list" class="checkbox-group-scroll" style="${wbMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
           ${allWbs.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用世界书</div>' :
             allWbs.map(w => `<label class="form-check"><input type="checkbox" class="cb-wb-bind" value="${esc(w)}" ${boundWbs.includes(w)?'checked':''}> ${esc(w)}</label>`).join('')}
         </div>
-        <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">切换到此角色时，将自动激活并关联勾选的世界书。</span>
+        <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">Auto=全库生效 | Custom=仅勾选生效 | Disabled=不加载世界书</span>
       </div>
+
       <div class="form-group">
-        <label>绑定文档知识库 (角色专属 Doc RAG)</label>
-        <div class="checkbox-group-scroll">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <label style="margin:0">文档知识库 (Doc RAG)</label>
+          <select id="pf-rag-mode" style="width:170px;padding:4px 8px" onchange="toggleExtList('rag')">
+            <option value="auto" ${ragMode==='auto'?'selected':''}>全库检索 (Auto)</option>
+            <option value="custom" ${ragMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
+            <option value="disabled" ${ragMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
+          </select>
+        </div>
+        <div id="pf-rag-list" class="checkbox-group-scroll" style="${ragMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
           ${ragDocs.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无已上传的外部文档</div>' :
             ragDocs.map(d => `<label class="form-check"><input type="checkbox" class="cb-rag-bind" value="${esc(d.source)}" ${boundRagDocs.includes(d.source)?'checked':''}> ${esc(d.source)}</label>`).join('')}
         </div>
-        <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">留空则匹配全部文档库；勾选后，AI 语义检索时将仅检索勾选的特定文档。</span>
+        <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">Auto=检索全库 | Custom=仅检索勾选文档 | Disabled=不检索任何文档</span>
+      </div>
+
+      <div class="form-group">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <label style="margin:0">写作素材库 (Knowledge Base)</label>
+          <select id="pf-kb-mode" style="width:170px;padding:4px 8px" onchange="toggleExtList('kb')">
+            <option value="auto" ${kbMode==='auto'?'selected':''}>全局匹配 (Auto)</option>
+            <option value="custom" ${kbMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
+            <option value="disabled" ${kbMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
+          </select>
+        </div>
+        <div id="pf-kb-list" class="checkbox-group-scroll" style="${kbMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
+          ${kbCats.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用分类</div>' :
+            kbCats.map(c => `<label class="form-check"><input type="checkbox" class="cb-kb-bind" value="${esc(c)}" ${boundKbs.includes(c)?'checked':''}> ${esc(c)}</label>`).join('')}
+        </div>
+        <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">Auto=全局匹配素材 | Custom=仅匹配勾选分类 | Disabled=不检索任何素材</span>
       </div>
     </div>
   `;
@@ -1585,9 +1607,10 @@ async function openPersonaModal(personaId) {
 async function savePersona() {
   const name = qs('#pf-name').value.trim();
   if (!name) { showToast('角色名称不能为空'); return; }
-  
+
   const boundWbs = Array.from(document.querySelectorAll('.cb-wb-bind:checked')).map(cb => cb.value);
   const boundRagDocs = Array.from(document.querySelectorAll('.cb-rag-bind:checked')).map(cb => cb.value);
+  const boundKbs = Array.from(document.querySelectorAll('.cb-kb-bind:checked')).map(cb => cb.value);
 
   const body = {
     id: _personaMode === 'edit' ? _personaData.id : name,
@@ -1601,8 +1624,12 @@ async function savePersona() {
       first_message: qs('#pf-first').value.trim(),
     },
     quill_extensions: {
+      wb_mode: qs('#pf-wb-mode').value,
       bound_worldbooks: boundWbs,
+      rag_mode: qs('#pf-rag-mode').value,
       bound_rag_docs: boundRagDocs,
+      kb_mode: qs('#pf-kb-mode').value,
+      bound_knowledge_base: boundKbs,
     },
   };
   try {
@@ -1668,7 +1695,7 @@ async function importPersona(input) {
   const file = input.files[0];
   if (!file) return;
   const ext = file.name.split('.').pop().toLowerCase();
-  if (!['png','jpg','jpeg','json'].includes(ext)) { showToast('不支持的文件格式（支持 PNG/JPG/JSON）'); return; }
+  if (!['png','jpg','jpeg','webp','json'].includes(ext)) { showToast('不支持的文件格式（支持 PNG/JPG/WebP/JSON）'); return; }
   if (file.size > 5 * 1024 * 1024) { showToast('文件过大（最大 5MB）'); return; }
 
   const container = qs('#persona-list');
@@ -1781,33 +1808,57 @@ async function loadRAGModelInfo() {
   } catch (_) {}
 }
 
-async function handleRAGDrop(e) { e.preventDefault(); if (e.dataTransfer.files.length) await uploadRAGFile(e.dataTransfer.files[0]); }
-async function handleRAGFileSelect(input) { if (input.files.length) await uploadRAGFile(input.files[0]); input.value = ''; }
-
-async function uploadRAGFile(file) {
-  const status = qs('#rag-upload-status'); status.textContent = '读取文件中...';
-  try {
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const base64Data = e.target.result.split(',')[1];
-        status.textContent = '上传并向量化中（可能需要几分钟，请勿刷新页面）...';
-        const result = await api('/rag/upload_base64', {
-          method: 'POST',
-          body: JSON.stringify({ source: file.name, b64_data: base64Data })
-        });
-        const count = result.chunk_count || 0;
-        status.innerHTML = `<span style="color:var(--success)">✓ 成功生成 ${count} 块向量</span>`;
-        loadRAG();
-      } catch (err) {
-        status.innerHTML = `<span style="color:var(--danger)">✗ ${err.message}</span>`;
-      }
-    };
-    reader.onerror = () => { status.innerHTML = `<span style="color:var(--danger)">✗ 文件读取失败</span>`; };
-    reader.readAsDataURL(file);
-  } catch (e) {
-    status.innerHTML = `<span style="color:var(--danger)">✗ ${e.message}</span>`;
+async function handleRAGDrop(e) {
+  e.preventDefault();
+  e.currentTarget.style.borderColor = '';
+  if (e.dataTransfer.files.length) {
+    await processMultipleRAGFiles(e.dataTransfer.files);
   }
+}
+
+async function handleRAGFileSelect(input) {
+  if (input.files.length) {
+    await processMultipleRAGFiles(input.files);
+  }
+  input.value = '';
+}
+
+async function processMultipleRAGFiles(fileList) {
+  const files = Array.from(fileList);
+  const status = qs('#rag-upload-status');
+  let successCount = 0, failCount = 0, totalChunks = 0;
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    status.textContent = `正在上传并向量化 (${i + 1}/${files.length}): ${file.name} ...`;
+    try {
+      const base64Data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result.split(',')[1]);
+        reader.onerror = () => reject(new Error("文件读取失败"));
+        reader.readAsDataURL(file);
+      });
+
+      const result = await api('/rag/upload_base64', {
+        method: 'POST',
+        body: JSON.stringify({ source: file.name, b64_data: base64Data })
+      });
+
+      successCount++;
+      totalChunks += (result.chunk_count || 0);
+    } catch (err) {
+      failCount++;
+      console.error(`[RAG Upload] 文件 ${file.name} 失败:`, err);
+    }
+  }
+
+  if (failCount === 0) {
+    status.innerHTML = `<span style="color:var(--success)">✓ 成功处理 ${successCount} 个文件，共生成 ${totalChunks} 块向量</span>`;
+  } else {
+    status.innerHTML = `<span style="color:var(--warning)">完成: ${successCount} 成功, ${failCount} 失败。请打开控制台(F12)查看错误。</span>`;
+  }
+
+  loadRAG();
 }
 
 function deleteRAGDocument(source) {
@@ -1955,6 +2006,9 @@ async function loadGlobalSettings() {
     qs('#c-ref-enabled').checked = safeGet('refusal', 'enabled', true);
     qs('#c-ref-pat').value = safeGet('refusal', 'patterns', '我不能\n我无法\n这违反\n我不应该\n这不合适\n我拒绝');
 
+    // 权限白名单
+    qs('#c-perm-admins').value = safeGet('permission', 'admin_users', '');
+
   } catch (e) { showToast('读取配置失败: ' + e.message); }
 }
 
@@ -1973,14 +2027,7 @@ async function saveAllChanges() {
   try {
     let changedCount = 0;
 
-    // 1. 保存活跃世界书状态
-    if (typeof getSelectedWB === 'function' && _allWorldbooks.length > 0) {
-      const sel = getSelectedWB();
-      await api('/config/save', { method: 'POST', body: JSON.stringify({ group: 'worldbook', key: 'active_worldbooks', value: sel.length === _allWorldbooks.length ? [] : sel }) });
-      changedCount++;
-    }
-
-    // 2. 保存全局模型与核心配置
+    // 1. 保存全局模型与核心配置
     const updates = [];
     const add = (g, k, v) => {
       const old = (_rawConfig[g] && _rawConfig[g][k] !== undefined) ? _rawConfig[g][k] : null;
@@ -2015,6 +2062,8 @@ async function saveAllChanges() {
 
       add('refusal', 'enabled', qs('#c-ref-enabled').checked);
       add('refusal', 'patterns', qs('#c-ref-pat').value);
+
+      add('permission', 'admin_users', qs('#c-perm-admins').value);
     }
 
     for (const u of updates) {

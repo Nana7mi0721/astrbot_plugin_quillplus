@@ -60,6 +60,18 @@
         "description": "启用动态记忆",
         "default": false,
         "hint": "开启后，在后台自动进行内容压缩与特征提取，跨会话保留长期记忆（不会阻塞聊天）。"
+      },
+      "enable_chat_logging": {
+        "type": "bool",
+        "description": "启用本地对话归档",
+        "default": true,
+        "hint": "开启后，按当前角色和会话完整保存所有原始对话历史。可用于导出剧本或未来辅助记忆。"
+      },
+      "chat_log_retention_days": {
+        "type": "int",
+        "description": "对话日志保留天数",
+        "default": 30,
+        "hint": "超过保留天数的对话日志将被自动清理。设为 0 表示永久保留。"
       }
     }
   },
@@ -73,12 +85,6 @@
         "description": "启用世界书",
         "default": true,
         "hint": "关闭后停用世界书系统。"
-      },
-      "active_worldbooks": {
-        "type": "list",
-        "description": "活跃世界书（多选）",
-        "default": [],
-        "hint": "也可直接在 Quill 独立 Web 面板中快捷勾选与管理。"
       },
       "max_dynamic_entries": {
         "type": "int",
@@ -217,6 +223,19 @@
         "description": "启用调试日志",
         "default": false,
         "hint": "开启后在控制台打印极其详细的匹配详情（会刷屏，非开发排错勿开）。"
+      }
+    }
+  },
+  "permissions": {
+    "type": "object",
+    "description": "[权限] 管理员白名单",
+    "hint": "防止群内角色卡被随意切换。留空则全员可操作。",
+    "items": {
+      "admin_users": {
+        "type": "text",
+        "description": "管理员 ID（换行分隔）",
+        "default": "",
+        "hint": "填写 AstrBot 账号 ID（纯数字），每行一个。留空则不限制。只有管理员可在群聊中切换角色卡、修改流式设置、管理记忆。"
       }
     }
   }

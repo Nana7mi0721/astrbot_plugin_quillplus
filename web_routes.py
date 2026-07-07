@@ -57,6 +57,8 @@ from ._route_core import (
     handle_provider_list,
     handle_memory_export,
     handle_memory_import,
+    handle_chat_log_list,
+    handle_chat_log_export,
 )
 
 PLUGIN_NAME = "astrbot_plugin_quillplus"
@@ -176,16 +178,18 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/memory/export",    self.memory_export, ["GET"],    "导出记忆(JSON)")
         _r(f"/{PLUGIN_NAME}/memory/import",    self.memory_import, ["POST"],   "导入记忆(JSON)")
 
+        # ── 对话日志 ──
+        _r(f"/{PLUGIN_NAME}/chatlog/list",     self.chat_log_list,  ["GET"],    "列出对话日志")
+        _r(f"/{PLUGIN_NAME}/chatlog/export",   self.chat_log_export, ["GET"],   "导出对话日志")
+
     # ── Info ──────────────────────────────────────────────────
 
     @_api_handler
     async def info(self):
-        """返回插件状态：可用世界书、活跃列表、触发日志。"""
+        """返回插件状态：可用世界书、触发日志。"""
         from ._route_core import handle_info
-        active = None
         show_log = False
         if self.config is not None:
-            active = getattr(self.config, 'worldbook_active', None)
             show_log = getattr(self.config, 'worldbook_show_log', False)
         pc = 0
         if self.persona_manager:
@@ -193,7 +197,6 @@ class QuillRoutes:
         return await handle_info(
             self.kb_manager, self.wb_manager,
             persona_count=pc,
-            active_worldbooks=active,
             show_trigger_log=show_log,
         )
 
@@ -393,7 +396,7 @@ class QuillRoutes:
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
             return error_response("记忆未初始化", status_code=500)
-        return json_response(handle_memory_export(memory_store))
+        return json_response(await handle_memory_export(memory_store))
 
     @_api_handler
     async def memory_import(self):
@@ -421,6 +424,31 @@ class QuillRoutes:
         return json_response(
             await handle_memory_delete(memory_store, data.get("memory_id"), data.get("session_id"))
         )
+
+    # ── Chat Log ──────────────────────────────────────────────
+
+    @_api_handler
+    async def chat_log_list(self):
+        """列出对话日志。"""
+        memory_store = self.rag.get('memory_store')
+        if memory_store is None:
+            return error_response("记忆系统未加载", status_code=500)
+        session_id = request.query.get("session_id")
+        limit = int(request.query.get("limit", 200))
+        return json_response(await handle_chat_log_list(memory_store, session_id, limit))
+
+    @_api_handler
+    async def chat_log_export(self):
+        """导出对话日志。"""
+        memory_store = self.rag.get('memory_store')
+        if memory_store is None:
+            return error_response("记忆系统未加载", status_code=500)
+        session_id = request.query.get("session_id")
+        fmt = request.query.get("format", "markdown")
+        result = await handle_chat_log_export(memory_store, session_id, fmt)
+        if result.get("status") == "error":
+            return error_response(result.get("message", "导出失败"), status_code=400)
+        return json_response(result)
 
     # ── Provider List ─────────────────────────────────────────
 
@@ -625,7 +653,7 @@ class QuillRoutes:
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                 f.write(file_data)
-            if not self.wb_manager.import_from_st(tmp_path, name):
+            if not await asyncio.to_thread(self.wb_manager.import_from_st, tmp_path, name):
                 return error_response("Failed to import worldbook", status_code=400)
         finally:
             if os.path.exists(tmp_path):
@@ -670,9 +698,9 @@ class QuillRoutes:
         """重新从磁盘加载所有世界书后返回列表（供面板刷新按钮用）。"""
         try:
             if hasattr(self.wb_manager, "reload_all"):
-                self.wb_manager.reload_all()
+                await asyncio.to_thread(self.wb_manager.reload_all)
             else:
-                self.wb_manager._load_all()
+                await asyncio.to_thread(self.wb_manager._load_all)
         except Exception:
             pass  # 即使 reload 失败也返回当前列表
         return json_response(await handle_wb_list(self.wb_manager))
@@ -711,12 +739,6 @@ class QuillRoutes:
             return error_response("Persona manager not available", status_code=500)
         try:
             result = await self.persona_manager.create_persona(data)
-            # 同步世界书绑定
-            if self.wb_manager:
-                persona_id = result.get("id")
-                bound_wbs = data.get("quill_extensions", {}).get("bound_worldbooks", [])
-                for wb in bound_wbs:
-                    self.wb_manager.bind_persona(persona_id, wb)
             return json_response(result)
         except ValueError as e:
             return error_response(str(e), status_code=400)
@@ -732,14 +754,6 @@ class QuillRoutes:
             return error_response("Persona manager not available", status_code=500)
         try:
             result = await self.persona_manager.update_persona(persona_id, data)
-            # 同步世界书绑定
-            if self.wb_manager:
-                bound_wbs = data.get("quill_extensions", {}).get("bound_worldbooks", [])
-                for wb in self.wb_manager.list_worldbooks():
-                    if wb in bound_wbs:
-                        self.wb_manager.bind_persona(persona_id, wb)
-                    else:
-                        self.wb_manager.unbind_persona(persona_id, wb)
             return json_response(result)
         except ValueError as e:
             return error_response(str(e), status_code=400)
@@ -845,11 +859,14 @@ class QuillRoutes:
             is_image = ext in ('.png', '.jpg', '.jpeg')
             persona_data = self.persona_manager.parse_v2_card(file_data, is_image)
 
-            # 如果是图片，保存为头像
+            # 如果是图片，保存为头像（头像保存失败不影响角色卡导入）
             if is_image:
-                avatar_filename = f"{persona_data['name']}{ext}"
-                avatar_path = await self.persona_manager.save_avatar(avatar_filename, file_data)
-                persona_data["avatar_path"] = avatar_path
+                try:
+                    avatar_filename = f"{persona_data['name']}{ext}"
+                    avatar_path = await self.persona_manager.save_avatar(avatar_filename, file_data)
+                    persona_data["avatar_path"] = avatar_path
+                except Exception as av_e:
+                    logger.warning(f"[Quill] 头像保存失败（角色卡仍会导入）: {av_e}")
 
             result = await self.persona_manager.create_persona(persona_data)
             return json_response(result)
@@ -881,21 +898,24 @@ class QuillRoutes:
             return error_response(f"Base64 解码失败: {e}", status_code=400)
 
         ext = os.path.splitext(filename)[1].lower()
-        if ext not in ('.png', '.jpg', '.jpeg', '.json'):
-            return error_response("不支持的文件格式（支持 PNG/JPG/JSON）", status_code=400)
+        if ext not in ('.png', '.jpg', '.jpeg', '.webp', '.json'):
+            return error_response("不支持的文件格式（支持 PNG/JPG/WebP/JSON）", status_code=400)
 
         if len(file_bytes) > 5 * 1024 * 1024:
             return error_response("文件过大（最大 5MB）", status_code=413)
 
         try:
-            is_image = ext in ('.png', '.jpg', '.jpeg')
+            is_image = ext in ('.png', '.jpg', '.jpeg', '.webp')
             persona_data = self.persona_manager.parse_v2_card(file_bytes, is_image)
 
-            # 如果是图片，保存为头像
+            # 如果是图片，保存为头像（头像保存失败不影响角色卡导入）
             if is_image:
-                avatar_filename = f"{persona_data['name']}{ext}"
-                avatar_path = await self.persona_manager.save_avatar(avatar_filename, file_bytes)
-                persona_data["avatar_path"] = avatar_path
+                try:
+                    avatar_filename = f"{persona_data['name']}{ext}"
+                    avatar_path = await self.persona_manager.save_avatar(avatar_filename, file_bytes)
+                    persona_data["avatar_path"] = avatar_path
+                except Exception as av_e:
+                    logger.warning(f"[Quill] 头像保存失败（角色卡仍会导入）: {av_e}")
 
             result = await self.persona_manager.create_persona(persona_data)
             return json_response(result)

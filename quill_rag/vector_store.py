@@ -143,7 +143,7 @@ class FaissVectorStore:
 
             # 多召回一些以补偿幽灵向量。如果有文档过滤限制，大幅放大召回池以防被过滤空。
             recall_k = min(top_k * 3, self._index.ntotal)
-            if allowed_sources:
+            if allowed_sources is not None:
                 recall_k = min(max(top_k * 10, 100), self._index.ntotal)
 
             with self._lock:
@@ -164,7 +164,7 @@ class FaissVectorStore:
                     if row:
                         doc_source = row[1]
                         # 【核心过滤逻辑】如果指定了允许的文档，且当前块不属于这些文档，则跳过
-                        if allowed_sources and doc_source not in allowed_sources:
+                        if allowed_sources is not None and doc_source not in allowed_sources:
                             continue
 
                         results.append({

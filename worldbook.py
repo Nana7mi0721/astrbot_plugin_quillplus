@@ -39,7 +39,7 @@ def _validate_name(name: str) -> bool:
     """Return True if *name* is a safe worldbook identifier.
 
     Rejects empty names, path traversal fragments (``..``, ``/``, ``\\``),
-    and any character outside [a-zA-Z0-9_\\-\\u4e00-\\u9fff].
+    and any character outside [a-zA-Z0-9_\\-\\u4e00-\u9fff].
     """
     if not name:
         return False
@@ -52,17 +52,10 @@ def _validate_name(name: str) -> bool:
 # ── Manager ──────────────────────────────────────────────────────────────────
 
 class WorldbookManager:
-    def __init__(self, worldbooks_dir: str, active_worldbooks: Optional[List[str]] = None):
+    def __init__(self, worldbooks_dir: str):
         self.worldbooks_dir: str = worldbooks_dir
         os.makedirs(worldbooks_dir, exist_ok=True)
         self.worldbooks: Dict[str, dict] = {}
-        # active_worldbooks: 配置层面的活跃世界书过滤（空列表=全选）
-        self.active_worldbooks: List[str] = active_worldbooks or []
-        self.bindings: dict = {
-            "user_bindings": {},
-            "persona_bindings": {},
-            "global_worldbooks": [],
-        }
         # 最近一次注入的触发日志（show_trigger_log 开启时使用）
         self._last_trigger_log: List[dict] = []
         self._lock = threading.Lock()
@@ -71,18 +64,17 @@ class WorldbookManager:
     # ── persistence ──────────────────────────────────────────────────────
 
     def _load_all(self):
-        """Load every ``*.json`` (except bindings) from *worldbooks_dir*."""
+        """Load every ``*.json`` from *worldbooks_dir*."""
         self.worldbooks.clear()
         for f in os.listdir(self.worldbooks_dir):
-            if not f.endswith('.json') or f == 'bindings.json':
+            if not f.endswith('.json'):
                 continue
             path = os.path.join(self.worldbooks_dir, f)
             try:
                 with open(path, 'r', encoding='utf-8') as fh:
                     wb = json.load(fh)
                 name = wb.get('name', f.replace('.json', ''))
-                # 拒绝包含路径穿越/非法字符的名字 —— 否则后续 delete_worldbook
-                # 等基于 name 拼路径的操作会 os.remove 到目录外
+                # 拒绝包含路径穿越/非法字符的名字
                 if not _validate_name(name):
                     logger.warning("[WorldbookManager] Skipping %s: invalid name %r", f, name)
                     continue
@@ -90,20 +82,8 @@ class WorldbookManager:
             except Exception as exc:
                 logger.warning("[WorldbookManager] Failed to load %s: %s", f, exc)
 
-        bindings_path = os.path.join(self.worldbooks_dir, 'bindings.json')
-        if os.path.exists(bindings_path):
-            try:
-                with open(bindings_path, 'r', encoding='utf-8') as fh:
-                    self.bindings = json.load(fh)
-            except Exception:
-                pass
-
-    def _save_bindings(self):
-        path = os.path.join(self.worldbooks_dir, 'bindings.json')
-        _save_json_atomic(path, self.bindings)
-
     def reload_all(self):
-        """重新从磁盘加载全部世界书与绑定。供 /wb reload 使用。"""
+        """重新从磁盘加载全部世界书。供 /wb reload 使用。"""
         with self._lock:
             self._load_all()
 
@@ -136,7 +116,7 @@ class WorldbookManager:
         if not _validate_name(name):
             return False
         for f in os.listdir(self.worldbooks_dir):
-            if not f.endswith('.json') or f == 'bindings.json':
+            if not f.endswith('.json'):
                 continue
             path = os.path.join(self.worldbooks_dir, f)
             try:
@@ -153,34 +133,42 @@ class WorldbookManager:
 
     # ── active / matching entries ────────────────────────────────────────
 
-    def get_active_worldbooks(self, persona_id: Optional[str] = None,
-                              user_id: Optional[str] = None) -> List[dict]:
-        with self._lock:
-            active_names: set = set(self.bindings.get('global_worldbooks', []))
-            if persona_id:
-                for n in self.bindings.get('persona_bindings', {}).get(persona_id, []):
-                    active_names.add(n)
-            if user_id:
-                for n in self.bindings.get('user_bindings', {}).get(user_id, []):
-                    active_names.add(n)
-            # 应用配置层面的活跃世界书过滤（空列表=不过滤=全选）
-            if self.active_worldbooks:
-                active_names = active_names & set(self.active_worldbooks)
-            return [copy.deepcopy(self.worldbooks[n]) for n in active_names
-                    if n in self.worldbooks]
+    def get_active_worldbooks(self, bound_worldbooks: Optional[List[str]] = None) -> List[dict]:
+        """获取活跃世界书
 
-    def get_constant_entries(self, persona_id: Optional[str] = None,
-                             user_id: Optional[str] = None) -> List[dict]:
+        Args:
+            bound_worldbooks: 来自角色卡的绑定列表
+                None = Auto 模式（全库）
+                [] = Custom 模式，空列表（什么都不启用）
+                ["wb1", "wb2"] = Custom 模式，只启用指定的世界书
+
+        Returns:
+            活跃世界书列表
+        """
+        with self._lock:
+            if bound_worldbooks is None:
+                # Auto 模式：返回所有世界书
+                logger.debug("[Worldbook] Auto 模式：加载所有世界书（%d 个）", len(self.worldbooks))
+                return [copy.deepcopy(self.worldbooks[n]) for n in self.worldbooks]
+            else:
+                # Custom 模式：返回指定的世界书（空列表返回空）
+                logger.debug("[Worldbook] Custom 模式：绑定世界书: %s", bound_worldbooks)
+                valid_wbs = [n for n in bound_worldbooks if n in self.worldbooks]
+                if len(valid_wbs) != len(bound_worldbooks):
+                    invalid_wbs = set(bound_worldbooks) - set(valid_wbs)
+                    logger.warning("[Worldbook] 以下世界书不存在，已跳过: %s", invalid_wbs)
+                return [copy.deepcopy(self.worldbooks[n]) for n in valid_wbs]
+
+    def get_constant_entries(self, bound_worldbooks: Optional[List[str]] = None) -> List[dict]:
         entries: List[dict] = []
-        for wb in self.get_active_worldbooks(persona_id, user_id):
+        for wb in self.get_active_worldbooks(bound_worldbooks):
             for entry in wb.get('entries', []):
                 if entry.get('enabled', True) and entry.get('is_constant', False):
                     entries.append(entry)
         return entries
 
     def match_entries(self, user_input: str,
-                      persona_id: Optional[str] = None,
-                      user_id: Optional[str] = None,
+                      bound_worldbooks: Optional[List[str]] = None,
                       top_k: int = 0,
                       sensitivity: float = 0.7) -> List[dict]:
         """Return keyword-matched entries (substring, case-insensitive).
@@ -190,8 +178,7 @@ class WorldbookManager:
 
         Args:
             user_input: text to match keywords against
-            persona_id: optional persona filter
-            user_id: optional user filter
+            bound_worldbooks: optional worldbook filter (None = Auto, [] = zero, [...] = Custom)
             top_k: max entries to return (0 = no limit)
             sensitivity: 0.0-1.0, 匹配灵敏度。<0.3 严格(需多关键词命中)；
                 0.3-0.7 平衡(子串匹配)；>0.7 宽松(单关键词即可)
@@ -202,7 +189,7 @@ class WorldbookManager:
         trigger_log: List[dict] = []
 
         # 获取活跃世界书快照（get_active_worldbooks 内部已加锁）
-        active_wbs = self.get_active_worldbooks(persona_id, user_id)
+        active_wbs = self.get_active_worldbooks(bound_worldbooks)
 
         # 灵敏度门控：最低匹配关键词数
         if sensitivity < 0.3:
@@ -253,55 +240,6 @@ class WorldbookManager:
             self._last_trigger_log = trigger_log
         return entries
 
-    # ── bindings ─────────────────────────────────────────────────────────
-
-    def bind_persona(self, persona_id: str, worldbook_name: str) -> bool:
-        with self._lock:
-            if worldbook_name not in self.worldbooks:
-                return False
-            pb = self.bindings.setdefault('persona_bindings', {})
-            if persona_id not in pb:
-                pb[persona_id] = []
-            if worldbook_name not in pb[persona_id]:
-                pb[persona_id].append(worldbook_name)
-            self._save_bindings()
-        return True
-
-    def unbind_persona(self, persona_id: str, worldbook_name: str) -> bool:
-        with self._lock:
-            pb = self.bindings.get('persona_bindings', {})
-            if persona_id in pb and worldbook_name in pb.get(persona_id, []):
-                pb[persona_id].remove(worldbook_name)
-                self._save_bindings()
-                return True
-        return False
-
-    def bind_user(self, user_id: str, worldbook_name: str) -> bool:
-        with self._lock:
-            if worldbook_name not in self.worldbooks:
-                return False
-            ub = self.bindings.setdefault('user_bindings', {})
-            if user_id not in ub:
-                ub[user_id] = []
-            if worldbook_name not in ub[user_id]:
-                ub[user_id].append(worldbook_name)
-            self._save_bindings()
-        return True
-
-    def unbind_user(self, user_id: str,
-                    worldbook_name: Optional[str] = None) -> bool:
-        with self._lock:
-            ub = self.bindings.get('user_bindings', {})
-            if user_id not in ub:
-                return False
-            if worldbook_name:
-                if worldbook_name in ub[user_id]:
-                    ub[user_id].remove(worldbook_name)
-            else:
-                ub[user_id] = []
-            self._save_bindings()
-        return True
-
     # ── CRUD ─────────────────────────────────────────────────────────────
 
     def create_worldbook(self, name: str, description: str = "") -> bool:
@@ -331,17 +269,6 @@ class WorldbookManager:
             if os.path.exists(path):
                 os.remove(path)
             del self.worldbooks[name]
-            # clean bindings
-            for key in ('persona_bindings', 'user_bindings'):
-                for k in list(self.bindings.get(key, {}).keys()):
-                    bindings_list = self.bindings[key].get(k, [])
-                    if name in bindings_list:
-                        bindings_list.remove(name)
-            # clean global
-            gw = self.bindings.get('global_worldbooks', [])
-            if name in gw:
-                gw.remove(name)
-            self._save_bindings()
         return True
 
     # ── Atomic entry operations (F1 fix: read-modify-write under single lock) ──
@@ -566,41 +493,36 @@ if __name__ == "__main__":
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(wb_obj, f, ensure_ascii=False, indent=2)
 
-        mgr.bind_user("user1", "test_wb")
-        matches = mgr.match_entries("I cast a magic spell", user_id="user1")
+        # Test with Custom mode (bound_worldbooks)
+        matches = mgr.match_entries("I cast a magic spell", bound_worldbooks=["test_wb"])
         _assert(len(matches) == 1, f"match_entries returns 1 (got {len(matches)})")
         _assert(matches[0]["id"] == "e1", "matched entry is e1")
         _assert(matches[0]["_match_score"] == 2, "match score is 2 (magic+spell)")
 
-        constants = mgr.get_constant_entries(user_id="user1")
+        constants = mgr.get_constant_entries(bound_worldbooks=["test_wb"])
         _assert(len(constants) == 1, f"constant entries = 1 (got {len(constants)})")
         _assert(constants[0]["id"] == "e2", "constant entry is e2")
 
-        # ── 5. bindings ──────────────────────────────────────────────────
-        print("\n== bindings ==")
-        _assert(mgr.bind_persona("p1", "test_wb"), "bind persona succeeds")
-        active = mgr.get_active_worldbooks(persona_id="p1", user_id="user1")
-        _assert(len(active) == 1, "active worldbooks = 1 (dedup)")
-        _assert(mgr.unbind_persona("p1", "test_wb"), "unbind persona succeeds")
-        _assert(mgr.unbind_user("user1", "test_wb"), "unbind user succeeds")
+        # Test Auto mode (bound_worldbooks=None, returns all)
+        auto_wbs = mgr.get_active_worldbooks(bound_worldbooks=None)
+        _assert(len(auto_wbs) == 3, f"Auto mode returns all worldbooks (got {len(auto_wbs)})")
 
-        # ── 6. reload ────────────────────────────────────────────────────
+        # Test Custom mode with empty list (zero injection)
+        empty_wbs = mgr.get_active_worldbooks(bound_worldbooks=[])
+        _assert(len(empty_wbs) == 0, f"Custom mode with empty list returns zero (got {len(empty_wbs)})")
+
+        # ── 5. reload ────────────────────────────────────────────────────
         print("\n== reload ==")
         _assert(mgr.reload_worldbook("test_wb"), "reload existing returns True")
         _assert(not mgr.reload_worldbook("nonexistent"), "reload missing returns False")
         _assert(not mgr.reload_worldbook("../evil"), "reload traversal returns False")
 
-        # ── 7. delete ────────────────────────────────────────────────────
+        # ── 6. delete ────────────────────────────────────────────────────
         print("\n== delete ==")
-        mgr.bind_user("user2", "中文书")
         _assert(mgr.delete_worldbook("中文书"), "delete CJK worldbook succeeds")
         _assert("中文书" not in mgr.list_worldbooks(), "deleted wb not in list")
-        # verify binding cleaned
-        user2_bindings = mgr.bindings.get('user_bindings', {}).get('user2', [])
-        _assert("中文书" not in user2_bindings,
-                "binding cleaned after delete")
 
-        # ── 8. Bug-fix #3: ST import keys coercion ──────────────────────
+        # ── 7. Bug-fix #3: ST import keys coercion ──────────────────────
         print("\n== Bug-fix #3: ST import keys ==")
         st_path = os.path.join(tmpdir, "st_lore.json")
         st_data = {

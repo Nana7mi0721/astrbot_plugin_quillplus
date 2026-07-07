@@ -336,49 +336,28 @@ async def handle_wb_import_st(wb_manager, name=None, upload_data=None):
 async def handle_wb_bindings(wb_manager):
     if not wb_manager:
         return err("Worldbook system not available")
-    import copy
-    with wb_manager._lock:
-        return ok({"bindings": copy.deepcopy(wb_manager.bindings)})
+    # 旧绑定系统已移除，现在使用角色卡级别的绑定
+    return ok({"bindings": {"global_worldbooks": [], "persona_bindings": {}, "user_bindings": {}}})
 
 
 async def handle_wb_bind(wb_manager, bind_type="user", target_id=None, worldbook_name=None):
     if not wb_manager:
         return err("Worldbook system not available")
-    if not target_id or not worldbook_name:
-        return err("target_id and worldbook_name are required")
-
-    ok_result = False
-    if bind_type == "user":
-        ok_result = await asyncio.to_thread(wb_manager.bind_user, target_id, worldbook_name)
-    elif bind_type == "persona":
-        ok_result = await asyncio.to_thread(wb_manager.bind_persona, target_id, worldbook_name)
-
-    if not ok_result:
-        return err("Failed to bind")
-    return ok({"type": bind_type, "target_id": target_id, "worldbook_name": worldbook_name}, message="Bound")
+    # 旧绑定系统已移除，现在通过角色卡编辑页面管理世界书绑定
+    return err("世界书绑定已迁移到角色卡编辑页面，请在角色卡的高级扩展标签中管理绑定")
 
 
 async def handle_wb_unbind(wb_manager, bind_type="user", target_id=None, worldbook_name=None):
     if not wb_manager:
         return err("Worldbook system not available")
-    if not target_id:
-        return err("target_id is required")
-
-    ok_result = False
-    if bind_type == "user":
-        ok_result = await asyncio.to_thread(wb_manager.unbind_user, target_id, worldbook_name)
-    elif bind_type == "persona":
-        ok_result = await asyncio.to_thread(wb_manager.unbind_persona, target_id, worldbook_name)
-
-    if not ok_result:
-        return err("Failed to unbind")
-    return ok(message="Unbound")
+    # 旧绑定系统已移除，现在通过角色卡编辑页面管理世界书绑定
+    return err("世界书绑定已迁移到角色卡编辑页面，请在角色卡的高级扩展标签中管理绑定")
 
 
 # ── Info handler ─────────────────────────────────────────────────
 
 async def handle_info(kb_manager, wb_manager, persona_count=0,
-                       active_worldbooks=None, show_trigger_log=False):
+                       show_trigger_log=False):
     """返回插件状态信息（含可用世界书列表 + 触发日志）。"""
     kb_count = 0
     categories = {}
@@ -393,12 +372,12 @@ async def handle_info(kb_manager, wb_manager, persona_count=0,
     trigger_log = []
     if wb_manager:
         try:
-            available_wb = wb_manager.get_available_worldbooks()
+            available_wb = await asyncio.to_thread(wb_manager.get_available_worldbooks)
         except Exception:
             pass
         if show_trigger_log and hasattr(wb_manager, 'get_trigger_log'):
             try:
-                trigger_log = wb_manager.get_trigger_log()
+                trigger_log = await asyncio.to_thread(wb_manager.get_trigger_log)
             except Exception:
                 pass
     return ok({
@@ -408,7 +387,6 @@ async def handle_info(kb_manager, wb_manager, persona_count=0,
         "categories": categories,
         "version": "Quill v5.2",
         "available_worldbooks": available_wb,
-        "active_worldbooks": active_worldbooks or [],
         "trigger_log": trigger_log,
     })
 
@@ -453,7 +431,7 @@ async def handle_rag_upload(vector_store, embedding_provider, upload_file, sourc
 async def handle_rag_documents(vector_store):
     """列出已上传文档。"""
     try:
-        docs = vector_store.list_documents()
+        docs = await asyncio.to_thread(vector_store.list_documents)
         return ok({"documents": docs})
     except Exception as e:
         return err(f"查询失败: {e}")
@@ -502,10 +480,10 @@ async def handle_memory_list(memory_store, session_id=None):
     """
     try:
         if session_id:
-            memories = memory_store.list_memories(session_id)
+            memories = await asyncio.to_thread(memory_store.list_memories, session_id)
             return ok({"session_id": session_id, "memories": memories})
         # 无 session_id：返回全部记忆（倒序），供记忆浏览表格用
-        memories = memory_store.list_all_memories(limit=200)
+        memories = await asyncio.to_thread(memory_store.list_all_memories, 200)
         return ok({"memories": memories, "sessions": []})
     except Exception as e:
         return err(f"查询失败: {e}")
@@ -531,7 +509,7 @@ async def handle_memory_list_all(memory_store, limit=200):
     前端记忆浏览表格调用此接口获取按时间排序的全量列表。
     """
     try:
-        memories = memory_store.list_all_memories(limit=limit)
+        memories = await asyncio.to_thread(memory_store.list_all_memories, limit)
         return ok({"memories": memories, "total": len(memories)})
     except Exception as e:
         return err(f"查询失败: {e}")
@@ -568,11 +546,33 @@ async def handle_provider_list(context):
         return err(f"获取提供商列表失败: {e}")
 
 
-def handle_memory_export(memory_store):
+async def handle_memory_export(memory_store):
     """导出全部记忆为 JSON 字符串。"""
     try:
-        memories = memory_store.list_all_memories(limit=10000)
+        memories = await asyncio.to_thread(memory_store.list_all_memories, 10000)
         return ok({"memories": memories, "total": len(memories)})
+    except Exception as e:
+        return err(f"导出失败: {e}")
+
+
+async def handle_chat_log_list(memory_store, session_id=None, limit=200):
+    """列出对话日志"""
+    if not session_id:
+        return err("需要 session_id")
+    try:
+        logs = await asyncio.to_thread(memory_store.list_chat_logs, session_id, limit)
+        return ok({"session_id": session_id, "logs": logs, "total": len(logs)})
+    except Exception as e:
+        return err(f"查询失败: {e}")
+
+
+async def handle_chat_log_export(memory_store, session_id=None, format="markdown"):
+    """导出对话日志"""
+    if not session_id:
+        return err("需要 session_id")
+    try:
+        text = await asyncio.to_thread(memory_store.export_chat_logs, session_id, format)
+        return ok({"session_id": session_id, "format": format, "content": text})
     except Exception as e:
         return err(f"导出失败: {e}")
 

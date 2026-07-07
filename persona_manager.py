@@ -12,6 +12,7 @@ import json
 import os
 import re
 import time
+from collections import defaultdict
 from io import BytesIO
 from typing import Optional
 
@@ -30,12 +31,13 @@ class QuillPersonaManager:
         self.avatar_dir = avatar_dir or os.path.join(
             os.path.dirname(data_dir), "quill_avatars"
         )
+        self._locks = defaultdict(asyncio.Lock)
 
     async def _ensure_dir(self):
-        os.makedirs(self.data_dir, exist_ok=True)
+        await asyncio.to_thread(os.makedirs, self.data_dir, exist_ok=True)
 
     async def _ensure_avatar_dir(self):
-        os.makedirs(self.avatar_dir, exist_ok=True)
+        await asyncio.to_thread(os.makedirs, self.avatar_dir, exist_ok=True)
 
     def _avatar_path(self, filename: str) -> str:
         return os.path.join(self.avatar_dir, filename)
@@ -86,21 +88,29 @@ class QuillPersonaManager:
     def _persona_path(self, persona_id: str) -> str:
         return os.path.join(self.data_dir, f"{self._sanitize_id(persona_id)}.json")
 
-    async def _read_file(self, path: str) -> Optional[dict]:
+    @staticmethod
+    def _sync_read_file(path: str) -> Optional[dict]:
         if not os.path.isfile(path):
             return None
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    async def _write_file(self, path: str, data: dict):
+    async def _read_file(self, path: str) -> Optional[dict]:
+        return await asyncio.to_thread(self._sync_read_file, path)
+
+    @staticmethod
+    def _sync_write_file(path: str, data: dict):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
+    async def _write_file(self, path: str, data: dict):
+        await asyncio.to_thread(self._sync_write_file, path, data)
 
     async def load_all(self) -> list[dict]:
         """加载所有角色卡，按 ID 排序返回。"""
         await self._ensure_dir()
         personas = []
-        for fname in os.listdir(self.data_dir):
+        for fname in await asyncio.to_thread(os.listdir, self.data_dir):
             if not fname.endswith(".json"):
                 continue
             path = os.path.join(self.data_dir, fname)
@@ -147,8 +157,12 @@ class QuillPersonaManager:
                 "first_message": (data.get("core_prompts", {}).get("first_message") or "").strip(),
             },
             "quill_extensions": {
+                "wb_mode": data.get("quill_extensions", {}).get("wb_mode", "disabled"),
                 "bound_worldbooks": data.get("quill_extensions", {}).get("bound_worldbooks", []),
+                "rag_mode": data.get("quill_extensions", {}).get("rag_mode", "disabled"),
                 "bound_rag_docs": data.get("quill_extensions", {}).get("bound_rag_docs", []),
+                "kb_mode": data.get("quill_extensions", {}).get("kb_mode", "disabled"),
+                "bound_knowledge_base": data.get("quill_extensions", {}).get("bound_knowledge_base", []),
             },
         }
         path = self._persona_path(persona_id)
@@ -158,45 +172,60 @@ class QuillPersonaManager:
 
     async def update_persona(self, persona_id: str, data: dict) -> dict:
         """更新角色卡（支持部分更新）。"""
-        existing = await self.get_persona(persona_id)
-        if not existing:
-            raise ValueError(f"角色卡不存在: {persona_id}")
+        async with self._locks[persona_id]:
+            existing = await self.get_persona(persona_id)
+            if not existing:
+                raise ValueError(f"角色卡不存在: {persona_id}")
 
-        name = data.get("name")
-        if name is not None:
-            name = name.strip()
-            if not name:
-                raise ValueError("角色名称 (name) 不能为空")
-            if await self._name_exists(name, exclude_id=persona_id):
-                raise ValueError(f"角色名 '{name}' 已存在")
-            existing["name"] = name
+            name = data.get("name")
+            if name is not None:
+                name = name.strip()
+                if not name:
+                    raise ValueError("角色名称 (name) 不能为空")
+                if await self._name_exists(name, exclude_id=persona_id):
+                    raise ValueError(f"角色名 '{name}' 已存在")
+                existing["name"] = name
 
-        for field in ("avatar_path", "summary"):
-            if field in data:
-                existing[field] = (data[field] or "").strip()
+            for field in ("avatar_path", "summary"):
+                if field in data:
+                    existing[field] = (data[field] or "").strip()
 
-        if "core_prompts" in data and isinstance(data["core_prompts"], dict):
-            cp = existing.setdefault("core_prompts", {})
-            for field in ("personality", "scenario", "examples_of_dialogue", "first_message"):
-                if field in data["core_prompts"]:
-                    cp[field] = (data["core_prompts"][field] or "").strip()
+            if "core_prompts" in data and isinstance(data["core_prompts"], dict):
+                cp = existing.setdefault("core_prompts", {})
+                for field in ("personality", "scenario", "examples_of_dialogue", "first_message"):
+                    if field in data["core_prompts"]:
+                        cp[field] = (data["core_prompts"][field] or "").strip()
 
-        if "quill_extensions" in data and isinstance(data["quill_extensions"], dict):
-            qe = existing.setdefault("quill_extensions", {})
-            for field in ("bound_worldbooks", "bound_rag_docs"):
-                if field in data["quill_extensions"]:
-                    qe[field] = data["quill_extensions"][field] or []
+            if "quill_extensions" in data and isinstance(data["quill_extensions"], dict):
+                qe = existing.setdefault("quill_extensions", {})
+                for field in ("wb_mode", "rag_mode", "kb_mode"):
+                    if field in data["quill_extensions"]:
+                        qe[field] = data["quill_extensions"][field]
+                for field in ("bound_worldbooks", "bound_rag_docs", "bound_knowledge_base"):
+                    if field in data["quill_extensions"]:
+                        qe[field] = data["quill_extensions"][field] or []
 
-        path = self._persona_path(persona_id)
-        await self._write_file(path, existing)
-        logger.info(f"[QuillPersona] 已更新角色卡: {persona_id}")
-        return existing
+            path = self._persona_path(persona_id)
+            await self._write_file(path, existing)
+            logger.info(f"[QuillPersona] 已更新角色卡: {persona_id}")
+            return existing
 
     async def delete_persona(self, persona_id: str) -> bool:
-        """删除角色卡。"""
+        """删除角色卡及其关联的头像文件。"""
         path = self._persona_path(persona_id)
         if not os.path.isfile(path):
             raise ValueError(f"角色卡不存在: {persona_id}")
+        # 读取角色卡数据以获取头像路径
+        try:
+            data = await self._read_file(path)
+            if data:
+                avatar_path = data.get("avatar_path", "")
+                if avatar_path and avatar_path.startswith("quill_avatars/"):
+                    avatar_filename = avatar_path[len("quill_avatars/"):]
+                    await self.delete_avatar(avatar_filename)
+                    logger.info(f"[QuillPersona] 已删除头像: {avatar_filename}")
+        except Exception as e:
+            logger.warning(f"[QuillPersona] 读取头像路径失败: {e}")
         os.remove(path)
         logger.info(f"[QuillPersona] 已删除角色卡: {persona_id}")
         return True
@@ -218,12 +247,12 @@ class QuillPersonaManager:
         else:
             v2_json = json.loads(raw_data.decode('utf-8'))
 
-        # 验证 V2 格式
+        # 验证 V2 格式（标准格式 + 扁平化格式 + 最小字段集）
         has_spec = v2_json.get("spec") == "chara_card_v2"
         has_data = "data" in v2_json
-        # 兼容无 spec 的扁平化 V2 格式（直接包含 first_mes/mes_example 等字段）
-        has_v2_fields = any(k in v2_json for k in ("first_mes", "mes_example", "metadata"))
-        if not (has_spec or has_data or has_v2_fields):
+        has_v2_standard_fields = any(k in v2_json for k in ("first_mes", "mes_example", "metadata"))
+        has_v2_flat_fields = any(k in v2_json for k in ("name", "description", "personality"))
+        if not (has_spec or has_data or has_v2_standard_fields or has_v2_flat_fields):
             raise ValueError("不是有效的 V2 角色卡格式")
 
         data = v2_json.get("data", v2_json)
@@ -258,7 +287,7 @@ class QuillPersonaManager:
     @staticmethod
     def _extract_v2_from_image(image_data: bytes) -> dict:
         """从 PNG/JPG 图片中提取 V2 JSON 数据。
-        防弹级解析：无论是 Pillow 能读取的 info、EXIF，还是原始字节中的 tEXt 标记。
+        多层递进解析：tEXt多key搜索 → EXIF → 原始字节Base64/JSON搜索。
         """
         try:
             from PIL import Image
@@ -269,15 +298,23 @@ class QuillPersonaManager:
 
         img = Image.open(BytesIO(image_data))
 
-        # 1. 检查 img.info（标准 tEXt 块）
-        chara_val = img.info.get('chara', '')
-        if chara_val:
+        # 1. 检查 img.info（标准 tEXt 块）— 多 key 兼容
+        for key in ('chara', 'TavernAI', 'sillytavern', 'SillyTavern',
+                    'character', 'comment', 'description', 'title', 'data'):
+            val = img.info.get(key, '')
+            if not val:
+                continue
             try:
-                raw = chara_val if isinstance(chara_val, bytes) else chara_val.encode('ascii')
+                raw = val if isinstance(val, bytes) else val.encode('ascii')
                 decoded = base64.b64decode(raw).decode('utf-8')
                 return json.loads(decoded)
             except Exception:
-                pass
+                try:
+                    s = raw.decode('utf-8', errors='ignore') if isinstance(raw, bytes) else str(raw)
+                    if s.startswith('{'):
+                        return json.loads(s)
+                except Exception:
+                    pass
 
         # 2. 检查 EXIF tag 37510 (UserComment) 和 270 (ImageDescription)
         try:
@@ -313,24 +350,62 @@ class QuillPersonaManager:
         except Exception:
             pass
 
-        # 3. 终极兜底：从原始字节中搜索 chara\0 标记（Pillow 可能跳过某些 tEXt 块）
-        marker = b'chara\x00'
-        idx = image_data.find(marker)
-        if idx >= 0:
-            payload_start = idx + len(marker)
-            # 向后搜索直到遇到非 base64 字符
-            payload_end = payload_start
-            while payload_end < len(image_data) and image_data[payload_end] in b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r\t ':
-                payload_end += 1
-            b64_str = image_data[payload_start:payload_end].decode('ascii', errors='ignore')
-            try:
-                decoded = base64.b64decode(b64_str).decode('utf-8')
-                return json.loads(decoded)
-            except Exception:
-                pass
+        # 3. 原始字节搜索 — Base64 编码的 JSON（chara\x00 标记）
+        for marker in (b'chara\x00', b'chara\x01'):
+            idx = image_data.find(marker)
+            if idx >= 0:
+                payload_start = idx + len(marker)
+                payload_end = payload_start
+                while payload_end < len(image_data) and image_data[payload_end] in b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r\t ':
+                    payload_end += 1
+                b64_str = image_data[payload_start:payload_end].decode('ascii', errors='ignore')
+                # 修复：trim 到 4 的倍数，防止跨 chunk 多收字符导致 base64 解码失败
+                trim_len = len(b64_str) - (len(b64_str) % 4)
+                b64_str = b64_str[:trim_len]
+                try:
+                    decoded = base64.b64decode(b64_str).decode('utf-8')
+                    return json.loads(decoded)
+                except Exception:
+                    pass
+
+        # 4. 原始字节搜索 — 直接的 JSON 结构（无 Base64 编码）
+        for marker in (b'"name":', b'"name": ', b'"description":', b'"personality":',
+                       b'"spec":', b'"first_mes":', b'"data":{'):
+            idx = image_data.find(marker)
+            if idx >= 0:
+                # 向前找到 {
+                brace_start = image_data.rfind(b'{', 0, idx)
+                if brace_start < 0:
+                    brace_start = idx
+                # 向后找到匹配的 }
+                depth = 0
+                brace_end = brace_start
+                for i in range(brace_start, min(brace_start + 5000000, len(image_data))):
+                    if image_data[i:i+1] == b'{':
+                        depth += 1
+                    elif image_data[i:i+1] == b'}':
+                        depth -= 1
+                        if depth == 0:
+                            brace_end = i + 1
+                            break
+                if depth == 0 and brace_end > brace_start:
+                    try:
+                        json_str = image_data[brace_start:brace_end].decode('utf-8', errors='ignore')
+                        return json.loads(json_str)
+                    except Exception:
+                        pass
+
+        # 判断是否为 PNG 但已被压缩（无文本块）
+        is_png = image_data[:8] == b'\x89PNG\r\n\x1a\n'
+        has_text_chunks = b'tEXt' in image_data or b'iTXt' in image_data or b'zTXt' in image_data
+        if is_png and not has_text_chunks:
+            raise ValueError(
+                "PNG 图片已被社交媒体压缩，所有元数据已丢失。请使用「文本粘贴导入」功能，"
+                "或从原平台下载原始 PNG 文件。"
+            )
 
         raise ValueError(
-            "未找到 V2 角色卡数据 (可能图片在社交平台上传时元数据已被压缩/擦除)"
+            "未找到 V2 角色卡数据（图片可能不是角色卡，或元数据已丢失）"
         )
 
     @staticmethod
@@ -365,28 +440,6 @@ class QuillPersonaManager:
         name_match = re.search(r'Name\s*=\s*["\']?([^"\'\n]+)["\']?', text, re.IGNORECASE)
         name_val = name_match.group(1) if name_match else ""
         name = (name_val or "").strip() or "未命名角色 (需手动修改)"
-
-        # 2.2 提取各区块
-        personality = extract_block(r'Personality', text)
-        scenario = extract_block(r'Scenario', text)
-        first_message = extract_block(r'First\s*Message|First_mes|FirstMes', text)
-        examples = extract_block(r'Example\s*Dialogs|Example_Dialog|mes_example|Examples', text)
-        description = extract_block(r'Description|Summary', text)
-
-        # 2.3 智能合并 description → personality
-        if not personality and description:
-            personality = description[:2000] if len(description) > 2000 else description
-
-        return {
-            "name": name,
-            "summary": description[:500] if description else "",
-            "core_prompts": {
-                "personality": personality,
-                "scenario": scenario,
-                "first_message": first_message,
-                "examples_of_dialogue": examples,
-            }
-        }
 
         # 2.2 提取各区块
         personality = extract_block(r'Personality', text)
