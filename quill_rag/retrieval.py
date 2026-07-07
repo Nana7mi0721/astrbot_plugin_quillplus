@@ -79,6 +79,19 @@ class QuillRetriever:
             logger.warning(f"[Quill Memory] 记忆检索失败: {e}")
             return []
 
+    async def log_chat_message(self, session_id: str, role: str, content: str):
+        """存储一条原始对话记录（在线程池中执行）"""
+        if not self.memory_store or not session_id or not content:
+            return
+        if not getattr(self.config, 'rag_enable_chat_logging', True):
+            return
+        try:
+            await asyncio.to_thread(
+                self.memory_store.log_message, session_id, role, content
+            )
+        except Exception as e:
+            logger.warning(f"[Quill ChatLog] 对话记录失败: {e}")
+
     async def store_memory(self, session_id: str, user_input: str, ai_response: str):
         """存储一条对话记忆（在线程池中执行数据库写入）。"""
         if not self.memory_store or not self.enable_memory or not session_id:
@@ -123,6 +136,74 @@ class QuillRetriever:
         except Exception as e:
             logger.warning(f"[Quill Memory] 直接记忆存储失败: {e}")
             raise
+
+    async def summarize_contexts(self, session_id: str, contexts: list[dict]) -> str:
+        """自动总结多轮对话历史，生成一条记忆并存储。
+
+        Args:
+            session_id: 会话 ID
+            contexts: 对话历史列表，每项含 role/content
+
+        Returns:
+            生成的摘要文本
+        """
+        if not self.memory_store or not self.enable_memory:
+            raise RuntimeError("动态记忆功能未启用")
+        if not contexts or len(contexts) < 2:
+            raise ValueError("对话历史不足（至少需要 1 条用户消息 + 1 条 AI 回复）")
+
+        # 1. 只取最近 6 轮（最多 12 条消息）
+        recent = contexts[-12:]
+
+        # 2. 格式化为结构化对话文本
+        lines = []
+        turn_count = 0
+        for msg in recent:
+            role = msg.get("role", "")
+            content = msg.get("content", "")[:300]
+            if role == "user":
+                lines.append(f"用户：{content}")
+                turn_count += 1
+            elif role == "assistant":
+                lines.append(f"AI：{content}")
+        combined = "\n".join(lines)
+
+        # 3. 调用 LLM 做结构化多轮摘要（复用 summarizer provider）
+        summary = ""
+        if self.summarizer and hasattr(self.summarizer, 'context_summarize'):
+            summary = await self.summarizer.context_summarize(combined, turn_count)
+        elif self.summarizer:
+            # 降级：用单轮 summarizer 兜底
+            summary = await self.summarizer.summarize(combined[:1500], "")
+        if not summary:
+            summary = f"最近{turn_count}轮对话片段：" + combined[:150]
+        summary = summary[:200]
+
+        # 4. Embedding → 存储
+        vector = await self.embedding.embed([summary])
+        if not vector:
+            raise RuntimeError("Embedding 生成失败")
+
+        # 5. 防重复：检查是否已有语义高度重叠的记忆
+        if self.memory_store:
+            try:
+                existing = await asyncio.to_thread(
+                    self.memory_store.search, session_id, vector[0], top_k=3
+                )
+                for mem in existing:
+                    if mem.get("score", 0) > 0.92:
+                        logger.info(f"[Quill Memory] 跳过重复记忆: session={session_id} similarity={mem['score']:.2f}")
+                        return summary  # 已存在高度相似记忆，跳过存储
+            except Exception:
+                pass  # 检查失败不影响存储
+
+        await asyncio.to_thread(
+            self.memory_store.add, session_id, summary, vector[0],
+            chat_summary=combined[:100]
+        )
+        logger.info(f"[Quill Memory] 上下文自动总结: session={session_id} turns={turn_count} summary={summary[:30]}...")
+
+        return summary
 
     def format_for_prompt(self, doc_results: list[dict], memory_results: list[dict]) -> str:
         """将检索结果格式化为注入 prompt 的文本。"""

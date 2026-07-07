@@ -26,7 +26,6 @@ _DEFAULTS = {
     },
     "worldbook": {
         "enabled": True,
-        "active_worldbooks": [],
         "max_dynamic_entries": 4,
         "max_token_limit": 4000,
         "match_sensitivity": 0.7,
@@ -54,6 +53,9 @@ _DEFAULTS = {
     },
     "debug": {
         "enabled": False,
+    },
+    "permissions": {
+        "admin_users": "",
     },
 }
 
@@ -86,11 +88,12 @@ class QuillConfig:
         self.rag_top_k: int = int(rag.get("top_k", 3))
         self.rag_dense_top_k: int = int(rag.get("dense_top_k", 5))
         self.rag_enable_memory: bool = bool(rag.get("enable_memory", False))
+        self.rag_enable_chat_logging: bool = bool(rag.get("enable_chat_logging", True))
+        self.rag_chat_log_retention_days: int = int(rag.get("chat_log_retention_days", 30))
 
         # ── worldbook ──
         wb = _get_nested(self._raw, "worldbook", {}) or {}
         self.worldbook_enabled: bool = bool(wb.get("enabled", True))
-        self.worldbook_active: list[str] = wb.get("active_worldbooks", []) or []
         self.worldbook_max_dynamic: int = int(wb.get("max_dynamic_entries", 4))
         self.worldbook_max_token: int = int(wb.get("max_token_limit", 4000))
         self.worldbook_sensitivity: float = float(wb.get("match_sensitivity", 0.7))
@@ -135,6 +138,19 @@ class QuillConfig:
         # ── debug ──
         dbg = _get_nested(self._raw, "debug", {}) or {}
         self.debug_enabled: bool = bool(dbg.get("enabled", False))
+
+        # ── permissions ──
+        perm = _get_nested(self._raw, "permissions", {}) or {}
+        admin_raw = perm.get("admin_users", "") or ""
+        if isinstance(admin_raw, str) and admin_raw.strip():
+            import re
+            self.admin_users: list[str] = [
+                u.strip() for u in re.split(r'[,\n|]+', admin_raw) if u.strip()
+            ]
+        elif isinstance(admin_raw, list):
+            self.admin_users = [str(u).strip() for u in admin_raw if str(u).strip()]
+        else:
+            self.admin_users = []
 
     def get_raw(self) -> dict:
         """返回原始 config dict（只读用途）。"""

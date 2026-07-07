@@ -104,7 +104,9 @@ class QuillPlugin(Star):
         self.activation_detector = ActivationDetector(activation_path)
 
         # --- State ---
-        self.state_manager = StateManager(max_users=500)
+        data_dir = os.path.join(self.plugin_dir, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        self.state_manager = StateManager(max_users=500, data_dir=data_dir)
 
         # --- Knowledge Base (deferred to initialize()) ---
         self.kb_manager = None
@@ -114,14 +116,9 @@ class QuillPlugin(Star):
         # --- Worldbook ---
         wb_dir = os.path.join(self.plugin_dir, "worldbooks")
         try:
-            self.wb_manager = WorldbookManager(
-                wb_dir,
-                active_worldbooks=self.config.worldbook_active
-            )
+            self.wb_manager = WorldbookManager(wb_dir)
             wb_names = self.wb_manager.list_worldbooks()
-            active = self.config.worldbook_active
-            logger.info(f"[Quill] 世界书已加载: {len(wb_names)} 个 - {wb_names}"
-                        f" (活跃: {active if active else '全部'})")
+            logger.info(f"[Quill] 世界书已加载: {len(wb_names)} 个 - {wb_names}")
         except Exception as e:
             self.wb_manager = None
             logger.warning(f"[Quill] 世界书加载失败: {e}")
@@ -211,6 +208,15 @@ class QuillPlugin(Star):
                 "面板 UI 不可用，但 API 路由仍正常工作。"
             )
 
+        # 启动时清理过期对话日志
+        if self.rag_retriever and self.rag_retriever.memory_store:
+            retention_days = getattr(self.config, 'rag_chat_log_retention_days', 30)
+            cleaned = await asyncio.to_thread(
+                self.rag_retriever.memory_store.cleanup_chat_logs, retention_days
+            )
+            if cleaned:
+                logger.info(f"[Quill ChatLog] 清理了 {cleaned} 条过期日志（保留 {retention_days} 天）")
+
         logger.info(
             f"[Quill] 插件初始化完成 | 激活词: {self.activation_detector.get_word_count()} 个"
         )
@@ -294,6 +300,24 @@ class QuillPlugin(Star):
             if group not in self._raw_config:
                 self._raw_config[group] = {}
             self._raw_config[group][key] = value
+
+            # 热重载：更新内存中所有配置派生属性
+            self.config = QuillConfig(self._raw_config)
+            self.kb_max_entries = self.config.kb_max_entries
+            self.kb_fallback_top_count = self.config.kb_fallback_top
+            self.wb_max_entries = self.config.worldbook_max_dynamic
+            self.status_bar_enabled = self.config.status_bar_enabled
+            self.status_bar_format_template = self.config.status_bar_format
+            self.love_fields = self.config.status_bar_fields
+            self.refusal_enabled = self.config.refusal_enabled
+            self.refusal_patterns = self.config.refusal_patterns
+            self.debug = self.config.debug_enabled
+            self.prompt_builder = PromptBuilder(self.config)
+
+            # 同步对话日志配置（供运行时检测）
+            self.rag_enable_chat_logging = self.config.rag_enable_chat_logging
+            self.rag_chat_log_retention_days = self.config.rag_chat_log_retention_days
+
             # 持久化到磁盘
             if hasattr(self._raw_config, 'save_config') and callable(self._raw_config.save_config):
                 self._raw_config.save_config()
@@ -314,13 +338,14 @@ class QuillPlugin(Star):
         """在流式决策前控制流式模式。"""
         try:
             user_input = event.message_str or ""
-            user_id = str(event.get_sender_id())
+            target_id = self._get_target_id(event)
         except Exception:
             return
 
-        # 拦截 /reinject 和 /重新注入
+        # 拦截 /reinject 和 /重新注入（个人行为，仍用 sender_id）
         if user_input.strip() in ("/reinject", "/重新注入"):
-            await self.state_manager.reset_quill_rounds(user_id)
+            sender_id = str(event.get_sender_id())
+            await self.state_manager.reset_quill_rounds(sender_id)
             logger.info("[Quill] /reinject 已重置 quill_rounds")
             from astrbot.core.message.message_event_result import MessageEventResult
             event.set_result(MessageEventResult().message(
@@ -328,8 +353,8 @@ class QuillPlugin(Star):
             ))
             return
 
-        # 读取用户流式偏好
-        state = await self.state_manager.get_state(user_id)
+        # 读取对话维度流式偏好
+        state = await self.state_manager.get_state(target_id)
 
         if state.stream_mode == "off":
             event.set_extra("enable_streaming", False)
@@ -348,10 +373,10 @@ class QuillPlugin(Star):
 
     # ── 状态栏解析共享方法 ──────────────────────────────────────
 
-    async def _persist_status_vars(self, updates: dict, user_id: str) -> None:
+    async def _persist_status_vars(self, updates: dict, target_id: str) -> None:
         """Persist parsed status fields to session_vars."""
         if updates:
-            await self.state_manager.update_session_vars(user_id, updates)
+            await self.state_manager.update_session_vars(target_id, updates)
             logger.info(f"[Quill] 状态栏持久化: {len(updates)} 个字段")
 
     def _format_love_data(self, content: str) -> tuple:
@@ -403,6 +428,14 @@ class QuillPlugin(Star):
                 delattr(tool, "_quill_orig_description")
             except AttributeError:
                 pass
+
+    def _get_target_id(self, event: AstrMessageEvent) -> str:
+        if hasattr(event, "unified_msg_origin") and event.unified_msg_origin:
+            return str(event.unified_msg_origin)
+        return str(event.get_sender_id())
+
+    def _get_memory_session_id(self, target_id: str, persona_id: str) -> str:
+        return f"{target_id}::{persona_id}" if persona_id else target_id
 
     @filter.on_using_llm_tool(priority=200)
     async def on_using_llm_tool(
@@ -461,23 +494,138 @@ class QuillPlugin(Star):
             for msg in messages:
                 if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
                     text = msg["text"]
-                    user_id = str(event.get_sender_id())
+                    target_id = self._get_target_id(event)
                     love_updates, love_formatted, raw_line = self._format_love_data(text)
                     if love_updates:
-                        await self._persist_status_vars(love_updates, user_id)
+                        await self._persist_status_vars(love_updates, target_id)
                         msg["text"] = text.replace(raw_line, love_formatted)
                         break
                     status_match = _STATUS_RE.search(text)
                     if status_match:
                         status_content = status_match.group(1).strip()
                         await self._persist_status_vars(
-                            self._parse_legacy_status(status_content), user_id
+                            self._parse_legacy_status(status_content), target_id
                         )
                         formatted = self.status_bar_format_template.replace(
                             "{content}", status_content
                         )
                         msg["text"] = _STATUS_RE.sub(formatted, text)
                         break
+
+    async def _inject_persona_and_first_message(self, req: ProviderRequest, event: AstrMessageEvent, target_id: str) -> tuple:
+        """获取角色卡数据并注入开场白。返回 (persona_id, persona_data)。"""
+        persona_id = await self.state_manager.get_persona_id(target_id)
+        # 切断 AstrBot 原生人格注入，防止双重 Prompt 污染
+        if req.conversation:
+            req.conversation.persona_id = "[%None]"
+
+        persona_data = None
+        if persona_id and self.persona_manager:
+            persona_data = await self.persona_manager.get_persona(persona_id)
+            if persona_data:
+                fm = persona_data.get("core_prompts", {}).get("first_message", "").strip()
+                if fm:
+                    state = await self.state_manager.get_state(target_id)
+                    if not state.first_message_injected:
+                        # 上下文为空（无恢复记录）才判定为"初次见面"
+                        is_truly_empty = not req.contexts or len(req.contexts) <= 1
+                        if is_truly_empty:
+                            if hasattr(req, 'contexts') and isinstance(req.contexts, list):
+                                req.contexts.insert(0, {"role": "assistant", "content": fm})
+                                logger.info(f"[Quill] 已注入 {persona_data.get('name', persona_id)} 的开场白 (first_message)")
+                        await self.state_manager.mark_first_message_injected(target_id)
+        return persona_id, persona_data
+
+    async def _check_activation(self, user_input: str, context_text: str, persona_data) -> tuple:
+        """检查激活状态（激活词 / 括号 / KB关键词）。返回 (activated, kb_activated)。"""
+        activated = self.activation_detector.should_activate(user_input)
+        has_bracket = self.activation_detector.check_brackets(user_input)
+
+        kb_activated = False
+        if not (activated or has_bracket) and self.kb_manager:
+            try:
+                ext = persona_data.get("quill_extensions", {}) if persona_data else {}
+                kb_mode = ext.get("kb_mode", "disabled")
+                bound_kbs = ext.get("bound_knowledge_base", []) if kb_mode == "custom" else None
+
+                logger.info(f"[Quill] 写作素材库模式: {kb_mode}，绑定分类: {bound_kbs if bound_kbs is not None else 'Auto (全局匹配)'}")
+
+                if kb_mode != "disabled":
+                    fetch_count = 7 if bound_kbs is not None else 3
+                    matched = await self.kb_manager.match(context_text, top_k=fetch_count, log_match=False)
+
+                    if bound_kbs is not None:
+                        matched = [m for m in matched if m.get("category") in bound_kbs]
+
+                    kb_activated = len(matched) > 0
+                    if kb_activated:
+                        logger.info(f"[Quill] 写作素材库关键词触发激活: {len(matched)} 条匹配 (context)")
+                    else:
+                        logger.info(f"[Quill] 写作素材库未匹配到内容")
+                else:
+                    logger.info(f"[Quill] 写作素材库模式: disabled，跳过素材检索")
+            except Exception as e:
+                logger.warning(f"[Quill] KB 匹配失败: {e}")
+
+        return activated, kb_activated
+
+    async def _run_rag_retrieval(self, event: AstrMessageEvent, req: ProviderRequest, user_input: str, persona_data, dynamic_prompt: str) -> str:
+        """执行 RAG 检索（Doc + Memory），返回更新后的 dynamic_prompt。"""
+        if not (self.rag_retriever and self.rag_retriever.embedding):
+            logger.warning(f"[Quill RAG] 文档系统未初始化")
+            return dynamic_prompt
+
+        try:
+            target_id = self._get_target_id(event)
+            persona_id = await self.state_manager.get_persona_id(target_id)
+            mem_session_id = self._get_memory_session_id(target_id, persona_id)
+
+            doc_results = []
+            ext = persona_data.get("quill_extensions", {}) if persona_data else {}
+            rag_mode = ext.get("rag_mode", "disabled")
+
+            logger.info(f"[Quill RAG] 模式: {rag_mode}，绑定文档: {ext.get('bound_rag_docs', []) if rag_mode == 'custom' else 'Auto (全库)'}")
+
+            if rag_mode != "disabled":
+                bound_rag_docs = ext.get("bound_rag_docs", []) if rag_mode == "custom" else None
+                doc_results = await self.rag_retriever.search_documents(user_input, allowed_sources=bound_rag_docs)
+                logger.info(f"[Quill RAG] 文档检索结果: {len(doc_results)} 段")
+            else:
+                logger.info(f"[Quill RAG] 模式: disabled，跳过文档检索")
+
+            mem_results = await self.rag_retriever.search_memories(mem_session_id, user_input)
+            logger.info(f"[Quill RAG] 记忆检索: {len(mem_results)} 条 (Session: {mem_session_id})")
+
+            rag_context = self.rag_retriever.format_for_prompt(doc_results, mem_results)
+            if rag_context:
+                dynamic_prompt += "\n\n" + rag_context
+                logger.info(f"[Quill RAG] 注入上下文: {len(rag_context)} 字符")
+        except Exception as e:
+            logger.warning(f"[Quill RAG] 检索失败: {e}")
+
+        return dynamic_prompt
+
+    async def _rewrite_smt_tool_description(self, req: ProviderRequest) -> None:
+        """改写 send_message_to_user 工具描述（含状态栏强制要求）。"""
+        if not (req.func_tool and not req.func_tool.empty()):
+            return
+        smt_tool = req.func_tool.get_tool("send_message_to_user")
+        if smt_tool and self._QUILL_SMT_DESC_MARKER not in (smt_tool.description or ""):
+            smt_tool._quill_orig_description = smt_tool.description
+            status_req = (
+                "\n\nCRITICAL: At the END of your message text, you MUST append:\n"
+                "1. Status bar (one line): [LOVE_DATA] " + " | ".join(self.love_fields) + "\n"
+                "2. Plot options:\n>>> Plot Paths <<<\n1. Option A\n2. Option B\n3. Option C\n<<< Select >>>"
+            ) if self.status_bar_enabled else ""
+            smt_tool.description = (
+                "Send message to the user. "
+                "IMPORTANT: You MUST use this tool to send ALL reply text. "
+                "Do NOT output text directly in the content field — it will be blocked by the content filter. "
+                "Call this tool IMMEDIATELY — do NOT call any other tools (file_read, shell, etc.) before sending. "
+                "Supports various message types including plain, image, record, video, file, and mention_user."
+                + status_req
+            )
+            logger.info(f"[Quill] 已重写 send_message_to_user 描述")
 
     @filter.on_llm_request(priority=100)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -486,27 +634,38 @@ class QuillPlugin(Star):
             self._restore_smt_tool(req)
 
             user_input = req.prompt or ""
-            user_id = str(event.get_sender_id())
+            target_id = self._get_target_id(event)
 
-            # 从 Quill 自身状态读取角色 ID（而非 AstrBot 原生）
-            persona_id = await self.state_manager.get_persona_id(user_id)
-            # 切断 AstrBot 原生人格注入，防止双重 Prompt 污染
-            if req.conversation:
-                req.conversation.persona_id = "[%None]"
+            # ── 上下文恢复（重启/滑动窗口切断后无缝续传）──
+            mem_session_id = self._get_memory_session_id(
+                target_id,
+                await self.state_manager.get_persona_id(target_id)
+            )
+            contexts_is_fresh = not req.contexts or len(req.contexts) <= 1
+            if contexts_is_fresh \
+                    and getattr(self.config, 'rag_enable_chat_logging', True) \
+                    and self.rag_retriever and self.rag_retriever.memory_store:
+                recent_logs = await asyncio.to_thread(
+                    self.rag_retriever.memory_store.get_recent_chat_logs, mem_session_id, limit=8
+                )
+                if recent_logs and isinstance(req.contexts, list):
+                    req.contexts = recent_logs + req.contexts
+                    logger.info(f"[Quill Context] 恢复 {len(recent_logs)} 条上下文（Session: {mem_session_id}）")
 
-            # 注入开场白 (first_message) 作为首条伪造历史记录
-            persona_data = None
-            if persona_id and self.persona_manager:
-                persona_data = await self.persona_manager.get_persona(persona_id)
-                if persona_data:
-                    fm = persona_data.get("core_prompts", {}).get("first_message", "").strip()
-                    if fm:
-                        state = await self.state_manager.get_state(user_id)
-                        if not state.first_message_injected:
-                            if hasattr(req, 'contexts') and isinstance(req.contexts, list):
-                                req.contexts.insert(0, {"role": "assistant", "content": fm})
-                                logger.info(f"[Quill] 已注入 {persona_data.get('name', persona_id)} 的开场白 (first_message)")
-                            await self.state_manager.mark_first_message_injected(user_id)
+            persona_id, persona_data = await self._inject_persona_and_first_message(req, event, target_id)
+
+            # 记录用户消息（仅已绑定角色卡且非指令时）
+            if persona_id and user_input and not user_input.strip().startswith("/") \
+                    and getattr(self.config, 'rag_enable_chat_logging', True) \
+                    and self.rag_retriever:
+                asyncio.create_task(self.rag_retriever.log_chat_message(
+                    mem_session_id, "user", user_input
+                ))
+
+            # 存储最近 6 轮对话，供 /memory learn 自动总结
+            if hasattr(req, 'contexts') and isinstance(req.contexts, list):
+                recent_msgs = [c for c in req.contexts[-12:] if c.get("role") in ("user", "assistant")]
+                event.set_extra("_quill_recent_msgs", recent_msgs)
 
             # Build multi-turn context for KB matching
             context_text = user_input
@@ -520,53 +679,20 @@ class QuillPlugin(Star):
                         parts.append(content)
                 context_text = "\n".join(parts)
 
-            activated = self.activation_detector.should_activate(user_input)
+            activated, kb_activated = await self._check_activation(user_input, context_text, persona_data)
             has_bracket = self.activation_detector.check_brackets(user_input)
 
-            # 写作素材库关键词触发
-            kb_activated = False
-            if not (activated or has_bracket) and self.kb_manager:
-                try:
-                    # 获取角色绑定的知识库分类
-                    bound_kbs = []
-                    if persona_data:
-                        bound_kbs = persona_data.get("quill_extensions", {}).get("bound_knowledge_base", [])
-
-                    # 取多一点候选池，防止过滤后不够
-                    fetch_count = 15 if bound_kbs else 3
-                    matched = await self.kb_manager.match(context_text, top_k=fetch_count, log_match=False)
-
-                    if bound_kbs:
-                        matched = [m for m in matched if m.get("category") in bound_kbs]
-
-                    kb_activated = len(matched) > 0
-                    if kb_activated:
-                        logger.info(f"[Quill] 写作素材库关键词触发激活: {len(matched)} 条匹配 (context)")
-                except Exception as e:
-                    logger.warning(f"[Quill] KB 匹配失败: {e}")
-
             if not (activated or has_bracket or kb_activated):
-                await self.state_manager.reset_quill_rounds(user_id)
+                await self.state_manager.reset_quill_rounds(target_id)
                 return
 
-            quill_rounds = await self.state_manager.increment_quill_rounds(user_id)
+            quill_rounds = await self.state_manager.increment_quill_rounds(target_id)
             skip_constants = quill_rounds > 1
             if skip_constants:
                 logger.info(f"[Quill] 连续第 {quill_rounds} 轮激活，跳过 Layer 1 常驻")
 
-            # 改写 send_message_to_user 描述
-            if req.func_tool and not req.func_tool.empty():
-                smt_tool = req.func_tool.get_tool("send_message_to_user")
-                if smt_tool and self._QUILL_SMT_DESC_MARKER not in (smt_tool.description or ""):
-                    smt_tool._quill_orig_description = smt_tool.description
-                    smt_tool.description = (
-                        "Send message to the user. "
-                        "IMPORTANT: You MUST use this tool to send ALL reply text. "
-                        "Do NOT output text directly in the content field — it will be blocked by the content filter. "
-                        "Call this tool IMMEDIATELY — do NOT call any other tools (file_read, shell, etc.) before sending. "
-                        "Supports various message types including plain, image, record, video, file, and mention_user."
-                    )
-                    logger.info(f"[Quill] 已重写 send_message_to_user 描述")
+            # 改写 send_message_to_user 描述（含状态栏强制要求）
+            await self._rewrite_smt_tool_description(req)
 
             if kb_activated and self.kb_manager and self.debug:
                 try:
@@ -580,21 +706,21 @@ class QuillPlugin(Star):
                 except Exception:
                     pass
 
-            emergency = await self.state_manager.should_inject_emergency(user_id)
+            emergency = await self.state_manager.should_inject_emergency(target_id)
 
             extra_info = {
                 "user_input": user_input,
                 "context_text": context_text,
                 "persona_id": persona_id,
                 "persona_data": persona_data,
-                "user_id": user_id,
+                "user_id": target_id,
                 "kb_max_entries": self.kb_max_entries,
                 "kb_fallback_top_count": self.kb_fallback_top_count,
                 "wb_max_entries": self.wb_max_entries,
                 "wb_sensitivity": self.config.worldbook_sensitivity,
                 "wb_max_token": self.config.worldbook_max_token,
                 "skip_constants": skip_constants,
-                "session_vars": await self.state_manager.get_session_vars(user_id),
+                "session_vars": await self.state_manager.get_session_vars(target_id),
             }
 
             stable_prompt, dynamic_prompt = await self.prompt_builder.build_system_prompt(
@@ -602,32 +728,12 @@ class QuillPlugin(Star):
             )
 
             # ── RAG 检索（Doc RAG + 动态记忆）──
-            if self.rag_retriever and self.rag_retriever.embedding:
-                try:
-                    session_id = str(event.unified_msg_origin) if hasattr(event, 'unified_msg_origin') else user_id
-
-                    # 获取当前角色绑定的 RAG 文档
-                    bound_rag_docs = None
-                    if persona_data:
-                        bound_rag_docs = persona_data.get("quill_extensions", {}).get("bound_rag_docs", [])
-                        if not bound_rag_docs:
-                            bound_rag_docs = None
-
-                    doc_results = await self.rag_retriever.search_documents(user_input, allowed_sources=bound_rag_docs)
-                    mem_results = await self.rag_retriever.search_memories(session_id, user_input)
-
-                    rag_context = self.rag_retriever.format_for_prompt(doc_results, mem_results)
-                    if rag_context:
-                        dynamic_prompt += "\n\n" + rag_context
-                        if self.debug:
-                            logger.info(f"[Quill RAG] 注入 {len(doc_results)} 文档 + {len(mem_results)} 记忆")
-                except Exception as e:
-                    logger.warning(f"[Quill RAG] 检索失败: {e}")
+            dynamic_prompt = await self._run_rag_retrieval(event, req, user_input, persona_data, dynamic_prompt)
 
             # 触发日志注入（show_trigger_log 开启时）
             if (self.config.worldbook_show_log and self.wb_manager
                     and hasattr(self.wb_manager, 'get_trigger_log')):
-                trigger_log = self.wb_manager.get_trigger_log()
+                trigger_log = await asyncio.to_thread(self.wb_manager.get_trigger_log)
                 if trigger_log:
                     log_lines = ["[触发日志]"]
                     for t in trigger_log[:10]:
@@ -641,8 +747,8 @@ class QuillPlugin(Star):
 
             event.set_extra("_quill_activated", True)
 
-            await self.state_manager.update_activity(user_id)
-            await self.state_manager.clear_refusal(user_id)
+            await self.state_manager.update_activity(target_id)
+            await self.state_manager.clear_refusal(target_id)
 
             trigger = "激活词" if activated else ("括号" if has_bracket else "KB关键词")
             _es = event.get_extra("enable_streaming")
@@ -674,19 +780,19 @@ class QuillPlugin(Star):
             # 状态栏解析 + 格式化
             if self.status_bar_enabled:
                 content = resp.completion_text or ""
-                user_id = str(event.get_sender_id())
+                target_id = self._get_target_id(event)
 
                 love_updates, love_formatted, raw_line = self._format_love_data(content)
                 if love_updates:
-                    await self._persist_status_vars(love_updates, user_id)
+                    await self._persist_status_vars(love_updates, target_id)
                     resp.completion_text = content.replace(raw_line, love_formatted)
-                    logger.info("[Quill] LOVE_DATA 状态栏已格式化")
+                    logger.info("[Quill LOVE_DATA 状态栏已格式化")
                 else:
                     status_match = _STATUS_RE.search(content)
                     if status_match:
                         status_content = status_match.group(1).strip()
                         await self._persist_status_vars(
-                            self._parse_legacy_status(status_content), user_id
+                            self._parse_legacy_status(status_content), target_id
                         )
                         formatted = self.status_bar_format_template.replace(
                             "{content}", status_content
@@ -706,9 +812,8 @@ class QuillPlugin(Star):
 
             for pattern in self.refusal_patterns:
                 if pattern in scan_text:
-                    user_id = str(event.get_sender_id())
-                    await self.state_manager.mark_refusal(user_id)
-                    logger.info(f"[Quill] 检测到拒绝模式 '{pattern}' (user={user_id})")
+                    await self.state_manager.mark_refusal(target_id)
+                    logger.info(f"[Quill] 检测到拒绝模式 '{pattern}' (target={target_id})")
                     break
         except Exception as e:
             logger.error(f"[Quill] on_llm_response 后处理遭遇未捕获异常，已降级放行: {e}", exc_info=True)
@@ -753,12 +858,21 @@ class QuillPlugin(Star):
                                 ai_response += m["text"] + "\n"
 
                 # 存入记忆库（后台任务，异常在done回调中捕获）
+                target_id = self._get_target_id(event)
+                persona_id = await self.state_manager.get_persona_id(target_id)
+                mem_session_id = self._get_memory_session_id(target_id, persona_id)
+
                 if user_input and ai_response and len(ai_response) > 50:
-                    session_id = str(event.unified_msg_origin) if hasattr(event, 'unified_msg_origin') else str(event.get_sender_id())
                     task = asyncio.create_task(
-                        self.rag_retriever.store_memory(session_id, user_input, ai_response.strip())
+                        self.rag_retriever.store_memory(mem_session_id, user_input, ai_response.strip())
                     )
                     task.add_done_callback(lambda t: t.exception() and logger.warning(f"[Quill Memory] 后台记忆存储异常: {t.exception()}"))
+
+                # 记录 AI 回复到对话日志
+                if ai_response.strip() and getattr(self.config, 'rag_enable_chat_logging', True):
+                    asyncio.create_task(self.rag_retriever.log_chat_message(
+                        mem_session_id, "assistant", ai_response.strip()
+                    ))
             except Exception as e:
                 logger.warning(f"[Quill Memory] 记忆存储调度失败: {e}")
 

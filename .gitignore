@@ -29,6 +29,7 @@ desktop.ini
 
 # ── AstrBot / Quill 插件用户数据（含隐私） ──
 imports/
+data/
 
 # ── MCP 配置（可能含 API Key） ──
 .mcp.json
@@ -54,3 +55,7 @@ logs/
 .coverage
 htmlcov/
 .tox/
+
+# ── 确保示例文件永远被追踪（不允许被上方规则误排除）──
+!worldbooks/
+!knowledge/

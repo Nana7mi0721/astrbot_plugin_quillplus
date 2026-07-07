@@ -17,6 +17,7 @@ All kb_manager methods are async; retrieve_content_layers is async too.
 wb_manager methods are synchronous.
 """
 
+import asyncio
 import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
@@ -80,6 +81,8 @@ class PromptBuilder:
             sb_cfg = (config or {}).get("status_bar", {})
             self.status_bar_enabled: bool = sb_cfg.get("enabled", False)
             self.status_bar_prompt_template: str = sb_cfg.get("prompt_template", "")
+
+        self.token_ratio: float = 1.5
 
     # ----------------------------------------------------------
     # Public API
@@ -265,18 +268,22 @@ class PromptBuilder:
         user_input = extra_info.get("user_input", "")
         seen_ids: set = set()
 
-        # === 提取角色卡绑定的知识库分类 ===
-        bound_kbs: List[str] = []
+        # === 提取角色卡扩展配置（三态模式）===
+        ext = {}
         if extra_info.get("persona_data"):
-            bound_kbs = extra_info["persona_data"].get("quill_extensions", {}).get("bound_knowledge_base", [])
+            ext = extra_info["persona_data"].get("quill_extensions", {})
+        kb_mode = ext.get("kb_mode", "disabled")
+        wb_mode = ext.get("wb_mode", "disabled")
+        bound_kbs = ext.get("bound_knowledge_base", []) if kb_mode == "custom" else None
+        bound_worldbooks = ext.get("bound_worldbooks", []) if wb_mode == "custom" else None
 
         # === Layer 1: constants + random pool (skip on consecutive turns) ===
         skip_constants = extra_info.get("skip_constants", False)
-        if not skip_constants and kb_manager:
+        if not skip_constants and kb_manager and kb_mode != "disabled":
             try:
                 constant_entries = await kb_manager.get_constant_entries()
-                # 过滤被绑定的分类
-                if bound_kbs:
+                # 过滤被绑定的分类（is not None 确保空列表也能正确过滤）
+                if bound_kbs is not None:
                     constant_entries = [e for e in constant_entries if e.get("category") in bound_kbs]
                 pools: Dict[str, List[str]] = {
                     "random_sensory": [],
@@ -308,13 +315,9 @@ class PromptBuilder:
             except Exception as exc:
                 logger.warning("[PromptBuilder] KB constant entries failed: %s", exc)
 
-        if not skip_constants and wb_manager:
+        if not skip_constants and wb_manager and wb_mode != "disabled":
             try:
-                persona_id = extra_info.get("persona_id")
-                user_id = extra_info.get("user_id")
-                wb_constants = wb_manager.get_constant_entries(
-                    persona_id=persona_id, user_id=user_id
-                )
+                wb_constants = await asyncio.to_thread(wb_manager.get_constant_entries, bound_worldbooks=bound_worldbooks)
                 for entry in wb_constants:
                     content = entry.get("content", "")
                     if content:
@@ -326,15 +329,15 @@ class PromptBuilder:
 
         # === Layer 2: keyword matching (uses multi-turn context for richer matching) ===
         matching_text = extra_info.get("context_text") or user_input
-        if matching_text and kb_manager:
+        if matching_text and kb_manager and kb_mode != "disabled":
             try:
                 max_entries = extra_info.get("kb_max_entries", 5)
-                # 取多一点候选池，防止过滤后不够
-                fetch_count = max_entries * 4 if bound_kbs else max_entries
+                # Custom 模式取多一点候选池，防止过滤后不够
+                fetch_count = max_entries * 2 if bound_kbs is not None else max_entries
                 matched = await kb_manager.match(matching_text, top_k=fetch_count)
 
-                # 过滤被绑定的分类
-                if bound_kbs:
+                # 过滤被绑定的分类（is not None 确保空列表也能正确过滤）
+                if bound_kbs is not None:
                     matched = [e for e in matched if e.get("category") in bound_kbs]
 
                 match_count = 0
@@ -352,8 +355,8 @@ class PromptBuilder:
                     try:
                         fallback_limit = extra_info.get("kb_fallback_top_count", 2)
                         top_entries = await kb_manager.get_top_entries_by_match_count(limit=fallback_limit)
-                        # 过滤被绑定的分类
-                        if bound_kbs:
+                        # 过滤被绑定的分类（is not None 确保空列表也能正确过滤）
+                        if bound_kbs is not None:
                             top_entries = [e for e in top_entries if e.get("category") in bound_kbs]
                         for entry in top_entries:
                             eid = entry.get("entry_id", "")
@@ -369,15 +372,13 @@ class PromptBuilder:
             except Exception as exc:
                 logger.warning("[PromptBuilder] KB keyword match failed: %s", exc)
 
-        if matching_text and wb_manager:
+        if matching_text and wb_manager and wb_mode != "disabled":
             try:
-                persona_id = extra_info.get("persona_id")
-                user_id = extra_info.get("user_id")
                 wb_top_k = extra_info.get("wb_max_entries", 4)
-                # \u8bfb\u53d6\u5339\u914d\u7075\u654f\u5ea6\uff08\u914d\u7f6e\u6ce8\u5165\uff09
                 sensitivity = extra_info.get("wb_sensitivity", 0.7)
-                wb_matched = wb_manager.match_entries(
-                    matching_text, persona_id=persona_id, user_id=user_id,
+                wb_matched = await asyncio.to_thread(
+                    wb_manager.match_entries,
+                    matching_text, bound_worldbooks=bound_worldbooks,
                     top_k=wb_top_k, sensitivity=sensitivity
                 )
                 # Token \u6ce8\u5165\u4e0a\u9650\uff08\u914d\u7f6e\u6ce8\u5165\uff09
@@ -387,7 +388,7 @@ class PromptBuilder:
                     content = entry.get("content", "")
                     if content:
                         # Token \u4f30\u7b97\uff1a1 token \u2248 1.5 \u4e2d\u6587\u5b57\u7b26\uff08\u4fdd\u5b88\u503c\uff09
-                        token_count = len(content) / 1.5
+                        token_count = len(content) / self.token_ratio
                         if max_token > 0 and accumulated_tokens + token_count > max_token:
                             logger.info("[PromptBuilder] WB Token \u4e0a\u9650\u5df2\u8fbe (%.0f/%d)\uff0c\u622a\u65ad\u540e\u7eed\u6761\u76ee",
                                         accumulated_tokens, max_token)
@@ -492,13 +493,14 @@ class PromptBuilder:
             "  包含大量对话、内心独白、感官描写、动作细节\n"
             "  节奏递进：铺垫 → 发展 → 高潮 → 收尾，不允许省略任何阶段\n"
             "  连续性规则：用户说“继续”时，从上一段最后一句的位置继续写，禁止跳场景、跳时间\n"
-            "步骤3：调用 send_message_to_user 发送回复\n"
         )
 
         # 动态判定：如果开启了状态栏，就强制它一起打包塞进工具里
         if self.status_bar_enabled:
+            guide += "步骤3：调用 send_message_to_user 发送回复（注意：必须在文本末尾追加 [LOVE_DATA] 状态栏和剧情选项）\n"
             guide += "  **重要：必须将【故事正文】和【[LOVE_DATA]状态栏及选项】一次性打包，全部放在 messages 参数的 text 字段中**\n"
         else:
+            guide += "步骤3：调用 send_message_to_user 发送回复\n"
             guide += "  **将【故事正文】放在 messages 参数的 text 字段中**\n"
 
         guide += (
@@ -708,7 +710,10 @@ async def _self_test():
 
     mock_kb = MockKB()
     layer1, layer2, layer1_random = await builder.retrieve_content_layers(
-        mock_kb, None, {"user_input": "something that matches nothing"}
+        mock_kb, None, {
+            "user_input": "something that matches nothing",
+            "persona_data": {"quill_extensions": {"kb_mode": "auto"}}
+        }
     )
     _assert(len(layer2) == 2, f"fallback returned 2 entries (got {len(layer2)})")
     _assert("Fallback entry one" in layer2[0], "first fallback entry present")
@@ -738,13 +743,20 @@ async def _self_test():
 
     # Without skip_constants: constants appear in layer1
     l1, l2, l1r = await builder.retrieve_content_layers(
-        mock_kb_const, None, {"user_input": "test"}
+        mock_kb_const, None, {
+            "user_input": "test",
+            "persona_data": {"quill_extensions": {"kb_mode": "auto"}}
+        }
     )
     _assert(any("CONSTANT_ENTRY" in p for p in l1), "constants appear when skip_constants=False")
 
     # With skip_constants: constants are excluded
     l1_skip, l2_skip, l1r_skip = await builder.retrieve_content_layers(
-        mock_kb_const, None, {"user_input": "test", "skip_constants": True}
+        mock_kb_const, None, {
+            "user_input": "test",
+            "skip_constants": True,
+            "persona_data": {"quill_extensions": {"kb_mode": "auto"}}
+        }
     )
     _assert(not any("CONSTANT_ENTRY" in p for p in l1_skip), "constants skipped when skip_constants=True")
     _assert(len(l1_skip) == 0, "layer1_parts empty with skip_constants")
