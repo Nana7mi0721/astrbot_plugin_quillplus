@@ -58,8 +58,8 @@ class QuillReranker:
         import inspect
         try:
             texts = [c.get('content', '') for c in candidates]
-            # 调用 rerank（可能是 sync 或 async）
-            rerank_resp = provider.rerank(query=texts[0] if texts else "", documents=texts)
+            # 调用 rerank（可能是 sync 或 async）—— 使用真实 query，不要用候选内容覆盖
+            rerank_resp = provider.rerank(query=query, documents=texts)
             if inspect.isawaitable(rerank_resp):
                 rerank_resp = await rerank_resp
 
@@ -96,8 +96,8 @@ class QuillReranker:
             try:
                 provider = self.context.get_provider_by_id(self.rerank_provider_id)
                 has_provider = provider is not None
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[Quill Reranker] get_status 查询 provider 失败: %s", e)
         return {
             "rerank_provider_id": self.rerank_provider_id,
             "has_rerank_provider": has_provider,

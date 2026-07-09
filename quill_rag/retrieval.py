@@ -36,6 +36,15 @@ class QuillRetriever:
         self.top_k = top_k
         self.enable_memory = enable_memory
         self.config = config
+        # F5 修复：保留后台 task 引用
+        self._bg_tasks: set = set()
+
+    def _spawn(self, coro):
+        """启动后台任务并保留引用，防止被 GC 中断"""
+        t = asyncio.create_task(coro)
+        self._bg_tasks.add(t)
+        t.add_done_callback(self._bg_tasks.discard)
+        return t
 
     async def search_documents(self, query: str, allowed_sources: list[str] = None) -> list[dict]:
         """Doc RAG 检索：FAISS 召回 + Rerank 重排（支持按源文档过滤）。"""
@@ -76,7 +85,7 @@ class QuillRetriever:
             )
             if results:
                 mem_ids = [r["id"] for r in results]
-                asyncio.create_task(self.memory_store.mark_memories_used(mem_ids, score_add=1.5))
+                self._spawn(asyncio.to_thread(self.memory_store.mark_memories_used, mem_ids, 1.5))
             return results
         except Exception as e:
             logger.warning(f"[Quill Memory] 记忆检索失败: {e}")

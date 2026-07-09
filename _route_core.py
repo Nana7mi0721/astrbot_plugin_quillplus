@@ -1,6 +1,6 @@
 """Shared route handler logic for Quill management API.
 
-Used by both web_routes.py (AstrBot mode) and quill_desktop.py (standalone).
+Used by web_routes.py (AstrBot mode).
 Contains zero HTTP/framework dependencies — pure async handler functions
 that receive already-parsed data and return plain dicts.
 
@@ -9,15 +9,15 @@ Each handler returns {"status": "ok", "data": ...} or {"status": "error", "messa
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 import uuid
 from typing import Any, Optional
 
-try:
-    from .worldbook import _validate_name  # AstrBot mode (package import)
-except ImportError:
-    from worldbook import _validate_name  # Desktop mode (standalone)
+from .worldbook import _validate_name
+
+logger = logging.getLogger(__name__)
 
 
 # ── Response helpers ─────────────────────────────────────────────
@@ -333,25 +333,6 @@ async def handle_wb_import_st(wb_manager, name=None, upload_data=None):
     return ok({"name": name}, message="ST worldbook imported")
 
 
-async def handle_wb_bindings(wb_manager):
-    if not wb_manager:
-        return err("Worldbook system not available")
-    # 旧绑定系统已移除，现在使用角色卡级别的绑定
-    return ok({"bindings": {"global_worldbooks": [], "persona_bindings": {}, "user_bindings": {}}})
-
-
-async def handle_wb_bind(wb_manager, bind_type="user", target_id=None, worldbook_name=None):
-    if not wb_manager:
-        return err("Worldbook system not available")
-    # 旧绑定系统已移除，现在通过角色卡编辑页面管理世界书绑定
-    return err("世界书绑定已迁移到角色卡编辑页面，请在角色卡的高级扩展标签中管理绑定")
-
-
-async def handle_wb_unbind(wb_manager, bind_type="user", target_id=None, worldbook_name=None):
-    if not wb_manager:
-        return err("Worldbook system not available")
-    # 旧绑定系统已移除，现在通过角色卡编辑页面管理世界书绑定
-    return err("世界书绑定已迁移到角色卡编辑页面，请在角色卡的高级扩展标签中管理绑定")
 
 
 # ── Info handler ─────────────────────────────────────────────────
@@ -503,14 +484,41 @@ async def handle_memory_delete(memory_store, memory_id=None, session_id=None):
         return err(f"删除失败: {e}")
 
 
-async def handle_memory_list_all(memory_store, limit=200):
-    """列出全部记忆（跨 session），按创建时间倒序。
+async def handle_memory_list_all(memory_store, limit=200, page=1, per_page=50):
+    """列出全部记忆（跨 session），按创建时间倒序，支持分页。
 
-    前端记忆浏览表格调用此接口获取按时间排序的全量列表。
+    返回 total 为数据库中记忆的真实总数（不受分页限制），
+    前端据此修正"总览"和"列表"之间的数量脱节问题。
     """
     try:
-        memories = await asyncio.to_thread(memory_store.list_all_memories, limit)
-        return ok({"memories": memories, "total": len(memories)})
+        per_page = min(per_page, 200)
+        offset = (page - 1) * per_page
+        total = await asyncio.to_thread(memory_store.count_all_memories)
+        memories = await asyncio.to_thread(memory_store.list_all_memories, per_page, offset)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        return ok({"memories": memories, "total": total, "page": page, "per_page": per_page, "total_pages": total_pages})
+    except Exception as e:
+        return err(f"查询失败: {e}")
+
+
+async def handle_memory_stats(memory_store):
+    """B4 修复：返回记忆存储统计（总数 / 活跃会话 / 今日新增），供总览页使用。"""
+    try:
+        stats = await asyncio.to_thread(memory_store.get_stats)
+        return ok(stats)
+    except Exception as e:
+        return err(f"统计失败: {e}")
+
+
+async def handle_memory_get(memory_store, memory_id=None):
+    """获取单条记忆完整详情。"""
+    if not memory_id:
+        return err("需要 memory_id")
+    try:
+        mem = await asyncio.to_thread(memory_store.get_memory_by_id, memory_id)
+        if mem is None:
+            return err("记忆不存在")
+        return ok(mem)
     except Exception as e:
         return err(f"查询失败: {e}")
 
@@ -587,47 +595,74 @@ async def handle_chat_log_export(memory_store, session_id=None, format="markdown
 
 
 async def handle_memory_import(memory_store, embedding_provider, data):
-    """从 JSON 数据批量导入记忆（异步，重新生成向量）。"""
+    """从 JSON 数据批量导入记忆（异步，重新生成向量）。
+
+    F16 修复：原实现循环内逐条 embed([summary])，100 条=100 次 API 往返。
+    现改为先收集所有 summary，一次批量 embed，再循环写 DB。
+    """
     try:
         if not data or not isinstance(data, dict):
             return err("无效的数据格式")
         memories = data.get("memories", [])
         if not isinstance(memories, list):
             return err("memories 必须是数组")
-        imported = 0
+
+        if not memories:
+            return ok({"imported": 0, "failed": 0, "message": "无记忆可导入"})
+
+        # 1. 预处理：收集有效条目（有 summary 且有 embedding_provider）
+        valid_entries = []
         failed = 0
         for m in memories:
+            summary = m.get("summary", "")
+            if not summary:
+                failed += 1
+                continue
+            valid_entries.append({
+                "summary": summary,
+                "chat_summary": m.get("chat_summary", ""),
+                "session_id": m.get("session_id", "imported"),
+            })
+
+        if not valid_entries:
+            return ok({"imported": 0, "failed": failed, "message": "无有效记忆可导入"})
+
+        # 2. 批量向量化（1 次 API 调用）
+        all_summaries = [e["summary"] for e in valid_entries]
+        if not embedding_provider:
+            return ok({"imported": 0, "failed": len(valid_entries) + failed,
+                        "message": "embedding_provider 未配置，无法导入"})
+
+        try:
+            all_vectors = await embedding_provider.embed(all_summaries)
+        except Exception as e:
+            logger.warning(f"[Quill Memory] 批量向量化失败: {e}")
+            return ok({"imported": 0, "failed": len(valid_entries) + failed,
+                        "message": f"向量化失败: {e}"})
+
+        if not all_vectors or len(all_vectors) != len(valid_entries):
+            logger.warning(
+                f"[Quill Memory] 向量化数量不匹配: 期望 {len(valid_entries)}, 得到 {len(all_vectors) if all_vectors else 0}"
+            )
+            return ok({"imported": 0, "failed": len(valid_entries) + failed,
+                        "message": "向量化数量不匹配"})
+
+        # 3. 批量写 DB（每条独立 to_thread，避免一条失败影响全部）
+        imported = 0
+        for entry, vector in zip(valid_entries, all_vectors):
             try:
-                summary = m.get("summary", "")
-                chat_summary = m.get("chat_summary", "")
-                session_id = m.get("session_id", "imported")
-                if not summary:
-                    failed += 1
-                    continue
-                # 重新生成向量（必须步骤，否则检索无法命中）
-                vector = None
-                if embedding_provider:
-                    try:
-                        vectors = await embedding_provider.embed([summary])
-                        if vectors:
-                            vector = vectors[0]
-                    except Exception as e:
-                        logger.warning(f"[Quill Memory] import embed failed: {e}")
-                        failed += 1
-                        continue
-                else:
-                    # 没有 embedding provider 时跳过（无法检索）
-                    failed += 1
-                    continue
                 if vector:
-                    await asyncio.to_thread(memory_store.add, session_id, summary, vector, chat_summary)
+                    await asyncio.to_thread(
+                        memory_store.add,
+                        entry["session_id"], entry["summary"], vector, entry["chat_summary"]
+                    )
                     imported += 1
                 else:
                     failed += 1
             except Exception as e:
                 logger.warning(f"[Quill Memory] import single failed: {e}")
                 failed += 1
-                continue
+
         return ok({"imported": imported, "failed": failed, "message": f"成功导入 {imported}/{len(memories)} 条"})
     except Exception as e:
         return err(f"导入失败: {e}")

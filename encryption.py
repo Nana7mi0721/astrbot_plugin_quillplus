@@ -66,13 +66,6 @@ def decrypt_output(text: str) -> str:
     return B64_PATTERN.sub(_decode, text)
 
 
-# Placeholder kept for API compatibility with callers that expect the signature.
-def process_full_encrypt_markers(
-    text: str, debug: bool = False
-) -> Tuple[str, Optional[str]]:
-    return text, None
-
-
 # ================================================================
 # Self-test
 # ================================================================

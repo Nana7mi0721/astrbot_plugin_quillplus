@@ -102,11 +102,18 @@ def strip_markdown(text: str) -> str:
 class QuillPlugin(Star):
     """QuillPlus — 世界书+写作素材库+角色卡+文档RAG+动态记忆，五合一 RP 注入系统"""
 
+    # S3-13: 反思/总结相关阈值常量
+    REFLECTION_TURN_THRESHOLD = 4       # 攒够 N 轮触发一次反思摘要
+    RECENT_LOG_LIMIT = 8                # 反思时读取的最近日志条数
+    MIN_LOGS_FOR_SUMMARY = 2            # 触发总结所需的最少日志条数
+
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
         self._raw_config = config  # AstrBotConfig 实例（支持 save_config）
         self.config = QuillConfig(config)
         self.plugin_dir = os.path.dirname(__file__)
+        # F5 修复：保留后台 task 引用，防止被 GC 中断
+        self._bg_tasks: set = set()
 
         # --- Activation ---
         activation_path = os.path.join(self.plugin_dir, "activation_triggers.yaml")
@@ -115,7 +122,7 @@ class QuillPlugin(Star):
         # --- State ---
         data_dir = os.path.join(self.plugin_dir, "data")
         os.makedirs(data_dir, exist_ok=True)
-        self.state_manager = StateManager(max_users=500, data_dir=data_dir)
+        self.state_manager = StateManager(data_dir=data_dir)
 
         # --- Knowledge Base (deferred to initialize()) ---
         self.kb_manager = None
@@ -233,6 +240,9 @@ class QuillPlugin(Star):
             if pruned:
                 logger.info(f"[Quill Memory] 启动修剪: 清理了 {pruned} 条低价值记忆")
 
+        # 启动 state 自动落盘（分级落盘：关键字段即时，高频字段 5s 批量刷洗）
+        self.state_manager.start_autoflush()
+
         logger.info(
             f"[Quill] 插件初始化完成 | 激活词: {self.activation_detector.get_word_count()} 个"
         )
@@ -257,7 +267,10 @@ class QuillPlugin(Star):
             # Doc RAG 向量库（FAISS + SQLite）
             rag_db = os.path.join(self.plugin_dir, "knowledge", "quill_rag.db")
             rag_idx = os.path.join(self.plugin_dir, "knowledge", "quill_rag.index")
-            self.rag_vector_store = FaissVectorStore(rag_db, rag_idx, dim=self.rag_embedding.get_dim())
+            # S2-10: 传入 embedding_provider，切换 provider 时自动重建索引
+            self.rag_vector_store = FaissVectorStore(
+                rag_db, rag_idx, embedding_provider=self.rag_embedding
+            )
 
             # Reranker
             self.rag_reranker = QuillReranker(
@@ -296,9 +309,22 @@ class QuillPlugin(Star):
 
     async def terminate(self) -> None:
         """Cleanup — close all database connections."""
+        # S2-4 修复：先取消并等待所有后台任务，防止退出时悬挂/资源泄漏
+        if self._bg_tasks:
+            bg_count = len(self._bg_tasks)
+            for t in list(self._bg_tasks):
+                if not t.done():
+                    t.cancel()
+            for t in list(self._bg_tasks):
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._bg_tasks.clear()
+            logger.info(f"[Quill] 已清理 {bg_count} 个后台任务")
         if self.state_manager:
             try:
-                await self.state_manager.persist_all()
+                await self.state_manager.shutdown()
                 logger.info("[Quill] 状态已持久化")
             except Exception as e:
                 logger.warning(f"[Quill] 状态持久化失败: {e}")
@@ -312,6 +338,13 @@ class QuillPlugin(Star):
         if self.rag_retriever and self.rag_retriever.vector_store:
             self.rag_retriever.vector_store.close()
         logger.info("[Quill] 插件已停用")
+
+    def _spawn(self, coro):
+        """F5 修复：启动后台任务并保留引用，防止被 GC 中断。完成后自动从集合移除。"""
+        t = asyncio.create_task(coro)
+        self._bg_tasks.add(t)
+        t.add_done_callback(self._bg_tasks.discard)
+        return t
 
     # ================================================================
     # 配置持久化
@@ -655,69 +688,89 @@ class QuillPlugin(Star):
         tool_args: dict | None
     ):
         """工具调用前拦截 — 在 Telegram 平台剥离 Markdown 标记，全平台格式化/擦除状态栏。"""
-        if tool.name != "send_message_to_user":
-            return
-        if not event.get_extra("_quill_activated"):
-            return
-        if not tool_args:
-            return
-
-        platform = ""
+        # S2-3 修复：顶层 try/except，异常时降级放行，与 on_llm_request/response 保持一致
         try:
-            pm = getattr(event, "platform_meta", None)
-            if pm is not None:
-                platform = (getattr(pm, "name", "") or "").lower()
-        except Exception:
-            pass
-        if not platform:
+            if tool.name != "send_message_to_user":
+                return
+            if not event.get_extra("_quill_activated"):
+                return
+            if not tool_args:
+                return
+
+            platform = ""
             try:
-                platform = (event.get_platform_name() or "").lower()
+                pm = getattr(event, "platform_meta", None)
+                if pm is not None:
+                    platform = (getattr(pm, "name", "") or "").lower()
             except Exception:
                 pass
+            if not platform:
+                try:
+                    platform = (event.get_platform_name() or "").lower()
+                except Exception:
+                    pass
 
-        # 记录原始类型以便正确回写
-        messages_raw = tool_args.get("messages", [])
-        was_string = isinstance(messages_raw, str)
-        if was_string:
-            try:
-                messages = json.loads(messages_raw)
-            except (json.JSONDecodeError, TypeError):
-                return
-        else:
-            messages = messages_raw
+            # 记录原始类型以便正确回写
+            messages_raw = tool_args.get("messages", [])
+            was_string = isinstance(messages_raw, str)
+            if was_string:
+                try:
+                    messages = json.loads(messages_raw)
+                except (json.JSONDecodeError, TypeError):
+                    return
+            else:
+                messages = messages_raw
 
-        # 仅对特定平台执行 Markdown 清理
-        needs_strip = platform in ("", "telegram", "tg")
-        if needs_strip:
-            logger.info(f"[Quill] >>> send_message_to_user 调用 (platform={platform or '?'}), 清理 Markdown...")
-            modified = 0
-            for msg in messages if isinstance(messages, list) else []:
-                if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
-                    original = msg["text"]
-                    cleaned = strip_markdown(original)
-                    if cleaned != original:
-                        msg["text"] = cleaned
-                        modified += 1
-            if modified:
-                logger.info(f"[Quill] 已清理 {modified} 条消息中的 Markdown 标记")
+            # 仅对特定平台执行 Markdown 清理
+            needs_strip = platform in ("", "telegram", "tg")
+            if needs_strip:
+                logger.info(f"[Quill] >>> send_message_to_user 调用 (platform={platform or '?'}), 清理 Markdown...")
+                modified = 0
+                for msg in messages if isinstance(messages, list) else []:
+                    if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
+                        original = msg["text"]
+                        cleaned = strip_markdown(original)
+                        if cleaned != original:
+                            msg["text"] = cleaned
+                            modified += 1
+                if modified:
+                    logger.info(f"[Quill] 已清理 {modified} 条消息中的 Markdown 标记")
 
-        # 状态栏处理（全平台执行）
-        if isinstance(messages, list):
-            target_id = self._get_target_id(event)
-            for msg in messages:
-                if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
-                    if self.status_bar_enabled:
-                        new_text, _, handled = await self._handle_status_bar(msg["text"], target_id)
-                        msg["text"] = new_text
-                        if handled:
-                            event.set_extra("_quill_status_handled", True)
-                    else:
-                        msg["text"] = self._strip_status_artifacts(msg["text"])
-                    break
+            # 状态栏处理（全平台执行）
+            if isinstance(messages, list):
+                target_id = self._get_target_id(event)
+                for msg in messages:
+                    if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
+                        if self.status_bar_enabled:
+                            new_text, _, handled = await self._handle_status_bar(msg["text"], target_id)
+                            msg["text"] = new_text
+                            if handled:
+                                event.set_extra("_quill_status_handled", True)
+                        else:
+                            msg["text"] = self._strip_status_artifacts(msg["text"])
+                        break
 
-        # JSON 回写：如果原始类型是字符串，序列化回去
-        if was_string:
-            tool_args["messages"] = json.dumps(messages, ensure_ascii=False)
+            # JSON 回写：如果原始类型是字符串，序列化回去
+            if was_string:
+                tool_args["messages"] = json.dumps(messages, ensure_ascii=False)
+
+            # S3-2: Agent 模式下 LLM 输出可能经由 tool_args.messages 传递，
+            # completion_text 为空时拒绝内容藏于此，需在此补充扫描。
+            if self.refusal_enabled and isinstance(messages, list):
+                target_id = self._get_target_id(event)
+                for msg in messages:
+                    if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
+                        scan_text = msg.get("text") or ""
+                        if not scan_text:
+                            continue
+                        for pattern in self.refusal_patterns:
+                            if pattern in scan_text:
+                                await self.state_manager.mark_refusal(target_id)
+                                logger.info(f"[Quill] (tool_args) 检测到拒绝模式 '{pattern}' (target={target_id})")
+                                break
+                        break  # 只扫首条 plain 文本
+        except Exception as e:
+            logger.error(f"[Quill] on_using_llm_tool 拦截异常，已降级放行: {e}", exc_info=True)
 
     async def _inject_persona_and_first_message(self, req: ProviderRequest, event: AstrMessageEvent, target_id: str) -> tuple:
         """获取角色卡数据并注入开场白。返回 (persona_id, persona_data)。"""
@@ -857,7 +910,7 @@ class QuillPlugin(Star):
             if persona_id and user_input and not user_input.strip().startswith("/") \
                     and getattr(self.config, 'rag_enable_chat_logging', True) \
                     and self.rag_retriever:
-                asyncio.create_task(self.rag_retriever.log_chat_message(
+                self._spawn(self.rag_retriever.log_chat_message(
                     mem_session_id, "user", user_input
                 ))
 
@@ -1103,7 +1156,7 @@ class QuillPlugin(Star):
 
                 # 记录 AI 回复到对话日志（始终保留，供断点续传使用）
                 if ai_response.strip() and getattr(self.config, 'rag_enable_chat_logging', True):
-                    asyncio.create_task(self.rag_retriever.log_chat_message(
+                    self._spawn(self.rag_retriever.log_chat_message(
                         mem_session_id, "assistant", ai_response.strip()
                     ))
 
@@ -1111,14 +1164,15 @@ class QuillPlugin(Star):
                 try:
                     unsummarized = await self.state_manager.increment_unsummarized_turns(target_id)
 
-                    if unsummarized >= 4:
+                    if unsummarized >= self.REFLECTION_TURN_THRESHOLD:
                         await self.state_manager.reset_unsummarized_turns(target_id)
                         recent_logs = await asyncio.to_thread(
-                            self.rag_retriever.memory_store.get_recent_chat_logs, mem_session_id, limit=8
+                            self.rag_retriever.memory_store.get_recent_chat_logs, mem_session_id, limit=self.RECENT_LOG_LIMIT
                         )
 
-                        if len(recent_logs) >= 2:
-                            sum_task = asyncio.create_task(
+                        if len(recent_logs) >= self.MIN_LOGS_FOR_SUMMARY:
+                            # S1-1 修复：改用 _spawn 保留 task 引用，防止 GC 中断
+                            sum_task = self._spawn(
                                 self.rag_retriever.summarize_contexts(mem_session_id, contexts=recent_logs)
                             )
                             def _log_summary_result(t):
@@ -1127,9 +1181,9 @@ class QuillPlugin(Star):
                                     logger.warning(f"[Quill Memory] 多轮总结异常: {exp}")
                             sum_task.add_done_callback(_log_summary_result)
 
-                        # 顺带跑一次记忆修剪（分档遗忘）
+                        # 顺带跑一次记忆修剪（分档遗忘）— 保留 to_thread 包装，prune_memories 是同步方法
                         if self.rag_retriever.memory_store:
-                            asyncio.create_task(asyncio.to_thread(self.rag_retriever.memory_store.prune_memories))
+                            self._spawn(asyncio.to_thread(self.rag_retriever.memory_store.prune_memories))
                     else:
                         logger.debug(f"[Quill Memory] 记忆收集进度: {unsummarized}/4 轮")
                 except Exception as e:

@@ -34,9 +34,12 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("refusal", "enabled"), ("refusal", "patterns"),
     # debug
     ("debug", "enabled"), ("debug", "panel_theme"),
+    # permissions (AstrBot may send 'permission' or 'permissions')
+    ("permissions", "admin_users"), ("permission", "admin_users"),
 }
 
 import asyncio
+import logging
 import os
 import tempfile
 from functools import wraps
@@ -50,6 +53,8 @@ from astrbot.api.web import (
     request,
 )
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+
+logger = logging.getLogger(__name__)
 
 from ._route_core import (
     handle_kb_list,
@@ -71,9 +76,6 @@ from ._route_core import (
     handle_wb_entry_delete,
     handle_wb_import_st,
     handle_wb_export_st,
-    handle_wb_bindings,
-    handle_wb_bind,
-    handle_wb_unbind,
     handle_rag_upload,
     handle_rag_documents,
     handle_rag_delete,
@@ -82,6 +84,8 @@ from ._route_core import (
     handle_memory_list,
     handle_memory_delete,
     handle_memory_list_all,
+    handle_memory_stats,
+    handle_memory_get,
     handle_memory_prune,
     handle_provider_list,
     handle_memory_export,
@@ -105,6 +109,53 @@ def _api_handler(handler):
         except Exception as e:
             return error_response(str(e), status_code=500)
     return wrapper
+
+
+def _require_admin(handler):
+    """F7 修复：敏感写端点的 admin 校验装饰器。
+
+    S1-6 修复：使用模块级全局 `request`（L53 已从 astrbot.api.web 导入），
+    而非从 args/kwargs 取（AstrBot handler 调用不传 request 位置参数）。
+    S1-7 修复：admin_users 未配置时 fail-close（返回 503 + 提示），
+    避免 公网暴露且未配 admin 时裸奔。用户须显式配置 admin_users 才能使用写端点。
+    S1-9 修复：使用模块级 logger，不再在函数内部 import logging。
+    S2-14 修复：桥接通道（桌面端 window.AstrBotPluginPage）无法注入自定义 header，
+    增加 query string `?admin=` fallback，前端桥接调用时拼到 URL。
+    """
+    @wraps(handler)
+    async def admin_wrapper(self, *args, **kwargs):
+        admin_users = []
+        if self.plugin and self.plugin.config:
+            admin_users = getattr(self.plugin.config, "admin_users", []) or []
+        admin_set = set(str(u) for u in admin_users)
+        if not admin_set:
+            # S1-7: fail-close，未配置 admin 时拒绝写端点
+            logger.warning("[Quill Web] admin_users 未配置，写端点已锁定。请在配置面板设置 admin_users。")
+            return error_response(
+                "admin_users 未配置，写端点已锁定。请先配置 admin_users。",
+                status_code=503,
+            )
+        # S1-6: 用模块级全局 request（astrbot.api.web.request）
+        declared = ""
+        headers = getattr(request, "headers", None)
+        if callable(headers):
+            headers = headers()
+        if isinstance(headers, dict):
+            declared = str(headers.get("X-Quill-Admin", ""))
+        elif hasattr(headers, "get"):
+            declared = str(headers.get("X-Quill-Admin", ""))
+        # S2-14: 桥接通道 fallback —— 从 query string 读 admin
+        if not declared:
+            try:
+                q = getattr(request, "query", None)
+                if q is not None and hasattr(q, "get"):
+                    declared = str(q.get("admin", "") or "")
+            except Exception:
+                pass
+        if declared and declared in admin_set:
+            return await handler(self, *args, **kwargs)
+        return error_response("admin required", status_code=403)
+    return admin_wrapper
 
 
 class QuillRoutes:
@@ -160,9 +211,6 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/wb/import_st",    self.wb_import_st,   ["POST"],   "导入 ST 格式世界书")
         _r(f"/{PLUGIN_NAME}/wb/import_json",  self.wb_import_json, ["POST"],   "导入 JSON(原生/ST)")
         _r(f"/{PLUGIN_NAME}/wb/export_st",    self.wb_export_st,   ["GET"],    "导出 ST 格式世界书")
-        _r(f"/{PLUGIN_NAME}/wb/bindings",     self.wb_bindings,    ["GET"],    "获取世界书绑定")
-        _r(f"/{PLUGIN_NAME}/wb/bind",         self.wb_bind,        ["POST"],   "绑定世界书")
-        _r(f"/{PLUGIN_NAME}/wb/unbind",       self.wb_unbind,      ["POST"],   "解绑世界书")
 
         # ── Persona 角色卡 (独立 Quill 管理 + V2 兼容) ──
         _r(f"/{PLUGIN_NAME}/persona/list",          self.persona_list,   ["GET"],    "列出角色卡")
@@ -194,9 +242,11 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/rag/search",       self.rag_search,     ["POST"],   "语义检索测试")
         _r(f"/{PLUGIN_NAME}/rag/config",       self.rag_config,     ["GET"],    "RAG 配置状态")
 
-        # ── 动态记忆 (4 个) ──
+        # ── 动态记忆 (5 个) ──
         _r(f"/{PLUGIN_NAME}/memory/list",      self.memory_list,    ["GET"],    "列出记忆")
         _r(f"/{PLUGIN_NAME}/memory/list_all",  self.memory_list_all,["GET"],    "列出全部记忆(倒序)")
+        _r(f"/{PLUGIN_NAME}/memory/stats",     self.memory_stats,   ["GET"],    "记忆存储统计")
+        _r(f"/{PLUGIN_NAME}/memory/get",       self.memory_get,     ["GET"],    "获取单条记忆详情")
         _r(f"/{PLUGIN_NAME}/memory/delete",    self.memory_delete,  ["POST"],   "删除记忆")
         _r(f"/{PLUGIN_NAME}/memory/vector_search", self.memory_vector_search, ["POST"], "向量检索(Debug)")
 
@@ -211,6 +261,10 @@ class QuillRoutes:
         # ── 对话日志 ──
         _r(f"/{PLUGIN_NAME}/chatlog/list",     self.chat_log_list,  ["GET"],    "列出对话日志")
         _r(f"/{PLUGIN_NAME}/chatlog/export",   self.chat_log_export, ["GET"],   "导出对话日志")
+
+        # ── Panel 主题（F8 修复：从 config_all 死代码区前移至此）──
+        _r(f"/{PLUGIN_NAME}/panel/theme",      self.panel_theme_get,  ["GET"],   "获取面板主题")
+        _r(f"/{PLUGIN_NAME}/panel/theme",      self.panel_theme_save, ["POST"],  "保存面板主题")
 
     # ── Info ──────────────────────────────────────────────────
 
@@ -232,6 +286,7 @@ class QuillRoutes:
 
     # ── Config Save ───────────────────────────────────────────
 
+    @_require_admin
     @_api_handler
     async def config_save(self):
         """保存配置项（support rag/worldbook groups）。直接使用注入的插件实例。"""
@@ -258,14 +313,22 @@ class QuillRoutes:
 
     @_api_handler
     async def config_all(self):
-        """获取底层全量 config 字典供前端渲染"""
+        """获取底层全量 config 字典供前端渲染。
+
+        S1-5 修复：过滤 admin_users 字段，避免通过未保护端点泄露 admin 列表
+        形成 0-click 提权链。前端通过独立的 admin_id 输入框管理本机标识。
+        """
         if not self.config:
             return json_response({})
-        return json_response(self.config.get_raw())
-
-        # ── Panel 主题 ──
-        _r(f"/{PLUGIN_NAME}/panel/theme", self.panel_theme_get,  ["GET"],   "获取面板主题")
-        _r(f"/{PLUGIN_NAME}/panel/theme", self.panel_theme_save, ["POST"],  "保存面板主题")
+        raw = self.config.get_raw()
+        # 防御性拷贝，避免修改底层 config
+        safe = dict(raw) if isinstance(raw, dict) else raw
+        # 移除 permissions.admin_users / permission.admin_users
+        if isinstance(safe, dict):
+            for perm_key in ("permissions", "permission"):
+                if perm_key in safe and isinstance(safe[perm_key], dict):
+                    safe[perm_key] = {k: v for k, v in safe[perm_key].items() if k != "admin_users"}
+        return json_response(safe)
 
     @_api_handler
     async def serve_panel(self):
@@ -287,6 +350,7 @@ class QuillRoutes:
         theme = getattr(self.config, "panel_theme", "light") if self.config else "light"
         return json_response({"theme": theme})
 
+    @_require_admin
     @_api_handler
     async def panel_theme_save(self):
         """保存面板主题设置。"""
@@ -303,6 +367,7 @@ class QuillRoutes:
 
     # ── RAG ───────────────────────────────────────────────────
 
+    @_require_admin
     @_api_handler
     async def rag_upload(self):
         """上传文档（multipart/form-data）。"""
@@ -331,6 +396,7 @@ class QuillRoutes:
             await handle_rag_upload(vector_store, embedding, _BytesUpload(file_bytes), source, chunk_size, chunk_overlap)
         )
 
+    @_require_admin
     @_api_handler
     async def rag_upload_base64(self):
         """接收前端发来的 Base64 JSON，完美绕过沙盒 FormData 拦截。"""
@@ -370,6 +436,7 @@ class QuillRoutes:
             return error_response("RAG 未初始化", status_code=500)
         return json_response(await handle_rag_documents(vector_store))
 
+    @_require_admin
     @_api_handler
     async def rag_delete(self):
         """删除文档。"""
@@ -423,12 +490,32 @@ class QuillRoutes:
 
     @_api_handler
     async def memory_list_all(self):
-        """列出全部记忆（跨 session），按创建时间倒序。"""
+        """列出全部记忆（跨 session），按创建时间倒序，支持分页。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
             return error_response("记忆未初始化", status_code=500)
-        limit = request.query.get("limit", 200, type=int)
-        return json_response(await handle_memory_list_all(memory_store, limit=limit))
+        page = request.query.get("page", 1, type=int)
+        per_page = min(request.query.get("per_page", 50, type=int), 200)
+        return json_response(await handle_memory_list_all(memory_store, page=page, per_page=per_page))
+
+    @_api_handler
+    async def memory_stats(self):
+        """B4 修复：记忆存储统计（总数 / 活跃会话 / 今日新增）。"""
+        memory_store = self.rag.get('memory_store')
+        if memory_store is None:
+            return error_response("记忆未初始化", status_code=500)
+        return json_response(await handle_memory_stats(memory_store))
+
+    @_api_handler
+    async def memory_get(self):
+        """获取单条记忆完整详情。"""
+        memory_store = self.rag.get('memory_store')
+        if memory_store is None:
+            return error_response("记忆未初始化", status_code=500)
+        memory_id = request.query.get("id", type=int)
+        if not memory_id:
+            return error_response("缺少 id 参数", status_code=400)
+        return json_response(await handle_memory_get(memory_store, memory_id=memory_id))
 
     @_api_handler
     async def memory_vector_search(self):
@@ -463,6 +550,7 @@ class QuillRoutes:
             return error_response("记忆未初始化", status_code=500)
         return json_response(await handle_memory_export(memory_store))
 
+    @_require_admin
     @_api_handler
     async def memory_import(self):
         """从上传的 JSON 文件导入记忆（异步，重新生成向量）。"""
@@ -479,6 +567,7 @@ class QuillRoutes:
             return error_response(result.get("message", "导入失败"), status_code=400)
         return json_response(result)
 
+    @_require_admin
     @_api_handler
     async def memory_prune(self):
         """一键清理低价值/过期记忆。"""
@@ -487,6 +576,7 @@ class QuillRoutes:
             return error_response("记忆系统未加载", status_code=500)
         return json_response(await handle_memory_prune(memory_store))
 
+    @_require_admin
     @_api_handler
     async def memory_delete(self):
         """删除记忆。"""
@@ -551,18 +641,21 @@ class QuillRoutes:
             await handle_kb_get(self.kb_manager, data.get("entry_id"))
         )
 
+    @_require_admin
     @_api_handler
     async def kb_create(self):
         return json_response(
             await handle_kb_create(self.kb_manager, await request.json(default={}))
         )
 
+    @_require_admin
     @_api_handler
     async def kb_update(self):
         return json_response(
             await handle_kb_update(self.kb_manager, await request.json(default={}))
         )
 
+    @_require_admin
     @_api_handler
     async def kb_delete(self):
         data = await request.json(default={})
@@ -570,6 +663,7 @@ class QuillRoutes:
             await handle_kb_delete(self.kb_manager, data.get("entry_id"))
         )
 
+    @_require_admin
     @_api_handler
     async def kb_toggle(self):
         data = await request.json(default={})
@@ -585,6 +679,7 @@ class QuillRoutes:
     async def kb_export(self):
         return json_response(await handle_kb_export(self.kb_manager))
 
+    @_require_admin
     @_api_handler
     async def kb_import(self):
         data = await request.json(default={})
@@ -616,6 +711,7 @@ class QuillRoutes:
             await handle_wb_get(self.wb_manager, data.get("name"))
         )
 
+    @_require_admin
     @_api_handler
     async def wb_create(self):
         data = await request.json(default={})
@@ -627,6 +723,7 @@ class QuillRoutes:
             )
         )
 
+    @_require_admin
     @_api_handler
     async def wb_delete(self):
         data = await request.json(default={})
@@ -634,6 +731,7 @@ class QuillRoutes:
             await handle_wb_delete(self.wb_manager, data.get("name"))
         )
 
+    @_require_admin
     @_api_handler
     async def wb_delete_book(self):
         data = await request.json(default={})
@@ -641,6 +739,7 @@ class QuillRoutes:
             await handle_wb_delete(self.wb_manager, data.get("name"))
         )
 
+    @_require_admin
     @_api_handler
     async def wb_entry_create(self):
         data = await request.json(default={})
@@ -652,6 +751,7 @@ class QuillRoutes:
             )
         )
 
+    @_require_admin
     @_api_handler
     async def wb_entry_update(self):
         data = await request.json(default={})
@@ -665,6 +765,7 @@ class QuillRoutes:
             )
         )
 
+    @_require_admin
     @_api_handler
     async def wb_entry_delete(self):
         data = await request.json(default={})
@@ -678,6 +779,7 @@ class QuillRoutes:
             )
         )
 
+    @_require_admin
     @_api_handler
     async def wb_import_st(self):
         """上传 ST 格式 lorebook 文件并导入。"""
@@ -690,6 +792,11 @@ class QuillRoutes:
         name = form.get("name")
         if not name:
             return error_response("Worldbook name required", status_code=400)
+
+        # S1-8 修复：校验 name 防止路径遍历（../、/、\ 等）
+        from .worldbook import _validate_name
+        if not _validate_name(name):
+            return error_response("Invalid worldbook name: only alphanumeric, underscore, hyphen, CJK allowed", status_code=400)
 
         # 必须先读取数据再 save（save 后文件指针在末尾，read() 返回空）
         data = await upload.read()
@@ -709,6 +816,7 @@ class QuillRoutes:
             await handle_wb_import_st(self.wb_manager, name, data)
         )
 
+    @_require_admin
     @_api_handler
     async def wb_import_json(self):
         """接收 JSON 文本数据并导入世界书（绕过沙盒 FormData 限制）。"""
@@ -740,32 +848,9 @@ class QuillRoutes:
             await handle_wb_export_st(self.wb_manager, name)
         )
 
-    @_api_handler
-    async def wb_bindings(self):
-        return json_response(await handle_wb_bindings(self.wb_manager))
-
-    @_api_handler
-    async def wb_bind(self):
-        data = await request.json(default={})
-        name = data.get("name")
-        bind_type = data.get("type", "persona")
-        target_id = data.get("persona_id") if bind_type == "persona" else data.get("user_id")
-        return json_response(
-            await handle_wb_bind(self.wb_manager, bind_type, target_id, name)
-        )
-
-    @_api_handler
-    async def wb_unbind(self):
-        data = await request.json(default={})
-        name = data.get("name")
-        unbind_type = data.get("type", "persona")
-        target_id = data.get("persona_id") if unbind_type == "persona" else data.get("user_id")
-        return json_response(
-            await handle_wb_unbind(self.wb_manager, unbind_type, target_id, name)
-        )
-
     # ── WB Reload ─────────────────────────────────────────────
 
+    @_require_admin
     @_api_handler
     async def wb_reload(self):
         """重新从磁盘加载所有世界书后返回列表（供面板刷新按钮用）。"""
@@ -804,6 +889,7 @@ class QuillRoutes:
                 p["avatar_url"] = ""
         return json_response(personas)
 
+    @_require_admin
     @_api_handler
     async def persona_create(self):
         """创建角色卡。"""
@@ -816,6 +902,7 @@ class QuillRoutes:
         except ValueError as e:
             return error_response(str(e), status_code=400)
 
+    @_require_admin
     @_api_handler
     async def persona_update(self):
         """更新角色卡（支持部分更新）。"""
@@ -831,6 +918,7 @@ class QuillRoutes:
         except ValueError as e:
             return error_response(str(e), status_code=400)
 
+    @_require_admin
     @_api_handler
     async def persona_delete(self):
         """删除角色卡。"""
@@ -848,6 +936,7 @@ class QuillRoutes:
 
     # ── Persona 扩展功能：头像上传 / V2 导入导出 ──────────────────
 
+    @_require_admin
     @_api_handler
     async def upload_avatar(self):
         """上传头像图片（multipart/form-data）。"""
@@ -874,6 +963,7 @@ class QuillRoutes:
         except Exception as e:
             return error_response(f"保存失败: {e}", status_code=500)
 
+    @_require_admin
     @_api_handler
     async def upload_avatar_base64(self):
         """上传头像图片（Base64 模式，绕过沙盒 FormData 拦截）。"""
@@ -904,6 +994,7 @@ class QuillRoutes:
         except Exception as e:
             return error_response(f"保存失败: {e}", status_code=500)
 
+    @_require_admin
     @_api_handler
     async def persona_import(self):
         """导入 V2 角色卡（multipart/form-data，支持 PNG/JPG/JSON）。"""
@@ -951,6 +1042,7 @@ class QuillRoutes:
         except Exception as e:
             return error_response(f"导入失败: {e}", status_code=500)
 
+    @_require_admin
     @_api_handler
     async def persona_import_base64(self):
         """导入 V2 角色卡（Base64 模式，绕过沙盒 FormData 拦截）。"""
@@ -1074,6 +1166,7 @@ class QuillRoutes:
             headers={"Cache-Control": "public, max-age=86400"}
         )
 
+    @_require_admin
     @_api_handler
     async def persona_import_text(self):
         """从剪贴板文本导入角色卡"""
@@ -1092,6 +1185,7 @@ class QuillRoutes:
         except Exception as e:
             return error_response(f"解析失败: {e}", status_code=400)
 
+    @_require_admin
     @_api_handler
     async def persona_import_text_base64(self):
         """从剪贴板文本导入角色卡（Base64 绕过沙盒）"""

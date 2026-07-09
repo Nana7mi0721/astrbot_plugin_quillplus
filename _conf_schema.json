@@ -16,7 +16,7 @@
         "description": "Embedding 提供商",
         "_special": "select_provider_embedding",
         "default": "",
-        "hint": "用于文档与记忆的文本向量化。留空使用本地模型 BAAI/bge-small-zh-v1.5。"
+        "hint": "用于文档与记忆的文本向量化。留空使用本地模型 BAAI/bge-small-zh-v1.5。注意：切换提供商会导致向量维度变化，已上传的 RAG 文档需重新上传。"
       },
       "rerank_provider_id": {
         "type": "string",
@@ -253,13 +253,13 @@
   "permissions": {
     "type": "object",
     "description": "[权限] 管理员白名单",
-    "hint": "防止群内角色卡被随意切换。留空则全员可操作。",
+    "hint": "控制群聊写指令与面板写端点的访问权限。[必须配置] 留空时群聊写指令与面板编辑功能将被锁定（fail-close 安全策略）。",
     "items": {
       "admin_users": {
         "type": "text",
         "description": "管理员 ID（换行分隔）",
         "default": "",
-        "hint": "填写 AstrBot 账号 ID（纯数字），每行一个。留空则不限制。只有管理员可在群聊中切换角色卡、修改流式设置、管理记忆。"
+        "hint": "填写 AstrBot 账号 ID（纯数字），每行一个。留空时群聊写指令（切卡/清记忆等）与面板编辑功能将全部锁定（返回 503）。私聊不受限制。配置后仅白名单用户可在群聊执行写操作，面板需在浏览器端设置同 ID 的管理员标识才能编辑。"
       }
     }
   }
