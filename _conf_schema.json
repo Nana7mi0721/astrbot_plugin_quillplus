@@ -117,6 +117,12 @@
         "description": "显示触发日志",
         "default": false,
         "hint": "调试用。可在发送 /info 时顺带查看最新一轮命中了哪些词条。"
+      },
+      "always_activate": {
+        "type": "bool",
+        "description": "全局常驻激活",
+        "default": false,
+        "hint": "开启后，每次对话都会强制注入系统提示词和状态栏，无需触发激活词。适合纯RP场景。"
       }
     }
   },
@@ -167,6 +173,12 @@
         "description": "要求回复最低字数",
         "default": 400,
         "hint": "[重要] 要求 LLM 写长文。建议 400-800。字数要求过低会导致大模型进入短聊模式忽略一切格式。"
+      },
+      "max_output_length": {
+        "type": "int",
+        "description": "限制回复最高字数",
+        "default": 0,
+        "hint": "限制 LLM 回复的最大字符数。0 表示无限制。建议 1000-3000 避免回复过长。"
       }
     }
   },
@@ -192,6 +204,12 @@
         "description": "UI 渲染模板",
         "default": "**状态栏**\n```\n{content}\n```",
         "hint": "控制状态栏在聊天窗口中的最终 Markdown 渲染样式。"
+      },
+      "plot_paths": {
+        "type": "text",
+        "description": "剧情走向选项",
+        "default": "继续当前话题|转换场景|结束互动",
+        "hint": "状态栏下方显示的分支选项，用 | 分隔。空字符串则不显示。"
       }
     }
   },
@@ -223,6 +241,12 @@
         "description": "启用调试日志",
         "default": false,
         "hint": "开启后在控制台打印极其详细的匹配详情（会刷屏，非开发排错勿开）。"
+      },
+      "panel_theme": {
+        "type": "string",
+        "description": "面板主题",
+        "default": "light",
+        "hint": "插件管理面板的颜色主题。light=浅色，dark=深色。"
       }
     }
   },

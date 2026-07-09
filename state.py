@@ -29,12 +29,15 @@ class UserState:
     session_vars: dict = field(default_factory=dict)
     persona_id: str = ""
     first_message_injected: bool = False
+    unsummarized_turns: int = 0
+    last_learned_id: int = 0
 
 
 class StateManager:
     def __init__(self, max_users: int = 0, data_dir: str = "data"):
         self._states: dict[str, UserState] = {}
         self._lock = asyncio.Lock()
+        self._dirty = False
         self.state_file = os.path.join(data_dir, "quill_state.json")
         os.makedirs(data_dir, exist_ok=True)
         self._load_from_disk()
@@ -73,7 +76,9 @@ class StateManager:
     async def get_state(self, user_id: str) -> UserState:
         async with self._lock:
             if user_id not in self._states:
-                self._states[user_id] = UserState(user_id=user_id)
+                self._states[user_id] = UserState(user_id=user_id)
+                self._dirty = True
+
             return self._states[user_id]
 
     async def update_activity(self, user_id: str) -> None:
@@ -82,7 +87,12 @@ class StateManager:
                 self._states[user_id] = UserState(user_id=user_id)
             st = self._states[user_id]
             st.last_active = datetime.now(timezone.utc).isoformat()
-            st.round_count += 1
+            st.round_count += 1
+            self._dirty = True
+
+    async def persist_all(self) -> None:
+        """Force persist all in-memory states to disk (call on shutdown)."""
+        await self._persist()
 
     async def mark_refusal(self, user_id: str) -> None:
         async with self._lock:
@@ -118,12 +128,47 @@ class StateManager:
             if st is not None:
                 st.quill_rounds = 0
 
+    async def increment_unsummarized_turns(self, user_id: str) -> int:
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None:
+                st = UserState(user_id=user_id)
+                self._states[user_id] = st
+            st.unsummarized_turns += 1
+            val = st.unsummarized_turns
+        await self._persist()
+        return val
+
+    async def reset_unsummarized_turns(self, user_id: str) -> None:
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is not None:
+                st.unsummarized_turns = 0
+        await self._persist()
+
+    async def update_last_learned_id(self, user_id: str, last_id: int) -> None:
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None:
+                st = UserState(user_id=user_id)
+                self._states[user_id] = st
+            st.last_learned_id = last_id
+        await self._persist()
+
+    async def get_last_learned_id(self, user_id: str) -> int:
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is not None:
+                return st.last_learned_id
+            return 0
+
     async def set_stream_mode(self, user_id: str, mode: str) -> None:
         async with self._lock:
             st = self._states.get(user_id)
             if st is None:
                 st = UserState(user_id=user_id)
-                self._states[user_id] = st
+                self._states[user_id] = st
+
             st.stream_mode = mode
         await self._persist()
 
@@ -132,10 +177,12 @@ class StateManager:
             st = self._states.get(user_id)
             if st is None:
                 st = UserState(user_id=user_id)
-                self._states[user_id] = st
+                self._states[user_id] = st
+
             st.session_vars.update(updates)
-            return dict(st.session_vars)
+            result = dict(st.session_vars)
         await self._persist()
+        return result
 
     async def get_session_vars(self, user_id: str) -> dict:
         async with self._lock:

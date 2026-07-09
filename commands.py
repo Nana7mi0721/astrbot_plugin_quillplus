@@ -882,6 +882,8 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         try:
             deleted = await asyncio.to_thread(plugin.rag_memory_store.delete_session_memories, session_id)
             chat_deleted = await asyncio.to_thread(plugin.rag_memory_store.delete_session_chat_logs, session_id)
+            await plugin.state_manager.reset_unsummarized_turns(target_id)
+            await plugin.state_manager.update_last_learned_id(target_id, 0)
             msg = f"已清空当前会话 {deleted} 条记忆"
             if chat_deleted:
                 msg += f"、{chat_deleted} 条对话日志"
@@ -894,46 +896,51 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         if not _check_group_permission(plugin, event):
             event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以添加记忆。"))
             return
-        content = (arg2 or "").strip()
-
-        # ── 无内容 → 自动总结最近对话 ──
-        if not content:
-            if not plugin.rag_retriever or not plugin.rag_retriever.enable_memory:
-                event.set_result(MessageEventResult().message(
-                    "动态记忆功能未启用，无法学习。\n"
-                    "请在对话中自然产生内容，系统会自动提取和存储。"
-                ))
-                return
-            try:
-                contexts = event.get_extra("_quill_recent_msgs") or []
-                if not contexts:
-                    event.set_result(MessageEventResult().message(
-                        "⚠️ 没有足够的对话历史供自动总结。\n"
-                        "请先聊几句，再发送 /memory learn 自动总结。"
-                    ))
-                    return
-                summary = await plugin.rag_retriever.summarize_contexts(session_id, contexts)
-                event.set_result(MessageEventResult().message(
-                    f"✅ 已自动总结最近对话并存储为记忆：\n\n{summary}"
-                ))
-            except ValueError as e:
-                event.set_result(MessageEventResult().message(f"⚠️ {e}"))
-            except Exception as e:
-                event.set_result(MessageEventResult().message(f"❌ 自动总结失败: {e}"))
-            return
-
-        # ── 有内容 → 原有单条学习逻辑 ──
         if not plugin.rag_retriever or not plugin.rag_retriever.enable_memory:
             event.set_result(MessageEventResult().message(
                 "动态记忆功能未启用，无法学习。\n"
                 "请在对话中自然产生内容，系统会自动提取和存储。"
             ))
             return
+
+        content = (arg2 or "").strip()
+
+        # ── 有内容 → 单条学习 ──
+        if content:
+            try:
+                await plugin.rag_retriever.store_memory_direct(session_id, content)
+                event.set_result(MessageEventResult().message(f"已学习: {content[:50]}..."))
+            except Exception as e:
+                event.set_result(MessageEventResult().message(f"学习失败: {e}"))
+            return
+
+        # ── 无内容 → 增量总结本地 chat_logs ──
         try:
-            await plugin.rag_retriever.store_memory_direct(session_id, content)
-            event.set_result(MessageEventResult().message(f"已学习: {content[:50]}..."))
+            last_learned_id = await plugin.state_manager.get_last_learned_id(target_id)
+            new_logs = plugin.rag_memory_store.get_chat_logs_after(session_id, last_learned_id, limit=50)
+            if not new_logs:
+                event.set_result(MessageEventResult().message(
+                    "⚠️ 没有新的对话记录可供总结。\n"
+                    "请先聊几句，再发送 /memory learn 增量总结。"
+                ))
+                return
+            if len(new_logs) < 2:
+                event.set_result(MessageEventResult().message(
+                    "⚠️ 新对话记录不足（至少需要 2 条）。\n"
+                    "请再多聊几句，再发送 /memory learn。"
+                ))
+                return
+            contexts = [{"role": log["role"], "content": log["content"]} for log in new_logs]
+            summary = await plugin.rag_retriever.summarize_contexts(session_id, contexts)
+            new_max_id = max(log["id"] for log in new_logs)
+            await plugin.state_manager.update_last_learned_id(target_id, new_max_id)
+            event.set_result(MessageEventResult().message(
+                f"✅ 已增量总结 {len(new_logs)} 条新对话并存储为记忆：\n\n{summary}"
+            ))
+        except ValueError as e:
+            event.set_result(MessageEventResult().message(f"⚠️ {e}"))
         except Exception as e:
-            event.set_result(MessageEventResult().message(f"学习失败: {e}"))
+            event.set_result(MessageEventResult().message(f"❌ 自动总结失败: {e}"))
         return
 
     if sub == "search":

@@ -149,7 +149,7 @@ class WorldbookManager:
             if bound_worldbooks is None:
                 # Auto 模式：返回所有世界书
                 logger.debug("[Worldbook] Auto 模式：加载所有世界书（%d 个）", len(self.worldbooks))
-                return [copy.deepcopy(self.worldbooks[n]) for n in self.worldbooks]
+                return list(self.worldbooks.values())
             else:
                 # Custom 模式：返回指定的世界书（空列表返回空）
                 logger.debug("[Worldbook] Custom 模式：绑定世界书: %s", bound_worldbooks)
@@ -157,7 +157,7 @@ class WorldbookManager:
                 if len(valid_wbs) != len(bound_worldbooks):
                     invalid_wbs = set(bound_worldbooks) - set(valid_wbs)
                     logger.warning("[Worldbook] 以下世界书不存在，已跳过: %s", invalid_wbs)
-                return [copy.deepcopy(self.worldbooks[n]) for n in valid_wbs]
+                return [self.worldbooks[n] for n in valid_wbs]
 
     def get_constant_entries(self, bound_worldbooks: Optional[List[str]] = None) -> List[dict]:
         entries: List[dict] = []

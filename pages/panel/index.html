@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+  // 防止 FOUC：在 CSS 加载前应用保存的主题
+  try { var t = localStorage.getItem('quill-theme'); if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark'); } catch(_) {}
+</script>
 <title>Quill 管理面板</title>
 <style>
 /* ── Design Tokens (100% 不透明实色) ── */
@@ -106,21 +110,6 @@ header .spacer { flex: 1; }
 }
 .nav-item:hover { background: var(--primary-light); color: var(--text); }
 .nav-item.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
-
-/* ── 保存按钮 margin-top:auto 贴底 ── */
-.save-panel {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 12px; border-top: 1px solid var(--border);
-  margin-top: auto; flex-shrink: 0;
-}
-.save-state { font-size: 12px; color: var(--text-muted); text-align: center; }
-.btn-save {
-  width: 100%; padding: 10px; border: none; border-radius: var(--radius);
-  background: var(--primary); color: #fff; font-size: 14px; font-weight: 600;
-  cursor: pointer; transition: background .15s;
-}
-.btn-save:hover { background: var(--primary-hover); }
-.btn-save:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ── 右侧内容区（唯一可滚动区域）── */
 .content {
@@ -445,6 +434,158 @@ select option {
   align-content: start;
   padding-bottom: 20px;
 }
+
+/* =========================================================
+   UI/UX 深度优化追加样式
+   ========================================================= */
+
+/* 1. 滚动条美化 (macOS 风格) */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* 2. 卡片立体感与悬浮反馈 */
+.card, .kb-card, .persona-card {
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+  transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+}
+
+/* 3. 输入框/文本域 底色区分与聚焦高亮 */
+input:not([type="checkbox"]):not([type="range"]), textarea, select {
+  background-color: var(--surface);
+  border: 1px solid transparent;
+}
+input:not([type="checkbox"]):not([type="range"]):focus, textarea:focus, select:focus {
+  background-color: var(--card);
+  border-color: var(--primary);
+}
+
+/* 4. 侧边栏激活指示器 (左侧高亮条) */
+.nav-item { position: relative; overflow: hidden; }
+.nav-item.active { background: transparent; color: var(--primary); }
+.nav-item.active::before {
+  content: ''; position: absolute; left: 0; top: 15%; bottom: 15%; width: 4px;
+  background: var(--primary); border-radius: 0 4px 4px 0;
+}
+
+/* 5. 工具栏吸顶 */
+.kb-filter-bar, .toolbar {
+  position: sticky;
+  top: -24px;
+  background: rgba(238, 241, 245, 0.9);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 20;
+  padding: 16px 0;
+  margin-top: -16px;
+  border-bottom: 1px solid var(--border-light);
+}
+[data-theme="dark"] .kb-filter-bar, [data-theme="dark"] .toolbar {
+  background: rgba(15, 17, 23, 0.9);
+}
+
+/* 6. 统一卡片底部排版 */
+.kb-card { display: flex; flex-direction: column; }
+.kb-card-footer { margin-top: auto; }
+
+/* 7. 世界书层级视觉优化 */
+.wb-inner {
+  background: var(--surface);
+  padding: 16px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+.wb-entry-card {
+  background: var(--card);
+  border: 1px solid var(--border-light);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--transition);
+}
+.wb-entry-card:hover {
+  transform: translateX(4px);
+  border-color: var(--primary-light);
+}
+
+/* 8. 标签(Tag)与徽章(Badge)对比度增强 */
+.tag {
+  background: var(--primary-light);
+  color: var(--primary-hover);
+  font-weight: 500;
+}
+[data-theme="dark"] .tag { color: #a5b4fc; }
+.mode-badge { font-weight: 600; border: 1px solid transparent; }
+.mode-badge.mode-auto { border-color: rgba(59,130,246,0.3); }
+.mode-badge.mode-custom { border-color: rgba(168,85,247,0.3); }
+
+/* 9. 代码框/特定文本域等宽字体与智能底色 */
+textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--surface);
+  color: var(--text);
+}
+[data-theme="dark"] textarea#c-sb-tpl,
+[data-theme="dark"] textarea#c-ref-pat,
+[data-theme="dark"] textarea#pf-first,
+[data-theme="dark"] textarea#pf-examples {
+  background: #000000;
+}
+
+/* 10. 配置页吸底操作栏 */
+.config-sticky-footer {
+  position: sticky;
+  bottom: -24px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 16px 28px;
+  margin: 0 -28px -24px -28px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 20;
+}
+[data-theme="dark"] .config-sticky-footer {
+  background: rgba(26, 31, 46, 0.85);
+}
+
+/* 强制头像预览框为正圆 */
+#avatar-preview-img {
+  width: 120px !important;
+  height: 120px !important;
+  object-fit: cover !important;
+  border-radius: 50% !important;
+  border: 4px solid var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 优化角色卡高级扩展多选框 UI */
+.checkbox-group-scroll {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm);
+  background: var(--surface) !important;
+  padding: 6px !important;
+}
+.checkbox-group-scroll .form-check {
+  margin: 0 0 2px 0 !important;
+  padding: 8px 12px;
+  border-radius: 6px;
+  transition: all var(--transition);
+}
+.checkbox-group-scroll .form-check:hover {
+  background: var(--card);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+.ext-search-input {
+  margin-bottom: 8px !important;
+  background: var(--surface) !important;
+  border-color: transparent !important;
+}
 </style>
 </head>
 <body>
@@ -464,10 +605,6 @@ select option {
       <button class="nav-item" data-tab="persona">角色卡</button>
       <button class="nav-item" data-tab="config">配置</button>
     </nav>
-    <div class="save-panel">
-      <div class="save-state" id="save-state">配置已同步</div>
-      <button class="btn-save" onclick="saveAllChanges()">保存更改</button>
-    </div>
   </aside>
   <main class="content">
 
@@ -581,7 +718,11 @@ select option {
       <div class="card"><h3>提供商配置</h3><div class="mem-provider-info" id="mem-provider-info"><span class="skeleton" style="width:200px">&nbsp;</span></div></div>
     </div>
     <div class="mem-sub-pane" id="mem-sub-browser">
-      <div class="card"><h3>记忆浏览</h3>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h3 style="margin:0">记忆浏览</h3>
+          <button class="btn btn-outline btn-sm" onclick="pruneMemories()">修剪低分记忆</button>
+        </div>
         <div class="form-group"><input type="text" id="mem-search" placeholder="搜索 session_id 或关键词..." oninput="handleMemSearch()"></div>
         <div class="table-wrap"><table class="data-table" id="mem-table"><thead><tr><th>Session ID</th><th>摘要</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="mem-table-body"></tbody></table></div>
       </div>
@@ -620,6 +761,16 @@ select option {
           <label class="toggle"><input type="checkbox" id="c-rag-memory"><span class="toggle-slider"></span></label>
           <div><span style="font-weight:500">启用动态记忆</span><span style="font-size:12px;color:var(--text-muted);margin-left:8px">后台自动提取历史并跨会话保留。</span></div>
         </div>
+        <div class="form-row" style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border-light)">
+          <div class="form-check" style="flex:1">
+            <label class="toggle"><input type="checkbox" id="c-rag-log"><span class="toggle-slider"></span></label>
+            <div><span style="font-weight:500">保存原始对话日志</span><span style="font-size:12px;color:var(--text-muted);margin-left:8px">用于导出剧本和增量学习</span></div>
+          </div>
+          <div class="form-group" style="flex:1; margin-bottom:0">
+            <label style="display:inline-block; margin-right:8px; font-size:14px; font-weight:500;">日志保留天数</label>
+            <input type="number" id="c-rag-log-days" value="30" style="width:80px; padding:4px 8px;">
+          </div>
+        </div>
       </div>
     </div>
 
@@ -635,6 +786,15 @@ select option {
           <div class="form-group"><label>单次触发条目上限</label><input type="number" id="c-wb-max" value="4"></div>
           <div class="form-group"><label>提示词注入位置</label><select id="c-wb-pos"><option value="user_prefix">贴脸输出 (user_prefix) - 推荐</option><option value="system_end">系统末尾 (system_end)</option></select></div>
           <div class="form-group"><label>匹配灵敏度</label><div class="range-wrap"><input type="range" id="c-wb-sens" min="0" max="1" step="0.1" value="0.7" oninput="this.nextElementSibling.textContent=this.value"><span class="range-value">0.7</span></div></div>
+          <div class="form-check" style="margin-top:16px;">
+            <label class="toggle"><input type="checkbox" id="c-wb-always"><span class="toggle-slider"></span></label>
+            <span style="font-weight:500">全局常驻激活</span>
+          </div>
+          <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">开启后，每次对话都强制注入系统提示词和状态栏，无需触发激活词。适合纯RP场景。</span>
+          <div class="form-check" style="margin-top:16px;">
+            <label class="toggle"><input type="checkbox" id="c-wb-show-log"><span class="toggle-slider"></span></label>
+            <div><span style="font-weight:500">显示触发日志</span><span style="font-size:12px;color:var(--text-muted);margin-left:8px">在 /info 指令中显示最新命中的词条（调试用）。</span></div>
+          </div>
         </div>
       </div>
 
@@ -657,11 +817,13 @@ select option {
         <div class="card" style="height:100%">
           <h3>表现与状态栏</h3>
           <div class="form-group"><label>强制回复最低字数</label><input type="number" id="c-perf-min" value="400"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">建议400-800，防大模型变短聊。</span></div>
+          <div class="form-group"><label>要求回复最高字数</label><input type="number" id="c-perf-max" value="0"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">填 0 表示不限制。防止大模型无限发散啰嗦。</span></div>
           <div class="form-check" style="margin:16px 0 10px;">
             <label class="toggle"><input type="checkbox" id="c-sb-enabled"><span class="toggle-slider"></span></label>
             <span style="font-weight:500">启用 [LOVE_DATA] 状态栏</span>
           </div>
           <div class="form-group"><label>状态栏字段 (6个, 用|隔开)</label><input type="text" id="c-sb-fields" value="好感度|关系阶段|心情|位置|穿着|当前想法"></div>
+          <div class="form-group"><label>剧情走向选项 (用|隔开)</label><input type="text" id="c-sb-plots" value="继续当前话题|转换场景|结束互动"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">状态栏末尾的三个选项，空字符串则不显示。</span></div>
           <div class="form-group"><label>渲染 Markdown 模板</label><textarea id="c-sb-tpl" rows="3"></textarea></div>
         </div>
       </div>
@@ -691,8 +853,11 @@ select option {
       </div>
     </div>
 
-    <div style="text-align:center;margin-bottom:40px;">
-      <button class="btn btn-primary" id="btn-save-all" style="padding:12px 40px;font-size:16px;border-radius:20px;" onclick="saveAllChanges()">保存全局设置 (保存后需重启对话生效)</button>
+    <div class="config-sticky-footer">
+      <div style="font-size:13px; color:var(--text-muted);">
+        提示：部分设置修改后需向机器人发送 <code style="background:var(--surface);padding:2px 6px;border-radius:4px;">/reset</code> 重置对话生效
+      </div>
+      <button class="btn btn-primary" id="btn-save-all" style="padding:10px 32px; font-size:15px; box-shadow: var(--shadow-md); transition: background 0.3s;" onclick="saveAllChanges()">保存全局设置</button>
     </div>
   </div>
 
@@ -867,13 +1032,25 @@ function toggleTheme() {
   const html = document.documentElement;
   const btn = qs('#themeToggle');
   const isDark = html.getAttribute('data-theme') === 'dark';
-  html.setAttribute('data-theme', isDark ? 'light' : 'dark');
+  const newTheme = isDark ? 'light' : 'dark';
+  html.setAttribute('data-theme', newTheme);
   btn.textContent = isDark ? '🌙' : '☀️';
-  try {
-      localStorage.setItem('quill-theme', isDark ? 'light' : 'dark');
-  } catch (e) { /* 忽略沙盒写入限制 */ }
+  try { localStorage.setItem('quill-theme', newTheme); } catch (e) { /* ignore */ }
+  // 异步同步到后端（不阻塞 UI）
+  api('/panel/theme', { method: 'POST', body: JSON.stringify({ theme: newTheme }) }).catch(() => {});
 }
-try { const saved = localStorage.getItem('quill-theme'); if (saved === 'dark') { document.documentElement.setAttribute('data-theme', 'dark'); qs('#themeToggle').textContent = '☀️'; } } catch (_) {}
+// 初始化：优先从后端读取，回退到 localStorage
+(async function initTheme() {
+  try {
+    const res = await api('/panel/theme');
+    const serverTheme = res.theme || 'light';
+    document.documentElement.setAttribute('data-theme', serverTheme);
+    const btn = qs('#themeToggle');
+    if (btn) btn.textContent = serverTheme === 'dark' ? '☀️' : '🌙';
+  } catch (_) {
+    try { const saved = localStorage.getItem('quill-theme'); if (saved === 'dark') { document.documentElement.setAttribute('data-theme', 'dark'); qs('#themeToggle').textContent = '☀️'; } } catch (_) {}
+  }
+})();
 
 // ── Modal（唯一弹窗系统）──
 function openModal() { qs('#modalOverlay').classList.add('open'); }
@@ -1280,7 +1457,8 @@ async function reloadSingleWB(wbName) {
       inner.innerHTML = `
         <div class="toolbar">
           <button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${esc(wbName)}', null)">+ 新建条目</button>
-          <span style="color:var(--text-muted)">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span>
+          <input type="text" placeholder="搜索本世界书设定..." oninput="filterWBEntries(this, '${esc(wbName)}')" style="flex:1; margin-right:8px;">
+          <span style="color:var(--text-muted);flex-shrink:0">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span>
         </div>
         ${displayEntries.length === 0 ? '<div class="empty">没有条目</div>' : displayEntries.map(e => `
         <div class="wb-entry-card">
@@ -1320,7 +1498,7 @@ async function toggleWB(name) {
     inner.dataset.loaded = '1';
     const entries = wb.entries || [];
     const displayEntries = wbShowConstantOnly ? entries.filter(e => e.is_constant) : entries;
-    inner.innerHTML = `<div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${esc(name)}', null)">+ 新建条目</button><span style="color:var(--text-muted)">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span></div>` +
+    inner.innerHTML = `<div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${esc(name)}', null)">+ 新建条目</button><input type="text" placeholder="搜索本世界书设定..." oninput="filterWBEntries(this, '${esc(name)}')" style="flex:1; margin-right:8px;"><span style="color:var(--text-muted);flex-shrink:0">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span></div>` +
       (displayEntries.length === 0 ? '<div class="empty">没有条目</div>' : displayEntries.map(e => `
       <div class="wb-entry-card">
         <div class="wb-entry-header"><div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
@@ -1407,7 +1585,7 @@ async function loadPersonas() {
     const personas = await api('/persona/list');
     state_personas = personas || [];
     if (!state_personas.length) {
-      container.innerHTML = '<div class="empty">暂无角色卡，点击上方「+ 新建角色卡」创建</div>';
+      container.innerHTML = '<div class="empty">暂无角色卡<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="openPersonaModal(null)">+ 新建角色卡</button></div>';
       return;
     }
 
@@ -1519,7 +1697,7 @@ async function openPersonaModal(personaId) {
             <div style="font-size:24px;margin-bottom:4px">📷</div>
             <div>点击上传头像</div>
           </div>
-          <img id="avatar-preview-img" style="display:none;max-width:120px;max-height:120px;border-radius:50%;object-fit:cover;">
+          <img id="avatar-preview-img" style="display:none;">
         </div>
         <input type="hidden" id="pf-avatar" value="${esc(data.avatar_path||'')}">
       </div>
@@ -1539,8 +1717,9 @@ async function openPersonaModal(personaId) {
             <option value="auto" ${wbMode==='auto'?'selected':''}>全库激活 (Auto)</option>
             <option value="custom" ${wbMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
             <option value="disabled" ${wbMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
-          </select>
+           </select>
         </div>
+        <input type="text" class="ext-search-input" placeholder="搜索世界书..." oninput="filterCheckboxes(this, 'pf-wb-list')" style="width:100%; border-radius:6px; padding:8px 12px;">
         <div id="pf-wb-list" class="checkbox-group-scroll" style="${wbMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
           ${allWbs.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用世界书</div>' :
             allWbs.map(w => `<label class="form-check"><input type="checkbox" class="cb-wb-bind" value="${esc(w)}" ${boundWbs.includes(w)?'checked':''}> ${esc(w)}</label>`).join('')}
@@ -1555,10 +1734,11 @@ async function openPersonaModal(personaId) {
             <option value="auto" ${ragMode==='auto'?'selected':''}>全库检索 (Auto)</option>
             <option value="custom" ${ragMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
             <option value="disabled" ${ragMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
-          </select>
+           </select>
         </div>
+        <input type="text" class="ext-search-input" placeholder="搜索文档..." oninput="filterCheckboxes(this, 'pf-rag-list')" style="width:100%; border-radius:6px; padding:8px 12px;">
         <div id="pf-rag-list" class="checkbox-group-scroll" style="${ragMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
-          ${ragDocs.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无已上传的外部文档</div>' :
+          ${ragDocs.length === 0 ? '<div class="empty">暂无已上传的外部文档<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="qs(\'#rag-file-input\').click()">立即上传</button></div>' :
             ragDocs.map(d => `<label class="form-check"><input type="checkbox" class="cb-rag-bind" value="${esc(d.source)}" ${boundRagDocs.includes(d.source)?'checked':''}> ${esc(d.source)}</label>`).join('')}
         </div>
         <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">Auto=检索全库 | Custom=仅检索勾选文档 | Disabled=不检索任何文档</span>
@@ -1571,8 +1751,9 @@ async function openPersonaModal(personaId) {
             <option value="auto" ${kbMode==='auto'?'selected':''}>全局匹配 (Auto)</option>
             <option value="custom" ${kbMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
             <option value="disabled" ${kbMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
-          </select>
+           </select>
         </div>
+        <input type="text" class="ext-search-input" placeholder="搜索分类..." oninput="filterCheckboxes(this, 'pf-kb-list')" style="width:100%; border-radius:6px; padding:8px 12px;">
         <div id="pf-kb-list" class="checkbox-group-scroll" style="${kbMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
           ${kbCats.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用分类</div>' :
             kbCats.map(c => `<label class="form-check"><input type="checkbox" class="cb-kb-bind" value="${esc(c)}" ${boundKbs.includes(c)?'checked':''}> ${esc(c)}</label>`).join('')}
@@ -1798,7 +1979,7 @@ async function importFromText() {
 
 // ── RAG ──
 async function loadRAG() {
-  try { const data = await api('/rag/documents'); const docs = data.documents || []; const c = qs('#rag-doc-list'); c.innerHTML = docs.length ? docs.map(d => `<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-light)"><div><strong>${esc(d.source)}</strong><div style="font-size:12px;color:var(--text-muted)">${d.chunk_count} 分块</div></div><button class="btn btn-outline btn-sm" onclick="deleteRAGDocument('${esc(d.source)}')">删除</button></div>`).join('') : '<div style="color:var(--text-muted)">暂无文档</div>'; } catch (e) { qs('#rag-doc-list').innerHTML = `<div style="color:var(--text-muted)">加载失败</div>`; }
+  try { const data = await api('/rag/documents'); const docs = data.documents || []; const c = qs('#rag-doc-list'); c.innerHTML = docs.length ? docs.map(d => `<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-light)"><div><strong>${esc(d.source)}</strong><div style="font-size:12px;color:var(--text-muted)">${d.chunk_count} 分块</div></div><button class="btn btn-outline btn-sm" onclick="deleteRAGDocument('${esc(d.source)}')">删除</button></div>`).join('') : '<div class="empty">暂无文档<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="qs(\'#rag-file-input\').click()">立即上传</button></div>'; } catch (e) { qs('#rag-doc-list').innerHTML = `<div style="color:var(--danger)">加载失败</div>`; }
 }
 
 async function loadRAGModelInfo() {
@@ -1924,7 +2105,28 @@ async function loadMemoryBrowser() {
     const data = search ? await api('/memory/list?session_id=' + encodeURIComponent(search)) : await api('/memory/list_all?limit=200');
     const memories = data.memories || [];
     if (!memories.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">暂无记忆</td></tr>'; return; }
-    tbody.innerHTML = memories.map(m => `<tr><td><span class="cell-session">${esc(m.session_id||'')}</span></td><td><span class="cell-summary">${esc(m.summary||'')}</span></td><td>${esc(m.timestamp||'')}</td><td><button class="btn btn-outline btn-sm" onclick="deleteMemory(${m.id})">删除</button></td></tr>`).join('');
+
+    tbody.innerHTML = memories.map(m => {
+      const isDanger = (m.useful_score || 0) < 3 && !m.is_active;
+      const scoreColor = isDanger ? 'var(--danger)' : 'var(--warning)';
+      const scoreBg = isDanger ? 'var(--danger-light)' : 'var(--warning-light)';
+      const timeStr = (m.timestamp||'').split('.')[0].replace('T', ' ');
+
+      return `<tr>
+        <td><span class="cell-session">${esc(m.session_id||'')}</span></td>
+        <td>
+          <div class="cell-summary" style="margin-bottom:6px">${esc(m.summary||'')}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px;">
+            <span class="tag" style="background:var(--primary-light);color:var(--primary)" title="记忆留存强度">强度 ${m.strength||10}</span>
+            <span class="tag" style="background:var(--success-light);color:var(--success)" title="被大模型召回引用的次数">引用 ${m.useful_count||0}次</span>
+            <span class="tag" style="background:${scoreBg};color:${scoreColor}" title="当前价值分">价值分 ${(m.useful_score||0).toFixed(1)}</span>
+            ${m.is_active ? '<span class="tag" style="background:#e2e8f0;color:#475569">主动记忆</span>' : ''}
+          </div>
+        </td>
+        <td style="font-size:12px;color:var(--text-muted)">${timeStr}</td>
+        <td><button class="btn btn-outline btn-sm" onclick="deleteMemory(${m.id})">删除</button></td>
+      </tr>`;
+    }).join('');
   } catch (e) { tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--danger)">${esc(e.message)}</td></tr>`; }
 }
 
@@ -1932,6 +2134,16 @@ function deleteMemory(id) {
   sandboxConfirm('确定删除此记忆？', async () => {
     try { await api('/memory/delete', { method: 'POST', body: JSON.stringify({ memory_id: id }) }); showToast('已删除', 'success'); loadMemoryBrowser(); } catch (e) { showToast(e.message); }
   }, true);
+}
+
+async function pruneMemories() {
+  sandboxConfirm('确定执行修剪？系统将根据有用性分档自动删除过期记忆。', async () => {
+    try {
+      const res = await api('/memory/prune', { method: 'POST' });
+      showToast(res.message || '修剪完成', 'success');
+      loadMemoryBrowser();
+    } catch (e) { showToast(e.message); }
+  });
 }
 async function exportMemories() {
   try {
@@ -1990,6 +2202,9 @@ async function loadGlobalSettings() {
     const sensEl = qs('#c-wb-sens');
     if (sensEl && sensEl.nextElementSibling) sensEl.nextElementSibling.textContent = sens;
 
+    // 全局常驻激活
+    qs('#c-wb-always').checked = safeGet('worldbook', 'always_activate', false);
+
     // 素材库
     qs('#c-kb-enabled').checked = safeGet('knowledge_base', 'enabled', true);
     qs('#c-kb-max').value = safeGet('knowledge_base', 'max_entries', 4);
@@ -2001,6 +2216,11 @@ async function loadGlobalSettings() {
     qs('#c-sb-enabled').checked = safeGet('status_bar', 'enabled', true);
     qs('#c-sb-fields').value = safeGet('status_bar', 'fields', '好感度|关系阶段|心情|位置|穿着|当前想法');
     qs('#c-sb-tpl').value = safeGet('status_bar', 'format_template', '**状态栏**\n```\n{content}\n```');
+    qs('#c-sb-plots').value = safeGet('status_bar', 'plot_paths', '继续当前话题|转换场景|结束互动');
+    qs('#c-perf-max').value = safeGet('performance', 'max_output_length', 0);
+    qs('#c-rag-log').checked = safeGet('rag', 'enable_chat_logging', true);
+    qs('#c-rag-log-days').value = safeGet('rag', 'chat_log_retention_days', 30);
+    qs('#c-wb-show-log').checked = safeGet('worldbook', 'show_trigger_log', false);
 
     // 反拒绝
     qs('#c-ref-enabled').checked = safeGet('refusal', 'enabled', true);
@@ -2012,16 +2232,11 @@ async function loadGlobalSettings() {
   } catch (e) { showToast('读取配置失败: ' + e.message); }
 }
 
-// 全局配置中心：差异保存（只提交变更项）
-// ── 全局保存（统一处理侧边栏按钮与底栏按钮） ──
+// 全局配置中心：差异保存（只提交项）
 async function saveAllChanges() {
-  const btnSidebar = qs('.btn-save');
   const btnGlobal = qs('#btn-save-all');
+  const origText = btnGlobal ? btnGlobal.textContent : '';
 
-  const origText1 = btnSidebar ? btnSidebar.textContent : '';
-  const origText2 = btnGlobal ? btnGlobal.textContent : '';
-
-  if (btnSidebar) { btnSidebar.textContent = '保存中...'; btnSidebar.disabled = true; }
   if (btnGlobal) { btnGlobal.textContent = '保存中...'; btnGlobal.disabled = true; }
 
   try {
@@ -2049,6 +2264,7 @@ async function saveAllChanges() {
       add('worldbook', 'max_dynamic_entries', parseInt(qs('#c-wb-max').value) || 4);
       add('worldbook', 'injection_position', qs('#c-wb-pos').value);
       add('worldbook', 'match_sensitivity', parseFloat(qs('#c-wb-sens').value) || 0.7);
+      add('worldbook', 'always_activate', qs('#c-wb-always').checked);
 
       add('knowledge_base', 'enabled', qs('#c-kb-enabled').checked);
       add('knowledge_base', 'max_entries', parseInt(qs('#c-kb-max').value) || 4);
@@ -2059,6 +2275,11 @@ async function saveAllChanges() {
       add('status_bar', 'enabled', qs('#c-sb-enabled').checked);
       add('status_bar', 'fields', qs('#c-sb-fields').value);
       add('status_bar', 'format_template', qs('#c-sb-tpl').value);
+      add('status_bar', 'plot_paths', qs('#c-sb-plots').value);
+      add('performance', 'max_output_length', parseInt(qs('#c-perf-max').value) || 0);
+      add('rag', 'enable_chat_logging', qs('#c-rag-log').checked);
+      add('rag', 'chat_log_retention_days', parseInt(qs('#c-rag-log-days').value) || 30);
+      add('worldbook', 'show_trigger_log', qs('#c-wb-show-log').checked);
 
       add('refusal', 'enabled', qs('#c-ref-enabled').checked);
       add('refusal', 'patterns', qs('#c-ref-pat').value);
@@ -2083,8 +2304,7 @@ async function saveAllChanges() {
   } catch (e) {
     showToast('保存失败: ' + e.message);
   } finally {
-    if (btnSidebar) { btnSidebar.textContent = origText1; btnSidebar.disabled = false; }
-    if (btnGlobal) { btnGlobal.textContent = origText2; btnGlobal.disabled = false; }
+    if (btnGlobal) { btnGlobal.textContent = origText; btnGlobal.disabled = false; }
   }
 }
 
@@ -2097,6 +2317,40 @@ async function quillInit() {
   loadPersonas();
 }
 if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', quillInit); } else { quillInit(); }
+</script>
+
+<script>
+  // Textarea 自动高度随动
+  document.addEventListener('input', function (e) {
+    if (e.target.tagName.toLowerCase() === 'textarea') {
+      e.target.style.height = 'auto';
+      e.target.style.height = (e.target.scrollHeight) + 'px';
+    }
+  }, false>
+
+  // 复选框列表局部搜索
+  function filterCheckboxes(inputEl, listId) {
+    const keyword = inputEl.value.toLowerCase().trim();
+    const list = document.getElementById(listId);
+    if (!list) return;
+    const labels = list.querySelectorAll('label');
+    labels.forEach(lbl => {
+      lbl.style.display = lbl.textContent.toLowerCase().includes(keyword) ? 'flex' : 'none';
+    });
+  }
+
+  // 世界书条目局部搜索
+  function filterWBEntries(inputEl, wbName) {
+    const keyword = inputEl.value.toLowerCase().trim();
+    const header = document.querySelector(`.wb-header[data-wb-name="${CSS.escape(wbName)}"]`);
+    if (!header) return;
+    const item = header.closest('.wb-item');
+    if (!item) return;
+    const cards = item.querySelectorAll('.wb-entry-card');
+    cards.forEach(card => {
+      card.style.display = card.textContent.toLowerCase().includes(keyword) ? 'block' : 'none';
+    });
+  }
 </script>
 
 <!-- 专属轻量级 Confirm / Prompt 对话框 -->
