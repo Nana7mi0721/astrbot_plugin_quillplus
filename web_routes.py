@@ -8,6 +8,34 @@ _route_core.py 提供纯 async handler（零 HTTP 依赖），
 本文件只做 HTTP ↔ 核心逻辑的适配。
 """
 
+_ALLOWED_CONFIG_KEYS: set = {
+    # rag
+    ("rag", "embedding_provider_id"), ("rag", "rerank_provider_id"),
+    ("rag", "llm_provider_id"), ("rag", "enable_local_embedding"),
+    ("rag", "chunk_size"), ("rag", "chunk_overlap"),
+    ("rag", "top_k"), ("rag", "dense_top_k"),
+    ("rag", "enable_memory"), ("rag", "enable_chat_logging"),
+    ("rag", "chat_log_retention_days"),
+    # worldbook
+    ("worldbook", "enabled"), ("worldbook", "max_dynamic_entries"),
+    ("worldbook", "max_token_limit"), ("worldbook", "match_sensitivity"),
+    ("worldbook", "injection_position"), ("worldbook", "show_trigger_log"),
+    ("worldbook", "always_activate"),
+    # knowledge_base
+    ("knowledge_base", "enabled"), ("knowledge_base", "max_entries"),
+    ("knowledge_base", "fallback_top_count"), ("knowledge_base", "category_dedup_limit"),
+    # performance
+    ("performance", "max_prompt_length"), ("performance", "min_output_length"),
+    ("performance", "max_output_length"),
+    # status_bar
+    ("status_bar", "enabled"), ("status_bar", "fields"),
+    ("status_bar", "format_template"), ("status_bar", "plot_paths"),
+    # refusal
+    ("refusal", "enabled"), ("refusal", "patterns"),
+    # debug
+    ("debug", "enabled"), ("debug", "panel_theme"),
+}
+
 import asyncio
 import os
 import tempfile
@@ -54,6 +82,7 @@ from ._route_core import (
     handle_memory_list,
     handle_memory_delete,
     handle_memory_list_all,
+    handle_memory_prune,
     handle_provider_list,
     handle_memory_export,
     handle_memory_import,
@@ -177,6 +206,7 @@ class QuillRoutes:
         # ── 记忆导入导出 ──
         _r(f"/{PLUGIN_NAME}/memory/export",    self.memory_export, ["GET"],    "导出记忆(JSON)")
         _r(f"/{PLUGIN_NAME}/memory/import",    self.memory_import, ["POST"],   "导入记忆(JSON)")
+        _r(f"/{PLUGIN_NAME}/memory/prune",     self.memory_prune,  ["POST"],   "修剪过期记忆")
 
         # ── 对话日志 ──
         _r(f"/{PLUGIN_NAME}/chatlog/list",     self.chat_log_list,  ["GET"],    "列出对话日志")
@@ -204,7 +234,7 @@ class QuillRoutes:
 
     @_api_handler
     async def config_save(self):
-        """保存配置项（支持 rag/worldbook 分组）。直接使用注入的插件实例。"""
+        """保存配置项（support rag/worldbook groups）。直接使用注入的插件实例。"""
         data = await request.json(default={})
         group = data.get("group", "")
         key = data.get("key", "")
@@ -212,6 +242,9 @@ class QuillRoutes:
 
         if not group or not key:
             return error_response("缺少 group 或 key 参数", status_code=400)
+
+        if (group, key) not in _ALLOWED_CONFIG_KEYS:
+            return error_response(f"不支持的配置项: {group}.{key}", status_code=400)
 
         # 直接使用注入的插件实例（由 main.py 传入 self）
         plugin = self.plugin
@@ -230,7 +263,9 @@ class QuillRoutes:
             return json_response({})
         return json_response(self.config.get_raw())
 
-    # ── Panel ─────────────────────────────────────────────────
+        # ── Panel 主题 ──
+        _r(f"/{PLUGIN_NAME}/panel/theme", self.panel_theme_get,  ["GET"],   "获取面板主题")
+        _r(f"/{PLUGIN_NAME}/panel/theme", self.panel_theme_save, ["POST"],  "保存面板主题")
 
     @_api_handler
     async def serve_panel(self):
@@ -246,6 +281,26 @@ class QuillRoutes:
         with open(html_path, "r", encoding="utf-8") as f:
             return f.read()
 
+    @_api_handler
+    async def panel_theme_get(self):
+        """获取面板主题设置。"""
+        theme = getattr(self.config, "panel_theme", "light") if self.config else "light"
+        return json_response({"theme": theme})
+
+    @_api_handler
+    async def panel_theme_save(self):
+        """保存面板主题设置。"""
+        try:
+            data = await request.json(default={})
+        except Exception:
+            return error_response("无效请求", status_code=400)
+        theme = data.get("theme", "light")
+        if theme not in ("light", "dark"):
+            return error_response("无效主题值", status_code=400)
+        if hasattr(self, 'plugin') and self.plugin:
+            self.plugin.save_plugin_config("debug", "panel_theme", theme)
+        return json_response({"theme": theme, "message": "主题已保存"})
+
     # ── RAG ───────────────────────────────────────────────────
 
     @_api_handler
@@ -256,6 +311,9 @@ class QuillRoutes:
         upload = files.get("file")
         if not isinstance(upload, PluginUploadFile):
             return error_response("未收到文件", status_code=400)
+        file_bytes = await upload.read()
+        if len(file_bytes) > 50 * 1024 * 1024:
+            return error_response("文档文件过大（最大 50MB）", status_code=413)
         form = await request.form()
         source = form.get("source", "") or getattr(upload, 'name', 'unknown')
         chunk_size = self.config.rag_chunk_size if self.config else 500
@@ -264,8 +322,13 @@ class QuillRoutes:
         vector_store = self.rag.get('vector_store')
         if embedding is None or vector_store is None:
             return error_response("RAG 未初始化", status_code=500)
+        class _BytesUpload:
+            def __init__(self, content):
+                self._content = content
+            async def read(self):
+                return self._content
         return json_response(
-            await handle_rag_upload(vector_store, embedding, upload, source, chunk_size, chunk_overlap)
+            await handle_rag_upload(vector_store, embedding, _BytesUpload(file_bytes), source, chunk_size, chunk_overlap)
         )
 
     @_api_handler
@@ -281,6 +344,8 @@ class QuillRoutes:
             file_bytes = base64.b64decode(b64_data)
         except Exception as e:
             return error_response(f"Base64 解码失败: {e}", status_code=400)
+        if len(file_bytes) > 50 * 1024 * 1024:
+            return error_response("文档文件过大（最大 50MB）", status_code=413)
         chunk_size = self.config.rag_chunk_size if self.config else 500
         chunk_overlap = self.config.rag_chunk_overlap if self.config else 50
         embedding = self.rag.get('embedding')
@@ -415,6 +480,14 @@ class QuillRoutes:
         return json_response(result)
 
     @_api_handler
+    async def memory_prune(self):
+        """一键清理低价值/过期记忆。"""
+        memory_store = self.rag.get('memory_store')
+        if memory_store is None:
+            return error_response("记忆系统未加载", status_code=500)
+        return json_response(await handle_memory_prune(memory_store))
+
+    @_api_handler
     async def memory_delete(self):
         """删除记忆。"""
         data = await request.json(default={})
@@ -434,7 +507,7 @@ class QuillRoutes:
         if memory_store is None:
             return error_response("记忆系统未加载", status_code=500)
         session_id = request.query.get("session_id")
-        limit = int(request.query.get("limit", 200))
+        limit = min(int(request.query.get("limit", 200)), 1000)
         return json_response(await handle_chat_log_list(memory_store, session_id, limit))
 
     @_api_handler
@@ -790,7 +863,7 @@ class QuillRoutes:
         data = await upload.read()
         filename = getattr(upload, 'name', 'avatar.png')
 
-        # 验证文件大小 (最大 10MB)
+        # 验证文件大小 (最大 5MB，与 Base64 接口保持一致)
         if len(data) > 5 * 1024 * 1024:
             return error_response("图片文件过大（最大 5MB）", status_code=413)
 
@@ -820,9 +893,9 @@ class QuillRoutes:
         except Exception as e:
             return error_response(f"Base64 解码失败: {e}", status_code=400)
 
-        # 验证文件大小 (最大 10MB，Base64 膨胀约 33%)
-        if len(file_bytes) > 10 * 1024 * 1024:
-            return error_response("图片文件过大（最大 10MB）", status_code=413)
+        # 验证文件大小 (最大 5MB，与 multipart 接口保持一致)
+        if len(file_bytes) > 5 * 1024 * 1024:
+            return error_response("图片文件过大（最大 5MB）", status_code=413)
 
         try:
             rel_path = await self.persona_manager.save_avatar(filename, file_bytes)

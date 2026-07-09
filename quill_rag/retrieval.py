@@ -71,10 +71,13 @@ class QuillRetriever:
             query_emb = await self.embedding.embed([query])
             if not query_emb:
                 return []
-            # 将 IO + NumPy 计算放入线程池
-            return await asyncio.to_thread(
+            results = await asyncio.to_thread(
                 self.memory_store.search, session_id, query_emb[0], self.top_k
             )
+            if results:
+                mem_ids = [r["id"] for r in results]
+                asyncio.create_task(self.memory_store.mark_memories_used(mem_ids, score_add=1.5))
+            return results
         except Exception as e:
             logger.warning(f"[Quill Memory] 记忆检索失败: {e}")
             return []
@@ -149,8 +152,8 @@ class QuillRetriever:
         """
         if not self.memory_store or not self.enable_memory:
             raise RuntimeError("动态记忆功能未启用")
-        if not contexts or len(contexts) < 2:
-            raise ValueError("对话历史不足（至少需要 1 条用户消息 + 1 条 AI 回复）")
+        if not contexts:
+            raise ValueError("对话历史不足，无法总结。")
 
         # 1. 只取最近 6 轮（最多 12 条消息）
         recent = contexts[-12:]
@@ -206,12 +209,20 @@ class QuillRetriever:
         return summary
 
     def format_for_prompt(self, doc_results: list[dict], memory_results: list[dict]) -> str:
-        """将检索结果格式化为注入 prompt 的文本。"""
+        """将检索结果格式化为 XML 规范文本。"""
         parts = []
         if doc_results:
-            doc_texts = [f"[文档-{r.get('source', '?')}]: {r['content']}" for r in doc_results]
-            parts.append("## [参考资料]\n" + "\n\n".join(doc_texts))
+            doc_texts = [f"  [{i+1}] [文档-{r.get('source', '?')}] {r['content']}" for i, r in enumerate(doc_results)]
+            parts.append("<documents>\n" + "\n".join(doc_texts) + "\n</documents>")
+
         if memory_results:
-            mem_texts = [f"- {r['summary']}" for r in memory_results]
-            parts.append("## [相关记忆]\n" + "\n".join(mem_texts))
+            mem_texts = [
+                f"  [{i+1}] [记忆] {r['summary']} (引用:{r.get('useful_count', 0)}次)"
+                for i, r in enumerate(memory_results)
+            ]
+            parts.append("<memories>\n" + "\n".join(mem_texts) + "\n</memories>")
+
+        if parts:
+            parts.append("请自然地结合上述 <memories> 和 <documents> 提供的信息进行回复，保持设定的连贯性。")
+
         return "\n\n".join(parts)

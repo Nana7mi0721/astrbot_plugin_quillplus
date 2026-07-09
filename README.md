@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.0.0-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.2.0-green.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)]()
 
 ---
@@ -17,7 +17,7 @@
 
 ---
 
-## ✨ 核心特性 (Key Features)
+## ✨ 核心特性
 
 ### 👤 角色卡系统 (Character Card V2)
 
@@ -65,6 +65,17 @@
 - **NumPy 余弦相似度**：SQLite BLOB 存储向量，矩阵运算极速检索
 - **聊天指令管理**：`/memory list/del/clear/learn/search` 全程掌控记忆
 
+### 💘 状态栏系统 (Status Bar) ⭐ v5.2 重构
+
+追踪角色关系状态的变化，将 LLM 输出自动结构化为可读面板。
+
+- **强制格式输出**：通过 5 级解析器（code block / LOVE_DATA / STATUS / raw / lenient）确保 LLM 输出严格符合 `[LOVE_DATA] 好感度|关系阶段|心情|位置|穿着|当前想法` 格式
+- **双重防重复**：工具调用钩子与响应钩子智能协作，避免重复注入兜底状态栏
+- **禁用绝对保证**：关闭状态栏后，7 重正则剥离所有残留痕迹
+- **自定义字段**：支持替换字段名（如催眠度、服从度、发情度等）
+- **分支剧情选项**：自动生成 3 个剧情走向选项
+- **兜底安全网**：LLM 未输出状态栏时自动注入默认值
+
 ---
 
 ## 🎮 指令说明
@@ -106,8 +117,8 @@
 | `/memory` | 查看记忆统计 |
 | `/memory list [页码]` | 分页列出当前会话记忆 |
 | `/memory del <序号>` | 删除指定记忆 |
-| `/memory clear` | 清空当前会话所有记忆 |
-| `/memory learn <内容>` | 手动添加一条新记忆 |
+| `/memory clear` | 清空当前会话所有记忆及对话日志 |
+| `/memory learn [内容]` | 手动添加一条新记忆（无内容时增量总结） |
 | `/memory search <关键词>` | 关键词搜索记忆 |
 
 ### 文档知识库 (`/doc`)
@@ -116,6 +127,9 @@
 |------|------|
 | `/doc list` | 列出已加载的外部文档 |
 | `/doc search <关键词>` | RAG 检索返回原文片段 |
+| `/doc bind <序号>` | 绑定文档到当前角色卡 |
+| `/doc unbind <序号>` | 解绑文档 |
+| `/doc reload` | 重新加载文档索引 |
 
 ### 其他控制
 
@@ -154,13 +168,11 @@
 - 拖拽上传文档（.txt / .md / .pdf）
 - 已上传文档管理
 - 语义检索测试
-- 链接触发器管理
 
 ### 动态记忆
 - **系统总览**：记忆总数、活跃会话、向量索引状态
 - **记忆浏览**：搜索过滤 + 数据表格 + 单条/批量删除
 - **导入导出**：JSON 备份与恢复
-- **链接触发器触发历史**
 
 ---
 
@@ -200,10 +212,10 @@ pip install faiss-cpu>=1.8.0 numpy>=1.24.0 aiosqlite>=0.19.0
 | `[写作素材库]` | 开关、最大注入条数、回退条数、去重上限 |
 | `[RAG]` | Embedding/Rerank 提供商、本地模型、分块参数、检索数量、记忆开关 |
 | `[性能]` | Prompt 截断上限、最低回复字数 |
-| `[状态栏]` | 开关、字段定义、格式模板 |
-| `[Agent]` | 工具调用后停止开关 |
+| `[状态栏]` | 开关、字段定义、格式模板、剧情走向选项 |
 | `[反拒绝]` | 开关、匹配模式 |
-| `[调试]` | 调试日志开关 |
+| `[调试]` | 调试日志开关、面板主题 |
+| `[权限]` | 管理员 ID 白名单 |
 
 **推荐配置**：
 - 仅使用关键词匹配 → 无需额外配置，开箱即用
@@ -225,9 +237,9 @@ astrbot_plugin_quillplus/
 ├── kb.py                    # 写作素材库 SQLite
 ├── prompt_builder.py        # 四层 Prompt 装配
 ├── encryption.py            # Base64 [B:...] 编解码
-├── state.py                 # 用户状态管理
+├── state.py                 # 用户状态管理（session_vars 持久化）
 ├── activation.py            # 激活检测
-├── commands.py              # 指令业务逻辑（19 个 dispatch 函数）
+├── commands.py              # 指令业务逻辑
 ├── quill_desktop.py         # 独立桌面启动器（Quart 服务端）
 ├── quill_rag/               # RAG + 记忆共享模块
 │   ├── embedding.py         # Embedding Provider 封装
@@ -240,6 +252,20 @@ astrbot_plugin_quillplus/
 ├── pages/panel/index.html   # 管理面板（沙盒穿透全链路 Base64）
 ├── knowledge/               # 数据目录（gitignore）
 └── worldbooks/              # 世界书目录（gitignore）
+```
+
+### LLM Hooks 执行流程
+
+```
+on_waiting_llm_request (priority=100)  →  控制流式模式
+        ↓
+on_llm_request (priority=100)  →  检测激活 + 注入 System Prompt + 改写 tool desc + 追加 tail
+        ↓
+on_using_llm_tool (priority=200)  →  Markdown 清理 + 状态栏解析/格式化/剥离
+        ↓
+on_llm_response (priority=10)  →  Base64 解密 + 状态栏兜底/剥离 + 拒绝检测
+        ↓
+on_llm_tool_respond (priority=10)  →  停止 agent loop + 记忆存储
 ```
 
 ---
@@ -261,6 +287,9 @@ A: 推荐 SiliconFlow 的 `Qwen3-Embedding-8B` 和 `bge-reranker-v2-m3`。不配
 **Q: 动态记忆会串群吗？**
 A: 不会。使用 `event.unified_msg_origin` 作为 session_id，SQL `WHERE session_id = ?` 天然隔离。
 
+**Q: 状态栏不显示或显示不正确怎么办？**
+A: 检查配置中的"状态栏→启用"是否开启；确认 LLM 有足够能力遵循格式指令；可尝试开启"贴脸模式"提升服从度。
+
 ---
 
 ## 📄 License
@@ -279,8 +308,10 @@ Plus 版本新增了以下功能：
 - 🔍 **万能文本解析引擎**（W++、Raw Text 一键粘贴解析）
 - 📱 **手机端指令系统**（完整覆盖五大系统，聊天窗口即是指令台）
 - 🧠 **动态记忆聊天管理**（`/memory learn/list/del/clear/search`）
-- 📄 **文档 RAG 聊天检索**（`/doc list/search`）
+- 📄 **文档 RAG 聊天检索**（`/doc list/search/bind/unbind/reload`）
 - 🔧 **世界书重载**（`/wb reload`）
+- 💘 **状态栏系统**（5 级解析器 + 双重防重复 + 自定义字段）
 - 🎨 **管理面板 UI 全面升级**
+- 🛡️ **安全审计与 Bug 修复**（P0/P1/P2 级漏洞修复、并发安全、数据一致性）
 
 🥂 **世界因创作而美好，角色因记忆而鲜活。**

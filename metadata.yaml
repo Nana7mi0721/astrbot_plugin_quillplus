@@ -1,6 +1,6 @@
 name: astrbot_plugin_quillplus
-display_name: 羽笔
-description: "世界书+写作素材库+角色卡三合一 RP 注入系统"
-author: Quill
-version: 5.0.0
-repo: ""
+display_name: 羽笔 QuillPlus
+description: "世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一 RP 注入系统 | 状态栏 | 反拒绝 | 五层 Prompt 装配"
+author: Quill (Mod by Nana7mi0721)
+version: 5.2.0
+repo: https://github.com/Nana7mi0721/astrbot_plugin_quillplus

@@ -72,6 +72,15 @@ _MD_PATTERNS = [
 
 _STATUS_RE = re.compile(r'\[STATUS\]([\s\S]*?)\[/STATUS\]')
 _LOVE_DATA_RE = re.compile(r'\[LOVE_DATA\]\s*(.+)')
+_STATUS_BLOCK_RE = re.compile(r'\*\*状态栏\*\*[\s\S]*?```([\s\S]*?)```')
+_PLOT_PATH_RE = re.compile(
+    r'>>>\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*<<<\s*(.+?)\s*<<<\s*(?:Select|请选择|选择)\s*>>>',
+    re.DOTALL | re.IGNORECASE
+)
+_RAW_STATUS_RE = re.compile(
+    r'(?:^|\n)\s*(?:[-\*\•]*\s*)?(好感度|关系阶段|心情|位置|穿着|当前想法|服从度|发情度)\s*[：:]\s*(.+?)(?=\n|$)',
+    re.MULTILINE
+)
 
 
 def strip_markdown(text: str) -> str:
@@ -141,6 +150,7 @@ class QuillPlugin(Star):
         self.status_bar_enabled = self.config.status_bar_enabled
         self.status_bar_format_template = self.config.status_bar_format
         self.love_fields: List[str] = self.config.status_bar_fields
+        self.status_bar_plot_paths: list[str] = getattr(self.config, "status_bar_plot_paths", ["继续当前话题", "转换场景", "结束互动"])
 
         # --- Debug ---
         self.debug = self.config.debug_enabled
@@ -217,6 +227,12 @@ class QuillPlugin(Star):
             if cleaned:
                 logger.info(f"[Quill ChatLog] 清理了 {cleaned} 条过期日志（保留 {retention_days} 天）")
 
+        # 启动时修剪过期低价值记忆
+        if self.rag_retriever and self.rag_retriever.memory_store:
+            pruned = await asyncio.to_thread(self.rag_retriever.memory_store.prune_memories)
+            if pruned:
+                logger.info(f"[Quill Memory] 启动修剪: 清理了 {pruned} 条低价值记忆")
+
         logger.info(
             f"[Quill] 插件初始化完成 | 激活词: {self.activation_detector.get_word_count()} 个"
         )
@@ -279,12 +295,22 @@ class QuillPlugin(Star):
             logger.warning(f"[Quill RAG] 初始化失败（RAG 功能不可用）: {e}")
 
     async def terminate(self) -> None:
-        """Cleanup — close KB connection."""
+        """Cleanup — close all database connections."""
+        if self.state_manager:
+            try:
+                await self.state_manager.persist_all()
+                logger.info("[Quill] 状态已持久化")
+            except Exception as e:
+                logger.warning(f"[Quill] 状态持久化失败: {e}")
         if self.kb_manager:
             try:
                 await self.kb_manager.close()
             except Exception as e:
                 logger.warning(f"[Quill] 写作素材库关闭失败: {e}")
+        if self.rag_retriever and self.rag_retriever.memory_store:
+            self.rag_retriever.memory_store.close()
+        if self.rag_retriever and self.rag_retriever.vector_store:
+            self.rag_retriever.vector_store.close()
         logger.info("[Quill] 插件已停用")
 
     # ================================================================
@@ -317,6 +343,9 @@ class QuillPlugin(Star):
             # 同步对话日志配置（供运行时检测）
             self.rag_enable_chat_logging = self.config.rag_enable_chat_logging
             self.rag_chat_log_retention_days = self.config.rag_chat_log_retention_days
+            self.worldbook_always_activate = self.config.worldbook_always_activate
+            self.panel_theme = self.config.panel_theme
+            self.status_bar_plot_paths = self.config.status_bar_plot_paths
 
             # 持久化到磁盘
             if hasattr(self._raw_config, 'save_config') and callable(self._raw_config.save_config):
@@ -373,11 +402,157 @@ class QuillPlugin(Star):
 
     # ── 状态栏解析共享方法 ──────────────────────────────────────
 
+    # 聚合所有状态栏变体的剥离正则（disabled 模式 + dedup 清理用）
+    _STRIP_PATTERNS: list = [
+        (re.compile(r'\*\*状态栏\*\*[\s\S]*?```[\s\S]*?```'), ''),
+        (re.compile(r'\[LOVE_DATA\]\s*.+'), ''),
+        (re.compile(r'\[STATUS\][\s\S]*?\[/STATUS\]'), ''),
+        (re.compile(
+            r'>>>\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*<<<\s*.+?\s*<<<\s*(?:Select|请选择|选择)\s*>>>',
+            re.DOTALL | re.IGNORECASE
+        ), ''),
+        (re.compile(
+            r'(?:^|\n)\s*(?:[-\*\•]*\s*)?(好感度|关系阶段|心情|位置|穿着|当前想法|服从度|发情度)\s*[：:]\s*.+?(?=\n|$)',
+            re.MULTILINE
+        ), ''),
+        (re.compile(r'\[状态栏\][\s\S]*?\[/状态栏\]'), ''),
+        (re.compile(r'状态栏[：:][\s\S]*?(?=\n\n|\Z)'), ''),
+    ]
+
+    @staticmethod
+    def _strip_status_artifacts(text: str) -> str:
+        """移除文本中所有状态栏相关痕迹（禁用模式 + dedup 清理）。"""
+        if not text:
+            return text
+        for pattern, replacement in QuillPlugin._STRIP_PATTERNS:
+            text = pattern.sub(replacement, text)
+        return text.strip()
+
+    @staticmethod
+    def _lenient_parse_status(text: str, love_fields: list) -> dict:
+        """宽松解析：扫描文本中 key=value 或 key：value 的行，匹配 love_fields。
+        作为严格正则失败后的回退解析器。"""
+        updates = {}
+        seen = set()
+        field_pattern = re.compile(
+            r'(?:^|\n)\s*(?:[-\*\•]*\s*)?'
+            r'([^\s：:=]+?)\s*[：:=]\s*(.+?)(?=\n(?:[^\s：:=]+\s*[：:=])|\n\n|\n(?:>>>)|$)',
+            re.MULTILINE | re.DOTALL
+        )
+        for m in field_pattern.finditer(text):
+            key = m.group(1).strip()
+            val = m.group(2).strip()
+            matched_field = None
+            for lf in love_fields:
+                if lf in key or key in lf:
+                    matched_field = lf
+                    break
+            if matched_field and matched_field not in seen and val:
+                seen.add(matched_field)
+                updates[matched_field] = val
+        return updates if len(updates) >= 2 else {}
+
+    async def _handle_status_bar(self, text: str, target_id: str) -> tuple:
+        """统一状态栏处理入口。
+
+        返回 (formatted_text: str, updates: dict, handled: bool)。
+        handled=True 表示文本中已存在有效状态栏并完成了格式化+持久化。
+        handled=False 表示未找到状态栏，调用方应注入兜底。
+        """
+        updates = {}
+        new_text = text
+        handled = False
+
+        # 1. **状态栏** code block
+        m = _STATUS_BLOCK_RE.search(text)
+        if m:
+            block_content = m.group(1).strip()
+            updates = self._parse_status_block(block_content)
+            if updates:
+                await self._persist_status_vars(updates, target_id)
+                handled = True
+                new_text = text  # code block 格式保留原样
+                logger.info("[Quill] 状态栏已处理 (code block)")
+
+        # 2. [LOVE_DATA] inline
+        if not handled:
+            love_updates, love_formatted, raw_line = self._format_love_data(text)
+            if love_updates:
+                updates = love_updates
+                await self._persist_status_vars(updates, target_id)
+                new_text = text.replace(raw_line, love_formatted)
+                handled = True
+                logger.info("[Quill] 状态栏已处理 (LOVE_DATA inline)")
+
+        # 3. [STATUS] legacy
+        if not handled:
+            m = _STATUS_RE.search(text)
+            if m:
+                status_content = m.group(1).strip()
+                updates = self._parse_legacy_status(status_content)
+                await self._persist_status_vars(updates, target_id)
+                formatted = self.status_bar_format_template.replace("{content}", status_content)
+                new_text = _STATUS_RE.sub(formatted, text)
+                handled = True
+                logger.info("[Quill] 状态栏已处理 (STATUS legacy)")
+
+        # 4. Raw key:value lines
+        if not handled:
+            raw_matches = _RAW_STATUS_RE.findall(text)
+            if raw_matches:
+                current_vars = await self.state_manager.get_session_vars(target_id)
+                matched_fields = set()
+                parsed_lines = []
+                for fn, fv in raw_matches:
+                    if fn in self.love_fields and fn not in matched_fields:
+                        val = fv.strip()
+                        updates[fn] = val
+                        parsed_lines.append(f"{fn}：{val}")
+                        matched_fields.add(fn)
+                for f_name in self.love_fields:
+                    if f_name not in matched_fields:
+                        val = current_vars.get(f_name, "") or "未设置"
+                        updates[f_name] = val
+                        parsed_lines.append(f"{f_name}：{val}")
+                # 从文本中移除已被解析的 raw 行
+                for fn in matched_fields:
+                    new_text = re.sub(rf'{re.escape(fn)}\s*[：:].*', '', new_text)
+                # 剧情走向
+                plot_str = ""
+                pm = _PLOT_PATH_RE.search(new_text)
+                if pm:
+                    plot_content = pm.group(1).strip()
+                    new_text = new_text.replace(pm.group(0), "").strip()
+                    plot_str = f"\n\n>>> 剧情走向 <<<\n{plot_content}\n<<< 请选择 >>>"
+                await self._persist_status_vars(updates, target_id)
+                block_content = "\n".join(parsed_lines) + plot_str
+                beautiful_bar = self.status_bar_format_template.replace("{content}", block_content)
+                new_text = new_text.strip() + "\n\n" + beautiful_bar
+                handled = True
+                logger.info("[Quill] 状态栏已处理 (raw key:value)")
+
+        # 5. Lenient fallback — 严格正则都失败了但可能 LLM 用了非标准格式
+        if not handled:
+            lenient_updates = self._lenient_parse_status(text, self.love_fields)
+            if lenient_updates and len(lenient_updates) >= 2:
+                await self._persist_status_vars(lenient_updates, target_id)
+                # 重建为标准格式
+                lines = []
+                for f_name in self.love_fields:
+                    val = lenient_updates.get(f_name, "未设置")
+                    lines.append(f"{f_name}：{val}")
+                bar = self.status_bar_format_template.replace("{content}", "\n".join(lines))
+                new_text = text + "\n\n" + bar
+                updates = lenient_updates
+                handled = True
+                logger.info("[Quill] 状态栏已处理 (lenient fallback)")
+
+        return new_text, updates, handled
+
     async def _persist_status_vars(self, updates: dict, target_id: str) -> None:
         """Persist parsed status fields to session_vars."""
         if updates:
             await self.state_manager.update_session_vars(target_id, updates)
-            logger.info(f"[Quill] 状态栏持久化: {len(updates)} 个字段")
 
     def _format_love_data(self, content: str) -> tuple:
         """Parse [LOVE_DATA] line, return (updates_dict, formatted_text, raw_line) or (None, None, None)."""
@@ -408,24 +583,61 @@ class QuillPlugin(Star):
                 updates[k.strip()] = v.strip()
         return updates
 
+    async def _build_default_love_data(self, target_id: str) -> str:
+        """构建默认状态栏（当 LLM 未输出状态栏时兜底）。"""
+        vars = await self.state_manager.get_session_vars(target_id)
+        parts = []
+        for field_name in self.love_fields:
+            val = vars.get(field_name, "")
+            parts.append(val if val else "未设置")
+        love_section = "\n".join(f"{f}：{v}" for f, v in zip(self.love_fields, parts))
+        plot_section = "\n\n>>> 剧情走向 <<<\n" + "\n".join(
+            f"{i+1}. {p}" for i, p in enumerate(self.status_bar_plot_paths)
+        ) + "\n<<< 请选择 >>>"
+        full_content = love_section + plot_section
+        return f"**状态栏**\n```\n{full_content}\n```"
+
+    def _parse_status_block(self, block_content: str) -> dict:
+        """Parse **状态栏** code block content into key-value dict."""
+        updates = {}
+        for line in block_content.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if ">>>" in line or "<<<" in line:
+                continue
+            if "：" in line:
+                k, v = line.split("：", 1)
+                updates[k.strip()] = v.strip()
+            elif ":" in line:
+                k, v = line.split(":", 1)
+                updates[k.strip()] = v.strip()
+            elif "=" in line:
+                k, v = line.split("=", 1)
+                updates[k.strip()] = v.strip()
+        return updates
+
     # ── FunctionTool 描述泄漏防护 ─────────────────────────────
     _QUILL_SMT_DESC_MARKER = "MUST use this tool to send ALL reply text"
+    _QUILL_ORIG_DESC_KEY = "_quill_orig_desc_saved"
 
-    @classmethod
-    def _restore_smt_tool(cls, req: ProviderRequest) -> None:
-        """若 send_message_to_user 描述被 Quill 改写过，恢复原件。"""
+    def _restore_smt_tool(self, req: ProviderRequest) -> None:
+        """若 send_message_to_user 描述被 Quill 改写过，恢复原件。
+
+        将原始描述存储在 req 对象上而非共享的 FunctionTool 实例，
+        防止多请求并发时互相覆盖。"""
         if not req or not req.func_tool or req.func_tool.empty():
             return
         tool = req.func_tool.get_tool("send_message_to_user")
         if tool is None:
             return
-        if cls._QUILL_SMT_DESC_MARKER not in (tool.description or ""):
+        if self._QUILL_SMT_DESC_MARKER not in (tool.description or ""):
             return
-        orig = getattr(tool, "_quill_orig_description", None)
+        orig = getattr(req, self._QUILL_ORIG_DESC_KEY, None)
         if orig is not None:
             tool.description = orig
             try:
-                delattr(tool, "_quill_orig_description")
+                delattr(req, self._QUILL_ORIG_DESC_KEY)
             except AttributeError:
                 pass
 
@@ -442,7 +654,7 @@ class QuillPlugin(Star):
         self, event: AstrMessageEvent, tool: FunctionTool,
         tool_args: dict | None
     ):
-        """工具调用前拦截 — 在 Telegram 平台剥离 Markdown 标记。"""
+        """工具调用前拦截 — 在 Telegram 平台剥离 Markdown 标记，全平台格式化/擦除状态栏。"""
         if tool.name != "send_message_to_user":
             return
         if not event.get_extra("_quill_activated"):
@@ -463,54 +675,49 @@ class QuillPlugin(Star):
             except Exception:
                 pass
 
-        needs_strip = platform in ("", "telegram", "tg")
-        if not needs_strip:
-            return
-
-        logger.info(f"[Quill] >>> send_message_to_user 调用 (platform={platform or '?'}), 清理 Markdown...")
-
-        messages = tool_args.get("messages", [])
-        if isinstance(messages, str):
+        # 记录原始类型以便正确回写
+        messages_raw = tool_args.get("messages", [])
+        was_string = isinstance(messages_raw, str)
+        if was_string:
             try:
-                messages = json.loads(messages)
-                tool_args["messages"] = messages
+                messages = json.loads(messages_raw)
             except (json.JSONDecodeError, TypeError):
                 return
+        else:
+            messages = messages_raw
 
-        modified = 0
-        for msg in messages if isinstance(messages, list) else []:
-            if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
-                original = msg["text"]
-                cleaned = strip_markdown(original)
-                if cleaned != original:
-                    msg["text"] = cleaned
-                    modified += 1
+        # 仅对特定平台执行 Markdown 清理
+        needs_strip = platform in ("", "telegram", "tg")
+        if needs_strip:
+            logger.info(f"[Quill] >>> send_message_to_user 调用 (platform={platform or '?'}), 清理 Markdown...")
+            modified = 0
+            for msg in messages if isinstance(messages, list) else []:
+                if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
+                    original = msg["text"]
+                    cleaned = strip_markdown(original)
+                    if cleaned != original:
+                        msg["text"] = cleaned
+                        modified += 1
+            if modified:
+                logger.info(f"[Quill] 已清理 {modified} 条消息中的 Markdown 标记")
 
-        if modified:
-            logger.info(f"[Quill] 已清理 {modified} 条消息中的 Markdown 标记")
-
-        # --- 状态栏提取 + 格式化 ---
-        if self.status_bar_enabled and isinstance(messages, list):
+        # 状态栏处理（全平台执行）
+        if isinstance(messages, list):
+            target_id = self._get_target_id(event)
             for msg in messages:
                 if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
-                    text = msg["text"]
-                    target_id = self._get_target_id(event)
-                    love_updates, love_formatted, raw_line = self._format_love_data(text)
-                    if love_updates:
-                        await self._persist_status_vars(love_updates, target_id)
-                        msg["text"] = text.replace(raw_line, love_formatted)
-                        break
-                    status_match = _STATUS_RE.search(text)
-                    if status_match:
-                        status_content = status_match.group(1).strip()
-                        await self._persist_status_vars(
-                            self._parse_legacy_status(status_content), target_id
-                        )
-                        formatted = self.status_bar_format_template.replace(
-                            "{content}", status_content
-                        )
-                        msg["text"] = _STATUS_RE.sub(formatted, text)
-                        break
+                    if self.status_bar_enabled:
+                        new_text, _, handled = await self._handle_status_bar(msg["text"], target_id)
+                        msg["text"] = new_text
+                        if handled:
+                            event.set_extra("_quill_status_handled", True)
+                    else:
+                        msg["text"] = self._strip_status_artifacts(msg["text"])
+                    break
+
+        # JSON 回写：如果原始类型是字符串，序列化回去
+        if was_string:
+            tool_args["messages"] = json.dumps(messages, ensure_ascii=False)
 
     async def _inject_persona_and_first_message(self, req: ProviderRequest, event: AstrMessageEvent, target_id: str) -> tuple:
         """获取角色卡数据并注入开场白。返回 (persona_id, persona_data)。"""
@@ -606,24 +813,16 @@ class QuillPlugin(Star):
         return dynamic_prompt
 
     async def _rewrite_smt_tool_description(self, req: ProviderRequest) -> None:
-        """改写 send_message_to_user 工具描述（含状态栏强制要求）。"""
+        """改写 send_message_to_user 工具描述。状态栏指令通过 system prompt + tail message 注入。"""
         if not (req.func_tool and not req.func_tool.empty()):
             return
         smt_tool = req.func_tool.get_tool("send_message_to_user")
         if smt_tool and self._QUILL_SMT_DESC_MARKER not in (smt_tool.description or ""):
-            smt_tool._quill_orig_description = smt_tool.description
-            status_req = (
-                "\n\nCRITICAL: At the END of your message text, you MUST append:\n"
-                "1. Status bar (one line): [LOVE_DATA] " + " | ".join(self.love_fields) + "\n"
-                "2. Plot options:\n>>> Plot Paths <<<\n1. Option A\n2. Option B\n3. Option C\n<<< Select >>>"
-            ) if self.status_bar_enabled else ""
+            setattr(req, self._QUILL_ORIG_DESC_KEY, smt_tool.description)
             smt_tool.description = (
-                "Send message to the user. "
-                "IMPORTANT: You MUST use this tool to send ALL reply text. "
-                "Do NOT output text directly in the content field — it will be blocked by the content filter. "
-                "Call this tool IMMEDIATELY — do NOT call any other tools (file_read, shell, etc.) before sending. "
-                "Supports various message types including plain, image, record, video, file, and mention_user."
-                + status_req
+                "THIS IS THE ONLY TOOL for sending replies. Output text DIRECTLY in your response will be DISCARDED. "
+                "You MUST call this tool to send ANY reply text — do NOT output text in the content field. "
+                "Call this tool IMMEDIATELY as your first action — do not call any other tools before sending your message."
             )
             logger.info(f"[Quill] 已重写 send_message_to_user 描述")
 
@@ -681,6 +880,12 @@ class QuillPlugin(Star):
 
             activated, kb_activated = await self._check_activation(user_input, context_text, persona_data)
             has_bracket = self.activation_detector.check_brackets(user_input)
+
+            # 全局常驻模式：跳过激活检测
+            always_activate = getattr(self.config, "worldbook_always_activate", False)
+            if always_activate:
+                activated = True
+                kb_activated = False
 
             if not (activated or has_bracket or kb_activated):
                 await self.state_manager.reset_quill_rounds(target_id)
@@ -745,6 +950,31 @@ class QuillPlugin(Star):
                 injection_position=self.config.worldbook_injection_pos
             )
 
+            if persona_id:
+                if self.status_bar_enabled:
+                    fields_format = " | ".join(f"{{{f}}}" for f in self.love_fields)
+                    tail = (
+                        "\n\n[System] 本轮回复末尾必须严格按以下格式追加状态栏和剧情选项：\n"
+                        f"[LOVE_DATA] {fields_format}\n"
+                        f"示例：[LOVE_DATA] 55/100（好感说明） | 朋友 | 放松 | 教室 | 校服 | 希望今天也能见到他...\n"
+                        "之后输出：\n"
+                        ">>> 剧情走向 <<<\n"
+                        "1. 继续当前话题\n"
+                        "2. 转换场景\n"
+                        "3. 结束互动\n"
+                        "<<< 请选择 >>>"
+                    )
+                else:
+                    tail = (
+                        "\n\n[System] 禁止输出任何格式的状态栏、[LOVE_DATA]、"
+                        "[STATUS]、好感度数值、关系阶段、心情标签、穿着描述、"
+                        "位置信息、剧情走向选项等内容。请仅输出纯剧情正文。"
+                    )
+                if req.prompt and tail not in req.prompt:
+                    req.prompt += tail
+                elif not req.prompt:
+                    req.prompt = tail
+
             event.set_extra("_quill_activated", True)
 
             await self.state_manager.update_activity(target_id)
@@ -777,28 +1007,41 @@ class QuillPlugin(Star):
                     resp.completion_text = decrypted
                     logger.info(f"[Quill] 解密 [B:...]: {len(text)} -> {len(decrypted)}")
 
-            # 状态栏解析 + 格式化
-            if self.status_bar_enabled:
-                content = resp.completion_text or ""
-                target_id = self._get_target_id(event)
+            content = resp.completion_text or ""
+            sys_msg = "[SYSTEM: User actively interrupted the response generation. Partial output before interruption is preserved.]"
+            if sys_msg in content:
+                content = content.replace(sys_msg, "").strip()
+                resp.completion_text = content
 
-                love_updates, love_formatted, raw_line = self._format_love_data(content)
-                if love_updates:
-                    await self._persist_status_vars(love_updates, target_id)
-                    resp.completion_text = content.replace(raw_line, love_formatted)
-                    logger.info("[Quill LOVE_DATA 状态栏已格式化")
+            # 状态栏处理
+            target_id = self._get_target_id(event)
+
+            if self.status_bar_enabled:
+
+                if event.get_extra("_quill_status_handled"):
+                    # 工具钩子已处理完毕 — 仅剥离 resp.completion_text 中的
+                    # 原始状态栏残留（LLM 可能同时在 content 字段也输出了）
+                    content = resp.completion_text or ""
+                    stripped = self._strip_status_artifacts(content)
+                    if stripped != content:
+                        resp.completion_text = stripped
+                        logger.info("[Quill] 已剥离 resp.completion_text 中的状态栏残留")
                 else:
-                    status_match = _STATUS_RE.search(content)
-                    if status_match:
-                        status_content = status_match.group(1).strip()
-                        await self._persist_status_vars(
-                            self._parse_legacy_status(status_content), target_id
-                        )
-                        formatted = self.status_bar_format_template.replace(
-                            "{content}", status_content
-                        )
-                        resp.completion_text = _STATUS_RE.sub(formatted, content)
-                        logger.info(f"[Quill] STATUS 状态栏已格式化: {status_content[:40]}...")
+                    # 工具钩子未命中 — 在此处作为最终安全网处理
+                    content = resp.completion_text or ""
+                    new_text, _, handled = await self._handle_status_bar(content, target_id)
+                    if not handled:
+                        persona_id = await self.state_manager.get_persona_id(target_id)
+                        if persona_id:
+                            default_bar = await self._build_default_love_data(target_id)
+                            new_text = (new_text or "") + "\n" + default_bar
+                            logger.info("[Quill] 状态栏兜底注入")
+                    resp.completion_text = new_text
+
+            else:
+                # 禁用模式：彻底擦除所有状态栏痕迹
+                content = resp.completion_text or ""
+                resp.completion_text = self._strip_status_artifacts(content)
 
             if not event.get_extra("_quill_activated"):
                 return
@@ -833,10 +1076,6 @@ class QuillPlugin(Star):
         logger.info("[Quill] send_message_to_user 已调用")
         event.set_extra("_quill_activated", False)
 
-        # 单次打包模式：无条件强制停止 agent loop（防止第二轮废话）
-        event.set_extra("agent_stop_requested", True)
-        logger.info("[Quill] 请求停止 agent loop（单次打包模式已强制启用）")
-
         # ── 动态记忆存储（异步后台任务，不阻塞响应）──
         if (self.rag_retriever and self.rag_retriever.enable_memory
                 and self.rag_retriever.memory_store):
@@ -862,17 +1101,40 @@ class QuillPlugin(Star):
                 persona_id = await self.state_manager.get_persona_id(target_id)
                 mem_session_id = self._get_memory_session_id(target_id, persona_id)
 
-                if user_input and ai_response and len(ai_response) > 50:
-                    task = asyncio.create_task(
-                        self.rag_retriever.store_memory(mem_session_id, user_input, ai_response.strip())
-                    )
-                    task.add_done_callback(lambda t: t.exception() and logger.warning(f"[Quill Memory] 后台记忆存储异常: {t.exception()}"))
-
-                # 记录 AI 回复到对话日志
+                # 记录 AI 回复到对话日志（始终保留，供断点续传使用）
                 if ai_response.strip() and getattr(self.config, 'rag_enable_chat_logging', True):
                     asyncio.create_task(self.rag_retriever.log_chat_message(
                         mem_session_id, "assistant", ai_response.strip()
                     ))
+
+                # N 轮反思触发：攒够 N 轮对话后生成摘要
+                try:
+                    unsummarized = await self.state_manager.increment_unsummarized_turns(target_id)
+
+                    if unsummarized >= 4:
+                        await self.state_manager.reset_unsummarized_turns(target_id)
+                        recent_logs = await asyncio.to_thread(
+                            self.rag_retriever.memory_store.get_recent_chat_logs, mem_session_id, limit=8
+                        )
+
+                        if len(recent_logs) >= 2:
+                            sum_task = asyncio.create_task(
+                                self.rag_retriever.summarize_contexts(mem_session_id, contexts=recent_logs)
+                            )
+                            def _log_summary_result(t):
+                                exp = t.exception()
+                                if exp:
+                                    logger.warning(f"[Quill Memory] 多轮总结异常: {exp}")
+                            sum_task.add_done_callback(_log_summary_result)
+
+                        # 顺带跑一次记忆修剪（分档遗忘）
+                        if self.rag_retriever.memory_store:
+                            asyncio.create_task(asyncio.to_thread(self.rag_retriever.memory_store.prune_memories))
+                    else:
+                        logger.debug(f"[Quill Memory] 记忆收集进度: {unsummarized}/4 轮")
+                except Exception as e:
+                    logger.warning(f"[Quill Memory] 反思调度失败: {e}")
+
             except Exception as e:
                 logger.warning(f"[Quill Memory] 记忆存储调度失败: {e}")
 

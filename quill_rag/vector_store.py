@@ -27,38 +27,35 @@ class FaissVectorStore:
         self.dim = dim
         self._index = None
         self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
         self._init_db()
         self._load_index()
 
     def _init_db(self):
-        """初始化 SQLite 表。"""
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS chunks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    doc_id TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    chunk_index INTEGER NOT NULL,
-                    content TEXT NOT NULL,
-                    faiss_id INTEGER DEFAULT -1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source)")
-            conn.commit()
-        finally:
-            conn.close()
+        """初始化 SQLite 表（复用长连接）。"""
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doc_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                faiss_id INTEGER DEFAULT -1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source)")
+        self._conn.commit()
 
-    def _get_conn(self):
-        """获取配置好的 SQLite 连接。"""
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        return conn
+    def close(self):
+        """关闭数据库连接（插件卸载时调用）。"""
+        try:
+            self._conn.close()
+        except Exception:
+            pass
 
     def _load_index(self):
         """加载 FAISS 索引（如存在）。"""
@@ -112,7 +109,7 @@ class FaissVectorStore:
             try:
                 emb_array = np.array(embeddings, dtype=np.float32)
                 ids = np.arange(self._index.ntotal, self._index.ntotal + len(texts), dtype=np.int64)
-                with self._lock:  # 【架构师补充：将内存操作和持久化操作放在同一个原子锁内】
+                with self._lock:
                     self._index.add_with_ids(emb_array, ids)
                     self._save_index()
                 faiss_ids = ids.tolist()
@@ -120,19 +117,18 @@ class FaissVectorStore:
                 logger.warning(f"[Quill RAG] FAISS 添加失败: {e}")
 
         # 写入 SQLite（批量事务插入，提升大文件写入性能）
-        conn = self._get_conn()
         try:
             rows = [
                 (doc_id, source, i, text, faiss_ids[i] if i < len(faiss_ids) else -1)
                 for i, text in enumerate(texts)
             ]
-            conn.executemany(
+            self._conn.executemany(
                 "INSERT INTO chunks (doc_id, source, chunk_index, content, faiss_id) VALUES (?, ?, ?, ?, ?)",
                 rows
             )
-            conn.commit()
-        finally:
-            conn.close()
+            self._conn.commit()
+        except Exception as e:
+            logger.warning(f"[Quill RAG] SQLite 批量写入失败: {e}")
 
     def search(self, query_embedding: list[float], top_k: int = 9, allowed_sources: list[str] = None) -> list[dict]:
         """FAISS 检索，支持通过 allowed_sources 按文档 source 过滤。"""
@@ -150,20 +146,17 @@ class FaissVectorStore:
                 scores, ids = self._index.search(query, recall_k)
 
             results = []
-            conn = self._get_conn()
             try:
                 for score, idx in zip(scores[0], ids[0]):
                     if idx < 0:
                         continue
-                    # 联表校验，并执行文档过滤
-                    row = conn.execute(
+                    row = self._conn.execute(
                         "SELECT content, source, chunk_index FROM chunks WHERE faiss_id = ?",
                         (int(idx),)
                     ).fetchone()
 
                     if row:
                         doc_source = row[1]
-                        # 【核心过滤逻辑】如果指定了允许的文档，且当前块不属于这些文档，则跳过
                         if allowed_sources is not None and doc_source not in allowed_sources:
                             continue
 
@@ -174,34 +167,47 @@ class FaissVectorStore:
                             "score": float(score),
                         })
 
-                        # 满载返回
                         if len(results) >= top_k:
                             break
-            finally:
-                conn.close()
+            except Exception as e:
+                logger.warning(f"[Quill RAG] SQLite 检索失败: {e}")
             return results
         except Exception as e:
             logger.warning(f"[Quill RAG] FAISS 检索失败: {e}")
             return []
 
     def delete_by_source(self, source: str) -> int:
-        """删除某文档的所有块。"""
-        conn = self._get_conn()
+        """删除某文档的所有块，并尝试从 FAISS 索引中移除对应向量。"""
         try:
-            cursor = conn.execute("DELETE FROM chunks WHERE source = ?", (source,))
+            rows = self._conn.execute(
+                "SELECT faiss_id FROM chunks WHERE source = ? AND faiss_id >= 0", (source,)
+            ).fetchall()
+            to_remove = np.array([r[0] for r in rows], dtype=np.int64)
+        except Exception:
+            to_remove = np.array([], dtype=np.int64)
+
+        try:
+            cursor = self._conn.execute("DELETE FROM chunks WHERE source = ?", (source,))
+            self._conn.commit()
             deleted = cursor.rowcount
-            conn.commit()
-            return deleted
-        finally:
-            conn.close()
-        # 注意：FAISS 不支持删除，需要重建索引
-        # 简化处理：标记删除，下次重建时清理
+        except Exception:
+            deleted = 0
+
+        if deleted > 0 and len(to_remove) > 0 and self._index is not None:
+            try:
+                self._index.remove_ids(to_remove)
+                self._save_index()
+                logger.info(f"[Quill RAG] 已从 FAISS 索引移除 {len(to_remove)} 条向量 (source={source})")
+            except Exception:
+                logger.info(f"[Quill RAG] FAISS remove_ids 失败 (source={source})，索引中将保留幽灵向量，"
+                            "可通过 /doc reload 完全重建")
+
+        return deleted
 
     def list_documents(self) -> list[dict]:
         """列出所有已上传文档。"""
-        conn = self._get_conn()
         try:
-            rows = conn.execute(
+            rows = self._conn.execute(
                 "SELECT source, doc_id, COUNT(*) as chunk_count, MIN(created_at) as created_at "
                 "FROM chunks GROUP BY source, doc_id"
             ).fetchall()
@@ -209,20 +215,25 @@ class FaissVectorStore:
                 {"source": r[0], "doc_id": r[1], "chunk_count": r[2], "created_at": r[3]}
                 for r in rows
             ]
-        finally:
-            conn.close()
+        except Exception:
+            return []
 
     def get_stats(self) -> dict:
         """返回存储统计。"""
-        conn = self._get_conn()
         try:
-            total_chunks = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-            total_docs = conn.execute("SELECT COUNT(DISTINCT source) FROM chunks").fetchone()[0]
-        finally:
-            conn.close()
+            total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            total_docs = self._conn.execute("SELECT COUNT(DISTINCT source) FROM chunks").fetchone()[0]
+        except Exception:
+            total_chunks = 0
+            total_docs = 0
         return {
             "total_chunks": total_chunks,
             "total_docs": total_docs,
             "faiss_vectors": self._index.ntotal if self._index else 0,
             "dim": self.dim,
         }
+
+    def load_index(self):
+        """重新加载 FAISS 索引（供 /doc reload 调用）。"""
+        with self._lock:
+            self._load_index()

@@ -99,6 +99,7 @@ class QuillConfig:
         self.worldbook_sensitivity: float = float(wb.get("match_sensitivity", 0.7))
         self.worldbook_injection_pos: str = str(wb.get("injection_position", "user_prefix"))
         self.worldbook_show_log: bool = bool(wb.get("show_trigger_log", False))
+        self.worldbook_always_activate: bool = bool(wb.get("always_activate", False))
 
         # ── knowledge_base ──
         kb = _get_nested(self._raw, "knowledge_base", {}) or {}
@@ -111,11 +112,18 @@ class QuillConfig:
         perf = _get_nested(self._raw, "performance", {}) or {}
         self.max_prompt_length: int = int(perf.get("max_prompt_length", 50000))
         self.min_output_length: int = int(perf.get("min_output_length", 400))
+        self.max_output_length: int = int(perf.get("max_output_length", 0))
 
         # ── status_bar ──
         sb = _get_nested(self._raw, "status_bar", {}) or {}
         self.status_bar_enabled: bool = bool(sb.get("enabled", True))
         self.status_bar_format: str = str(sb.get("format_template", "**状态栏**\n```\n{content}\n```"))
+        # 解析剧情走向选项
+        plot_raw = sb.get("plot_paths", "") or ""
+        if isinstance(plot_raw, str) and plot_raw.strip():
+            self.status_bar_plot_paths: list[str] = [p.strip() for p in plot_raw.split("|") if p.strip()]
+        else:
+            self.status_bar_plot_paths = ["继续当前话题", "转换场景", "结束互动"]
         # 解析字段列表
         fields_raw = sb.get("fields", "") or ""
         if isinstance(fields_raw, str) and fields_raw.strip():
@@ -138,6 +146,7 @@ class QuillConfig:
         # ── debug ──
         dbg = _get_nested(self._raw, "debug", {}) or {}
         self.debug_enabled: bool = bool(dbg.get("enabled", False))
+        self.panel_theme: str = str(dbg.get("panel_theme", "light"))
 
         # ── permissions ──
         perm = _get_nested(self._raw, "permissions", {}) or {}

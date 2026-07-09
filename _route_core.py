@@ -555,6 +555,15 @@ async def handle_memory_export(memory_store):
         return err(f"导出失败: {e}")
 
 
+async def handle_memory_prune(memory_store):
+    """一键清理低价值/过期记忆。"""
+    try:
+        deleted = await asyncio.to_thread(memory_store.prune_memories)
+        return ok({"deleted": deleted, "message": f"已清理 {deleted} 条低价值记忆"})
+    except Exception as e:
+        return err(f"修剪失败: {e}")
+
+
 async def handle_chat_log_list(memory_store, session_id=None, limit=200):
     """列出对话日志"""
     if not session_id:

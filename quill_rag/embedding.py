@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -56,7 +57,6 @@ class QuillEmbeddingProvider:
             if self._local_model is None:
                 logger.info("[Quill RAG] 加载本地 embedding 模型 BAAI/bge-small-zh-v1.5...")
                 self._local_model = self._load_local_model()
-            import asyncio
             loop = asyncio.get_running_loop()
             embeddings = await loop.run_in_executor(
                 None,

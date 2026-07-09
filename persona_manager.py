@@ -32,6 +32,8 @@ class QuillPersonaManager:
             os.path.dirname(data_dir), "quill_avatars"
         )
         self._locks = defaultdict(asyncio.Lock)
+        self._cache: dict[str, dict] = {}
+        self._cache_loaded: bool = False
 
     async def _ensure_dir(self):
         await asyncio.to_thread(os.makedirs, self.data_dir, exist_ok=True)
@@ -75,8 +77,9 @@ class QuillPersonaManager:
     async def delete_avatar(self, filename: str) -> bool:
         """删除头像文件。"""
         path = os.path.join(self.avatar_dir, filename)
-        if os.path.isfile(path):
-            os.remove(path)
+        exists = await asyncio.to_thread(os.path.isfile, path)
+        if exists:
+            await asyncio.to_thread(os.remove, path)
             return True
         return False
 
@@ -106,24 +109,37 @@ class QuillPersonaManager:
     async def _write_file(self, path: str, data: dict):
         await asyncio.to_thread(self._sync_write_file, path, data)
 
+    def invalidate_cache(self):
+        """清除缓存（供文件外部变动或 reload 后调用）。"""
+        self._cache.clear()
+        self._cache_loaded = False
+
     async def load_all(self) -> list[dict]:
-        """加载所有角色卡，按 ID 排序返回。"""
+        """加载所有角色卡，按 ID 排序返回（优先读缓存）。"""
+        if self._cache_loaded:
+            personas = list(self._cache.values())
+            personas.sort(key=lambda p: p.get("id", ""))
+            return personas
+
         await self._ensure_dir()
-        personas = []
+        self._cache.clear()
         for fname in await asyncio.to_thread(os.listdir, self.data_dir):
             if not fname.endswith(".json"):
                 continue
             path = os.path.join(self.data_dir, fname)
             data = await self._read_file(path)
             if data and data.get("id"):
-                personas.append(data)
+                self._cache[data["id"]] = data
+        self._cache_loaded = True
+        personas = list(self._cache.values())
         personas.sort(key=lambda p: p.get("id", ""))
         return personas
 
     async def get_persona(self, persona_id: str) -> Optional[dict]:
-        """根据 ID 获取单张角色卡。"""
-        path = self._persona_path(persona_id)
-        return await self._read_file(path)
+        """根据 ID 获取单张角色卡（优先读缓存）。"""
+        if not self._cache_loaded:
+            await self.load_all()
+        return self._cache.get(persona_id)
 
     async def _name_exists(self, name: str, exclude_id: str = "") -> bool:
         """检查角色名是否已存在（排除 exclude_id）。"""
@@ -167,6 +183,7 @@ class QuillPersonaManager:
         }
         path = self._persona_path(persona_id)
         await self._write_file(path, persona)
+        self._cache[persona_id] = persona
         logger.info(f"[QuillPersona] 已创建角色卡: {persona_id}")
         return persona
 
@@ -207,13 +224,15 @@ class QuillPersonaManager:
 
             path = self._persona_path(persona_id)
             await self._write_file(path, existing)
+            self._cache[persona_id] = existing
             logger.info(f"[QuillPersona] 已更新角色卡: {persona_id}")
             return existing
 
     async def delete_persona(self, persona_id: str) -> bool:
         """删除角色卡及其关联的头像文件。"""
         path = self._persona_path(persona_id)
-        if not os.path.isfile(path):
+        exists = await asyncio.to_thread(os.path.isfile, path)
+        if not exists:
             raise ValueError(f"角色卡不存在: {persona_id}")
         # 读取角色卡数据以获取头像路径
         try:
@@ -226,7 +245,8 @@ class QuillPersonaManager:
                     logger.info(f"[QuillPersona] 已删除头像: {avatar_filename}")
         except Exception as e:
             logger.warning(f"[QuillPersona] 读取头像路径失败: {e}")
-        os.remove(path)
+        await asyncio.to_thread(os.remove, path)
+        self._cache.pop(persona_id, None)
         logger.info(f"[QuillPersona] 已删除角色卡: {persona_id}")
         return True
 

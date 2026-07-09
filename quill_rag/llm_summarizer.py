@@ -79,10 +79,12 @@ class QuillSummarizer:
                 prompt=prompt,
                 system_prompt=self.CONTEXT_SUMMARY_PROMPT,
             )
-            if response and getattr(response, "completion_text", ""):
-                summary = response.completion_text.strip()
-                logger.info(f"[Quill Memory] 多轮摘要生成成功: {summary[:30]}...")
-                return summary
+            if response:
+                completion = getattr(response, "completion_text", None) or getattr(response, "text", "")
+                if completion:
+                    summary = completion.strip()
+                    logger.info(f"[Quill Memory] 多轮摘要生成成功: {summary[:30]}...")
+                    return summary
         except Exception as e:
             logger.warning(f"[Quill Memory] 多轮摘要生成失败: {e}")
         return ""

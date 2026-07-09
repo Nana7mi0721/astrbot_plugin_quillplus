@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """MemoryStore — SQLite BLOB + NumPy 余弦相似度。用于动态记忆（session 隔离）。"""
 
 from __future__ import annotations
@@ -24,47 +24,67 @@ class MemoryStore:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
         self._init_db()
 
     def _init_db(self):
-        """初始化 SQLite 表。"""
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS memories (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    chat_summary TEXT DEFAULT '',
-                    vector BLOB NOT NULL,
-                    dim INTEGER NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS chat_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-                    content TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_session ON chat_logs(session_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_ts ON chat_logs(timestamp)")
-            conn.commit()
-        finally:
-            conn.close()
+        """初始化 SQLite 表（复用长连接）。"""
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                chat_summary TEXT DEFAULT '',
+                vector BLOB NOT NULL,
+                dim INTEGER NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)")
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                content TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_session ON chat_logs(session_id)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_ts ON chat_logs(timestamp)")
+        self._conn.commit()
 
-    def _get_conn(self):
-        """获取配置好的 SQLite 连接。"""
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        return conn
+        # Schema 热迁移：新增记忆质量管理字段（兼容老数据库）
+        try:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN tags TEXT DEFAULT '[]'")
+        except Exception:
+            pass
+        try:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN strength INTEGER DEFAULT 10")
+        except Exception:
+            pass
+        try:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN useful_count INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN useful_score REAL DEFAULT 0.0")
+        except Exception:
+            pass
+        try:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN is_active INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        self._conn.commit()
+
+    def close(self):
+        """关闭数据库连接（插件卸载时调用）。"""
+        try:
+            self._conn.close()
+        except Exception:
+            pass
 
     def _encode_vector(self, vector: list[float]) -> bytes:
         """将向量列表编码为 BLOB。"""
@@ -88,41 +108,36 @@ class MemoryStore:
             return
         dim = len(vector)
         blob = self._encode_vector(vector)
-        conn = self._get_conn()
         try:
-            conn.execute(
+            self._conn.execute(
                 "INSERT INTO memories (session_id, summary, chat_summary, vector, dim) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (session_id, summary, chat_summary, blob, dim)
             )
-            conn.commit()
+            self._conn.commit()
         except Exception as e:
             logger.warning(f"[Quill Memory] 添加记忆失败: {e}")
-        finally:
-            conn.close()
 
     def search(self, session_id: str, query_vector: list[float], top_k: int = 3) -> list[dict]:
-        """按 session_id 隔离检索，NumPy 余弦相似度排序。"""
+        """按 session_id 隔离检索，NumPy 余弦相似度排序，含时间衰减。"""
         if not session_id or not query_vector:
             return []
 
-        conn = self._get_conn()
         try:
-            rows = conn.execute(
-                "SELECT id, summary, chat_summary, vector, dim, timestamp FROM memories "
-                "WHERE session_id = ? ORDER BY timestamp DESC LIMIT 500",
+            rows = self._conn.execute(
+                """SELECT id, summary, chat_summary, vector, dim, timestamp,
+                          strength, useful_count, useful_score, is_active,
+                          (julianday('now') - julianday(timestamp)) AS age_days
+                   FROM memories WHERE session_id = ? ORDER BY timestamp DESC LIMIT 500""",
                 (session_id,)
             ).fetchall()
         except Exception as e:
             logger.warning(f"[Quill Memory] 检索失败: {e}")
             return []
-        finally:
-            conn.close()
 
         if not rows:
             return []
 
-        # 构建向量矩阵
         try:
             query = np.array(query_vector, dtype=np.float32)
             vectors = []
@@ -140,28 +155,37 @@ class MemoryStore:
                 return []
 
             matrix = np.stack(vectors)
-            # 余弦相似度（epsilon 取 float32 精度上限，避免零除且减少失真）
-            eps = np.finfo(np.float32).eps  # ~1.19e-7
+            eps = np.finfo(np.float32).eps
             query_norm_val = np.linalg.norm(query)
             if query_norm_val < eps:
-                return []  # 零向量无法计算相似度
+                return []
             query_norm = query / query_norm_val
             matrix_norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-            # 过滤零向量行
             valid_mask = (matrix_norms.ravel() >= eps)
             if not np.any(valid_mask):
                 return []
             matrix_normalized = matrix[valid_mask] / matrix_norms[valid_mask]
             similarities = matrix_normalized @ query_norm
 
-            # 检查 NaN/Inf
             if not np.all(np.isfinite(similarities)):
                 logger.warning("[Quill Memory] Similarities contain NaN/Inf")
                 return []
 
-            # 取 top_k（映射回 valid_rows 的索引）
+            # 时间衰减：is_active=1 的记忆不衰减，被动记忆按 age_days 衰减
+            final_scores = []
+            for idx, sim in enumerate(similarities):
+                row = valid_rows[idx]
+                is_active = row[9]
+                age_days = float(row[10])
+                if is_active:
+                    final_scores.append(float(sim))
+                else:
+                    decay_factor = 1.0 / (1.0 + 0.05 * max(0, age_days))
+                    final_scores.append(float(sim) * decay_factor)
+
+            final_scores = np.array(final_scores)
             valid_indices = np.where(valid_mask)[0]
-            top_local = np.argsort(similarities)[::-1][:top_k]
+            top_local = np.argsort(final_scores)[::-1][:top_k]
             top_indices = valid_indices[top_local]
             results = []
             for idx in top_indices:
@@ -171,18 +195,75 @@ class MemoryStore:
                     "summary": row[1],
                     "chat_summary": row[2],
                     "timestamp": row[5],
-                    "score": float(similarities[idx]),
+                    "strength": row[6],
+                    "useful_count": row[7],
+                    "useful_score": float(row[8]),
+                    "score": float(final_scores[idx]),
                 })
             return results
         except Exception as e:
             logger.warning(f"[Quill Memory] 相似度计算失败: {e}")
             return []
 
+    def mark_memories_used(self, memory_ids: list[int], score_add: float = 1.5):
+        """更新被召回记忆的有用性统计。"""
+        if not memory_ids:
+            return
+        try:
+            placeholders = ",".join("?" for _ in memory_ids)
+            self._conn.execute(
+                f"""UPDATE memories
+                    SET useful_count = useful_count + 1,
+                        useful_score = useful_score + ?,
+                        strength = MIN(100, strength + 1)
+                    WHERE id IN ({placeholders})""",
+                [score_add] + memory_ids
+            )
+            self._conn.commit()
+        except Exception as e:
+            logger.warning(f"[Quill Memory] 更新记忆有用性失败: {e}")
+
+    def prune_memories(self) -> int:
+        """分档遗忘清理任务（无情斩杀低价值记忆）。"""
+        try:
+            cursor = self._conn.execute("""
+                DELETE FROM memories
+                WHERE is_active = 0 AND (
+                    (useful_score < 3 AND julianday('now') - julianday(timestamp) > 3)
+                    OR
+                    (useful_score >= 3 AND useful_score < 10 AND julianday('now') - julianday(timestamp) > 9)
+                )
+            """)
+            deleted = cursor.rowcount
+            self._conn.commit()
+            if deleted > 0:
+                logger.info(f"[Quill Memory] 记忆修剪: 清理了 {deleted} 条过期低价值记忆")
+            return deleted
+        except Exception as e:
+            logger.warning(f"[Quill Memory] 记忆修剪失败: {e}")
+            return 0
+
+    def get_chat_logs_after(self, session_id: str, after_id: int, limit: int = 50) -> list[dict]:
+        """获取指定 session 中 after_id 之后的对话日志（增量读取）。"""
+        if not session_id:
+            return []
+        try:
+            rows = self._conn.execute(
+                "SELECT id, role, content, timestamp FROM chat_logs "
+                "WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
+                (session_id, after_id, limit)
+            ).fetchall()
+            return [
+                {"id": r[0], "role": r[1], "content": r[2], "timestamp": r[3]}
+                for r in rows
+            ]
+        except Exception:
+            return []
+
     def list_sessions(self) -> list[dict]:
         """列出所有有记忆的 session。"""
-        conn = self._get_conn()
         try:
-            rows = conn.execute(
+            rows = self._conn.execute(
                 "SELECT session_id, COUNT(*) as count, MIN(timestamp) as first, "
                 "MAX(timestamp) as last FROM memories GROUP BY session_id"
             ).fetchall()
@@ -190,43 +271,46 @@ class MemoryStore:
                 {"session_id": r[0], "count": r[1], "first": r[2], "last": r[3]}
                 for r in rows
             ]
-        finally:
-            conn.close()
+        except Exception:
+            return []
 
     def list_memories(self, session_id: str, limit: int = 50) -> list[dict]:
         """列出某 session 的所有记忆。"""
-        conn = self._get_conn()
+        if not session_id:
+            return []
         try:
-            rows = conn.execute(
-                "SELECT id, summary, chat_summary, timestamp FROM memories "
+            rows = self._conn.execute(
+                "SELECT id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active FROM memories "
                 "WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?",
                 (session_id, limit)
             ).fetchall()
             return [
-                {"id": r[0], "summary": r[1], "chat_summary": r[2], "timestamp": r[3]}
+                {
+                    "id": r[0], "summary": r[1], "chat_summary": r[2], "timestamp": r[3],
+                    "strength": r[4], "useful_count": r[5], "useful_score": r[6], "is_active": r[7]
+                }
                 for r in rows
             ]
-        finally:
-            conn.close()
+        except Exception:
+            return []
 
     def delete_session_memories(self, session_id: str) -> int:
         """删除某 session 的所有记忆。"""
-        conn = self._get_conn()
+        if not session_id:
+            return 0
         try:
-            cursor = conn.execute("DELETE FROM memories WHERE session_id = ?", (session_id,))
-            deleted = cursor.rowcount
-            conn.commit()
-            return deleted
-        finally:
-            conn.close()
+            cursor = self._conn.execute("DELETE FROM memories WHERE session_id = ?", (session_id,))
+            self._conn.commit()
+            return cursor.rowcount
+        except Exception:
+            return 0
 
     def get_recent_chat_logs(self, session_id: str, limit: int = 8) -> list[dict]:
         """获取最近聊天记录（正序返回，供上下文恢复用）"""
         if not session_id:
             return []
-        conn = self._get_conn()
         try:
-            rows = conn.execute(
+            rows = self._conn.execute(
                 "SELECT role, content FROM chat_logs "
                 "WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?",
                 (session_id, limit)
@@ -237,8 +321,6 @@ class MemoryStore:
         except Exception as e:
             logger.warning(f"[Quill Memory] 获取聊天日志失败: {e}")
             return []
-        finally:
-            conn.close()
 
     def log_message(self, session_id: str, role: str, content: str):
         """记录一条原始对话"""
@@ -246,25 +328,21 @@ class MemoryStore:
             return
         if role not in ("user", "assistant"):
             return
-        conn = self._get_conn()
         try:
-            conn.execute(
+            self._conn.execute(
                 "INSERT INTO chat_logs (session_id, role, content) VALUES (?, ?, ?)",
                 (session_id, role, content[:2000])
             )
-            conn.commit()
+            self._conn.commit()
         except Exception as e:
             logger.warning(f"[Quill Memory] 聊天日志记录失败: {e}")
-        finally:
-            conn.close()
 
     def list_chat_logs(self, session_id: str, limit: int = 200) -> list[dict]:
         """按 session 查询原始对话日志"""
         if not session_id:
             return []
-        conn = self._get_conn()
         try:
-            rows = conn.execute(
+            rows = self._conn.execute(
                 "SELECT id, role, content, timestamp FROM chat_logs "
                 "WHERE session_id = ? ORDER BY timestamp ASC LIMIT ?",
                 (session_id, limit)
@@ -273,22 +351,21 @@ class MemoryStore:
                 {"id": r[0], "role": r[1], "content": r[2], "timestamp": r[3]}
                 for r in rows
             ]
-        finally:
-            conn.close()
+        except Exception:
+            return []
 
     def export_chat_logs(self, session_id: str, format: str = "markdown") -> str:
         """导出对话日志为文本格式"""
         if not session_id:
             return ""
-        conn = self._get_conn()
         try:
-            rows = conn.execute(
+            rows = self._conn.execute(
                 "SELECT role, content, timestamp FROM chat_logs "
                 "WHERE session_id = ? ORDER BY timestamp ASC",
                 (session_id,)
             ).fetchall()
-        finally:
-            conn.close()
+        except Exception:
+            return ""
 
         if format == "txt":
             lines = [f"[{r[2]}] {r[0]}: {r[1]}" for r in rows]
@@ -303,91 +380,78 @@ class MemoryStore:
         """清理超过保留天数的对话日志"""
         if retention_days <= 0:
             return 0
-        conn = self._get_conn()
         try:
-            cursor = conn.execute(
+            cursor = self._conn.execute(
                 "DELETE FROM chat_logs WHERE timestamp < datetime('now', ?)",
                 (f"-{retention_days} days",)
             )
-            conn.commit()
+            self._conn.commit()
             return cursor.rowcount
         except Exception as e:
             logger.warning(f"[Quill Memory] 对话日志清理失败: {e}")
             return 0
-        finally:
-            conn.close()
 
     def delete_session_chat_logs(self, session_id: str) -> int:
         """删除某 session 的所有对话日志"""
         if not session_id:
             return 0
-        conn = self._get_conn()
         try:
-            cursor = conn.execute("DELETE FROM chat_logs WHERE session_id = ?", (session_id,))
-            conn.commit()
+            cursor = self._conn.execute("DELETE FROM chat_logs WHERE session_id = ?", (session_id,))
+            self._conn.commit()
             return cursor.rowcount
-        finally:
-            conn.close()
+        except Exception:
+            return 0
 
     def delete_memory(self, memory_id: int) -> bool:
         """删除单条记忆。"""
-        conn = self._get_conn()
         try:
-            cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-            conn.commit()
+            cursor = self._conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            self._conn.commit()
             return cursor.rowcount > 0
-        finally:
-            conn.close()
+        except Exception:
+            return False
 
     def get_stats(self) -> dict:
         """返回存储统计。"""
-        conn = self._get_conn()
         try:
-            total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-            sessions = conn.execute(
+            total = self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            sessions = self._conn.execute(
                 "SELECT COUNT(DISTINCT session_id) FROM memories"
             ).fetchone()[0]
-        finally:
-            conn.close()
+        except Exception:
+            return {"total_memories": 0, "total_sessions": 0}
         return {"total_memories": total, "total_sessions": sessions}
 
     def list_all_memories(self, limit: int = 200) -> list[dict]:
-        """列出全部记忆（跨 session），按创建时间倒序。
-
-        供前端记忆浏览表格展示用，默认最新在前。
-        """
-        conn = self._get_conn()
+        """列出全部记忆（跨 session），按创建时间倒序。"""
         try:
-            rows = conn.execute(
-                "SELECT id, session_id, summary, timestamp FROM memories "
+            rows = self._conn.execute(
+                "SELECT id, session_id, summary, timestamp, strength, useful_count, useful_score, is_active FROM memories "
                 "ORDER BY timestamp DESC LIMIT ?",
                 (limit,)
             ).fetchall()
             return [
-                {"id": r[0], "session_id": r[1], "summary": r[2], "timestamp": r[3]}
+                {
+                    "id": r[0], "session_id": r[1], "summary": r[2], "timestamp": r[3],
+                    "strength": r[4], "useful_count": r[5], "useful_score": r[6], "is_active": r[7]
+                }
                 for r in rows
             ]
-        finally:
-            conn.close()
+        except Exception:
+            return []
 
     def search_all(self, query_vector: list[float], top_k: int = 5) -> list[dict]:
-        """跨 session 向量检索（全局搜索，不限制 session_id）。
-
-        供 Debug 用：直接传入 query_vector，返回全局最相关的 top_k 条。
-        """
+        """跨 session 向量检索（全局搜索，不限制 session_id）。"""
         if not query_vector:
             return []
-        conn = self._get_conn()
         try:
-            rows = conn.execute(
+            rows = self._conn.execute(
                 "SELECT id, session_id, summary, chat_summary, vector, dim, timestamp FROM memories "
                 "ORDER BY timestamp DESC LIMIT 2000"
             ).fetchall()
         except Exception as e:
             logger.warning(f"[Quill Memory] 向量检索查询失败: {e}")
             return []
-        finally:
-            conn.close()
 
         if not rows:
             return []
