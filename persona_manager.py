@@ -8,9 +8,11 @@
 
 import asyncio
 import base64
+import copy
 import json
 import os
 import re
+import tempfile
 import time
 from collections import defaultdict
 from io import BytesIO
@@ -32,6 +34,8 @@ class QuillPersonaManager:
             os.path.dirname(data_dir), "quill_avatars"
         )
         self._locks = defaultdict(asyncio.Lock)
+        # S2-7 修复：_cache_lock 专门保护 cache 状态转换（load/create/delete），避免 TOCTOU
+        self._cache_lock = asyncio.Lock()
         self._cache: dict[str, dict] = {}
         self._cache_loaded: bool = False
 
@@ -59,8 +63,20 @@ class QuillPersonaManager:
 
     @staticmethod
     def _sync_write_bytes(path: str, data: bytes):
-        with open(path, "wb") as f:
-            f.write(data)
+        """F3 修复：原子写入二进制（头像文件），tmp + fsync + os.replace"""
+        d = os.path.dirname(os.path.abspath(path))
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except Exception:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
 
     async def read_avatar(self, filename: str) -> Optional[bytes]:
         """读取头像文件数据。"""
@@ -103,21 +119,44 @@ class QuillPersonaManager:
 
     @staticmethod
     def _sync_write_file(path: str, data: dict):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        """F3 修复：原子写入 JSON（tmp + fsync + os.replace），防写入中断损坏文件"""
+        d = os.path.dirname(os.path.abspath(path))
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except Exception:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
 
     async def _write_file(self, path: str, data: dict):
         await asyncio.to_thread(self._sync_write_file, path, data)
 
-    def invalidate_cache(self):
+    async def invalidate_cache(self):
         """清除缓存（供文件外部变动或 reload 后调用）。"""
-        self._cache.clear()
-        self._cache_loaded = False
+        # S2-7: 加锁保护，避免与正在进行的 load/create/delete 竞争
+        async with self._cache_lock:
+            self._cache.clear()
+            self._cache_loaded = False
 
     async def load_all(self) -> list[dict]:
-        """加载所有角色卡，按 ID 排序返回（优先读缓存）。"""
+        """加载所有角色卡，按 ID 排序返回（优先读缓存）。
+
+        S2-7 修复：用 _cache_lock 保护加载过程，避免多协程同时加载造成 TOCTOU。
+        S2-6 修复：返回 deepcopy 列表，防止调用方 mutate 污染缓存。
+        """
+        async with self._cache_lock:
+            return await self._load_all_locked()
+
+    async def _load_all_locked(self) -> list[dict]:
+        """load_all 的内部实现，假设调用方已持有 _cache_lock。"""
         if self._cache_loaded:
-            personas = list(self._cache.values())
+            personas = [copy.deepcopy(p) for p in self._cache.values()]
             personas.sort(key=lambda p: p.get("id", ""))
             return personas
 
@@ -131,64 +170,89 @@ class QuillPersonaManager:
             if data and data.get("id"):
                 self._cache[data["id"]] = data
         self._cache_loaded = True
-        personas = list(self._cache.values())
+        personas = [copy.deepcopy(p) for p in self._cache.values()]
         personas.sort(key=lambda p: p.get("id", ""))
         return personas
 
     async def get_persona(self, persona_id: str) -> Optional[dict]:
-        """根据 ID 获取单张角色卡（优先读缓存）。"""
+        """根据 ID 获取单张角色卡（优先读缓存）。
+
+        F10 修复：返回深拷贝，防止调用方直接 mutate 缓存导致并发 lost update。
+        """
         if not self._cache_loaded:
             await self.load_all()
-        return self._cache.get(persona_id)
+        persona = self._cache.get(persona_id)
+        return copy.deepcopy(persona) if persona else None
 
     async def _name_exists(self, name: str, exclude_id: str = "") -> bool:
-        """检查角色名是否已存在（排除 exclude_id）。"""
+        """检查角色名是否已存在（排除 exclude_id）。
+
+        注意：此方法会调用 load_all（获取 _cache_lock），因此不能在持有 _cache_lock 时调用。
+        持锁场景请改用 _name_exists_locked。
+        """
         personas = await self.load_all()
         for p in personas:
             if p.get("name") == name and p.get("id") != exclude_id:
                 return True
         return False
 
+    async def _name_exists_locked(self, name: str, exclude_id: str = "") -> bool:
+        """_name_exists 的持锁版本，假设调用方已持有 _cache_lock。"""
+        personas = await self._load_all_locked()
+        for p in personas:
+            if p.get("name") == name and p.get("id") != exclude_id:
+                return True
+        return False
+
     async def create_persona(self, data: dict) -> dict:
-        """创建一张新的角色卡。返回保存后的数据。"""
-        name = (data.get("name") or "").strip()
-        if not name:
-            raise ValueError("角色名称 (name) 为必填项")
-        if await self._name_exists(name):
-            raise ValueError(f"角色名 '{name}' 已存在")
+        """创建一张新的角色卡。返回保存后的数据。
 
-        persona_id = (data.get("id") or "").strip() or name
-        if await self.get_persona(persona_id):
-            raise ValueError(f"角色 ID '{persona_id}' 已存在")
+        S2-7 修复：加 _cache_lock 保护，避免与 load_all/delete_persona 竞争。
+        S2-6 修复：缓存与返回值均为 deepcopy，防止调用方 mutate 污染缓存。
+        """
+        async with self._cache_lock:
+            name = (data.get("name") or "").strip()
+            if not name:
+                raise ValueError("角色名称 (name) 为必填项")
+            if await self._name_exists_locked(name):
+                raise ValueError(f"角色名 '{name}' 已存在")
 
-        persona = {
-            "id": persona_id,
-            "name": name,
-            "avatar_path": (data.get("avatar_path") or "").strip(),
-            "summary": (data.get("summary") or "").strip(),
-            "core_prompts": {
-                "personality": (data.get("core_prompts", {}).get("personality") or "").strip(),
-                "scenario": (data.get("core_prompts", {}).get("scenario") or "").strip(),
-                "examples_of_dialogue": (data.get("core_prompts", {}).get("examples_of_dialogue") or "").strip(),
-                "first_message": (data.get("core_prompts", {}).get("first_message") or "").strip(),
-            },
-            "quill_extensions": {
-                "wb_mode": data.get("quill_extensions", {}).get("wb_mode", "disabled"),
-                "bound_worldbooks": data.get("quill_extensions", {}).get("bound_worldbooks", []),
-                "rag_mode": data.get("quill_extensions", {}).get("rag_mode", "disabled"),
-                "bound_rag_docs": data.get("quill_extensions", {}).get("bound_rag_docs", []),
-                "kb_mode": data.get("quill_extensions", {}).get("kb_mode", "disabled"),
-                "bound_knowledge_base": data.get("quill_extensions", {}).get("bound_knowledge_base", []),
-            },
-        }
-        path = self._persona_path(persona_id)
-        await self._write_file(path, persona)
-        self._cache[persona_id] = persona
-        logger.info(f"[QuillPersona] 已创建角色卡: {persona_id}")
-        return persona
+            persona_id = (data.get("id") or "").strip() or name
+            if self._cache_loaded and persona_id in self._cache:
+                raise ValueError(f"角色 ID '{persona_id}' 已存在")
+
+            persona = {
+                "id": persona_id,
+                "name": name,
+                "avatar_path": (data.get("avatar_path") or "").strip(),
+                "summary": (data.get("summary") or "").strip(),
+                "core_prompts": {
+                    "personality": (data.get("core_prompts", {}).get("personality") or "").strip(),
+                    "scenario": (data.get("core_prompts", {}).get("scenario") or "").strip(),
+                    "examples_of_dialogue": (data.get("core_prompts", {}).get("examples_of_dialogue") or "").strip(),
+                    "first_message": (data.get("core_prompts", {}).get("first_message") or "").strip(),
+                },
+                "quill_extensions": {
+                    "wb_mode": data.get("quill_extensions", {}).get("wb_mode", "disabled"),
+                    "bound_worldbooks": data.get("quill_extensions", {}).get("bound_worldbooks", []),
+                    "rag_mode": data.get("quill_extensions", {}).get("rag_mode", "disabled"),
+                    "bound_rag_docs": data.get("quill_extensions", {}).get("bound_rag_docs", []),
+                    "kb_mode": data.get("quill_extensions", {}).get("kb_mode", "disabled"),
+                    "bound_knowledge_base": data.get("quill_extensions", {}).get("bound_knowledge_base", []),
+                },
+            }
+            path = self._persona_path(persona_id)
+            await self._write_file(path, persona)
+            # 缓存存 deepcopy，返回 deepcopy
+            self._cache[persona_id] = copy.deepcopy(persona)
+            logger.info(f"[QuillPersona] 已创建角色卡: {persona_id}")
+            return copy.deepcopy(persona)
 
     async def update_persona(self, persona_id: str, data: dict) -> dict:
-        """更新角色卡（支持部分更新）。"""
+        """更新角色卡（支持部分更新）。
+
+        S2-6 修复：缓存与返回值均为 deepcopy，防止调用方 mutate 污染缓存。
+        """
         async with self._locks[persona_id]:
             existing = await self.get_persona(persona_id)
             if not existing:
@@ -224,31 +288,38 @@ class QuillPersonaManager:
 
             path = self._persona_path(persona_id)
             await self._write_file(path, existing)
-            self._cache[persona_id] = existing
+            # S2-6: 缓存 deepcopy，返回 deepcopy
+            self._cache[persona_id] = copy.deepcopy(existing)
             logger.info(f"[QuillPersona] 已更新角色卡: {persona_id}")
-            return existing
+            return copy.deepcopy(existing)
 
     async def delete_persona(self, persona_id: str) -> bool:
-        """删除角色卡及其关联的头像文件。"""
-        path = self._persona_path(persona_id)
-        exists = await asyncio.to_thread(os.path.isfile, path)
-        if not exists:
-            raise ValueError(f"角色卡不存在: {persona_id}")
-        # 读取角色卡数据以获取头像路径
-        try:
-            data = await self._read_file(path)
-            if data:
-                avatar_path = data.get("avatar_path", "")
-                if avatar_path and avatar_path.startswith("quill_avatars/"):
-                    avatar_filename = avatar_path[len("quill_avatars/"):]
-                    await self.delete_avatar(avatar_filename)
-                    logger.info(f"[QuillPersona] 已删除头像: {avatar_filename}")
-        except Exception as e:
-            logger.warning(f"[QuillPersona] 读取头像路径失败: {e}")
-        await asyncio.to_thread(os.remove, path)
-        self._cache.pop(persona_id, None)
-        logger.info(f"[QuillPersona] 已删除角色卡: {persona_id}")
-        return True
+        """删除角色卡及其关联的头像文件。
+
+        S2-7 修复：加 _cache_lock 保护，避免与 load_all/create_persona 竞争。
+        """
+        async with self._cache_lock:
+            path = self._persona_path(persona_id)
+            exists = await asyncio.to_thread(os.path.isfile, path)
+            if not exists:
+                raise ValueError(f"角色卡不存在: {persona_id}")
+            # 读取角色卡数据以获取头像路径
+            try:
+                data = await self._read_file(path)
+                if data:
+                    avatar_path = data.get("avatar_path", "")
+                    if avatar_path and avatar_path.startswith("quill_avatars/"):
+                        avatar_filename = avatar_path[len("quill_avatars/"):]
+                        await self.delete_avatar(avatar_filename)
+                        logger.info(f"[QuillPersona] 已删除头像: {avatar_filename}")
+            except Exception as e:
+                logger.warning(f"[QuillPersona] 读取头像路径失败: {e}")
+            await asyncio.to_thread(os.remove, path)
+            self._cache.pop(persona_id, None)
+            # S3-3: 清理 _locks 中的孤儿锁，防止 defaultdict 无限增长
+            self._locks.pop(persona_id, None)
+            logger.info(f"[QuillPersona] 已删除角色卡: {persona_id}")
+            return True
 
     async def get_persona_count(self) -> int:
         """返回角色卡数量。"""

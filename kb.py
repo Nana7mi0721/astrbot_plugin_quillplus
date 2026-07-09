@@ -89,12 +89,24 @@ class KnowledgeBaseManager:
         await c.execute("CREATE INDEX IF NOT EXISTS idx_enabled ON knowledge_base(enabled)")
 
         # FTS5 virtual table
-        await c.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
-                keywords, name, content,
-                content=knowledge_base, content_rowid=id
-            )
-        """)
+        # S3-5: 指定 trigram 分词器，改善中文子串匹配（SQLite 3.34+）。
+        # 若旧 SQLite 不支持 trigram，回退到默认 unicode61 分词器。
+        try:
+            await c.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+                    keywords, name, content,
+                    content=knowledge_base, content_rowid=id,
+                    tokenize='trigram'
+                )
+            """)
+        except Exception as exc:
+            logger.warning("[KB] trigram 分词器不可用，回退默认分词器: %s", exc)
+            await c.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+                    keywords, name, content,
+                    content=knowledge_base, content_rowid=id
+                )
+            """)
 
         # Match logs
         await c.execute("""

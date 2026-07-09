@@ -26,15 +26,27 @@ def _get_target_id(event: AstrMessageEvent) -> str:
 
 
 def _check_group_permission(plugin, event: AstrMessageEvent) -> bool:
-    """群聊写权限校验。私聊始终返回 True。"""
-    admin_users = getattr(plugin.config, "admin_users", [])
-    if not admin_users:
-        return True
+    """群聊写权限校验。私聊始终返回 True。
+
+    F2 修复：原实现用 `sender_id in target_id` 子串匹配，群号含于用户 ID 时越权。
+    现改为：私聊场景要求 unified_msg_origin 尾部精确匹配 sender_id；群聊仅 admin 放行。
+    S2-5 修复：admin_users 未配置时群聊默认拒绝（fail-close），避免公网裸奔。
+    """
+    admin_users = getattr(plugin.config, "admin_users", []) or []
     sender_id = str(event.get_sender_id())
     target_id = _get_target_id(event)
-    if sender_id in target_id:
-        return True
-    return sender_id in admin_users
+    # 私聊：unified_msg_origin 形如 "aiocqhttp:PrivateMessage:<uid>"，尾部应严格等于 sender_id
+    if "PrivateMessage" in target_id:
+        if target_id.endswith(":" + sender_id):
+            return True
+        logger.debug(f"[Quill] 私聊权限校验：target_id={target_id} 末段与 sender_id={sender_id} 不符，拒绝")
+        return False
+    # 群聊：仅 admin 放行；admin 未配置时 fail-close
+    if not admin_users:
+        logger.warning("[Quill] admin_users 未配置，群聊写操作已拒绝。请在配置面板设置 admin_users。")
+        return False
+    admin_set = set(str(u) for u in admin_users)
+    return sender_id in admin_set
 
 
 # ================================================================
@@ -170,7 +182,7 @@ async def _wb_bind(plugin, event: AstrMessageEvent, arg: str):
         ext["wb_mode"] = "custom"  # 自动切换到 Custom 模式
         persona_data["quill_extensions"] = ext
 
-        await plugin.persona_manager.update_persona(persona_data)
+        await plugin.persona_manager.update_persona(persona_id, persona_data)
         logger.info(f"[Quill] 对话 {target_id} 绑定世界书 '{name}' 到角色卡 '{persona_id}'")
         event.set_result(MessageEventResult().message(
             f"已绑定世界书: {name} ({entry_count} 条) → 当前角色"
@@ -221,7 +233,7 @@ async def _wb_unbind(plugin, event: AstrMessageEvent, arg: str):
         ext["bound_worldbooks"] = bound_wbs
         persona_data["quill_extensions"] = ext
 
-        await plugin.persona_manager.update_persona(persona_data)
+        await plugin.persona_manager.update_persona(persona_id, persona_data)
         logger.info(f"[Quill] 对话 {target_id} 解绑世界书 '{name}' 从角色卡 '{persona_id}'")
         event.set_result(MessageEventResult().message(
             f"已解绑世界书: {name} 从当前角色"
@@ -1141,7 +1153,7 @@ async def _doc_bind(plugin, event: AstrMessageEvent, arg: str):
         ext["rag_mode"] = "custom"
         persona_data["quill_extensions"] = ext
 
-        await plugin.persona_manager.update_persona(persona_data)
+        await plugin.persona_manager.update_persona(persona_id, persona_data)
         logger.info(f"[Quill] 对话 {target_id} 绑定文档 '{doc_source}' 到角色卡 '{persona_id}'")
         event.set_result(MessageEventResult().message(
             f"已绑定文档: {doc_source} ({chunk_count} 段) → 当前角色"
@@ -1200,7 +1212,7 @@ async def _doc_unbind(plugin, event: AstrMessageEvent, arg: str):
         ext["bound_rag_docs"] = bound_docs
         persona_data["quill_extensions"] = ext
 
-        await plugin.persona_manager.update_persona(persona_data)
+        await plugin.persona_manager.update_persona(persona_id, persona_data)
         logger.info(f"[Quill] 对话 {target_id} 解绑文档 '{doc_source}' 从角色卡 '{persona_id}'")
         event.set_result(MessageEventResult().message(
             f"已解绑文档: {doc_source} 从当前角色"

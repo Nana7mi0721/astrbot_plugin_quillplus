@@ -590,8 +590,8 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 </head>
 <body>
 <header>
-  <h1>Quill</h1>
-  <span class="sub">管理面板</span>
+  <h1>Quill <span style="font-size:12px;font-weight:normal;color:var(--text-muted);">v5.2</span></h1>
+  <span class="sub">羽笔管理面板</span>
   <span class="spacer"></span>
   <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="切换深色模式">🌙</button>
 </header>
@@ -725,6 +725,13 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
         </div>
         <div class="form-group"><input type="text" id="mem-search" placeholder="搜索 session_id 或关键词..." oninput="handleMemSearch()"></div>
         <div class="table-wrap"><table class="data-table" id="mem-table"><thead><tr><th>Session ID</th><th>摘要</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="mem-table-body"></tbody></table></div>
+        <div id="mem-pagination" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:13px;color:var(--text-muted);">
+          <span id="mem-page-info"></span>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-outline btn-sm" id="mem-prev-btn" onclick="changeMemPage(-1)">上一页</button>
+            <button class="btn btn-outline btn-sm" id="mem-next-btn" onclick="changeMemPage(1)">下一页</button>
+          </div>
+        </div>
       </div>
     </div>
     <div class="mem-sub-pane" id="mem-sub-io">
@@ -748,9 +755,9 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
       <h3>RAG 与动态记忆 <span style="font-weight:normal;font-size:13px;color:var(--text-muted);margin-left:8px">(依赖底层向量库引擎)</span></h3>
       <div style="border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:16px;background:var(--surface);">
         <div class="form-row">
-          <div class="form-group"><label>Embedding 模型</label><select id="c-rag-emb"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">用于文本向量化。留空使用本地 bge-small。</span></div>
-          <div class="form-group"><label>Rerank 重排模型</label><select id="c-rag-rerank"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">二次打分，极大提升检准率。建议配置。</span></div>
-          <div class="form-group"><label>摘要 LLM 模型</label><select id="c-rag-llm"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">用于后台将长对话压缩为记忆摘要。</span></div>
+          <div class="form-group"><label>Embedding 模型</label><select id="c-rag-emb"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">用于文本向量化。留空使用本地 bge-small。注意：切换提供商会导致维度变化，已上传文档需重新上传。</span></div>
+          <div class="form-group"><label>Rerank 重排模型</label><select id="c-rag-rerank"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">对向量初筛候选二次打分，极大提升检准率。建议配置。</span></div>
+          <div class="form-group"><label>摘要 LLM 模型</label><select id="c-rag-llm"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">用于后台将长对话压缩为记忆摘要。留空则用简单文本截断。</span></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>文档分块大小</label><input type="number" id="c-rag-chunk" value="500"></div>
@@ -844,10 +851,39 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
       <div class="form-group">
         <div class="card" style="height:100%">
           <h3>🛡️ 安全与权限控制</h3>
+          <div style="background:var(--surface);border-left:3px solid var(--warning, #f59e0b);padding:8px 12px;margin-bottom:12px;font-size:12px;color:var(--text-muted);border-radius:4px;">
+            ⚠️ <b>必须配置</b>：留空时群聊写指令（切卡/清记忆/改流式等）与面板编辑功能将<b>全部锁定</b>（返回 503）。私聊不受限制。
+          </div>
           <div class="form-group">
             <label>管理员白名单 (QQ号/用户ID)</label>
             <textarea id="c-perm-admins" rows="4" placeholder="例如:&#10;123456789&#10;987654321"></textarea>
-            <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">支持多行、逗号或竖线分隔。留空则所有人均可操作；填写后，仅名单内的用户可执行切卡、清空记忆等操作。</span>
+            <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">支持多行、逗号或竖线分隔。配置后仅白名单用户可在群聊执行写操作。留空时群聊写指令与面板编辑功能锁定（fail-close 安全策略）。</span>
+            <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+              <input type="text" id="c-perm-my-admin-id" placeholder="你的管理员ID（用于面板鉴权）" style="flex:1;font-size:13px;padding:6px 10px;">
+              <button class="btn btn-outline" style="font-size:13px;padding:6px 12px;" onclick="saveMyAdminId()">设为本机管理员标识</button>
+            </div>
+            <span style="font-size:11px;color:var(--text-muted);margin-top:4px;display:block">填写上述白名单中的某个 ID 并点击按钮，本机面板将以该 ID 身份发起请求。后端通过此 ID 校验是否为管理员，桌面端走桥接通道时同样携带。</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <div class="card" style="height:100%">
+          <h3>🔧 调试与维护</h3>
+          <div class="form-check" style="margin-bottom:16px;">
+            <label class="toggle"><input type="checkbox" id="c-debug-enabled"><span class="toggle-slider"></span></label>
+            <div>
+              <span style="font-weight:500">启用调试日志</span>
+              <span style="font-size:12px;color:var(--text-muted);margin-left:8px">开启后在控制台打印详细的匹配详情与注入流程。非排错时建议关闭，日志量较大。</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>面板主题</label>
+            <select id="c-debug-theme">
+              <option value="light">浅色 (light)</option>
+              <option value="dark">深色 (dark)</option>
+            </select>
+            <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">切换后需刷新页面生效。</span>
           </div>
         </div>
       </div>
@@ -923,22 +959,30 @@ let _kbTagInput = null;   // 写作素材库标签输入
 let _wbEntryTagInput = null;  // 世界书条目标签输入
 
 // ── utilities ──
-let debounceTimer;
-function debounce(fn, ms) { return (...args) => { clearTimeout(debounceTimer); debounceTimer = setTimeout(() => fn(...args), ms); }; }
-const handleMemSearch = debounce(loadMemoryBrowser, 300);  // 全局共享防抖实例
+// B2 修复：debounce 改为闭包式，每个调用独立 timer，不再共享全局变量
+function debounce(fn, ms) { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }
+const handleMemSearch = debounce(loadMemoryBrowser, 300);
 function qs(s) { return document.querySelector(s); }
 function qsa(s) { return document.querySelectorAll(s); }
 function esc(s) { return s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function escAttr(s) { return esc(s); }
 function jsesc(s) { return s == null ? '' : String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"').replace(/\n/g,'\\n').replace(/\r/g,'\\r'); }
+// B3 修复：onclick/onchange 等 HTML 属性内 JS 字符串上下文专用转义。
+// 先 jsesc 保护 JS 字符串（' → \'），再 esc 保护 HTML 属性（" → &quot;），双重安全。
+function jsAttr(s) { return esc(jsesc(s)); }
 function catColor(name) { if (!name) return '#6366f1'; let h = 0; for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h); return `hsl(${(h % 360 + 360) % 360}, 55%, 50%)`; }
 function showToast(msg, type = 'error') {
   const container = qs('#toast-container');
-  const icon = type === 'success' ? '✓' : '✕';
+  // C3 扩展：支持 info / warning 类型
+  const icons = { success: '✓', error: '✕', info: 'ℹ', warning: '⚠' };
+  const icon = icons[type] || icons.error;
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
   el.innerHTML = `<span class="toast-icon">${icon}</span><span>${esc(msg)}</span><button class="toast-close" onclick="this.parentElement.remove()">×</button>`;
   container.appendChild(el);
+  // 限制最多 5 条堆叠
+  const all = container.querySelectorAll('.toast');
+  if (all.length > 5) all[0].remove();
   setTimeout(() => el.remove(), 3500);
 }
 
@@ -952,13 +996,19 @@ async function api(path, opts = {}) {
   // 1. 如果桥接器可用，且不是文件流或表单上传，优先走安全的桥接器
   if (bridge && !opts.isFormData && !opts.isBlob) {
     const method = (opts.method || 'GET').toUpperCase();
+    // S2-14: 桥接通道无法注入自定义 header，把 admin_id 拼到 query string
+    let bridgeAdmin = '';
+    try { bridgeAdmin = localStorage.getItem('quill_admin_id') || ''; } catch (e) { /* 沙盒忽略 */ }
     let result;
     if (method === 'GET') {
       const params = { '_t': Date.now() };
       if (qs_str) new URLSearchParams(qs_str).forEach((v, k) => { params[k] = v; });
+      if (bridgeAdmin) params['admin'] = bridgeAdmin;
       result = await bridge.apiGet(bp, params);
     } else {
-      result = await bridge.apiPost(bp, opts.body ? JSON.parse(opts.body) : {});
+      // POST：把 admin 拼到 path 的 query string
+      const postPath = bridgeAdmin ? `${bp}?admin=${encodeURIComponent(bridgeAdmin)}` : bp;
+      result = await bridge.apiPost(postPath, opts.body ? JSON.parse(opts.body) : {});
     }
     if (result && typeof result === 'object' && 'status' in result) {
       if (result.status === 'error') throw new Error(result.message || 'API error');
@@ -990,6 +1040,11 @@ async function api(path, opts = {}) {
       /* 忽略 iframe 沙盒安全拦截，依赖 credentials Cookie 鉴权 */
   }
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  // A1 修复：携带 admin 标识供后端 F7 校验（若配置了 admin_users）
+  try {
+      const adminId = localStorage.getItem('quill_admin_id');
+      if (adminId) headers['X-Quill-Admin'] = adminId;
+  } catch (e) { /* 沙盒忽略 */ }
 
   const sep = np.includes('?') ? '&' : '?';
   const cacheBust = isPost ? '' : `${sep}_t=${Date.now()}`;
@@ -1006,7 +1061,18 @@ async function api(path, opts = {}) {
   for (const url of candidates) {
     try {
       const res = await fetch(url, { method: isPost ? 'POST' : 'GET', headers, body: opts.body || undefined, credentials: 'include' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // A1 修复：403/503 单独提示权限/admin 配置问题
+        if (res.status === 403) {
+          showToast('⚠️ 权限不足：此操作需要管理员权限。请在配置中填写 admin_users', 'warning');
+          throw new Error('需要管理员权限（403）');
+        }
+        if (res.status === 503) {
+          showToast('⚠️ 写端点已锁定：请先在配置中填写 admin_users', 'warning');
+          throw new Error('admin_users 未配置（503）');
+        }
+        throw new Error(`HTTP ${res.status}`);
+      }
 
       // 拦截文件流下载
       if (opts.isBlob) return await res.blob();
@@ -1054,7 +1120,7 @@ function toggleTheme() {
 
 // ── Modal（唯一弹窗系统）──
 function openModal() { qs('#modalOverlay').classList.add('open'); }
-function closeModal() { qs('#modalOverlay').classList.remove('open'); modalMode = null; modalState = null; }
+function closeModal() { qs('#modalOverlay').classList.remove('open'); qs('#modalSaveBtn').style.display = ''; modalMode = null; modalState = null; }
 
 // ── 轻量级弹窗（沙盒安全，替代 confirm/prompt）──
 function closeDialog() {
@@ -1199,11 +1265,12 @@ function renderKBGrid() {
   if (!kbState.entries.length) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1">没有条目</div>'; return; }
   grid.innerHTML = kbState.entries.map((e) => {
     const escId = esc(e.entry_id);
+    const jsId = jsAttr(e.entry_id);  // B3: onclick 上下文用双重转义
     const kw = (e.keywords || []).slice(0, 6).map(k => `<span class="tag">${esc(k)}</span>`).join('');
     const more = (e.keywords || []).length > 6 ? ` <span style="color:var(--text-muted);font-size:11px">+${(e.keywords || []).length - 6}</span>` : '';
     const isOpen = _kbExpandedId === e.entry_id;
     return `<div class="kb-card${isOpen ? ' expanded' : ''}" data-eid="${escId}">
-      <div class="kb-card-header" onclick="${isOpen ? '' : "toggleKBExpand('" + escId + "')"}">
+      <div class="kb-card-header" onclick="${isOpen ? '' : "toggleKBExpand('" + jsId + "')"}">
         <div><div class="kb-card-title">${esc(e.name || e.entry_id)}</div><div class="kb-card-id">${escId}</div></div>
         <div class="kb-card-meta">
           <span class="cat-chip" style="background:${catColor(e.category)}">${esc(e.category)}</span>
@@ -1212,11 +1279,11 @@ function renderKBGrid() {
       </div>
       ${isOpen ? renderKBExpanded(e) : (kw || more) ? `<div class="kb-card-tags">${kw}${more}</div>` : ''}
       <div class="kb-card-footer">
-        <label class="toggle"><input type="checkbox" ${e.enabled !== false ? 'checked' : ''} onchange="toggleKBEntry('${escId}', this.checked)"><span class="toggle-slider"></span></label>
+        <label class="toggle"><input type="checkbox" ${e.enabled !== false ? 'checked' : ''} onchange="toggleKBEntry('${jsId}', this.checked)"><span class="toggle-slider"></span></label>
         <div class="kb-card-actions">
-          ${isOpen ? `<button class="btn btn-sm btn-outline btn-icon" onclick="saveKBInline('${escId}')">✓</button>` : ''}
-          <button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openKBModal('${escId}')" title="编辑">✎</button>
-          <button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteKBEntry('${escId}')" title="删除">×</button>
+          ${isOpen ? `<button class="btn btn-sm btn-outline btn-icon" onclick="saveKBInline('${jsId}')">✓</button>` : ''}
+          <button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openKBModal('${jsId}')" title="编辑">✎</button>
+          <button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteKBEntry('${jsId}')" title="删除">×</button>
         </div>
       </div>
     </div>`;
@@ -1225,19 +1292,20 @@ function renderKBGrid() {
 
 function renderKBExpanded(e) {
   const escId = esc(e.entry_id);
-  const kwTags = (e.keywords || []).map(k => `<span class="tag" style="margin:0 2px 2px 0">${esc(k)} <span class="tag-del" onclick="removeKBInlineTag('${escId}',${JSON.stringify(k)})">×</span></span>`).join('');
+  const jsId = jsAttr(e.entry_id);  // B3: onclick 上下文用双重转义
+  const kwTags = (e.keywords || []).map(k => `<span class="tag" style="margin:0 2px 2px 0">${esc(k)} <span class="tag-del" onclick="removeKBInlineTag('${jsId}','${jsAttr(k)}')">×</span></span>`).join('');
   return `<div class="kb-expanded" onclick="event.stopPropagation()">
     <div class="form-row">
       <div class="form-group"><label>分类</label><input value="${esc(e.category||'')}" onchange="kbInlineDirty=true"></div>
       <div class="form-group" style="flex:0 0 120px"><label>权重</label><div class="range-wrap"><input type="range" min="1" max="10" value="${e.priority||5}" oninput="this.nextElementSibling.textContent=this.value"><span class="range-value">${e.priority||5}</span></div></div>
     </div>
     <div class="form-group"><label>关键词</label><div>${kwTags || '<span style="color:var(--text-muted)">无</span>'}</div>
-      <input style="flex:1" placeholder="添加关键词" onkeydown="if(event.key==='Enter'){addKBInlineTag('${escId}',this.value);this.value=''}"></div>
+      <input style="flex:1" placeholder="添加关键词" onkeydown="if(event.key==='Enter'){addKBInlineTag('${jsId}',this.value);this.value=''}"></div>
     <div class="form-group"><label>内容</label><textarea rows="4">${esc(e.content||'')}</textarea></div>
     <div style="display:flex;gap:8px;align-items:center">
       <label class="form-check" style="margin-bottom:0"><input type="checkbox" class="kb-inline-const-cb" ${e.is_constant?'checked':''}> 常驻</label>
-      <button class="btn btn-sm btn-primary" onclick="saveKBInline('${escId}')" style="margin-left:auto">保存</button>
-      <button class="btn btn-sm btn-outline" onclick="toggleKBExpand('${escId}')">收起</button>
+      <button class="btn btn-sm btn-primary" onclick="saveKBInline('${jsId}')" style="margin-left:auto">保存</button>
+      <button class="btn btn-sm btn-outline" onclick="toggleKBExpand('${jsId}')">收起</button>
     </div>
   </div>`;
 }
@@ -1388,6 +1456,11 @@ async function exportKB() {
 }
 async function importKB(input) {
   const file = input.files[0]; if (!file) return;
+  // C4 防重复点击
+  const btn = input.parentElement;
+  const origHTML = btn.innerHTML;
+  btn.style.pointerEvents = 'none';
+  btn.innerHTML = '<span>导入中...</span>';
   try {
     const text = await file.text(); const data = JSON.parse(text);
     const entries = data.entries || data.data?.entries || (Array.isArray(data) ? data : (data.data ? [data.data] : [data]));
@@ -1397,8 +1470,9 @@ async function importKB(input) {
     entries.forEach((e, i) => { if(!e.entry_id) e.entry_id = 'import_' + Date.now() + '_' + i; });
     const res = await api('/kb/import', { method: 'POST', body: JSON.stringify({ entries }) });
     showToast(`导入完成：${res.imported} 成功`, res.failed ? 'error' : 'success');
-    input.value = ''; loadKB();
-  } catch (e) { showToast(e.message); input.value = ''; }
+    loadKB();
+  } catch (e) { showToast(e.message); }
+  finally { btn.style.pointerEvents = ''; btn.innerHTML = origHTML; input.value = ''; }
 }
 
 // ── Worldbook ──
@@ -1412,7 +1486,7 @@ async function loadWB(forceOpenName = null) {
   try { const data = await api('/wb/list'); const wbs = data.worldbooks || []; wbCache = {};
     if (!wbs.length) { el.innerHTML = '<div class="empty">没有世界书</div>'; _wbOpenItem = null; return; }
     el.innerHTML = wbs.map(wb => { wbCache[wb.name] = wb; const ne = wb.entries?.length || 0;
-      return `<div class="wb-item"><div class="wb-header" data-wb-name="${esc(wb.name)}" onclick="toggleWB('${esc(wb.name)}')"><div class="wb-header-left"><span class="arrow">▶</span><span class="wb-name">${esc(wb.name)}</span>${wb.description ? `<span class="wb-desc">${esc(wb.description)}</span>` : ''}</div><div style="display:flex;align-items:center;gap:12px"><span class="wb-meta">${ne} 条</span><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWB('${esc(wb.name)}')">删除</button></div></div><div class="wb-body"><div class="wb-inner"><div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${esc(wb.name)}', null)">+ 新建条目</button><span style="color:var(--text-muted)">点击上方展开</span></div></div></div></div>`;
+      return `<div class="wb-item"><div class="wb-header" data-wb-name="${esc(wb.name)}" onclick="toggleWB('${jsAttr(wb.name)}')"><div class="wb-header-left"><span class="arrow">▶</span><span class="wb-name">${esc(wb.name)}</span>${wb.description ? `<span class="wb-desc">${esc(wb.description)}</span>` : ''}</div><div style="display:flex;align-items:center;gap:12px"><span class="wb-meta">${ne} 条</span><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWB('${jsAttr(wb.name)}')">删除</button></div></div><div class="wb-body"><div class="wb-inner"><div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${jsAttr(wb.name)}', null)">+ 新建条目</button><span style="color:var(--text-muted)">点击上方展开</span></div></div></div></div>`;
     }).join('');
     _wbOpenItem = null;
     if (currentOpenName && wbs.some(w => w.name === currentOpenName)) {
@@ -1456,15 +1530,15 @@ async function reloadSingleWB(wbName) {
     if (inner) {
       inner.innerHTML = `
         <div class="toolbar">
-          <button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${esc(wbName)}', null)">+ 新建条目</button>
-          <input type="text" placeholder="搜索本世界书设定..." oninput="filterWBEntries(this, '${esc(wbName)}')" style="flex:1; margin-right:8px;">
+          <button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${jsAttr(wbName)}', null)">+ 新建条目</button>
+          <input type="text" placeholder="搜索本世界书设定..." oninput="filterWBEntries(this, '${jsAttr(wbName)}')" style="flex:1; margin-right:8px;">
           <span style="color:var(--text-muted);flex-shrink:0">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span>
         </div>
         ${displayEntries.length === 0 ? '<div class="empty">没有条目</div>' : displayEntries.map(e => `
         <div class="wb-entry-card">
           <div class="wb-entry-header">
             <div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
-            <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${esc(wbName)}','${esc(e.id||'')}')">✎</button><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWBEntry('${esc(wbName)}','${esc(e.id||'')}')">×</button></div>
+            <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${jsAttr(wbName)}','${jsAttr(e.id||'')}')">✎</button><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWBEntry('${jsAttr(wbName)}','${jsAttr(e.id||'')}')">×</button></div>
           </div>
           ${(e.keys||[]).length ? `<div class="wb-entry-keys">${e.keys.map(k => '<span class="tag">' + esc(k) + '</span>').join('')}</div>` : ''}
           ${e.content ? '<div class="wb-entry-content">' + esc(e.content.substring(0,200)) + (e.content.length>200?'…':'') + '</div>' : ''}
@@ -1498,11 +1572,11 @@ async function toggleWB(name) {
     inner.dataset.loaded = '1';
     const entries = wb.entries || [];
     const displayEntries = wbShowConstantOnly ? entries.filter(e => e.is_constant) : entries;
-    inner.innerHTML = `<div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${esc(name)}', null)">+ 新建条目</button><input type="text" placeholder="搜索本世界书设定..." oninput="filterWBEntries(this, '${esc(name)}')" style="flex:1; margin-right:8px;"><span style="color:var(--text-muted);flex-shrink:0">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span></div>` +
+    inner.innerHTML = `<div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${jsAttr(name)}', null)">+ 新建条目</button><input type="text" placeholder="搜索本世界书设定..." oninput="filterWBEntries(this, '${jsAttr(name)}')" style="flex:1; margin-right:8px;"><span style="color:var(--text-muted);flex-shrink:0">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span></div>` +
       (displayEntries.length === 0 ? '<div class="empty">没有条目</div>' : displayEntries.map(e => `
       <div class="wb-entry-card">
         <div class="wb-entry-header"><div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
-          <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${esc(name)}','${esc(e.id||'')}')">✎</button><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWBEntry('${esc(name)}','${esc(e.id||'')}')">×</button></div>
+          <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${jsAttr(name)}','${jsAttr(e.id||'')}')">✎</button><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWBEntry('${jsAttr(name)}','${jsAttr(e.id||'')}')">×</button></div>
         </div>
         ${(e.keys||[]).length ? `<div class="wb-entry-keys">${e.keys.map(k => `<span class="tag">${esc(k)}</span>`).join('')}</div>` : ''}
         ${e.content ? `<div class="wb-entry-content">${esc(e.content.substring(0,200))}${e.content.length>200?'…':''}</div>` : ''}
@@ -1518,8 +1592,13 @@ function deleteWB(name) {
 function importWB_ST(input) {
   const file = input.files[0]; if (!file) return;
   const defaultName = file.name.replace('.json', '');
+  // C4 防重复点击：在 sandboxPrompt 回调中禁用按钮
+  const btn = input.parentElement;
   sandboxPrompt("请输入世界书名称（纯英文/下划线）", defaultName, async (name) => {
     if (!name) { input.value = ''; return; }
+    const origHTML = btn.innerHTML;
+    btn.style.pointerEvents = 'none';
+    btn.innerHTML = '<span>导入中...</span>';
     try {
       // 读取为文本通过 JSON 发送（绕过沙盒 FormData 限制）
       const text = await file.text();
@@ -1527,7 +1606,7 @@ function importWB_ST(input) {
 
       showToast('导入成功', 'success'); await loadWB(name);
     } catch(e) { showToast('导入失败: ' + e.message); }
-    input.value = '';
+    finally { btn.style.pointerEvents = ''; btn.innerHTML = origHTML; input.value = ''; }
   });
 }
 
@@ -1579,6 +1658,8 @@ let _personaData = null;  // 当前编辑中的角色卡数据
 let _personaMode = null;  // 'create' | 'edit'
 let state_personas = [];  // 全局角色卡列表缓存
 
+let _personaShowCount = 20;  // C1: 客户端分页，初始显示 20 张
+
 async function loadPersonas() {
   const container = qs('#persona-list');
   try {
@@ -1588,19 +1669,32 @@ async function loadPersonas() {
       container.innerHTML = '<div class="empty">暂无角色卡<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="openPersonaModal(null)">+ 新建角色卡</button></div>';
       return;
     }
+    _personaShowCount = 20;  // 重置分页
+    renderPersonaPage();
+  } catch (e) {
+    container.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
+  }
+}
 
-    // 第一步：渲染基础骨架（不含超长 Base64，避免 innerHTML 解析崩溃）
-    // 用全局注册表按序号保存 pid，避免把含特殊字符的 id 直接写进 onclick 属性
-    window.__quillPids = window.__quillPids || {};
-    container.innerHTML = '<div class="persona-grid">' + personas.map((p, index) => {
+function renderPersonaPage() {
+  const container = qs('#persona-list');
+  const personas = state_personas;
+  const visible = personas.slice(0, _personaShowCount);
+  const hasMore = personas.length > _personaShowCount;
+
+  // 第一步：渲染基础骨架（不含超长 Base64，避免 innerHTML 解析崩溃）
+  window.__quillPids = window.__quillPids || {};
+  let html = '<div class="persona-grid">' + visible.map((p, index) => {
       const pid = p.id;
       window.__quillPids[index] = pid;
       const name = esc(p.name || pid);
       const summary = esc((p.summary || '').substring(0, 80));
       const ext = p.quill_extensions || {};
-      const wbMode = ext.wb_mode || 'disabled';
-      const ragMode = ext.rag_mode || 'disabled';
-      const kbMode = ext.kb_mode || 'disabled';
+      // S3-10: mode 值白名单校验，防止导入恶意角色卡注入 class 属性
+      const _validModes = { 'auto': true, 'custom': true, 'disabled': true };
+      const wbMode = _validModes[ext.wb_mode] ? ext.wb_mode : 'disabled';
+      const ragMode = _validModes[ext.rag_mode] ? ext.rag_mode : 'disabled';
+      const kbMode = _validModes[ext.kb_mode] ? ext.kb_mode : 'disabled';
       const modeLabels = { 'auto': 'Auto', 'custom': 'Custom', 'disabled': 'Off' };
       return `<div class="persona-card">
         <div class="persona-card-left">
@@ -1624,22 +1718,29 @@ async function loadPersonas() {
       </div>`;
     }).join('') + '</div>';
 
-    // 第二步：通过原生 DOM 赋值，安全挂载 MB 级别的 Base64 数据
-    personas.forEach((p, index) => {
-      if (p.avatar_url) {
-        const img = document.getElementById(`avatar-img-${index}`);
-        const letter = document.getElementById(`avatar-letter-${index}`);
-        if (img && letter) {
-          img.src = p.avatar_url;
-          img.style.display = 'block';
-          letter.style.display = 'none';
-        }
-      }
-    });
-
-  } catch (e) {
-    container.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
+  // C1: 分页"加载更多"按钮
+  if (hasMore) {
+    html += `<div style="text-align:center;padding:16px"><button class="btn btn-outline btn-sm" onclick="loadMorePersonas()">加载更多（${personas.length - _personaShowCount} 张剩余）</button></div>`;
   }
+  container.innerHTML = html;
+
+  // 第二步：通过原生 DOM 赋值，安全挂载 MB 级别的 Base64 数据
+  visible.forEach((p, index) => {
+    if (p.avatar_url) {
+      const img = document.getElementById(`avatar-img-${index}`);
+      const letter = document.getElementById(`avatar-letter-${index}`);
+      if (img && letter) {
+        img.src = p.avatar_url;
+        img.style.display = 'block';
+        letter.style.display = 'none';
+      }
+    }
+  });
+}
+
+function loadMorePersonas() {
+  _personaShowCount += 20;
+  renderPersonaPage();
 }
 
 // 三态模式切换视觉联动
@@ -1979,13 +2080,25 @@ async function importFromText() {
 
 // ── RAG ──
 async function loadRAG() {
-  try { const data = await api('/rag/documents'); const docs = data.documents || []; const c = qs('#rag-doc-list'); c.innerHTML = docs.length ? docs.map(d => `<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-light)"><div><strong>${esc(d.source)}</strong><div style="font-size:12px;color:var(--text-muted)">${d.chunk_count} 分块</div></div><button class="btn btn-outline btn-sm" onclick="deleteRAGDocument('${esc(d.source)}')">删除</button></div>`).join('') : '<div class="empty">暂无文档<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="qs(\'#rag-file-input\').click()">立即上传</button></div>'; } catch (e) { qs('#rag-doc-list').innerHTML = `<div style="color:var(--danger)">加载失败</div>`; }
+  try { const data = await api('/rag/documents'); const docs = data.documents || []; const c = qs('#rag-doc-list'); c.innerHTML = docs.length ? docs.map(d => `<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-light)"><div><strong>${esc(d.source)}</strong><div style="font-size:12px;color:var(--text-muted)">${d.chunk_count} 分块</div></div><button class="btn btn-outline btn-sm" onclick="deleteRAGDocument('${jsAttr(d.source)}')">删除</button></div>`).join('') : '<div class="empty">暂无文档<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="qs(\'#rag-file-input\').click()">立即上传</button></div>'; } catch (e) { qs('#rag-doc-list').innerHTML = `<div style="color:var(--danger)">加载失败</div>`; }
+}
+
+// C2 缓存：/rag/config 在 Memory overview 和 RAG tab 重复请求，缓存 60 秒
+let _ragConfigCache = null;
+let _ragConfigCacheTime = 0;
+async function getRAGConfig() {
+  const now = Date.now();
+  if (_ragConfigCache && (now - _ragConfigCacheTime) < 60000) return _ragConfigCache;
+  _ragConfigCache = await api('/rag/config');
+  _ragConfigCacheTime = now;
+  return _ragConfigCache;
 }
 
 async function loadRAGModelInfo() {
   try {
-    const cfg = await api('/rag/config');
-    qs('#rag-model-info').innerHTML = `<div class="prov-row"><span class="prov-key">Embedding</span><span>${cfg.embedding?.type||'local'} (${cfg.embedding?.provider_id||'BAAI/bge-small-zh-v1.5'})</span></div><div class="prov-row"><span class="prov-key">Rerank</span><span>${cfg.rerank?.has_rerank_provider ? cfg.rerank.rerank_provider_id : '未配置'}</span></div>`;
+    const cfg = await getRAGConfig();
+    // S2-15: 后端字段统一 esc() 防御 XSS
+    qs('#rag-model-info').innerHTML = `<div class="prov-row"><span class="prov-key">Embedding</span><span>${esc(cfg.embedding?.type||'local')} (${esc(cfg.embedding?.provider_id||'BAAI/bge-small-zh-v1.5')})</span></div><div class="prov-row"><span class="prov-key">Rerank</span><span>${cfg.rerank?.has_rerank_provider ? esc(cfg.rerank.rerank_provider_id) : '未配置'}</span></div>`;
   } catch (_) {}
 }
 
@@ -2071,30 +2184,33 @@ async function testRAGSearch() {
       </div>
     `).join('') : '<div class="empty">无匹配结果</div>';
   } catch (e) {
-    r.innerHTML = `<span style="color:var(--danger)">${e.message}</span>`;
+    r.innerHTML = `<span style="color:var(--danger)">${esc(e.message)}</span>`;
   }
 }
 
 // ── Memory ──
 let _memCurrentSub = 'overview';
+let _memPage = 1;
+let _memPerPage = 50;
+let _memTotalPages = 1;
 function switchMemSub(sub) {
   _memCurrentSub = sub;
   qsa('.memory-subnav-item').forEach(b => b.classList.toggle('active', b.dataset.memSub === sub));
   qsa('.mem-sub-pane').forEach(p => p.classList.toggle('active', p.id === 'mem-sub-' + sub));
   if (sub === 'overview') loadMemoryOverview();
-  if (sub === 'browser') loadMemoryBrowser();
+  if (sub === 'browser') { _memPage = 1; loadMemoryBrowser(); }
 }
 
 async function loadMemoryOverview() {
   try {
-    const data = await api('/memory/list_all?limit=1');
-    const total = data.total || 0;
-    qs('#dash-total').textContent = total;
-    qs('#dash-sessions').textContent = 'SQLite';
-    qs('#dash-index').textContent = 'NumPy';
-    qs('#dash-today').textContent = '—';
-    try { const cfg = await api('/rag/config'); qs('#mem-provider-info').innerHTML = `<div class="prov-row"><span class="prov-key">Embedding</span><span>${cfg.embedding?.type||'local'} (${cfg.embedding?.provider_id||'BAAI/bge-small-zh-v1.5'})</span></div><div class="prov-row"><span class="prov-key">Rerank</span><span>${cfg.rerank?.has_rerank_provider ? cfg.rerank.rerank_provider_id : '未配置'}</span></div>`; } catch (_) {}
-  } catch (e) { qs('#dash-total').textContent = '—'; }
+    const data = await api('/memory/stats');
+    const d = data.data || data;
+    qs('#dash-total').textContent = d.total_memories ?? 0;
+    qs('#dash-sessions').textContent = d.total_sessions ?? 0;
+    qs('#dash-today').textContent = d.today_count ?? 0;
+    qs('#dash-index').textContent = d.total_memories ? `NumPy (${d.total_memories})` : 'NumPy';
+    try { const cfg = await getRAGConfig(); qs('#mem-provider-info').innerHTML = `<div class="prov-row"><span class="prov-key">Embedding</span><span>${esc(cfg.embedding?.type||'local')} (${esc(cfg.embedding?.provider_id||'BAAI/bge-small-zh-v1.5')})</span></div><div class="prov-row"><span class="prov-key">Rerank</span><span>${cfg.rerank?.has_rerank_provider ? esc(cfg.rerank.rerank_provider_id) : '未配置'}</span></div>`; } catch (_) {}
+  } catch (e) { qs('#dash-total').textContent = '—'; qs('#dash-sessions').textContent = '—'; qs('#dash-today').textContent = '—'; qs('#dash-index').textContent = '—'; }
 }
 
 async function loadMemoryBrowser() {
@@ -2102,9 +2218,17 @@ async function loadMemoryBrowser() {
   const tbody = qs('#mem-table-body');
   tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>';
   try {
-    const data = search ? await api('/memory/list?session_id=' + encodeURIComponent(search)) : await api('/memory/list_all?limit=200');
+    const url = search
+      ? '/memory/list?session_id=' + encodeURIComponent(search)
+      : '/memory/list_all?page=' + _memPage + '&per_page=' + _memPerPage;
+    const resp = await api(url);
+    const data = resp.data || resp;
     const memories = data.memories || [];
-    if (!memories.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">暂无记忆</td></tr>'; return; }
+    const total = data.total || memories.length;
+    _memTotalPages = data.total_pages || Math.max(1, Math.ceil(total / _memPerPage));
+    _memPage = data.page || _memPage;
+
+    if (!memories.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">暂无记忆</td></tr>'; updateMemPagination(0, total); return; }
 
     tbody.innerHTML = memories.map(m => {
       const isDanger = (m.useful_score || 0) < 3 && !m.is_active;
@@ -2115,7 +2239,7 @@ async function loadMemoryBrowser() {
       return `<tr>
         <td><span class="cell-session">${esc(m.session_id||'')}</span></td>
         <td>
-          <div class="cell-summary" style="margin-bottom:6px">${esc(m.summary||'')}</div>
+          <div class="cell-summary" style="margin-bottom:6px">${esc((m.summary||'—').substring(0,60))}</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px;">
             <span class="tag" style="background:var(--primary-light);color:var(--primary)" title="记忆留存强度">强度 ${m.strength||10}</span>
             <span class="tag" style="background:var(--success-light);color:var(--success)" title="被大模型召回引用的次数">引用 ${m.useful_count||0}次</span>
@@ -2124,10 +2248,52 @@ async function loadMemoryBrowser() {
           </div>
         </td>
         <td style="font-size:12px;color:var(--text-muted)">${timeStr}</td>
-        <td><button class="btn btn-outline btn-sm" onclick="deleteMemory(${m.id})">删除</button></td>
+        <td>
+          <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="showMemoryDetail(${m.id})">详情</button>
+          <button class="btn btn-outline btn-sm" onclick="deleteMemory(${m.id})">删除</button>
+        </td>
       </tr>`;
     }).join('');
+    updateMemPagination(memories.length, total);
   } catch (e) { tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--danger)">${esc(e.message)}</td></tr>`; }
+}
+
+function updateMemPagination(shown, total) {
+  const info = qs('#mem-page-info');
+  if (info) info.textContent = `共 ${total} 条，第 ${_memPage}/${_memTotalPages} 页`;
+  if (qs('#mem-prev-btn')) qs('#mem-prev-btn').disabled = _memPage <= 1;
+  if (qs('#mem-next-btn')) qs('#mem-next-btn').disabled = _memPage >= _memTotalPages;
+}
+
+function changeMemPage(delta) {
+  _memPage += delta;
+  if (_memPage < 1) _memPage = 1;
+  if (_memPage > _memTotalPages) _memPage = _memTotalPages;
+  loadMemoryBrowser();
+}
+
+async function showMemoryDetail(id) {
+  try {
+    const resp = await api('/memory/get?id=' + id);
+    const m = resp.data || resp;
+    if (!m || resp.status === 'error') { showToast(resp.message || '获取失败'); return; }
+    const timeStr = (m.timestamp||'').split('.')[0].replace('T', ' ');
+    qs('#modalTitle').textContent = '记忆详情 #' + m.id;
+    qs('#modalBody').innerHTML = `
+      <div class="form-group"><label>Session ID</label><input readonly value="${esc(m.session_id||'')}"></div>
+      <div class="form-group"><label>摘要 (Summary)</label><textarea readonly rows="3" style="min-height:auto">${esc(m.summary||'')}</textarea></div>
+      <div class="form-group"><label>完整内容 (chat_summary)</label><textarea readonly rows="6" style="min-height:auto">${esc(m.chat_summary||'(无)')}</textarea></div>
+      <div class="form-group"><label>创建时间</label><input readonly value="${timeStr}"></div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:100px"><label>强度</label><input readonly value="${m.strength||10}"></div>
+        <div class="form-group" style="flex:1;min-width:100px"><label>引用次数</label><input readonly value="${m.useful_count||0}"></div>
+        <div class="form-group" style="flex:1;min-width:100px"><label>价值分</label><input readonly value="${(m.useful_score||0).toFixed(1)}"></div>
+        <div class="form-group" style="flex:1;min-width:100px"><label>状态</label><input readonly value="${m.is_active ? '主动记忆' : '被动记忆'}"></div>
+      </div>
+    `;
+    qs('#modalSaveBtn').style.display = 'none';
+    openModal();
+  } catch (e) { showToast('获取详情失败: ' + e.message); }
 }
 
 function deleteMemory(id) {
@@ -2143,7 +2309,7 @@ async function pruneMemories() {
       showToast(res.message || '修剪完成', 'success');
       loadMemoryBrowser();
     } catch (e) { showToast(e.message); }
-  });
+  }, true);
 }
 async function exportMemories() {
   try {
@@ -2155,7 +2321,32 @@ async function exportMemories() {
     showToast('导出成功', 'success');
   } catch (e) { showToast('导出失败: ' + e.message); }
 }
-async function importMemories(input) { const file = input.files[0]; if (!file) return; try { const text = await file.text(); const data = JSON.parse(text); const res = await api('/memory/import', { method: 'POST', body: JSON.stringify(data) }); showToast('导入完成: ' + (res.message || ''), 'success'); loadMemoryBrowser(); } catch (e) { showToast('导入失败: ' + e.message); } input.value = ''; }
+async function importMemories(input) {
+  const file = input.files[0]; if (!file) return;
+  // C4 防重复点击
+  const btn = input.parentElement;
+  const origHTML = btn.innerHTML;
+  btn.style.pointerEvents = 'none';
+  btn.innerHTML = '<span>导入中...</span>';
+  showToast('正在批量向量化记忆，请稍候...', 'info');
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    // A3 前置校验
+    if (!data || typeof data !== 'object') throw new Error('无效的 JSON 格式');
+    if (!data.memories || !Array.isArray(data.memories)) throw new Error('JSON 缺少 memories 数组');
+    const res = await api('/memory/import', { method: 'POST', body: JSON.stringify(data) });
+    showToast('导入完成: ' + (res.message || ''), 'success');
+    // A3 自动切换到记忆浏览子页签，让用户看到结果
+    switchMemSub('browser');
+  } catch (e) {
+    showToast('导入失败: ' + e.message);
+  } finally {
+    btn.style.pointerEvents = '';
+    btn.innerHTML = origHTML;
+    input.value = '';
+  }
+}
 
 async function testMemoryVectorSearch() {
   const q = qs('#mem-vector-input').value.trim();
@@ -2229,7 +2420,31 @@ async function loadGlobalSettings() {
     // 权限白名单
     qs('#c-perm-admins').value = safeGet('permission', 'admin_users', '');
 
+    // 调试与维护
+    qs('#c-debug-enabled').checked = safeGet('debug', 'enabled', false);
+    qs('#c-debug-theme').value = safeGet('debug', 'panel_theme', 'light');
+
+    // A1 回填本机 admin 标识
+    try {
+      const saved = localStorage.getItem('quill_admin_id');
+      if (saved) qs('#c-perm-my-admin-id').value = saved;
+    } catch (e) { /* 沙盒忽略 */ }
+
   } catch (e) { showToast('读取配置失败: ' + e.message); }
+}
+
+// A1 修复：保存本机管理员标识
+function saveMyAdminId() {
+  const v = qs('#c-perm-my-admin-id').value.trim();
+  try {
+    if (v) {
+      localStorage.setItem('quill_admin_id', v);
+      showToast('本机管理员标识已设为: ' + v, 'success');
+    } else {
+      localStorage.removeItem('quill_admin_id');
+      showToast('已清除本机管理员标识', 'info');
+    }
+  } catch (e) { showToast('保存失败（沙盒限制）: ' + e.message); }
 }
 
 // 全局配置中心：差异保存（只提交项）
@@ -2285,6 +2500,9 @@ async function saveAllChanges() {
       add('refusal', 'patterns', qs('#c-ref-pat').value);
 
       add('permission', 'admin_users', qs('#c-perm-admins').value);
+
+      add('debug', 'enabled', qs('#c-debug-enabled').checked);
+      add('debug', 'panel_theme', qs('#c-debug-theme').value);
     }
 
     for (const u of updates) {
@@ -2339,17 +2557,21 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
     });
   }
 
-  // 世界书条目局部搜索
+  // 世界书条目局部搜索（B2 修复：加防抖，避免快速输入时频繁 DOM 遍历）
+  let _wbFilterTimer;
   function filterWBEntries(inputEl, wbName) {
-    const keyword = inputEl.value.toLowerCase().trim();
-    const header = document.querySelector(`.wb-header[data-wb-name="${CSS.escape(wbName)}"]`);
-    if (!header) return;
-    const item = header.closest('.wb-item');
-    if (!item) return;
-    const cards = item.querySelectorAll('.wb-entry-card');
-    cards.forEach(card => {
-      card.style.display = card.textContent.toLowerCase().includes(keyword) ? 'block' : 'none';
-    });
+    clearTimeout(_wbFilterTimer);
+    _wbFilterTimer = setTimeout(() => {
+      const keyword = inputEl.value.toLowerCase().trim();
+      const header = document.querySelector(`.wb-header[data-wb-name="${CSS.escape(wbName)}"]`);
+      if (!header) return;
+      const item = header.closest('.wb-item');
+      if (!item) return;
+      const cards = item.querySelectorAll('.wb-entry-card');
+      cards.forEach(card => {
+        card.style.display = card.textContent.toLowerCase().includes(keyword) ? 'block' : 'none';
+      });
+    }, 200);
   }
 </script>
 

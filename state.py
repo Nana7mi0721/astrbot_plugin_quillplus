@@ -1,4 +1,4 @@
-﻿"""Async-safe per-session state manager with JSON persistence."""
+"""Async-safe per-session state manager with JSON persistence."""
 
 from __future__ import annotations
 
@@ -34,10 +34,12 @@ class UserState:
 
 
 class StateManager:
-    def __init__(self, max_users: int = 0, data_dir: str = "data"):
+    def __init__(self, data_dir: str = "data", max_users: int = 10000):
         self._states: dict[str, UserState] = {}
         self._lock = asyncio.Lock()
         self._dirty = False
+        self._max_users = max_users
+        self._autoflush_task: asyncio.Task | None = None
         self.state_file = os.path.join(data_dir, "quill_state.json")
         os.makedirs(data_dir, exist_ok=True)
         self._load_from_disk()
@@ -51,15 +53,43 @@ class StateManager:
             for key, val in raw.items():
                 try:
                     self._states[key] = UserState(**val)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # S3-15: 补日志，便于发现损坏的状态条目
+                    logger.warning("[Quill State] 跳过损坏的状态条目 %s: %s", key, e)
+            self._evict_if_needed()
             logger.info(f"[Quill State] 已恢复 {len(self._states)} 个对话状态")
         except Exception as e:
             logger.error(f"[Quill State] 加载失败: {e}")
 
+    def _evict_if_needed(self) -> None:
+        """Evict oldest sessions beyond max_users limit (LRU by last_active)."""
+        if len(self._states) <= self._max_users:
+            return
+        sorted_sessions = sorted(
+            self._states.items(),
+            key=lambda x: x[1].last_active,
+        )
+        to_remove = len(self._states) - self._max_users
+        for i in range(to_remove):
+            del self._states[sorted_sessions[i][0]]
+            self._dirty = True
+        logger.info("[Quill State] LRU 淘汰: %d 个最旧会话", to_remove)
+
     async def _persist(self) -> None:
-        data = await asyncio.to_thread(self._serialize)
-        await asyncio.to_thread(self._atomic_write, data)
+        """立即落盘：锁内序列化快照，锁外写盘（F6 修复：减少持锁时间）
+
+        S2-1 修复：写盘成功后才清脏，失败时恢复 dirty 供 autoflush 重试。
+        """
+        async with self._lock:
+            snapshot = self._serialize()
+            self._dirty = False
+        try:
+            await asyncio.to_thread(self._atomic_write, snapshot)
+        except Exception:
+            # 写盘失败：恢复脏标记，让 autoflush 下轮重试
+            async with self._lock:
+                self._dirty = True
+            raise
 
     def _serialize(self) -> str:
         return json.dumps(
@@ -71,28 +101,82 @@ class StateManager:
         tmp = self.state_file + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, self.state_file)
 
     async def get_state(self, user_id: str) -> UserState:
         async with self._lock:
             if user_id not in self._states:
                 self._states[user_id] = UserState(user_id=user_id)
-                self._dirty = True
-
+                self._evict_if_needed()
+                self._mark_dirty()
             return self._states[user_id]
 
     async def update_activity(self, user_id: str) -> None:
         async with self._lock:
             if user_id not in self._states:
                 self._states[user_id] = UserState(user_id=user_id)
+                self._evict_if_needed()
             st = self._states[user_id]
             st.last_active = datetime.now(timezone.utc).isoformat()
             st.round_count += 1
-            self._dirty = True
+            self._mark_dirty()
 
     async def persist_all(self) -> None:
         """Force persist all in-memory states to disk (call on shutdown)."""
-        await self._persist()
+        await self._persist()
+
+    # ── Autoflush ──────────────────────────────────────────────────
+
+    def start_autoflush(self, interval: float = 5.0) -> None:
+        """Start background task that periodically flushes dirty state."""
+        if self._autoflush_task is not None:
+            return
+        self._autoflush_task = asyncio.ensure_future(self._autoflush_loop(interval))
+        logger.info("[Quill State] 自动落盘已启动 (interval=%.0fs)", interval)
+
+    async def _autoflush_loop(self, interval: float) -> None:
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                # F6 修复：锁内只做序列化+清脏，锁外写盘，避免阻塞其他状态读写
+                async with self._lock:
+                    if not self._dirty:
+                        continue
+                    snapshot = self._serialize()
+                    self._dirty = False
+                # S1-2 修复：内层捕获写盘异常，恢复 dirty 供下轮重试，避免循环死亡
+                try:
+                    await asyncio.to_thread(self._atomic_write, snapshot)
+                    logger.debug("[Quill State] 自动落盘")
+                except Exception as e:
+                    logger.error(f"[Quill State] 自动落盘失败，将在下个周期重试: {e}")
+                    async with self._lock:
+                        self._dirty = True  # 恢复脏标记以便重试
+        except asyncio.CancelledError:
+            pass
+
+    async def stop_autoflush(self) -> None:
+        """Cancel the background autoflush task."""
+        if self._autoflush_task is not None:
+            self._autoflush_task.cancel()
+            try:
+                await self._autoflush_task
+            except asyncio.CancelledError:
+                pass
+            self._autoflush_task = None
+
+    async def shutdown(self) -> None:
+        """Convenience: stop autoflush then persist all."""
+        await self.stop_autoflush()
+        await self.persist_all()
+
+    # Internal: mark dirty
+    def _mark_dirty(self) -> None:
+        self._dirty = True
+
+    # ── Public state API ───────────────────────────────────────────
 
     async def mark_refusal(self, user_id: str) -> None:
         async with self._lock:
@@ -104,10 +188,11 @@ class StateManager:
         await self._persist()
 
     async def clear_refusal(self, user_id: str) -> None:
+        # F13 降级：clear 是幂等操作，丢失可由下次 mark_refusal 覆盖；on_llm_response 每轮调，写放大严重
         async with self._lock:
             if user_id in self._states:
                 self._states[user_id].refusal_detected = False
-        await self._persist()
+            self._mark_dirty()
 
     async def should_inject_emergency(self, user_id: str) -> bool:
         async with self._lock:
@@ -118,8 +203,11 @@ class StateManager:
             st = self._states.get(user_id)
             if st is None:
                 st = UserState(user_id=user_id)
-                self._states[user_id] = st
+                self._evict_if_needed()
+                self._states[user_id] = st
+
             st.quill_rounds += 1
+            self._mark_dirty()
             return st.quill_rounds
 
     async def reset_quill_rounds(self, user_id: str) -> None:
@@ -127,16 +215,18 @@ class StateManager:
             st = self._states.get(user_id)
             if st is not None:
                 st.quill_rounds = 0
+                self._mark_dirty()
 
     async def increment_unsummarized_turns(self, user_id: str) -> int:
         async with self._lock:
             st = self._states.get(user_id)
             if st is None:
                 st = UserState(user_id=user_id)
+                self._evict_if_needed()
                 self._states[user_id] = st
             st.unsummarized_turns += 1
             val = st.unsummarized_turns
-        await self._persist()
+            self._mark_dirty()
         return val
 
     async def reset_unsummarized_turns(self, user_id: str) -> None:
@@ -144,6 +234,8 @@ class StateManager:
             st = self._states.get(user_id)
             if st is not None:
                 st.unsummarized_turns = 0
+                # S3-1: 补 _mark_dirty()，与同类写操作一致；persist 失败时 autoflush 可重试
+                self._mark_dirty()
         await self._persist()
 
     async def update_last_learned_id(self, user_id: str, last_id: int) -> None:
@@ -163,6 +255,7 @@ class StateManager:
             return 0
 
     async def set_stream_mode(self, user_id: str, mode: str) -> None:
+        # F13 降级：运行时态，重启可重算
         async with self._lock:
             st = self._states.get(user_id)
             if st is None:
@@ -170,7 +263,7 @@ class StateManager:
                 self._states[user_id] = st
 
             st.stream_mode = mode
-        await self._persist()
+            self._mark_dirty()
 
     async def update_session_vars(self, user_id: str, updates: dict) -> dict:
         async with self._lock:
@@ -181,7 +274,7 @@ class StateManager:
 
             st.session_vars.update(updates)
             result = dict(st.session_vars)
-        await self._persist()
+            self._mark_dirty()
         return result
 
     async def get_session_vars(self, user_id: str) -> dict:
@@ -231,7 +324,7 @@ if __name__ == "__main__":
     _tmp_dir = tempfile.mkdtemp(prefix="quill_state_test_")
 
     async def _run_tests():
-        mgr = StateManager(max_users=500, data_dir=_tmp_dir)
+        mgr = StateManager(data_dir=_tmp_dir)
 
         # 1. Basic get/update/mark/clear cycle
         s = await mgr.get_state("u1")
@@ -277,7 +370,7 @@ if __name__ == "__main__":
 
         # 6. quill_rounds tracking
         mgr2_dir = tempfile.mkdtemp(prefix="quill_mgr2_")
-        mgr2 = StateManager(max_users=10, data_dir=mgr2_dir)
+        mgr2 = StateManager(data_dir=mgr2_dir)
         r = await mgr2.increment_quill_rounds("u_quill")
         assert r == 1, f"first increment should be 1, got {r}"
         r = await mgr2.increment_quill_rounds("u_quill")
@@ -303,11 +396,12 @@ if __name__ == "__main__":
         assert s_default.stream_mode == "auto", "default stream_mode should be 'auto'"
         print("[OK] stream_mode")
 
-        # 8. Persistence round-trip
+        # 8. Persistence round-trip（set_stream_mode 已降级为 dirty-only，需显式 persist）
         await mgr2.set_persona_id("persist_user", "test_persona_123")
         await mgr2.set_stream_mode("persist_user", "off")
+        await mgr2.persist_all()  # 显式落盘（set_stream_mode 不再立即写）
         del mgr2
-        mgr3 = StateManager(max_users=10, data_dir=mgr2_dir)
+        mgr3 = StateManager(data_dir=mgr2_dir)
         p = await mgr3.get_persona_id("persist_user")
         assert p == "test_persona_123", f"persona_id not persisted, got {p}"
         st = await mgr3.get_state("persist_user")

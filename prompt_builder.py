@@ -77,7 +77,7 @@ class PromptBuilder:
         else:
             perf = (config or {}).get("performance", {})
             self.max_prompt_length: int = perf.get("max_prompt_length", 50000)
-            self.min_output_length: int = perf.get("min_output_length", 800)
+            self.min_output_length: int = perf.get("min_output_length", 400)
             self.max_output_length: int = perf.get("max_output_length", 0)
             sb_cfg = (config or {}).get("status_bar", {})
             self.status_bar_enabled: bool = sb_cfg.get("enabled", False)

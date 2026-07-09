@@ -92,8 +92,8 @@ class QuillEmbeddingProvider:
                 provider = self.context.get_provider_by_id(self.provider_id)
                 if provider and hasattr(provider, 'get_dim'):
                     return provider.get_dim()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[Quill Embedding] get_dim 查询 provider 失败: %s", e)
         # 本地模型默认维度
         return 512  # bge-small-zh-v1.5 的维度
 
@@ -105,8 +105,8 @@ class QuillEmbeddingProvider:
                 provider = self.context.get_provider_by_id(self.provider_id)
                 if provider:
                     provider_type = "api"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[Quill Embedding] get_status 查询 provider 失败: %s", e)
         if provider_type == "none" and self.enable_local:
             provider_type = "local"
         return {

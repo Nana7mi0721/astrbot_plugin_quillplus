@@ -71,6 +71,24 @@ def _get_nested(raw: dict, group: str, default=None):
     return group_dict
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """S3-9: 安全 int 转换，非法值回退默认值，防止配置解析崩溃。"""
+    try:
+        if isinstance(value, bool):
+            return int(value)
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    """S3-9: 安全 float 转换，非法值回退默认值，防止配置解析崩溃。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class QuillConfig:
     """Quill 插件配置解析层。"""
 
@@ -83,20 +101,20 @@ class QuillConfig:
         self.rag_embedding_provider_id: str = str(rag.get("embedding_provider_id", "") or "").strip()
         self.rag_rerank_provider_id: str = str(rag.get("rerank_provider_id", "") or "").strip()
         self.rag_enable_local_embedding: bool = bool(rag.get("enable_local_embedding", True))
-        self.rag_chunk_size: int = int(rag.get("chunk_size", 500))
-        self.rag_chunk_overlap: int = int(rag.get("chunk_overlap", 50))
-        self.rag_top_k: int = int(rag.get("top_k", 3))
-        self.rag_dense_top_k: int = int(rag.get("dense_top_k", 5))
+        self.rag_chunk_size: int = _safe_int(rag.get("chunk_size", 500), 500)
+        self.rag_chunk_overlap: int = _safe_int(rag.get("chunk_overlap", 50), 50)
+        self.rag_top_k: int = _safe_int(rag.get("top_k", 3), 3)
+        self.rag_dense_top_k: int = _safe_int(rag.get("dense_top_k", 5), 5)
         self.rag_enable_memory: bool = bool(rag.get("enable_memory", False))
         self.rag_enable_chat_logging: bool = bool(rag.get("enable_chat_logging", True))
-        self.rag_chat_log_retention_days: int = int(rag.get("chat_log_retention_days", 30))
+        self.rag_chat_log_retention_days: int = _safe_int(rag.get("chat_log_retention_days", 30), 30)
 
         # ── worldbook ──
         wb = _get_nested(self._raw, "worldbook", {}) or {}
         self.worldbook_enabled: bool = bool(wb.get("enabled", True))
-        self.worldbook_max_dynamic: int = int(wb.get("max_dynamic_entries", 4))
-        self.worldbook_max_token: int = int(wb.get("max_token_limit", 4000))
-        self.worldbook_sensitivity: float = float(wb.get("match_sensitivity", 0.7))
+        self.worldbook_max_dynamic: int = _safe_int(wb.get("max_dynamic_entries", 4), 4)
+        self.worldbook_max_token: int = _safe_int(wb.get("max_token_limit", 4000), 4000)
+        self.worldbook_sensitivity: float = _safe_float(wb.get("match_sensitivity", 0.7), 0.7)
         self.worldbook_injection_pos: str = str(wb.get("injection_position", "user_prefix"))
         self.worldbook_show_log: bool = bool(wb.get("show_trigger_log", False))
         self.worldbook_always_activate: bool = bool(wb.get("always_activate", False))
@@ -104,15 +122,15 @@ class QuillConfig:
         # ── knowledge_base ──
         kb = _get_nested(self._raw, "knowledge_base", {}) or {}
         self.kb_enabled: bool = bool(kb.get("enabled", True))
-        self.kb_max_entries: int = int(kb.get("max_entries", 4))
-        self.kb_fallback_top: int = int(kb.get("fallback_top_count", 2))
-        self.kb_dedup_limit: int = int(kb.get("category_dedup_limit", 3))
+        self.kb_max_entries: int = _safe_int(kb.get("max_entries", 4), 4)
+        self.kb_fallback_top: int = _safe_int(kb.get("fallback_top_count", 2), 2)
+        self.kb_dedup_limit: int = _safe_int(kb.get("category_dedup_limit", 3), 3)
 
         # ── performance ──
         perf = _get_nested(self._raw, "performance", {}) or {}
-        self.max_prompt_length: int = int(perf.get("max_prompt_length", 50000))
-        self.min_output_length: int = int(perf.get("min_output_length", 400))
-        self.max_output_length: int = int(perf.get("max_output_length", 0))
+        self.max_prompt_length: int = _safe_int(perf.get("max_prompt_length", 50000), 50000)
+        self.min_output_length: int = _safe_int(perf.get("min_output_length", 400), 400)
+        self.max_output_length: int = _safe_int(perf.get("max_output_length", 0), 0)
 
         # ── status_bar ──
         sb = _get_nested(self._raw, "status_bar", {}) or {}

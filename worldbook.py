@@ -18,11 +18,24 @@ from typing import Dict, List, Optional
 
 # ── 原子写入辅助函数（纠偏1: os.replace(tmp_path, path)）──
 def _save_json_atomic(path: str, data: dict):
-    """原子写入 JSON 文件：先写 .tmp 再 os.replace，防止写入中断导致文件损坏"""
-    tmp_path = path + ".tmp"
-    with open(tmp_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)  # ✅ 原子操作
+    """原子写入 JSON 文件：tmp + fsync + os.replace，防止写入中断导致文件损坏。
+
+    S2-8 修复：补充 fsync 确保数据落盘，异常时清理 tmp 文件。
+    复用 persona_manager._sync_write_file 的模式。
+    """
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 try:
     from astrbot.api import logger
@@ -127,8 +140,9 @@ class WorldbookManager:
                     with self._lock:
                         self.worldbooks[name] = wb
                     return True
-            except Exception:
-                pass
+            except Exception as exc:
+                # S3-4: 裸 except pass 会吞掉 JSON 损坏/IO 错误，改为日志便于排查
+                logger.warning("[WorldbookManager] reload 读取失败 %s: %s", f, exc)
         return False
 
     # ── active / matching entries ────────────────────────────────────────
