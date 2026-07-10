@@ -1,11 +1,7 @@
 # QuillPlus 核心依赖
 
 # V2 角色卡图片导入导出（PNG tEXt 块 + JPG EXIF）
-Pillow>=9.0.0
-
-# Web 服务框架（独立桌面启动器 & AstrBot WebUI 代理）
-fastapi
-quart
+Pillow>=10.0.0
 
 # 向量检索 + 本地嵌入 + SQLite 异步
 faiss-cpu>=1.8.0
