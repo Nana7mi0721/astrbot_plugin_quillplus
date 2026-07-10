@@ -1103,6 +1103,35 @@ function closeDialog() {
 }
 
 window.sandboxConfirm = function(msg, callback, isDanger = false) {
+  // P0-2: 高危操作要求输入确认词（confirmWord 非空时启用）
+  if (isDanger && arguments[3]) {
+    const confirmWord = arguments[3];
+    qs('#dialogTitle').textContent = '⚠️ 危险操作确认';
+    qs('#dialogBody').innerHTML = `
+      <div style="color:var(--danger);font-weight:600;margin-bottom:8px;">${esc(msg)}</div>
+      <div style="background:var(--danger-light);border:1px solid var(--danger);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:13px;">
+        此操作<b>不可逆</b>。为防止误操作，请输入 <b style="color:var(--danger)">${esc(confirmWord)}</b> 以确认：
+      </div>
+      <input id="danger-confirm-input" class="tag-input-field" style="border:2px solid var(--danger)!important;padding:8px!important;width:100%;box-sizing:border-box;" placeholder="请输入确认词">
+      <div id="danger-confirm-hint" style="font-size:12px;color:var(--danger);margin-top:4px;display:none;">确认词不匹配</div>
+    `;
+    const btn = qs('#dialogConfirmBtn');
+    btn.className = 'btn btn-danger';
+    btn.textContent = '执行不可逆操作';
+    btn.disabled = true;
+    btn.onclick = () => {
+      const val = qs('#danger-confirm-input').value.trim();
+      if (val === confirmWord) {
+        closeDialog();
+        if (callback) callback();
+      } else {
+        qs('#danger-confirm-hint').style.display = 'block';
+      }
+    };
+    qs('#dialogOverlay').classList.add('open');
+    setTimeout(() => qs('#danger-confirm-input').focus(), 50);
+    return;
+  }
   qs('#dialogTitle').textContent = '操作确认';
   qs('#dialogBody').innerHTML = `<div style="color:${isDanger ? 'var(--danger)' : 'var(--text)'}">${esc(msg)}</div>`;
 
@@ -1560,9 +1589,9 @@ async function toggleWB(name) {
 }
 
 function deleteWB(name) {
-  sandboxConfirm(`确定删除世界书 "${name}"？此操作不可逆！`, async () => {
+  sandboxConfirm(`确定删除世界书 "${name}"？此操作不可逆！\n所有绑定此世界书的角色将自动解绑。`, async () => {
     try { await api('/wb/delete', { method: 'POST', body: JSON.stringify({ name }) }); showToast('已删除', 'success'); await loadWB(); } catch (e) { showToast(e.message); }
-  }, true);
+  }, true, name);
 }
 function importWB_ST(input) {
   const file = input.files[0]; if (!file) return;
@@ -1903,9 +1932,9 @@ async function savePersona() {
 }
 
 function deletePersona(personaId) {
-  sandboxConfirm('确定删除此角色卡？此操作不可逆！', async () => {
+  sandboxConfirm(`确定删除角色卡 "${personaId}"？此操作不可逆！\n相关头像与世界书绑定将一并清除。`, async () => {
     try { await api('/persona/delete', { method: 'POST', body: JSON.stringify({ id: personaId }) }); showToast('已删除', 'success'); loadPersonas(); } catch (e) { showToast(e.message); }
-  }, true);
+  }, true, personaId);
 }
 
 // ── Persona 扩展功能 ──────────────────────────────────────
@@ -2212,7 +2241,7 @@ async function loadMemoryBrowser() {
       const timeStr = (m.timestamp||'').split('.')[0].replace('T', ' ');
 
       return `<tr>
-        <td><span class="cell-session">${esc(m.session_id||'')}</span></td>
+        <td><span class="cell-session" title="${esc(m.session_id||'')}">${esc(formatSessionId(m.session_id))}</span></td>
         <td>
           <div class="cell-summary" style="margin-bottom:6px">${esc((m.summary||'—').substring(0,60))}</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px;">
@@ -2255,7 +2284,7 @@ async function showMemoryDetail(id) {
     const timeStr = (m.timestamp||'').split('.')[0].replace('T', ' ');
     qs('#modalTitle').textContent = '记忆详情 #' + m.id;
     qs('#modalBody').innerHTML = `
-      <div class="form-group"><label>Session ID</label><input readonly value="${esc(m.session_id||'')}"></div>
+      <div class="form-group"><label>会话 (Session)</label><input readonly value="${esc(formatSessionId(m.session_id))}" title="${esc(m.session_id||'')}"></div>
       <div class="form-group"><label>摘要 (Summary)</label><textarea readonly rows="3" style="min-height:auto">${esc(m.summary||'')}</textarea></div>
       <div class="form-group"><label>完整内容 (chat_summary)</label><textarea readonly rows="6" style="min-height:auto">${esc(m.chat_summary||'(无)')}</textarea></div>
       <div class="form-group"><label>创建时间</label><input readonly value="${timeStr}"></div>
@@ -2277,6 +2306,27 @@ function deleteMemory(id) {
   }, true);
 }
 
+// P0-1: 将 target_id::persona_id 复合键渲染为人类可读格式
+function formatSessionId(sid) {
+  if (!sid) return '—';
+  // 格式: {platform}:{MsgType}:{id}::{persona_id}
+  const parts = sid.split('::');
+  const target = parts[0] || '';
+  const persona = parts[1] || '';
+  // 解析 target: aiocqhttp:GroupMessage:123456 / aiocqhttp:PrivateMessage:uid
+  const targetParts = target.split(':');
+  let scopeLabel = target;
+  if (targetParts.length >= 3) {
+    const msgType = targetParts[targetParts.length - 2];
+    const id = targetParts[targetParts.length - 1];
+    if (msgType === 'GroupMessage') scopeLabel = `群 ${id}`;
+    else if (msgType === 'PrivateMessage') scopeLabel = `私聊 ${id}`;
+    else scopeLabel = `${msgType} ${id}`;
+  }
+  if (persona) return `${scopeLabel} / ${persona}`;
+  return scopeLabel;
+}
+
 async function pruneMemories() {
   sandboxConfirm('确定执行修剪？系统将根据有用性分档自动删除过期记忆。', async () => {
     try {
@@ -2284,7 +2334,7 @@ async function pruneMemories() {
       showToast(res.message || '修剪完成', 'success');
       loadMemoryBrowser();
     } catch (e) { showToast(e.message); }
-  }, true);
+  }, true, '修剪');
 }
 async function exportMemories() {
   try {
