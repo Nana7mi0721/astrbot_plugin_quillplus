@@ -286,10 +286,14 @@ class QuillRoutes:
 
     # ── Config Save ───────────────────────────────────────────
 
-    @_require_admin
     @_api_handler
     async def config_save(self):
-        """保存配置项（support rag/worldbook groups）。直接使用注入的插件实例。"""
+        """保存配置项（support rag/worldbook groups）。直接使用注入的插件实例。
+
+        死锁修复：admin_users 未配置时，仅允许保存 permission.admin_users
+        字段（首次配置豁免）；其他配置项仍需 admin 校验。避免"未配 admin
+        则无法保存 admin 配置"的初始化死锁。
+        """
         data = await request.json(default={})
         group = data.get("group", "")
         key = data.get("key", "")
@@ -300,6 +304,42 @@ class QuillRoutes:
 
         if (group, key) not in _ALLOWED_CONFIG_KEYS:
             return error_response(f"不支持的配置项: {group}.{key}", status_code=400)
+
+        # 死锁修复：admin_users 未配置时，仅允许保存 admin_users 字段
+        admin_users = []
+        if self.plugin and self.plugin.config:
+            admin_users = getattr(self.plugin.config, "admin_users", []) or []
+        admin_set = set(str(u) for u in admin_users)
+        is_admin_key = (group, key) in (("permissions", "admin_users"),
+                                        ("permission", "admin_users"))
+        if not admin_set:
+            if not is_admin_key:
+                logger.warning("[Quill Web] admin_users 未配置，写端点已锁定。"
+                               "仅允许保存 admin_users 字段。")
+                return error_response(
+                    "admin_users 未配置，写端点已锁定。请先配置 admin_users。",
+                    status_code=503,
+                )
+            # admin_users 字段首次配置放行
+        else:
+            # admin 已配置，需校验请求者身份
+            declared = ""
+            headers = getattr(request, "headers", None)
+            if callable(headers):
+                headers = headers()
+            if isinstance(headers, dict):
+                declared = str(headers.get("X-Quill-Admin", ""))
+            elif hasattr(headers, "get"):
+                declared = str(headers.get("X-Quill-Admin", ""))
+            if not declared:
+                try:
+                    q = getattr(request, "query", None)
+                    if q is not None and hasattr(q, "get"):
+                        declared = str(q.get("admin", "") or "")
+                except Exception:
+                    pass
+            if not declared or declared not in admin_set:
+                return error_response("admin required", status_code=403)
 
         # 直接使用注入的插件实例（由 main.py 传入 self）
         plugin = self.plugin

@@ -2505,6 +2505,13 @@ async function saveAllChanges() {
       add('debug', 'panel_theme', qs('#c-debug-theme').value);
     }
 
+    // 死锁修复：admin_users 优先发送，避免首次配置时其他配置项被 503 阻断
+    updates.sort((a, b) => {
+      const aAdmin = a.group === 'permission' && a.key === 'admin_users';
+      const bAdmin = b.group === 'permission' && b.key === 'admin_users';
+      return (bAdmin ? 1 : 0) - (aAdmin ? 1 : 0);
+    });
+
     for (const u of updates) {
       await api('/config/save', { method: 'POST', body: JSON.stringify(u) });
       changedCount++;
