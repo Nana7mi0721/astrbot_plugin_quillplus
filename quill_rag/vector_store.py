@@ -182,6 +182,9 @@ class FaissVectorStore:
                     self._save_index()
             except Exception as e:
                 # 3. FAISS 失败：回滚 SQLite（用精确 row_ids 删除 pending 行）
+                if not row_ids:
+                    logger.warning(f"[Quill RAG] FAISS 写入失败且无 row_ids 可回滚: {e}")
+                    return
                 with self._lock:
                     placeholders = ",".join("?" for _ in row_ids)
                     self._conn.execute(

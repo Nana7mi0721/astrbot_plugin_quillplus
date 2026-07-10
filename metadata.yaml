@@ -1,6 +1,15 @@
 name: astrbot_plugin_quillplus
-display_name: 羽笔 QuillPlus
-description: "世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一 RP 注入系统 | 状态栏 | 反拒绝 | 五层 Prompt 装配"
-author: Quill (Mod by Nana7mi0721)
-version: 5.2.0
-repo: https://github.com/Nana7mi0721/astrbot_plugin_quillplus
+display_name: "羽笔 QuillPlus"
+author: "Nana7mi0721 & Gemini & GLM-5.2 & DeepSeek"
+version: "5.2.0"
+desc: "世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 核心引擎 | 平行宇宙双轴隔离 | JSON 原子化状态机 | 无损断点续传"
+repo: "https://github.com/Nana7mi0721/astrbot_plugin_quillplus"
+astrbot_version: ">=4.8.0"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram
+  - wecom
+  - lark
+  - dingtalk
+  - kook
