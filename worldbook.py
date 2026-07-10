@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Worldbook manager — JSON file storage with persona/user bindings.
 
-Ported from intimate_send v5.1 with three bug fixes:
+Ported from intimate_send v5.0 with three bug fixes:
   #1: get_worldbook() returns copy.deepcopy() (was direct reference)
   #2: _validate_name() rejects path-traversal / invalid characters
   #3: import_from_st() coerces keys to list (was trusting ST format)

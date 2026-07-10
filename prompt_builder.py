@@ -5,7 +5,7 @@ Prompt Builder — structured prompt assembly engine with dataclass sections.
 
 Builds the 4-layer system prompt for Quill's send-reply mode.
 Uses PromptSection dataclasses with priority-based truncation instead of
-v5.1's fragile ``\\n---\\n\\n`` string-splitting approach.
+v5.0's fragile ``\\n---\\n\\n`` string-splitting approach.
 
 Layers:
   0 — Anti-refusal protocol + send_message_to_user usage guide (priority=0)
