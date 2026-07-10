@@ -366,7 +366,7 @@ async def handle_info(kb_manager, wb_manager, persona_count=0,
         "wb_count": len(available_wb),
         "persona_count": persona_count,
         "categories": categories,
-        "version": "Quill v5.2",
+        "version": "Quill v5.0",
         "available_worldbooks": available_wb,
         "trigger_log": trigger_log,
     })

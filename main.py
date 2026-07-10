@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""QuillPlugin — 羽笔 QuillPlus v5.2 企业级 RP 核心引擎
+"""QuillPlugin — 羽笔 v5.0 多维沉浸式 RP 增强插件
 
 五合一沉浸式 RP 注入系统：世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆。
 
@@ -11,7 +11,7 @@
 - FAISS + SQLite 事务一致性：row_id 映射 + L2 归一化 + 幽灵向量回收
 - 4 层 Prompt 装配 + 强制 Tool Description 重写
 
-v5.2 变化:
+v5.0 变化:
 - 配置由 AstrBot 通过 _conf_schema.json 注入（不再读 config.yaml）
 - 全部行为由 QuillConfig 控制
 - admin_users 收窄为仅群聊写指令权限控制，Web 面板信任 AstrBot 鉴权
@@ -102,13 +102,13 @@ def strip_markdown(text: str) -> str:
 
 @register(
     "astrbot_plugin_quillplus",
-    "Nana7mi0721 & Gemini & GLM-5.2 & DeepSeek",
-    "羽笔 QuillPlus v5.2 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 核心引擎",
-    "5.2.0",
+    "Nana7mi0721 & Gemini & GLM & DeepSeek",
+    "羽笔 v5.0 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 增强插件",
+    "5.0.0",
     "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(Star):
-    """QuillPlus — 羽笔 v5.2 企业级 RP 核心引擎
+    """羽笔 — v5.0 多维沉浸式 RP 增强插件
 
     五合一沉浸式 RP 注入系统：世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆。
 

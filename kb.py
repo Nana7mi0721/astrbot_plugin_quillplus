@@ -3,7 +3,7 @@
 Async Knowledge Base Manager (aiosqlite + FTS5)
 ================================================
 
-Port of intimate_send v5.1 KnowledgeBaseManager to fully async I/O.
+Port of intimate_send v5.0 KnowledgeBaseManager to fully async I/O.
 Identical table schema — compatible with existing .db files.
 """
 
