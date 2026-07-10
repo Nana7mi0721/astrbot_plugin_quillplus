@@ -852,17 +852,12 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
         <div class="card" style="height:100%">
           <h3>🛡️ 安全与权限控制</h3>
           <div style="background:var(--surface);border-left:3px solid var(--warning, #f59e0b);padding:8px 12px;margin-bottom:12px;font-size:12px;color:var(--text-muted);border-radius:4px;">
-            ⚠️ <b>必须配置</b>：留空时群聊写指令（切卡/清记忆/改流式等）与面板编辑功能将<b>全部锁定</b>（返回 503）。私聊不受限制。
+            ⚠️ <b>建议配置</b>：留空时群聊写指令（切卡/清记忆/改流式等）将被拦截。私聊与 Web 面板编辑不受限制。
           </div>
           <div class="form-group">
             <label>管理员白名单 (QQ号/用户ID)</label>
             <textarea id="c-perm-admins" rows="4" placeholder="例如:&#10;123456789&#10;987654321"></textarea>
-            <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">支持多行、逗号或竖线分隔。配置后仅白名单用户可在群聊执行写操作。留空时群聊写指令与面板编辑功能锁定（fail-close 安全策略）。</span>
-            <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
-              <input type="text" id="c-perm-my-admin-id" placeholder="你的管理员ID（用于面板鉴权）" style="flex:1;font-size:13px;padding:6px 10px;">
-              <button class="btn btn-outline" style="font-size:13px;padding:6px 12px;" onclick="saveMyAdminId()">设为本机管理员标识</button>
-            </div>
-            <span style="font-size:11px;color:var(--text-muted);margin-top:4px;display:block">填写上述白名单中的某个 ID 并点击按钮，本机面板将以该 ID 身份发起请求。后端通过此 ID 校验是否为管理员，桌面端走桥接通道时同样携带。</span>
+            <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">支持多行、逗号或竖线分隔。仅作用于群聊写指令权限控制，Web 面板已由 AstrBot 鉴权保护。</span>
           </div>
         </div>
       </div>
@@ -996,19 +991,13 @@ async function api(path, opts = {}) {
   // 1. 如果桥接器可用，且不是文件流或表单上传，优先走安全的桥接器
   if (bridge && !opts.isFormData && !opts.isBlob) {
     const method = (opts.method || 'GET').toUpperCase();
-    // S2-14: 桥接通道无法注入自定义 header，把 admin_id 拼到 query string
-    let bridgeAdmin = '';
-    try { bridgeAdmin = localStorage.getItem('quill_admin_id') || ''; } catch (e) { /* 沙盒忽略 */ }
     let result;
     if (method === 'GET') {
       const params = { '_t': Date.now() };
       if (qs_str) new URLSearchParams(qs_str).forEach((v, k) => { params[k] = v; });
-      if (bridgeAdmin) params['admin'] = bridgeAdmin;
       result = await bridge.apiGet(bp, params);
     } else {
-      // POST：把 admin 拼到 path 的 query string
-      const postPath = bridgeAdmin ? `${bp}?admin=${encodeURIComponent(bridgeAdmin)}` : bp;
-      result = await bridge.apiPost(postPath, opts.body ? JSON.parse(opts.body) : {});
+      result = await bridge.apiPost(bp, opts.body ? JSON.parse(opts.body) : {});
     }
     if (result && typeof result === 'object' && 'status' in result) {
       if (result.status === 'error') throw new Error(result.message || 'API error');
@@ -1040,11 +1029,6 @@ async function api(path, opts = {}) {
       /* 忽略 iframe 沙盒安全拦截，依赖 credentials Cookie 鉴权 */
   }
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  // A1 修复：携带 admin 标识供后端 F7 校验（若配置了 admin_users）
-  try {
-      const adminId = localStorage.getItem('quill_admin_id');
-      if (adminId) headers['X-Quill-Admin'] = adminId;
-  } catch (e) { /* 沙盒忽略 */ }
 
   const sep = np.includes('?') ? '&' : '?';
   const cacheBust = isPost ? '' : `${sep}_t=${Date.now()}`;
@@ -1062,15 +1046,6 @@ async function api(path, opts = {}) {
     try {
       const res = await fetch(url, { method: isPost ? 'POST' : 'GET', headers, body: opts.body || undefined, credentials: 'include' });
       if (!res.ok) {
-        // A1 修复：403/503 单独提示权限/admin 配置问题
-        if (res.status === 403) {
-          showToast('⚠️ 权限不足：此操作需要管理员权限。请在配置中填写 admin_users', 'warning');
-          throw new Error('需要管理员权限（403）');
-        }
-        if (res.status === 503) {
-          showToast('⚠️ 写端点已锁定：请先在配置中填写 admin_users', 'warning');
-          throw new Error('admin_users 未配置（503）');
-        }
         throw new Error(`HTTP ${res.status}`);
       }
 
@@ -2424,27 +2399,7 @@ async function loadGlobalSettings() {
     qs('#c-debug-enabled').checked = safeGet('debug', 'enabled', false);
     qs('#c-debug-theme').value = safeGet('debug', 'panel_theme', 'light');
 
-    // A1 回填本机 admin 标识
-    try {
-      const saved = localStorage.getItem('quill_admin_id');
-      if (saved) qs('#c-perm-my-admin-id').value = saved;
-    } catch (e) { /* 沙盒忽略 */ }
-
   } catch (e) { showToast('读取配置失败: ' + e.message); }
-}
-
-// A1 修复：保存本机管理员标识
-function saveMyAdminId() {
-  const v = qs('#c-perm-my-admin-id').value.trim();
-  try {
-    if (v) {
-      localStorage.setItem('quill_admin_id', v);
-      showToast('本机管理员标识已设为: ' + v, 'success');
-    } else {
-      localStorage.removeItem('quill_admin_id');
-      showToast('已清除本机管理员标识', 'info');
-    }
-  } catch (e) { showToast('保存失败（沙盒限制）: ' + e.message); }
 }
 
 // 全局配置中心：差异保存（只提交项）
@@ -2504,13 +2459,6 @@ async function saveAllChanges() {
       add('debug', 'enabled', qs('#c-debug-enabled').checked);
       add('debug', 'panel_theme', qs('#c-debug-theme').value);
     }
-
-    // 死锁修复：admin_users 优先发送，避免首次配置时其他配置项被 503 阻断
-    updates.sort((a, b) => {
-      const aAdmin = a.group === 'permission' && a.key === 'admin_users';
-      const bAdmin = b.group === 'permission' && b.key === 'admin_users';
-      return (bAdmin ? 1 : 0) - (aAdmin ? 1 : 0);
-    });
 
     for (const u of updates) {
       await api('/config/save', { method: 'POST', body: JSON.stringify(u) });
