@@ -1,11 +1,12 @@
-# QuillPlus - 羽笔 · 创意写作增强插件
+# QuillPlus - 羽笔 · 企业级 RP 核心引擎
 
-> **为世界注入灵魂**：世界书 + 写作素材库 + 角色卡 + 文档知识库 + 动态记忆，五合一 RP 增强引擎
+> **为世界注入灵魂**：世界书 + 写作素材库 + 角色卡 + 文档知识库 + 动态记忆，五合一沉浸式 RP 核心引擎
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
 [![Version](https://img.shields.io/badge/version-5.2.0-green.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)]()
+[![Authors](https://img.shields.io/badge/authors-Nana7mi0721%20%26%20Gemini%20%26%20GLM--5.2%20%26%20DeepSeek-purple.svg)]()
 
 ---
 
@@ -14,6 +15,44 @@
 **QuillPlus（羽笔）** 是一个专为沉浸式角色扮演（RP）和跑团（TRPG）设计的 AstrBot 增强插件。它通过五大核心系统的协同联动，让 AI 角色真正"活"起来——拥有自己的记忆、知识、世界设定和灵魂。
 
 无论是手机聊天窗口的快捷指令，还是 PC 端 Web 面板的深度管理，QuillPlus 都能让你在任意终端掌控全局。
+
+---
+
+## 🚀 v5.2 核心架构亮点（竞品绝对没有的杀手级 Feature）
+
+### 🌌 平行宇宙双轴隔离 (target_id::persona_id)
+
+**彻底根治群聊切卡串戏问题**。每个群 × 每个角色 = 独立平行宇宙，状态、记忆、世界书互不干扰。
+
+- 复合主键 `target_id::persona_id` 精确切分状态空间
+- 群 A 切角色 X，群 B 切角色 Y，两群对话互不污染
+- 同一群切换不同角色，各自保留独立的好感度、剧情进度、记忆
+
+### 💾 JSON 原子化状态机（拔电源级防损坏）
+
+**断电、崩溃、进程被杀，数据零丢失**。
+
+- `tmp` 临时文件 + `f.flush()` + `os.fsync()` + `os.replace()` 四连招
+- 状态写入与缓存更新分离，避免锁内 IO 阻塞
+- 损坏条目自动跳过并告警，不影响其他用户
+
+### ⚡ 全链路纯异步防阻塞
+
+**AstrBot 事件循环永不卡顿**。所有重 IO / CPU 操作均通过 `asyncio.to_thread()` 卸载到线程池。
+
+- 磁盘读写、SQLite 操作、FAISS 检索全部异步化
+- `threading.Lock` 保护 SQLite（`check_same_thread=False`），`asyncio.Lock` 保护缓存状态流转
+- 后台任务通过 `_spawn` + `_bg_tasks` 集合防 GC 中断
+
+### 📚 无损对话日志归档（重启零失忆）
+
+**服务器重启、崩溃、手动关机，角色记忆与剧情永远无缝衔接**。
+
+- `on_llm_request` 中检测 `req.contexts` 为空时，自动从 `chat_logs` 表捞取最近 N 条日志垫入
+- 配合"First Message 智能抑制"，避免重启后突兀复读开场白
+- 无人值守日志清理：反思调度中自动清理过期日志，避免长期运行膨胀
+
+
 
 ---
 

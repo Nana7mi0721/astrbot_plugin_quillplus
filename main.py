@@ -1,12 +1,20 @@
 # -*- coding: utf-8 -*-
-"""QuillPlugin — 羽笔 v5.0 世界书+写作素材库+角色卡 RP 注入系统
+"""QuillPlugin — 羽笔 QuillPlus v5.2 企业级 RP 核心引擎
 
-Integration glue: wires together activation detection, state management,
-knowledge base, worldbook, prompt building, commands, and web routes.
+五合一沉浸式 RP 注入系统：世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆。
 
-v5.0 变化:
+核心架构：
+- 平行宇宙双轴隔离 (target_id::persona_id)：彻底根治群聊切卡串戏
+- JSON 原子化状态机：tmp+fsync+os.replace 四连防数据损坏
+- 全链路纯异步防阻塞：asyncio.to_thread 包裹所有 IO/DB 操作
+- 无损对话日志归档：Context Restoration 断点续传，重启零失忆
+- FAISS + SQLite 事务一致性：row_id 映射 + L2 归一化 + 幽灵向量回收
+- 4 层 Prompt 装配 + 强制 Tool Description 重写
+
+v5.2 变化:
 - 配置由 AstrBot 通过 _conf_schema.json 注入（不再读 config.yaml）
 - 全部行为由 QuillConfig 控制
+- admin_users 收窄为仅群聊写指令权限控制，Web 面板信任 AstrBot 鉴权
 """
 
 import asyncio
@@ -94,13 +102,24 @@ def strip_markdown(text: str) -> str:
 
 @register(
     "astrbot_plugin_quillplus",
-    "Quill (Mod by Nana7mi0721)",
-    "世界书+写作素材库+角色卡三合一 RP 注入系统",
-    "5.0.0",
-    "",
+    "Nana7mi0721 & Gemini & GLM-5.2 & DeepSeek",
+    "羽笔 QuillPlus v5.2 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 核心引擎",
+    "5.2.0",
+    "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(Star):
-    """QuillPlus — 世界书+写作素材库+角色卡+文档RAG+动态记忆，五合一 RP 注入系统"""
+    """QuillPlus — 羽笔 v5.2 企业级 RP 核心引擎
+
+    五合一沉浸式 RP 注入系统：世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆。
+
+    核心特性：
+    - 平行宇宙双轴隔离 (target_id::persona_id)
+    - JSON 原子化状态机（拔电源级防损坏）
+    - 全链路纯异步防阻塞
+    - 无损对话日志归档与断点续传
+    - FAISS + SQLite 事务一致性
+    - 4 层 Prompt 装配 + 状态栏降级解析
+    """
 
     # S3-13: 反思/总结相关阈值常量
     REFLECTION_TURN_THRESHOLD = 4       # 攒够 N 轮触发一次反思摘要
@@ -177,7 +196,14 @@ class QuillPlugin(Star):
     # ================================================================
 
     async def initialize(self) -> None:
-        """Async initialization — KB init + web route registration."""
+        """异步初始化：KB 载入、Web 路由注册、RAG 索引构建、过期日志清理。
+
+        生命周期阶段一。完成以下工作：
+        - 知识库（KB）懒加载
+        - Web 面板 API 路由注册
+        - RAG 检索器与 FAISS 索引初始化
+        - 过期对话日志清理与低价值记忆修剪
+        """
         if self.config.kb_enabled:
             kb_path = os.path.join(self.plugin_dir, "knowledge", "quill_kb.db")
             try:
@@ -308,7 +334,7 @@ class QuillPlugin(Star):
             logger.warning(f"[Quill RAG] 初始化失败（RAG 功能不可用）: {e}")
 
     async def terminate(self) -> None:
-        """Cleanup — close all database connections."""
+        """生命周期终止：取消所有后台任务并关闭数据库连接，防止资源泄漏。"""
         # S2-4 修复：先取消并等待所有后台任务，防止退出时悬挂/资源泄漏
         if self._bg_tasks:
             bg_count = len(self._bg_tasks)
@@ -881,7 +907,16 @@ class QuillPlugin(Star):
 
     @filter.on_llm_request(priority=100)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
-        """LLM 请求拦截 — 检测激活并注入 System Prompt。"""
+        """LLM 请求拦截：触发平行宇宙隔离，执行状态栏降级解析与多维 Prompt 组装注入。
+
+        核心职责：
+        - 平行宇宙双轴隔离 (target_id::persona_id)：按群+角色切分独立状态
+        - 激活检测：决定本次请求是否进入 RP 模式
+        - Context Restoration：req.contexts 为空时从 chat_logs 捞取最近 N 条垫入
+        - First Message 智能抑制：避免重启后突兀复读开场白
+        - 4 层 Prompt 装配：系统/角色/世界书/KB/RAG 多源注入
+        - 状态栏降级解析：5 级兜底（STATUS 块→LOVE_DATA→legacy→RAW→lenient）
+        """
         try:
             self._restore_smt_tool(req)
 
@@ -1050,7 +1085,14 @@ class QuillPlugin(Star):
 
     @filter.on_llm_response(priority=10)
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
-        """LLM 响应拦截 — Base64 解密 + 拒绝检测。"""
+        """LLM 响应拦截：Base64 解密、拒绝检测、状态栏提取与剧情分支解析。
+
+        核心职责：
+        - Base64 解密输出（若启用）
+        - 反拒绝模式检测与降级处理
+        - 状态栏提取（多级正则降级）
+        - 剧情走向 (Plot Paths) 解析
+        """
         try:
             # [B:...] Base64 解码——安全网
             text = resp.completion_text or ""
@@ -1119,7 +1161,15 @@ class QuillPlugin(Star):
         self, event: AstrMessageEvent, tool: FunctionTool,
         tool_args: dict | None, tool_result
     ):
-        """工具调用后拦截 — 检测 send_message_to_user 调用，停止 agent loop。"""
+        """工具调用后拦截：Agent Loop 终止信号、动态记忆存储与多轮反思调度。
+
+        核心职责：
+        - 检测 send_message_to_user 调用，终止 agent loop
+        - AI 回复异步写入对话日志（供断点续传使用）
+        - N 轮反思触发：攒够阈值后生成上下文摘要
+        - 记忆修剪调度（分档遗忘）
+        - 过期对话日志无人值守清理（避免长期运行日志膨胀）
+        """
         if tool.name != "send_message_to_user":
             return
 
@@ -1184,6 +1234,11 @@ class QuillPlugin(Star):
                         # 顺带跑一次记忆修剪（分档遗忘）— 保留 to_thread 包装，prune_memories 是同步方法
                         if self.rag_retriever.memory_store:
                             self._spawn(asyncio.to_thread(self.rag_retriever.memory_store.prune_memories))
+                            # 同步清理过期对话日志（无人值守，避免长期运行服务器日志膨胀）
+                            self._spawn(asyncio.to_thread(
+                                self.rag_retriever.memory_store.cleanup_chat_logs,
+                                getattr(self.config, 'rag_chat_log_retention_days', 30)
+                            ))
                     else:
                         logger.debug(f"[Quill Memory] 记忆收集进度: {unsummarized}/4 轮")
                 except Exception as e:
