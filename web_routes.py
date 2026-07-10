@@ -111,53 +111,6 @@ def _api_handler(handler):
     return wrapper
 
 
-def _require_admin(handler):
-    """F7 修复：敏感写端点的 admin 校验装饰器。
-
-    S1-6 修复：使用模块级全局 `request`（L53 已从 astrbot.api.web 导入），
-    而非从 args/kwargs 取（AstrBot handler 调用不传 request 位置参数）。
-    S1-7 修复：admin_users 未配置时 fail-close（返回 503 + 提示），
-    避免 公网暴露且未配 admin 时裸奔。用户须显式配置 admin_users 才能使用写端点。
-    S1-9 修复：使用模块级 logger，不再在函数内部 import logging。
-    S2-14 修复：桥接通道（桌面端 window.AstrBotPluginPage）无法注入自定义 header，
-    增加 query string `?admin=` fallback，前端桥接调用时拼到 URL。
-    """
-    @wraps(handler)
-    async def admin_wrapper(self, *args, **kwargs):
-        admin_users = []
-        if self.plugin and self.plugin.config:
-            admin_users = getattr(self.plugin.config, "admin_users", []) or []
-        admin_set = set(str(u) for u in admin_users)
-        if not admin_set:
-            # S1-7: fail-close，未配置 admin 时拒绝写端点
-            logger.warning("[Quill Web] admin_users 未配置，写端点已锁定。请在配置面板设置 admin_users。")
-            return error_response(
-                "admin_users 未配置，写端点已锁定。请先配置 admin_users。",
-                status_code=503,
-            )
-        # S1-6: 用模块级全局 request（astrbot.api.web.request）
-        declared = ""
-        headers = getattr(request, "headers", None)
-        if callable(headers):
-            headers = headers()
-        if isinstance(headers, dict):
-            declared = str(headers.get("X-Quill-Admin", ""))
-        elif hasattr(headers, "get"):
-            declared = str(headers.get("X-Quill-Admin", ""))
-        # S2-14: 桥接通道 fallback —— 从 query string 读 admin
-        if not declared:
-            try:
-                q = getattr(request, "query", None)
-                if q is not None and hasattr(q, "get"):
-                    declared = str(q.get("admin", "") or "")
-            except Exception:
-                pass
-        if declared and declared in admin_set:
-            return await handler(self, *args, **kwargs)
-        return error_response("admin required", status_code=403)
-    return admin_wrapper
-
-
 class QuillRoutes:
     """Quill 插件后端 Web API 路由注册器。
 
@@ -288,12 +241,7 @@ class QuillRoutes:
 
     @_api_handler
     async def config_save(self):
-        """保存配置项（support rag/worldbook groups）。直接使用注入的插件实例。
-
-        死锁修复：admin_users 未配置时，仅允许保存 permission.admin_users
-        字段（首次配置豁免）；其他配置项仍需 admin 校验。避免"未配 admin
-        则无法保存 admin 配置"的初始化死锁。
-        """
+        """保存配置项。Web 面板已由 AstrBot 鉴权保护，无需二次校验。"""
         data = await request.json(default={})
         group = data.get("group", "")
         key = data.get("key", "")
@@ -305,43 +253,6 @@ class QuillRoutes:
         if (group, key) not in _ALLOWED_CONFIG_KEYS:
             return error_response(f"不支持的配置项: {group}.{key}", status_code=400)
 
-        # 死锁修复：admin_users 未配置时，仅允许保存 admin_users 字段
-        admin_users = []
-        if self.plugin and self.plugin.config:
-            admin_users = getattr(self.plugin.config, "admin_users", []) or []
-        admin_set = set(str(u) for u in admin_users)
-        is_admin_key = (group, key) in (("permissions", "admin_users"),
-                                        ("permission", "admin_users"))
-        if not admin_set:
-            if not is_admin_key:
-                logger.warning("[Quill Web] admin_users 未配置，写端点已锁定。"
-                               "仅允许保存 admin_users 字段。")
-                return error_response(
-                    "admin_users 未配置，写端点已锁定。请先配置 admin_users。",
-                    status_code=503,
-                )
-            # admin_users 字段首次配置放行
-        else:
-            # admin 已配置，需校验请求者身份
-            declared = ""
-            headers = getattr(request, "headers", None)
-            if callable(headers):
-                headers = headers()
-            if isinstance(headers, dict):
-                declared = str(headers.get("X-Quill-Admin", ""))
-            elif hasattr(headers, "get"):
-                declared = str(headers.get("X-Quill-Admin", ""))
-            if not declared:
-                try:
-                    q = getattr(request, "query", None)
-                    if q is not None and hasattr(q, "get"):
-                        declared = str(q.get("admin", "") or "")
-                except Exception:
-                    pass
-            if not declared or declared not in admin_set:
-                return error_response("admin required", status_code=403)
-
-        # 直接使用注入的插件实例（由 main.py 传入 self）
         plugin = self.plugin
         if plugin is None:
             return error_response("插件实例不可用", status_code=500)
@@ -353,21 +264,11 @@ class QuillRoutes:
 
     @_api_handler
     async def config_all(self):
-        """获取底层全量 config 字典供前端渲染。
-
-        S1-5 修复：过滤 admin_users 字段，避免通过未保护端点泄露 admin 列表
-        形成 0-click 提权链。前端通过独立的 admin_id 输入框管理本机标识。
-        """
+        """获取底层全量 config 字典供前端渲染。"""
         if not self.config:
             return json_response({})
         raw = self.config.get_raw()
-        # 防御性拷贝，避免修改底层 config
         safe = dict(raw) if isinstance(raw, dict) else raw
-        # 移除 permissions.admin_users / permission.admin_users
-        if isinstance(safe, dict):
-            for perm_key in ("permissions", "permission"):
-                if perm_key in safe and isinstance(safe[perm_key], dict):
-                    safe[perm_key] = {k: v for k, v in safe[perm_key].items() if k != "admin_users"}
         return json_response(safe)
 
     @_api_handler
@@ -390,7 +291,6 @@ class QuillRoutes:
         theme = getattr(self.config, "panel_theme", "light") if self.config else "light"
         return json_response({"theme": theme})
 
-    @_require_admin
     @_api_handler
     async def panel_theme_save(self):
         """保存面板主题设置。"""
@@ -407,7 +307,6 @@ class QuillRoutes:
 
     # ── RAG ───────────────────────────────────────────────────
 
-    @_require_admin
     @_api_handler
     async def rag_upload(self):
         """上传文档（multipart/form-data）。"""
@@ -436,7 +335,6 @@ class QuillRoutes:
             await handle_rag_upload(vector_store, embedding, _BytesUpload(file_bytes), source, chunk_size, chunk_overlap)
         )
 
-    @_require_admin
     @_api_handler
     async def rag_upload_base64(self):
         """接收前端发来的 Base64 JSON，完美绕过沙盒 FormData 拦截。"""
@@ -476,7 +374,6 @@ class QuillRoutes:
             return error_response("RAG 未初始化", status_code=500)
         return json_response(await handle_rag_documents(vector_store))
 
-    @_require_admin
     @_api_handler
     async def rag_delete(self):
         """删除文档。"""
@@ -590,7 +487,6 @@ class QuillRoutes:
             return error_response("记忆未初始化", status_code=500)
         return json_response(await handle_memory_export(memory_store))
 
-    @_require_admin
     @_api_handler
     async def memory_import(self):
         """从上传的 JSON 文件导入记忆（异步，重新生成向量）。"""
@@ -607,7 +503,6 @@ class QuillRoutes:
             return error_response(result.get("message", "导入失败"), status_code=400)
         return json_response(result)
 
-    @_require_admin
     @_api_handler
     async def memory_prune(self):
         """一键清理低价值/过期记忆。"""
@@ -616,7 +511,6 @@ class QuillRoutes:
             return error_response("记忆系统未加载", status_code=500)
         return json_response(await handle_memory_prune(memory_store))
 
-    @_require_admin
     @_api_handler
     async def memory_delete(self):
         """删除记忆。"""
@@ -681,21 +575,18 @@ class QuillRoutes:
             await handle_kb_get(self.kb_manager, data.get("entry_id"))
         )
 
-    @_require_admin
     @_api_handler
     async def kb_create(self):
         return json_response(
             await handle_kb_create(self.kb_manager, await request.json(default={}))
         )
 
-    @_require_admin
     @_api_handler
     async def kb_update(self):
         return json_response(
             await handle_kb_update(self.kb_manager, await request.json(default={}))
         )
 
-    @_require_admin
     @_api_handler
     async def kb_delete(self):
         data = await request.json(default={})
@@ -703,7 +594,6 @@ class QuillRoutes:
             await handle_kb_delete(self.kb_manager, data.get("entry_id"))
         )
 
-    @_require_admin
     @_api_handler
     async def kb_toggle(self):
         data = await request.json(default={})
@@ -719,7 +609,6 @@ class QuillRoutes:
     async def kb_export(self):
         return json_response(await handle_kb_export(self.kb_manager))
 
-    @_require_admin
     @_api_handler
     async def kb_import(self):
         data = await request.json(default={})
@@ -751,7 +640,6 @@ class QuillRoutes:
             await handle_wb_get(self.wb_manager, data.get("name"))
         )
 
-    @_require_admin
     @_api_handler
     async def wb_create(self):
         data = await request.json(default={})
@@ -763,7 +651,6 @@ class QuillRoutes:
             )
         )
 
-    @_require_admin
     @_api_handler
     async def wb_delete(self):
         data = await request.json(default={})
@@ -771,7 +658,6 @@ class QuillRoutes:
             await handle_wb_delete(self.wb_manager, data.get("name"))
         )
 
-    @_require_admin
     @_api_handler
     async def wb_delete_book(self):
         data = await request.json(default={})
@@ -779,7 +665,6 @@ class QuillRoutes:
             await handle_wb_delete(self.wb_manager, data.get("name"))
         )
 
-    @_require_admin
     @_api_handler
     async def wb_entry_create(self):
         data = await request.json(default={})
@@ -791,7 +676,6 @@ class QuillRoutes:
             )
         )
 
-    @_require_admin
     @_api_handler
     async def wb_entry_update(self):
         data = await request.json(default={})
@@ -805,7 +689,6 @@ class QuillRoutes:
             )
         )
 
-    @_require_admin
     @_api_handler
     async def wb_entry_delete(self):
         data = await request.json(default={})
@@ -819,7 +702,6 @@ class QuillRoutes:
             )
         )
 
-    @_require_admin
     @_api_handler
     async def wb_import_st(self):
         """上传 ST 格式 lorebook 文件并导入。"""
@@ -856,7 +738,6 @@ class QuillRoutes:
             await handle_wb_import_st(self.wb_manager, name, data)
         )
 
-    @_require_admin
     @_api_handler
     async def wb_import_json(self):
         """接收 JSON 文本数据并导入世界书（绕过沙盒 FormData 限制）。"""
@@ -890,7 +771,6 @@ class QuillRoutes:
 
     # ── WB Reload ─────────────────────────────────────────────
 
-    @_require_admin
     @_api_handler
     async def wb_reload(self):
         """重新从磁盘加载所有世界书后返回列表（供面板刷新按钮用）。"""
@@ -929,7 +809,6 @@ class QuillRoutes:
                 p["avatar_url"] = ""
         return json_response(personas)
 
-    @_require_admin
     @_api_handler
     async def persona_create(self):
         """创建角色卡。"""
@@ -942,7 +821,6 @@ class QuillRoutes:
         except ValueError as e:
             return error_response(str(e), status_code=400)
 
-    @_require_admin
     @_api_handler
     async def persona_update(self):
         """更新角色卡（支持部分更新）。"""
@@ -958,7 +836,6 @@ class QuillRoutes:
         except ValueError as e:
             return error_response(str(e), status_code=400)
 
-    @_require_admin
     @_api_handler
     async def persona_delete(self):
         """删除角色卡。"""
@@ -976,7 +853,6 @@ class QuillRoutes:
 
     # ── Persona 扩展功能：头像上传 / V2 导入导出 ──────────────────
 
-    @_require_admin
     @_api_handler
     async def upload_avatar(self):
         """上传头像图片（multipart/form-data）。"""
@@ -1003,7 +879,6 @@ class QuillRoutes:
         except Exception as e:
             return error_response(f"保存失败: {e}", status_code=500)
 
-    @_require_admin
     @_api_handler
     async def upload_avatar_base64(self):
         """上传头像图片（Base64 模式，绕过沙盒 FormData 拦截）。"""
@@ -1034,7 +909,6 @@ class QuillRoutes:
         except Exception as e:
             return error_response(f"保存失败: {e}", status_code=500)
 
-    @_require_admin
     @_api_handler
     async def persona_import(self):
         """导入 V2 角色卡（multipart/form-data，支持 PNG/JPG/JSON）。"""
@@ -1082,7 +956,6 @@ class QuillRoutes:
         except Exception as e:
             return error_response(f"导入失败: {e}", status_code=500)
 
-    @_require_admin
     @_api_handler
     async def persona_import_base64(self):
         """导入 V2 角色卡（Base64 模式，绕过沙盒 FormData 拦截）。"""
@@ -1206,7 +1079,6 @@ class QuillRoutes:
             headers={"Cache-Control": "public, max-age=86400"}
         )
 
-    @_require_admin
     @_api_handler
     async def persona_import_text(self):
         """从剪贴板文本导入角色卡"""
@@ -1225,7 +1097,6 @@ class QuillRoutes:
         except Exception as e:
             return error_response(f"解析失败: {e}", status_code=400)
 
-    @_require_admin
     @_api_handler
     async def persona_import_text_base64(self):
         """从剪贴板文本导入角色卡（Base64 绕过沙盒）"""
