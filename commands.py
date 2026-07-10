@@ -599,8 +599,52 @@ async def _resolve_persona_id(plugin, arg: str, event: AstrMessageEvent) -> str 
 
 
 # ================================================================
-# /quill — 状态总览 / 多系统测试
+# /quill — 状态总览 / 多系统测试 / 速查帮助
 # ================================================================
+
+async def quill_help(event: AstrMessageEvent):
+    """P0-3: 折叠式指令速查 — 按五大系统分组，聊天窗口内可读。"""
+    lines = [
+        "━━━ 羽笔 QuillPlus 指令速查 ━━━",
+        "",
+        "【🎭 角色卡 /char】",
+        "  /char              查看当前角色",
+        "  /char <名字>       切换角色",
+        "  /char unset        取消当前角色",
+        "  /char info         角色详情",
+        "  /char export       导出 V2 卡",
+        "  /char import       导入 V2 卡",
+        "",
+        "【📖 世界书 /wb】",
+        "  /wb                查看已绑定世界书",
+        "  /wb <名字>         绑定世界书",
+        "  /wb off            解绑世界书",
+        "  /wb info <名字>    世界书详情",
+        "  /wb reload         重载世界书",
+        "",
+        "【🧠 动态记忆 /memory】",
+        "  /memory            记忆统计",
+        "  /memory list       记忆列表",
+        "  /memory del <序号>  删除记忆",
+        "  /memory clear      清空当前会话记忆",
+        "  /memory learn <内容> 手动添加记忆",
+        "  /memory search <词>  搜索记忆",
+        "",
+        "【📄 文档RAG /doc】",
+        "  /doc list          文档列表",
+        "  /doc del <名字>     删除文档",
+        "  /doc rebuild       重建索引",
+        "",
+        "【⚙️ 系统 /quill】",
+        "  /quill             系统总览",
+        "  /quill help        本帮助",
+        "  /quill test <kb|wb|mem> <文字>  系统测试",
+        "  /stream on|off     流式模式开关",
+        "",
+        "━━━ 私聊不受权限限制 ━━━",
+    ]
+    event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
+
 
 async def quill_status(plugin, event: AstrMessageEvent):
     """Quill 系统总览 — 覆盖五大系统状态"""

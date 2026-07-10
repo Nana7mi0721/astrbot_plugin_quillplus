@@ -104,7 +104,7 @@ def strip_markdown(text: str) -> str:
     "astrbot_plugin_quillplus",
     "Nana7mi0721 & Gemini & GLM & DeepSeek",
     "羽笔 v5.0 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 增强插件",
-    "5.0.0",
+    "5.0.1",
     "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(Star):
@@ -1266,8 +1266,12 @@ class QuillPlugin(Star):
         self, event: AstrMessageEvent,
         arg1: str = "", rest: GreedyStr = ""
     ):
-        """Quill 系统总览与测试。用法：/quill | /quill test <kb|wb|mem> <文字>"""
-        if (arg1 or "").strip().lower() == "test":
+        """Quill 系统总览与测试。用法：/quill | /quill help | /quill test <kb|wb|mem> <文字>"""
+        arg1_lower = (arg1 or "").strip().lower()
+        if arg1_lower == "help":
+            await _cmds.quill_help(event)
+            return
+        if arg1_lower == "test":
             text = (rest or "").strip()
             # 解析: /quill test kb <文字> 或 /quill test <文字>
             parts = text.split(None, 1) if text else []
