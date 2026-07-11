@@ -15,8 +15,20 @@ tags:
 support_platforms:
   - aiocqhttp
   - qq_official
+  - qq_official_webhook
   - telegram
+  - discord
+  - slack
   - wecom
+  - wecom_ai_bot
+  - weixin_oc
+  - weixin_official_account
   - lark
   - dingtalk
+  - satori
   - kook
+  - vocechat
+  - misskey
+  - line
+  - matrix
+  - mattermost
