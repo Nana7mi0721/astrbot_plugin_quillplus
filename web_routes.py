@@ -235,6 +235,7 @@ class QuillRoutes:
             self.kb_manager, self.wb_manager,
             persona_count=pc,
             show_trigger_log=show_log,
+            health_tracker=self.plugin.health_tracker if self.plugin else None,
         )
 
     # ── Config Save ───────────────────────────────────────────
