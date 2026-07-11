@@ -90,6 +90,26 @@ _RAW_STATUS_RE = re.compile(
     re.MULTILINE
 )
 
+def _build_raw_status_re(fields: list) -> re.Pattern:
+    """方案A: 动态构建 L4 正则 — 用配置字段名替代硬编码白名单，扩展分隔符。
+
+    分隔符扩展: [：:=→] 覆盖 '好感度→85' 等非标准格式。
+    字段名动态: 支持用户自定义字段（如 饥饿度| thirst）。
+    """
+    # 转义字段名并过滤空值
+    valid_fields = [re.escape(f) for f in fields if f and f.strip()]
+    if not valid_fields:
+        valid_fields = [re.escape(f) for f in _DEFAULT_LOVE_FIELDS_RAW]
+    pattern = (
+        r'(?:^|\n)\s*(?:[-\*\•]*\s*)?'
+        r'(' + '|'.join(valid_fields) + r')'
+        r'\s*[：:=→]\s*(.+?)(?=\n|$)'
+    )
+    return re.compile(pattern, re.MULTILINE)
+
+# 默认字段名（用于 _build_raw_status_re 兜底）
+_DEFAULT_LOVE_FIELDS_RAW = ["好感度", "关系阶段", "心情", "位置", "穿着", "当前想法", "服从度", "发情度"]
+
 
 class HealthTracker:
     """P1-4: 轻量级健康度追踪器 — 滑动窗口记录最近 N 次事件的成功/失败。
@@ -146,7 +166,7 @@ def strip_markdown(text: str) -> str:
     "astrbot_plugin_quillplus",
     "Nana7mi0721 & Gemini & GLM & DeepSeek",
     "羽笔 v5.0 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 增强插件",
-    "5.0.3",
+    "5.0.2",
     "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(Star):
@@ -599,9 +619,10 @@ class QuillPlugin(Star):
                 handled = True
                 logger.info("[Quill] 状态栏已处理 (STATUS legacy)")
 
-        # 4. Raw key:value lines
+        # 4. Raw key:value lines — 方案A: 动态字段白名单 + 分隔符扩展
         if not handled:
-            raw_matches = _RAW_STATUS_RE.findall(text)
+            raw_re = _build_raw_status_re(self.love_fields)
+            raw_matches = raw_re.findall(text)
             if raw_matches:
                 current_vars = await self.state_manager.get_session_vars(target_id)
                 matched_fields = set()
@@ -619,7 +640,7 @@ class QuillPlugin(Star):
                         parsed_lines.append(f"{f_name}：{val}")
                 # 从文本中移除已被解析的 raw 行
                 for fn in matched_fields:
-                    new_text = re.sub(rf'{re.escape(fn)}\s*[：:].*', '', new_text)
+                    new_text = re.sub(rf'{re.escape(fn)}\s*[：:=→].*', '', new_text)
                 # 剧情走向
                 plot_str = ""
                 pm = _PLOT_PATH_RE.search(new_text)
@@ -632,23 +653,44 @@ class QuillPlugin(Star):
                 beautiful_bar = self.status_bar_format_template.replace("{content}", block_content)
                 new_text = new_text.strip() + "\n\n" + beautiful_bar
                 handled = True
-                logger.info("[Quill] 状态栏已处理 (raw key:value)")
+                logger.info("[Quill] 状态栏已处理 (raw key:value, 动态字段)")
 
-        # 5. Lenient fallback — 严格正则都失败了但可能 LLM 用了非标准格式
+        # 5. Lenient fallback — 方案A: 阈值降为 ≥1（原为 ≥2）
         if not handled:
             lenient_updates = self._lenient_parse_status(text, self.love_fields)
-            if lenient_updates and len(lenient_updates) >= 2:
-                await self._persist_status_vars(lenient_updates, target_id)
-                # 重建为标准格式
-                lines = []
-                for f_name in self.love_fields:
-                    val = lenient_updates.get(f_name, "未设置")
-                    lines.append(f"{f_name}：{val}")
+            if lenient_updates and len(lenient_updates) >= 1:
+                # 方案B: 部分提取 + 历史值融合
+                current_vars = await self.state_manager.get_session_vars(target_id)
+                merged = {}
+                for f in self.love_fields:
+                    new_val = lenient_updates.get(f)
+                    if new_val:
+                        merged[f] = new_val
+                    else:
+                        merged[f] = current_vars.get(f, "") or "未设置"
+                await self._persist_status_vars(merged, target_id)
+                lines = [f"{f}：{merged[f]}" for f in self.love_fields]
                 bar = self.status_bar_format_template.replace("{content}", "\n".join(lines))
                 new_text = text + "\n\n" + bar
-                updates = lenient_updates
+                updates = merged
                 handled = True
-                logger.info("[Quill] 状态栏已处理 (lenient fallback)")
+                logger.info(f"[Quill] 状态栏已处理 (lenient + 部分提取 {len(lenient_updates)}/{len(self.love_fields)} 字段)")
+
+        # 6. 方案C: LLM 智能提取（可选，配置开关启用）
+        if not handled and getattr(self.config, 'status_bar_llm_extract', False):
+            llm_extracted = await self._llm_extract_status(text, target_id)
+            if llm_extracted:
+                current_vars = await self.state_manager.get_session_vars(target_id)
+                merged = {}
+                for f in self.love_fields:
+                    merged[f] = llm_extracted.get(f) or current_vars.get(f, "") or "未设置"
+                await self._persist_status_vars(merged, target_id)
+                lines = [f"{f}：{merged[f]}" for f in self.love_fields]
+                bar = self.status_bar_format_template.replace("{content}", "\n".join(lines))
+                new_text = text + "\n\n" + bar
+                updates = merged
+                handled = True
+                logger.info("[Quill] 状态栏已处理 (LLM 智能提取)")
 
         # P1-1: 所有降级解析均失败时，记录原始文本片段便于调试（不暴露给用户）
         if not handled and self.status_bar_enabled:
@@ -708,6 +750,65 @@ class QuillPlugin(Star):
         ) + "\n<<< 请选择 >>>"
         full_content = love_section + plot_section
         return f"**状态栏**\n```\n{full_content}\n```"
+
+    async def _llm_extract_status(self, text: str, target_id: str) -> dict | None:
+        """方案C: LLM 智能提取状态栏字段 — 当 L1-L5 全部失败时，调用轻量 LLM 做结构化提取。
+
+        风险控制:
+        - 超时 3s，失败则放弃（不影响主流程）
+        - JSON 解析失败则放弃
+        - 字段名白名单校验（仅保留 self.love_fields 中的）
+        - 启发式判断：文本中必须包含 ≥2 个字段关键词才触发
+        """
+        # 启发式：检查文本是否疑似包含状态信息
+        keyword_hits = sum(1 for f in self.love_fields if f in text)
+        if keyword_hits < 2:
+            return None
+
+        # 复用 RAG summarizer 的 provider（轻量级 LLM）
+        if not self.rag_summarizer or not hasattr(self.rag_summarizer, 'provider'):
+            return None
+
+        fields_json = json.dumps(self.love_fields, ensure_ascii=False)
+        prompt = (
+            "从以下角色扮演文本中提取角色状态字段，输出严格 JSON。\n"
+            f"已知字段：{fields_json}\n"
+            "规则：\n"
+            "- 若某字段在文本中存在，提取其值（纯文本，去除 Markdown 标记）\n"
+            "- 若某字段不存在，填 null\n"
+            "- 仅输出 JSON 对象，不要任何额外文字\n\n"
+            f"文本：\n{text[:1500]}"
+        )
+
+        try:
+            resp = await asyncio.wait_for(
+                self.rag_summarizer.provider.text_chat(
+                    prompt=prompt, session_id=None, contexts=[],
+                    image_urls=[], system_prompt="你是 JSON 提取助手，仅输出 JSON。"
+                ),
+                timeout=3.0
+            )
+            raw = (resp.completion_text or "").strip()
+            # 提取 JSON（兼容 ```json 包裹）
+            if raw.startswith("```"):
+                raw = re.sub(r'^```(?:json)?\s*', '', raw)
+                raw = re.sub(r'\s*```$', '', raw)
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                return None
+            # 字段名白名单校验
+            result = {}
+            for f in self.love_fields:
+                val = data.get(f)
+                if val and isinstance(val, str) and val.strip():
+                    result[f] = val.strip()
+            return result if result else None
+        except asyncio.TimeoutError:
+            logger.debug("[Quill] LLM 状态栏提取超时（3s），放弃")
+            return None
+        except (json.JSONDecodeError, Exception) as e:
+            logger.debug(f"[Quill] LLM 状态栏提取失败: {e}")
+            return None
 
     def _parse_status_block(self, block_content: str) -> dict:
         """Parse **状态栏** code block content into key-value dict."""

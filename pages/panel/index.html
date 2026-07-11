@@ -762,6 +762,11 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
         <div class="mem-dash-card"><div class="mem-dash-value" id="health-rag-rate">—</div><div class="mem-dash-label">RAG 检索成功率</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px" id="health-rag-detail">— / —</div></div>
         <div class="mem-dash-card"><div class="mem-dash-value" id="health-status-rate">—</div><div class="mem-dash-label">状态栏解析成功率</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px" id="health-status-detail">— / —</div></div>
       </div>
+      <div style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:0 12px;border:1px solid var(--border);border-radius:var(--radius-sm);height:36px;margin-top:12px">
+        <div class="toggle" style="transform:scale(0.8);margin:0;"><input type="checkbox" id="c-sb-llm-extract" onchange="saveCheckbox('status_bar','llm_extract',this.checked)"><span class="toggle-slider"></span></div>
+        <span style="font-size:13px;font-weight:500;user-select:none;">LLM 智能提取（实验性）</span>
+        <span style="font-size:11px;color:var(--text-muted);margin-left:auto">L1-L5 全失败时调用 LLM 提取，3s 超时</span>
+      </div>
     </div>
 
     <div class="card">
@@ -2512,6 +2517,7 @@ async function loadGlobalSettings() {
     qs('#c-sb-fields').value = safeGet('status_bar', 'fields', '好感度|关系阶段|心情|位置|穿着|当前想法');
     qs('#c-sb-tpl').value = safeGet('status_bar', 'format_template', '**状态栏**\n```\n{content}\n```');
     qs('#c-sb-plots').value = safeGet('status_bar', 'plot_paths', '继续当前话题|转换场景|结束互动');
+    qs('#c-sb-llm-extract').checked = safeGet('status_bar', 'llm_extract', false);
     qs('#c-perf-max').value = safeGet('performance', 'max_output_length', 0);
     qs('#c-rag-log').checked = safeGet('rag', 'enable_chat_logging', true);
     qs('#c-rag-log-days').value = safeGet('rag', 'chat_log_retention_days', 30);
@@ -2575,6 +2581,7 @@ async function saveAllChanges() {
       add('status_bar', 'fields', qs('#c-sb-fields').value);
       add('status_bar', 'format_template', qs('#c-sb-tpl').value);
       add('status_bar', 'plot_paths', qs('#c-sb-plots').value);
+      add('status_bar', 'llm_extract', qs('#c-sb-llm-extract').checked);
       add('performance', 'max_output_length', parseInt(qs('#c-perf-max').value) || 0);
       add('rag', 'enable_chat_logging', qs('#c-rag-log').checked);
       add('rag', 'chat_log_retention_days', parseInt(qs('#c-rag-log-days').value) || 30);
