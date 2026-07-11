@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
 [![Version](https://img.shields.io/badge/version-5.0.3-green.svg)]()
-[![License](https://img.shields.io/badge/license-MIT-orange.svg)](./LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
 ---
@@ -282,7 +282,7 @@ A: 切换提供商会导致向量维度变化，插件会自动检测并重建 F
 
 ## License
 
-本项目基于 [MIT License](./LICENSE) 开源。
+本项目基于 [GNU AGPL-3.0](./LICENSE) 开源。
 
 ---
 
