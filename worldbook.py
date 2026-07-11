@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Worldbook manager — JSON file storage with persona/user bindings.
 
 Ported from intimate_send v5.0 with three bug fixes:

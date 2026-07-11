@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Prompt Builder — structured prompt assembly engine with dataclass sections.
 ===========================================================================

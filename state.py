@@ -1,3 +1,5 @@
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Async-safe per-session state manager with JSON persistence."""
 
 from __future__ import annotations

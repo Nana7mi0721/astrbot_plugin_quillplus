@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Activation Detector — boolean gate for prompt injection mode.
 Ported from intimate_send, standalone (no astrbot imports).
