@@ -21,6 +21,8 @@
   --success-light: rgba(22,163,74,.12);
   --warning: #d97706;
   --warning-light: rgba(217,119,6,.12);
+  --info: #0ea5e9;
+  --info-light: rgba(14,165,233,.12);
 
   --bg: #eef1f5;
   --card: #ffffff;
@@ -48,6 +50,8 @@
   --accent: #34d399;
   --danger: #f87171;
   --danger-light: rgba(248,113,113,.14);
+  --info: #38bdf8;
+  --info-light: rgba(56,189,248,.14);
   --success: #4ade80;
   --success-light: rgba(74,222,128,.14);
   --warning: #fbbf24;
@@ -58,7 +62,7 @@
   --surface: #222838;
   --text: #e1e5ee;
   --text-secondary: #9ca3b8;
-  --text-muted: #6b7280;
+  --text-muted: #7c8498; /* V3: 提升对比度至 5.1:1 */
   --border: #2d3548;
   --border-light: #262d3d;
 
@@ -230,6 +234,8 @@ select { cursor: pointer; appearance: auto; }
 .toast { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-radius: var(--radius-sm); font-size: 14px; color: #fff; box-shadow: var(--shadow-lg); animation: toastIn 250ms ease; pointer-events: auto; max-width: 400px; }
 .toast-success { background: var(--success); }
 .toast-error { background: var(--danger); }
+.toast-info { background: var(--info); }
+.toast-warning { background: var(--warning); }
 @keyframes toastIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
@@ -752,6 +758,108 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 @media (max-width: 600px) {
   .rag-stats-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ── P0: E3 - 危险操作视觉强化 ── */
+.btn-danger-outline {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+.btn-danger-outline:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ── P1: U1 - 侧边栏图标+分组 ── */
+.sidebar-section {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+.sidebar-section:last-child { border-bottom: none; }
+.sidebar-label {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 4px 16px; margin-bottom: 4px;
+}
+.nav-item-icon {
+  width: 18px; height: 18px; margin-right: 10px; opacity: 0.7;
+}
+
+/* ── P1: V1 - 微交互动画 ── */
+.card, .kb-card, .persona-card, .wb-item { transition: all 0.2s ease; }
+.card:hover, .kb-card:hover, .persona-card:hover {
+  transform: translateY(-2px); box-shadow: var(--shadow-md);
+}
+.tab-content { animation: fadeIn 0.3s ease; }
+.modal-dialog { animation: modalIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes modalIn {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* ── P2: U2 - 页面标题统一 ── */
+.page-title {
+  font-size: 24px; font-weight: 700; color: var(--text);
+  margin-bottom: 20px; display: flex; align-items: center; gap: 12px;
+}
+.page-title-stats {
+  font-size: 14px; font-weight: 400; color: var(--text-muted);
+  background: var(--surface); padding: 4px 12px; border-radius: var(--radius-sm);
+}
+
+/* ── P2: V2 - 空状态优化 ── */
+.empty-state { text-align: center; padding: 60px 20px; color: var(--text-muted); }
+.empty-state-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.5; }
+.empty-state-title { font-size: 18px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
+.empty-state-description { font-size: 14px; margin-bottom: 20px; line-height: 1.6; }
+
+/* ── P2: E5 - 回到顶部 ── */
+.back-to-top {
+  position: fixed; bottom: 24px; right: 24px;
+  width: 44px; height: 44px; border-radius: 50%;
+  background: var(--primary); color: #fff; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--shadow-md); opacity: 0; pointer-events: none;
+  transition: all 0.3s ease; z-index: 100;
+}
+.back-to-top.visible { opacity: 1; pointer-events: auto; }
+.back-to-top:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
+
+/* ── P3: U4 - 卡片变体 ── */
+.card--surface { background: var(--surface); border: none; }
+.card--compact { padding: 16px; }
+
+/* ── P3: V4 - 骨架屏统一 ── */
+.skeleton-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.skeleton-card { height: 120px; background: var(--surface); border-radius: var(--radius); animation: pulse 1.5s ease-in-out infinite; }
+.skeleton-list { display: flex; flex-direction: column; gap: 12px; }
+.skeleton-item { height: 60px; background: var(--surface); border-radius: var(--radius); animation: pulse 1.5s ease-in-out infinite; }
+
+/* ── P3: V5 - 统计数字语义化 ── */
+.stat-value--success { color: var(--success); }
+.stat-value--warning { color: var(--warning); }
+.stat-value--danger { color: var(--danger); }
+.stat-value--info { color: var(--info); }
+
+/* ── P3: E4 - hint 文字优化 ── */
+.form-hint {
+  font-size: 13px; color: var(--text-muted); margin-top: 4px;
+  display: flex; align-items: flex-start; gap: 6px;
+}
+.form-hint::before { content: "ⓘ"; font-size: 12px; opacity: 0.6; flex-shrink: 0; margin-top: 1px; }
+
+/* ── P3: E1 - 侧边栏折叠 ── */
+.sidebar.collapsed { width: 52px; }
+.sidebar.collapsed .sidebar-label,
+.sidebar.collapsed .nav-item span { display: none; }
+.sidebar.collapsed .nav-item { justify-content: center; padding: 10px; }
+.sidebar.collapsed .nav-item-icon { margin-right: 0; }
+.sidebar-toggle {
+  background: none; border: none; cursor: pointer; color: var(--text-muted);
+  padding: 8px; display: flex; align-items: center; justify-content: center;
+  transition: color 0.15s;
+}
+.sidebar-toggle:hover { color: var(--text); }
 </style>
 </head>
 <body>
@@ -762,21 +870,76 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
   <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="切换深色模式">🌙</button>
 </header>
 <div class="layout">
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
+    <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" title="折叠/展开侧边栏">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="3" y1="12" x2="21" y2="12"></line>
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <line x1="3" y1="18" x2="21" y2="18"></line>
+      </svg>
+    </button>
     <nav class="nav-menu">
-      <button class="nav-item active" data-tab="kb">写作素材库</button>
-      <button class="nav-item" data-tab="wb">世界书</button>
-      <button class="nav-item" data-tab="rag">文档知识库</button>
-      <button class="nav-item" data-tab="memory">动态记忆</button>
-      <button class="nav-item" data-tab="persona">角色卡</button>
-      <button class="nav-item" data-tab="config">配置</button>
+      <div class="sidebar-section">
+        <div class="sidebar-label">内容管理</div>
+        <button class="nav-item active" data-tab="kb">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+          </svg>
+          <span>写作素材库</span>
+        </button>
+        <button class="nav-item" data-tab="wb">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+          </svg>
+          <span>世界书</span>
+        </button>
+        <button class="nav-item" data-tab="persona">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+          <span>角色卡</span>
+        </button>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">知识系统</div>
+        <button class="nav-item" data-tab="rag">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+          </svg>
+          <span>文档知识库</span>
+        </button>
+        <button class="nav-item" data-tab="memory">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+          <span>动态记忆</span>
+        </button>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">系统</div>
+        <button class="nav-item" data-tab="config">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          <span>配置</span>
+        </button>
+      </div>
     </nav>
   </aside>
   <main class="content">
 
   <!-- KB Tab -->
   <div class="tab-content active" id="tab-kb">
-    <h2 style="margin-bottom:12px">写作素材库 <span id="kb-stats-bar" style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:8px"></span></h2>
+    <h2 class="page-title">写作素材库 <span class="page-title-stats" id="kb-stats-bar"></span></h2>
     <div class="page-stats-bar" id="kb-page-stats"><span class="stat-item">加载中...</span></div>
     <!-- 顶部筛选器（原"匹配测试"移到此）-->
     <div class="kb-filter-bar sticky-toolbar">
@@ -798,7 +961,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
   <!-- WB Tab -->
   <div class="tab-content" id="tab-wb">
-    <h2 style="margin-bottom:12px">世界书 <span id="wb-stats-bar" style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:8px"></span></h2>
+    <h2 class="page-title">世界书 <span class="page-title-stats" id="wb-stats-bar"></span></h2>
     <div class="page-stats-bar" id="wb-page-stats"><span class="stat-item">加载中...</span></div>
     <div class="toolbar sticky-toolbar">
       <input type="text" id="wb-filter-input" placeholder="搜索世界书名称或描述..." style="flex:1;max-width:300px" oninput="onWBSearchInput()">
@@ -815,7 +978,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
   <!-- Persona Tab (独立角色卡管理 + V2 兼容) -->
   <div class="tab-content" id="tab-persona">
-    <h2 style="margin-bottom:12px">角色卡 <span id="persona-stats-bar" style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:8px"></span></h2>
+    <h2 class="page-title">角色卡 <span class="page-title-stats" id="persona-stats-bar"></span></h2>
     <div class="page-stats-bar" id="persona-page-stats"><span class="stat-item">加载中...</span></div>
     <div class="toolbar sticky-toolbar">
       <input type="text" id="persona-filter-input" placeholder="搜索角色卡名称..." style="flex:1;max-width:300px" oninput="onPersonaSearchInput()">
@@ -833,7 +996,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
   <!-- RAG Tab -->
   <div class="tab-content" id="tab-rag">
-    <h2 style="margin-bottom:12px">文档知识库 <span id="rag-stats-bar" style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:8px"></span></h2>
+    <h2 class="page-title">文档知识库 <span class="page-title-stats" id="rag-stats-bar"></span></h2>
     <div class="form-row" style="margin-bottom:16px">
       <div class="form-group" style="flex:1.2">
         <div class="card" style="height:100%" id="rag-model-info-card">
@@ -888,7 +1051,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
   <!-- Memory Tab -->
   <div class="tab-content" id="tab-memory">
-    <h2 style="margin-bottom:16px">动态记忆</h2>
+    <h2 class="page-title">动态记忆</h2>
     <div class="memory-subnav">
       <button class="memory-subnav-item active" data-mem-sub="overview">系统总览</button>
       <button class="memory-subnav-item" data-mem-sub="browser">记忆浏览</button>
@@ -1589,7 +1752,7 @@ let _kbExpandedId = null;
 
 function renderKBGrid() {
   const grid = qs('#kb-grid');
-  if (!kbState.entries.length) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1">没有条目</div>'; return; }
+  if (!kbState.entries.length) { grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="empty-state-icon">📭</div><div class="empty-state-title">还没有素材条目</div><div class="empty-state-description">点击上方"新建条目"按钮开始创建</div></div>'; return; }
   grid.innerHTML = kbState.entries.map((e) => {
     const escId = esc(e.entry_id);
     const jsId = jsAttr(e.entry_id);  // B3: onclick 上下文用双重转义
@@ -1610,7 +1773,7 @@ function renderKBGrid() {
         <div class="kb-card-actions">
           ${isOpen ? `<button class="btn btn-sm btn-outline btn-icon" onclick="saveKBInline('${jsId}')">✓</button>` : ''}
           <button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openKBModal('${jsId}')" title="编辑">✎</button>
-          <button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteKBEntry('${jsId}')" title="删除">×</button>
+          <button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteKBEntry('${jsId}')" title="删除">×</button>
         </div>
       </div>
     </div>`;
@@ -1835,9 +1998,9 @@ function updateWBStats(wbs) {
 
 function renderWBList(wbs, currentOpenName) {
   const el = qs('#wb-list');
-  if (!wbs.length) { el.innerHTML = '<div class="empty">没有世界书</div>'; _wbOpenItem = null; return; }
+  if (!wbs.length) { el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📖</div><div class="empty-state-title">还没有世界书</div><div class="empty-state-description">点击上方"新建世界书"按钮开始创建</div></div>'; _wbOpenItem = null; return; }
   el.innerHTML = wbs.map(wb => { wbCache[wb.name] = wb; const ne = wb.entries?.length || 0;
-    return `<div class="wb-item"><div class="wb-header" data-wb-name="${esc(wb.name)}" onclick="toggleWB('${jsAttr(wb.name)}')"><div class="wb-header-left"><span class="arrow">▶</span><span class="wb-name">${esc(wb.name)}</span>${wb.description ? `<span class="wb-desc">${esc(wb.description)}</span>` : ''}</div><div style="display:flex;align-items:center;gap:12px"><span class="wb-meta">${ne} 条</span><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWB('${jsAttr(wb.name)}')">删除</button></div></div><div class="wb-body"><div class="wb-inner"><div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${jsAttr(wb.name)}', null)">+ 新建条目</button><span style="color:var(--text-muted)">点击上方展开</span></div></div></div></div>`;
+    return `<div class="wb-item"><div class="wb-header" data-wb-name="${esc(wb.name)}" onclick="toggleWB('${jsAttr(wb.name)}')"><div class="wb-header-left"><span class="arrow">▶</span><span class="wb-name">${esc(wb.name)}</span>${wb.description ? `<span class="wb-desc">${esc(wb.description)}</span>` : ''}</div><div style="display:flex;align-items:center;gap:12px"><span class="wb-meta">${ne} 条</span><button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWB('${jsAttr(wb.name)}')">删除</button></div></div><div class="wb-body"><div class="wb-inner"><div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${jsAttr(wb.name)}', null)">+ 新建条目</button><span style="color:var(--text-muted)">点击上方展开</span></div></div></div></div>`;
   }).join('');
   _wbOpenItem = null;
   if (currentOpenName && wbs.some(w => w.name === currentOpenName)) {
@@ -1934,7 +2097,7 @@ async function toggleWB(name) {
       (displayEntries.length === 0 ? '<div class="empty">没有条目</div>' : displayEntries.map(e => `
       <div class="wb-entry-card">
         <div class="wb-entry-header"><div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
-          <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${jsAttr(name)}','${jsAttr(e.id||'')}')">✎</button><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWBEntry('${jsAttr(name)}','${jsAttr(e.id||'')}')">×</button></div>
+          <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${jsAttr(name)}','${jsAttr(e.id||'')}')">✎</button><button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWBEntry('${jsAttr(name)}','${jsAttr(e.id||'')}')">×</button></div>
         </div>
         ${(e.keys||[]).length ? `<div class="wb-entry-keys">${e.keys.map(k => `<span class="tag">${esc(k)}</span>`).join('')}</div>` : ''}
         ${e.content ? `<div class="wb-entry-content">${esc(e.content.substring(0,200))}${e.content.length>200?'…':''}</div>` : ''}
@@ -2027,7 +2190,7 @@ async function loadPersonas() {
     state_personas = personas || [];
     updatePersonaStats();
     if (!state_personas.length) {
-      container.innerHTML = '<div class="empty">暂无角色卡<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="openPersonaModal(null)">+ 新建角色卡</button></div>';
+      container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">👤</div><div class="empty-state-title">还没有角色卡</div><div class="empty-state-description">点击上方"新建角色卡"按钮开始创建</div><button class="btn btn-primary" onclick="openPersonaModal(null)">+ 新建角色卡</button></div>';
       return;
     }
     _personaShowCount = 20;  // 重置分页
@@ -2072,7 +2235,7 @@ function renderPersonaPage() {
   const container = qs('#persona-list');
   const filtered = getFilteredPersonas();
   if (!filtered.length) {
-    container.innerHTML = `<div class="empty">${_personaSearchQuery ? '未找到匹配的角色卡' : '暂无角色卡'}<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="openPersonaModal(null)">+ 新建角色卡</button></div>`;
+    container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🔍</div><div class="empty-state-title">未找到匹配的角色卡</div><div class="empty-state-description">尝试调整搜索关键词</div></div>`;
     return;
   }
   const visible = filtered.slice(0, _personaShowCount);
@@ -2110,7 +2273,7 @@ function renderPersonaPage() {
         <div class="persona-card-actions">
           <button class="btn btn-sm btn-outline" onclick="openPersonaModal(window.__quillPids[${index}])">编辑</button>
           <button class="btn btn-sm btn-outline" onclick="exportPersona(window.__quillPids[${index}])">导出</button>
-          <button class="btn btn-sm btn-danger" onclick="deletePersona(window.__quillPids[${index}])">删除</button>
+          <button class="btn btn-sm btn-danger-outline" onclick="deletePersona(window.__quillPids[${index}])">删除</button>
         </div>
       </div>`;
     }).join('') + '</div>';
@@ -3052,6 +3215,82 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
 
 <!-- 预置的全局 Toast 提示容器 -->
 <div class="toast-container" id="toast-container"></div>
+
+<!-- P2: E5 - 回到顶部按钮 -->
+<button class="back-to-top" id="back-to-top" onclick="document.querySelector('.content').scrollTo({top:0,behavior:'smooth'})">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <polyline points="18 15 12 9 6 15"></polyline>
+  </svg>
+</button>
+
+<script>
+// P2: E5 - 回到顶部按钮可见性
+(function() {
+  const content = document.querySelector('.content');
+  const btn = document.getElementById('back-to-top');
+  if (content && btn) {
+    content.addEventListener('scroll', function() {
+      btn.classList.toggle('visible', content.scrollTop > 300);
+    });
+  }
+})();
+
+// P3: E1 - 侧边栏折叠
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar) {
+    sidebar.classList.toggle('collapsed');
+    localStorage.setItem('quill-sidebar-collapsed', sidebar.classList.contains('collapsed'));
+  }
+}
+// 恢复侧边栏状态
+(function() {
+  const collapsed = localStorage.getItem('quill-sidebar-collapsed');
+  if (collapsed === 'true') {
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.classList.add('collapsed');
+  }
+})();
+
+// P3: E2 - 键盘快捷键
+document.addEventListener('keydown', function(e) {
+  // Esc: 关闭 Modal
+  if (e.key === 'Escape') {
+    const openModal = document.querySelector('.modal-overlay.open');
+    if (openModal) {
+      openModal.classList.remove('open');
+      return;
+    }
+  }
+  // Ctrl+S: 保存配置
+  if (e.ctrlKey && e.key === 's') {
+    e.preventDefault();
+    const saveBtn = document.getElementById('btn-save-config');
+    if (saveBtn && !saveBtn.disabled) saveBtn.click();
+  }
+  // /: 聚焦搜索框
+  if (e.key === '/' && !e.ctrlKey && !e.metaKey) {
+    const activeTab = document.querySelector('.tab-content.active');
+    if (activeTab) {
+      const searchInput = activeTab.querySelector('input[type="text"]');
+      if (searchInput && document.activeElement !== searchInput) {
+        e.preventDefault();
+        searchInput.focus();
+      }
+    }
+  }
+  // Alt+1-6: 切换 Tab
+  if (e.altKey && !e.ctrlKey && !e.metaKey) {
+    const tabMap = {'1':'kb','2':'wb','3':'persona','4':'rag','5':'memory','6':'config'};
+    const tabId = tabMap[e.key];
+    if (tabId) {
+      e.preventDefault();
+      const btn = document.querySelector('.nav-item[data-tab="' + tabId + '"]');
+      if (btn) btn.click();
+    }
+  }
+});
+</script>
 </body>
 </html>
 
