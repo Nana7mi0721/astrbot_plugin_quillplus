@@ -765,8 +765,15 @@ class QuillPlugin(Star):
         if keyword_hits < 2:
             return None
 
-        # 复用 RAG summarizer 的 provider（轻量级 LLM）
-        if not self.rag_summarizer or not hasattr(self.rag_summarizer, 'provider'):
+        # 复用 RAG summarizer 的 provider_id 和 context 获取 provider
+        provider_id = getattr(self.rag_summarizer, 'provider_id', '') if self.rag_summarizer else ''
+        if not provider_id or not self.context:
+            return None
+        try:
+            provider = self.context.get_provider_by_id(provider_id)
+        except Exception:
+            provider = None
+        if not provider:
             return None
 
         fields_json = json.dumps(self.love_fields, ensure_ascii=False)
@@ -782,7 +789,7 @@ class QuillPlugin(Star):
 
         try:
             resp = await asyncio.wait_for(
-                self.rag_summarizer.provider.text_chat(
+                provider.text_chat(
                     prompt=prompt, session_id=None, contexts=[],
                     image_urls=[], system_prompt="你是 JSON 提取助手，仅输出 JSON。"
                 ),
