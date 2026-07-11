@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Quill Web API routes — AstrBot v4.26+ register_web_api 模式。
 
 所有 handler 使用 astrbot.api.web 的请求/响应抽象，

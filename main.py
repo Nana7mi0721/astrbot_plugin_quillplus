@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """QuillPlugin — 羽笔 v5.0 多维沉浸式 RP 增强插件
 
 五合一沉浸式 RP 注入系统：世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆。

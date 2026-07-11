@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """QuillPersonaManager — 独立的角色卡管理系统。
 
 完全脱离 AstrBot 原生的 data_v4.db 和 context.persona_manager，

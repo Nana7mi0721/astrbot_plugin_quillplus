@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """QuillConfig — 从 AstrBot 注入的 config dict 读取配置，提供属性访问 + 校验。
 
 AstrBot 启动时扫描 _conf_schema.json，实例化 AstrBotConfig(dict) 注入 __init__。

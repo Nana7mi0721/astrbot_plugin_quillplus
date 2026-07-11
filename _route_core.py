@@ -1,3 +1,5 @@
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Shared route handler logic for Quill management API.
 
 Used by web_routes.py (AstrBot mode).

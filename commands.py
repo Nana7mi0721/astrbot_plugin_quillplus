@@ -1,3 +1,5 @@
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Business helpers for QuillPlugin commands.
 
 命令入口（@filter.command 装饰的函数）必须定义在 Star 子类所在的模块
