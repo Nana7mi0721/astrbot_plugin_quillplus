@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -103,28 +102,6 @@ class QuillRetriever:
             )
         except Exception as e:
             logger.warning(f"[Quill ChatLog] 对话记录失败: {e}")
-
-    async def store_memory(self, session_id: str, user_input: str, ai_response: str):
-        """存储一条对话记忆（在线程池中执行数据库写入）。"""
-        if not self.memory_store or not self.enable_memory or not session_id:
-            return
-        try:
-            summary = ""
-            if self.summarizer:
-                summary = await self.summarizer.summarize(user_input, ai_response)
-            if not summary:
-                summary = (user_input + " " + ai_response)[:50]
-
-            vector = await self.embedding.embed([summary])
-            if vector:
-                chat_summary = (user_input + " " + ai_response)[:100]
-                # 将同步数据库写入放入线程池
-                await asyncio.to_thread(
-                    self.memory_store.add, session_id, summary, vector[0], chat_summary
-                )
-                logger.info(f"[Quill Memory] 记忆已存储: session={session_id} summary={summary[:30]}...")
-        except Exception as e:
-            logger.warning(f"[Quill Memory] 记忆存储失败: {e}")
 
     async def store_memory_direct(self, session_id: str, content: str):
         """直接存储一条用户提供的记忆内容（无需 user_input/ai_response 配对）。

@@ -8,14 +8,11 @@ Each handler returns {"status": "ok", "data": ...} or {"status": "error", "messa
 """
 
 import asyncio
-import json
 import logging
 import os
 import tempfile
 import uuid
-from typing import Any, Optional
-
-from .worldbook import _validate_name
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -333,8 +330,6 @@ async def handle_wb_import_st(wb_manager, name=None, upload_data=None):
     return ok({"name": name}, message="ST worldbook imported")
 
 
-
-
 # ── Info handler ─────────────────────────────────────────────────
 
 async def handle_info(kb_manager, wb_manager, persona_count=0,
@@ -355,12 +350,12 @@ async def handle_info(kb_manager, wb_manager, persona_count=0,
         try:
             available_wb = await asyncio.to_thread(wb_manager.get_available_worldbooks)
         except Exception:
-            pass
+            logger.debug("[Quill] 获取可用世界书列表失败", exc_info=True)
         if show_trigger_log and hasattr(wb_manager, 'get_trigger_log'):
             try:
                 trigger_log = await asyncio.to_thread(wb_manager.get_trigger_log)
             except Exception:
-                pass
+                logger.debug("[Quill] 获取触发日志失败", exc_info=True)
     # P1-4: 健康度数据
     health = health_tracker.stats() if health_tracker else None
     return ok({

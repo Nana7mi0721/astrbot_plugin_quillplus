@@ -166,7 +166,7 @@ def strip_markdown(text: str) -> str:
     "astrbot_plugin_quillplus",
     "Nana7mi0721 & Gemini & GLM & DeepSeek",
     "羽笔 v5.0 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 增强插件",
-    "5.0.2",
+    "5.0.3",
     "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(Star):
@@ -1162,7 +1162,7 @@ class QuillPlugin(Star):
                             f"kw={e.get('keywords',[])})"
                         )
                 except Exception:
-                    pass
+                    logger.debug("[Quill] 调试 KB 匹配失败", exc_info=True)
 
             emergency = await self.state_manager.should_inject_emergency(target_id)
 
@@ -1358,6 +1358,7 @@ class QuillPlugin(Star):
                         try:
                             msgs = json.loads(msgs)
                         except Exception:
+                            logger.debug("[Quill] tool messages JSON 解析失败，原样作为文本处理", exc_info=True)
                             msgs = []
                     if isinstance(msgs, list):
                         for m in msgs:

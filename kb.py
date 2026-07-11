@@ -44,10 +44,6 @@ class KnowledgeBaseManager:
         assert self._conn is not None, "Database not initialized. Call initialize() or use async with."
         return self._conn
 
-    @conn.setter
-    def conn(self, value: Optional[aiosqlite.Connection]):
-        self._conn = value
-
     async def _connect(self):
         db_dir = os.path.dirname(self.db_path)
         if db_dir and not os.path.exists(db_dir):
@@ -265,13 +261,6 @@ class KnowledgeBaseManager:
     async def get_entry(self, entry_id: str) -> Optional[Dict]:
         async with self.conn.execute(
             "SELECT * FROM knowledge_base WHERE entry_id = ?", (entry_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return self._row_to_dict(row) if row else None
-
-    async def get_entry_by_id(self, row_id: int) -> Optional[Dict]:
-        async with self.conn.execute(
-            "SELECT * FROM knowledge_base WHERE id = ?", (row_id,)
         ) as cursor:
             row = await cursor.fetchone()
             return self._row_to_dict(row) if row else None

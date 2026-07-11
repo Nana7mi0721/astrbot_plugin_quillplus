@@ -22,7 +22,7 @@ body:
     attributes:
       label: 插件版本
       description: 可在 README 徽章或 metadata.yaml 中查看
-      placeholder: "例如: 5.0.2"
+      placeholder: "例如: 5.0.3"
     validations:
       required: true
 

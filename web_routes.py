@@ -136,9 +136,6 @@ class QuillRoutes:
         """一次性注册全部 Web API 路由（包含前端 panel 调用的全部端点）。"""
         _r = self.context.register_web_api
 
-        # Panel HTML 页面
-        _r(f"/{PLUGIN_NAME}/panel", self.serve_panel, ["GET"], "Quill 插件面板")
-
         # ── KB 写作素材库 (11 个) ──
         _r(f"/{PLUGIN_NAME}/kb/list",         self.kb_list,        ["GET"],    "列出写作素材库条目")
         _r(f"/{PLUGIN_NAME}/kb/get",          self.kb_get,         ["POST"],   "获取单个写作素材库条目")
@@ -271,20 +268,6 @@ class QuillRoutes:
         raw = self.config.get_raw()
         safe = dict(raw) if isinstance(raw, dict) else raw
         return json_response(safe)
-
-    @_api_handler
-    async def serve_panel(self):
-        """提供旧版 web_panel 静态 HTML (向后兼容)。
-
-        新面板请直接使用 pages/panel/index.html (Plugin Pages 系统)。
-        """
-        html_path = os.path.join(
-            os.path.dirname(__file__), "web_panel", "static", "index.html"
-        )
-        if not os.path.isfile(html_path):
-            return error_response("Frontend not built", status_code=501)
-        with open(html_path, "r", encoding="utf-8") as f:
-            return f.read()
 
     @_api_handler
     async def panel_theme_get(self):
@@ -750,8 +733,6 @@ class QuillRoutes:
         if not file_data:
             return error_response("No file data provided", status_code=400)
         # 写入临时文件供 import_from_st 解析
-        import tempfile, os
-        from pathlib import Path
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
@@ -776,10 +757,7 @@ class QuillRoutes:
     async def wb_reload(self):
         """重新从磁盘加载所有世界书后返回列表（供面板刷新按钮用）。"""
         try:
-            if hasattr(self.wb_manager, "reload_all"):
-                await asyncio.to_thread(self.wb_manager.reload_all)
-            else:
-                await asyncio.to_thread(self.wb_manager._load_all)
+            await asyncio.to_thread(self.wb_manager.reload_all)
         except Exception:
             pass  # 即使 reload 失败也返回当前列表
         return json_response(await handle_wb_list(self.wb_manager))
@@ -1033,14 +1011,12 @@ class QuillRoutes:
 
             # 返回文件下载
             if avatar_data:
-                from astrbot.api.web import file_response
                 return file_response(
                     export_data,
                     filename=f"{persona['name']}_v2.png",
                     content_type="image/png"
                 )
             else:
-                from astrbot.api.web import file_response
                 return file_response(
                     export_data,
                     filename=f"{persona['name']}_v2.json",
