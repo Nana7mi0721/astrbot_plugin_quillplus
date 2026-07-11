@@ -104,7 +104,7 @@ def strip_markdown(text: str) -> str:
     "astrbot_plugin_quillplus",
     "Nana7mi0721 & Gemini & GLM & DeepSeek",
     "羽笔 v5.0 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 增强插件",
-    "5.0.1",
+    "5.0.2",
     "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(Star):
@@ -605,6 +605,11 @@ class QuillPlugin(Star):
                 updates = lenient_updates
                 handled = True
                 logger.info("[Quill] 状态栏已处理 (lenient fallback)")
+
+        # P1-1: 所有降级解析均失败时，记录原始文本片段便于调试（不暴露给用户）
+        if not handled and self.status_bar_enabled:
+            preview = (text or "")[:200].replace("\n", "\\n")
+            logger.debug(f"[Quill] 状态栏解析失败，兜底注入将触发 | target={target_id} | preview={preview!r}")
 
         return new_text, updates, handled
 

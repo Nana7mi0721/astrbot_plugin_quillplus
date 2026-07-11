@@ -1,7 +1,7 @@
 name: astrbot_plugin_quillplus
 display_name: "羽笔"
 author: "Nana7mi0721 & Gemini & GLM & DeepSeek"
-version: "5.0.1"
+version: "5.0.2"
 desc: "世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 核心引擎 | 平行宇宙双轴隔离 | JSON 原子化状态机 | 无损断点续传"
 repo: "https://github.com/Nana7mi0721/astrbot_plugin_quillplus"
 astrbot_version: ">=4.26.0"
