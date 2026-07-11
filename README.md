@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.0.1-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.0.2-green.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)]()
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -275,6 +275,14 @@ A: 切换提供商会导致向量维度变化，插件会自动检测并重建 F
 ---
 
 ## Changelog
+
+### v5.0.2 — P1 体验打磨
+
+针对 longcat2.0 评估报告中的 P1 级问题进行打磨优化：
+
+- **P1-1 状态栏 fallback 调试增强**：所有降级解析均失败时记录原始文本前 200 字到 debug 日志，便于排查 LLM 非标准格式输出
+- **P1-2 导入错误详情展示**：新增 `showErrorDetail` 函数，长错误信息（>80 字符）用 modal 显示完整内容，短错误降级为 toast
+- **P1-3 长文本 modal 可读性**：角色卡编辑 textarea 行数增大（人格 5→8、场景/范例 4→6、开场白 3→4），line-height 1.6，readonly textarea 使用等宽字体
 
 ### v5.0.1 — UX 优化与安全加固
 

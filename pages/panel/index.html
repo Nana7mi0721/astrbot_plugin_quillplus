@@ -276,7 +276,8 @@ pre { background: var(--surface); border: 1px solid var(--border); border-radius
 .modal-header h2 { font-size: 17px; font-weight: 600; }
 .modal-close { background: none; border: none; font-size: 22px; cursor: pointer; color: var(--text-muted); padding: 4px; line-height: 1; }
 .modal-body { flex: 1; overflow-y: auto; padding: 24px; }
-.modal-body textarea { min-height: 300px; resize: vertical; }
+.modal-body textarea { min-height: 300px; resize: vertical; line-height: 1.6; font-size: 14px; }
+.modal-body textarea[readonly] { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 13px; background: var(--surface); min-height: auto; }
 .modal-footer { padding: 16px 24px; border-top: 1px solid var(--border); display: flex; gap: 10px; justify-content: flex-end; }
 
 /* ── Select 美化：干掉原生箭头 + 自定义 SVG ── */
@@ -979,6 +980,25 @@ function showToast(msg, type = 'error') {
   const all = container.querySelectorAll('.toast');
   if (all.length > 5) all[0].remove();
   setTimeout(() => el.remove(), 3500);
+}
+
+// P1-2: 错误详情展示 — 长错误信息用 modal 显示，短错误降级为 toast
+function showErrorDetail(title, msg) {
+  if (!msg) { showToast(title, 'error'); return; }
+  const shortMsg = msg.length <= 80;
+  if (shortMsg) { showToast(`${title}: ${msg}`, 'error'); return; }
+  // 长错误信息用 modal 显示完整内容
+  qs('#dialogTitle').textContent = '⚠️ ' + title;
+  qs('#dialogBody').innerHTML = `
+    <div style="background:var(--danger-light);border:1px solid var(--danger);border-radius:6px;padding:12px 16px;">
+      <pre style="margin:0;white-space:pre-wrap;word-wrap:break-word;font-size:13px;line-height:1.6;color:var(--text);max-height:50vh;overflow-y:auto;">${esc(msg)}</pre>
+    </div>
+  `;
+  const btn = qs('#dialogConfirmBtn');
+  btn.className = 'btn btn-primary';
+  btn.textContent = '知道了';
+  btn.onclick = closeDialog;
+  qs('#dialogOverlay').classList.add('open');
 }
 
 // ── API ──
@@ -1809,10 +1829,10 @@ async function openPersonaModal(personaId) {
       <div class="form-group"><label>简介</label><textarea id="pf-summary" rows="3" placeholder="简短介绍，显示在卡片上">${esc(data.summary||'')}</textarea></div>
     </div>
     <div class="persona-form-tab-content" id="ptab-core">
-      <div class="form-group"><label>人格/外貌设定</label><textarea id="pf-personality" rows="5" placeholder="角色的性格、外貌、语气等核心设定">${esc(data.core_prompts?.personality||'')}</textarea></div>
-      <div class="form-group"><label>世界观/场景</label><textarea id="pf-scenario" rows="4" placeholder="当前场景、世界背景">${esc(data.core_prompts?.scenario||'')}</textarea></div>
-      <div class="form-group"><label>对话范例</label><textarea id="pf-examples" rows="4" placeholder="几组对话示例，帮助 AI 掌握角色语气">${esc(data.core_prompts?.examples_of_dialogue||'')}</textarea></div>
-      <div class="form-group"><label>开场白 (first_message)</label><textarea id="pf-first" rows="3" placeholder="切换角色后自动注入到对话历史的第一条">${esc(data.core_prompts?.first_message||'')}</textarea></div>
+      <div class="form-group"><label>人格/外貌设定</label><textarea id="pf-personality" rows="8" placeholder="角色的性格、外貌、语气等核心设定">${esc(data.core_prompts?.personality||'')}</textarea></div>
+      <div class="form-group"><label>世界观/场景</label><textarea id="pf-scenario" rows="6" placeholder="当前场景、世界背景">${esc(data.core_prompts?.scenario||'')}</textarea></div>
+      <div class="form-group"><label>对话范例</label><textarea id="pf-examples" rows="6" placeholder="几组对话示例，帮助 AI 掌握角色语气">${esc(data.core_prompts?.examples_of_dialogue||'')}</textarea></div>
+      <div class="form-group"><label>开场白 (first_message)</label><textarea id="pf-first" rows="4" placeholder="切换角色后自动注入到对话历史的第一条">${esc(data.core_prompts?.first_message||'')}</textarea></div>
     </div>
     <div class="persona-form-tab-content" id="ptab-ext">
       <div class="form-group">
@@ -1999,7 +2019,7 @@ async function importPersona(input) {
         showToast(`角色卡 "${result.name}" 导入成功`, 'success');
         loadPersonas();
       } catch (err) {
-        showToast('导入失败: ' + err.message);
+        showErrorDetail('角色卡导入失败', err.message);
         loadPersonas();
       }
     };
@@ -2075,7 +2095,7 @@ async function importFromText() {
     showToast(`角色卡 "${result.name}" 导入成功`, 'success');
     loadPersonas();
   } catch (e) {
-    showToast('导入失败: ' + e.message);
+    showErrorDetail('文本导入失败', e.message);
   } finally {
     btn.textContent = origText;
     btn.disabled = false;
@@ -2285,8 +2305,8 @@ async function showMemoryDetail(id) {
     qs('#modalTitle').textContent = '记忆详情 #' + m.id;
     qs('#modalBody').innerHTML = `
       <div class="form-group"><label>会话 (Session)</label><input readonly value="${esc(formatSessionId(m.session_id))}" title="${esc(m.session_id||'')}"></div>
-      <div class="form-group"><label>摘要 (Summary)</label><textarea readonly rows="3" style="min-height:auto">${esc(m.summary||'')}</textarea></div>
-      <div class="form-group"><label>完整内容 (chat_summary)</label><textarea readonly rows="6" style="min-height:auto">${esc(m.chat_summary||'(无)')}</textarea></div>
+      <div class="form-group"><label>摘要 (Summary)</label><textarea readonly rows="4">${esc(m.summary||'')}</textarea></div>
+      <div class="form-group"><label>完整内容 (chat_summary)</label><textarea readonly rows="10">${esc(m.chat_summary||'(无)')}</textarea></div>
       <div class="form-group"><label>创建时间</label><input readonly value="${timeStr}"></div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;">
         <div class="form-group" style="flex:1;min-width:100px"><label>强度</label><input readonly value="${m.strength||10}"></div>
