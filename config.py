@@ -151,6 +151,8 @@ class QuillConfig:
         # 确保至少 6 个字段（不足补空字符串）
         while len(self.status_bar_fields) < 6:
             self.status_bar_fields.append("")
+        # 方案C: LLM 智能提取开关（默认关闭，高成本兜底）
+        self.status_bar_llm_extract: bool = bool(sb.get("llm_extract", False))
 
         # ── refusal ──
         ref = _get_nested(self._raw, "refusal", {}) or {}

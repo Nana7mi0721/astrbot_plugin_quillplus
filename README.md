@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.0.3-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.0.2-green.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)]()
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -276,20 +276,22 @@ A: 切换提供商会导致向量维度变化，插件会自动检测并重建 F
 
 ## Changelog
 
-### v5.0.3 — P1 感知与性能优化
+### v5.0.2 — P1 体验打磨 + 状态栏智能纠正
 
-扩展 P1 级优化，新增系统健康度感知与角色卡网格性能改进：
+针对 longcat2.0 评估报告中的 P1 级问题进行打磨优化，并新增状态栏智能纠正管线：
 
-- **P1-4 RAG 异常感知面板**：配置页新增「系统健康度」卡片，滑动窗口记录最近 20 次 RAG 检索成功率与状态栏解析成功率，三色阈值（绿≥80% / 橙≥50% / 红<50%）
-- **P1-5 角色卡网格懒加载**：`<img loading="lazy">` 延迟加载屏幕外头像，IntersectionObserver 无限滚动替代手动"加载更多"按钮
+**P1 体验打磨：**
+- **P1-1 状态栏 fallback 调试增强**：所有降级解析均失败时记录原始文本前 200 字到 debug 日志
+- **P1-2 导入错误详情展示**：新增 `showErrorDetail` 函数，长错误信息用 modal 显示完整内容
+- **P1-3 长文本 modal 可读性**：角色卡编辑 textarea 行数增大，line-height 1.6，readonly 用等宽字体
+- **P1-4 RAG 异常感知面板**：配置页新增「系统健康度」卡片，滑动窗口记录最近 20 次 RAG 检索/状态栏解析成功率，三色阈值显示
+- **P1-5 角色卡网格懒加载**：`<img loading="lazy">` + IntersectionObserver 无限滚动
 
-### v5.0.2 — P1 体验打磨
-
-针对 longcat2.0 评估报告中的 P1 级问题进行打磨优化：
-
-- **P1-1 状态栏 fallback 调试增强**：所有降级解析均失败时记录原始文本前 200 字到 debug 日志，便于排查 LLM 非标准格式输出
-- **P1-2 导入错误详情展示**：新增 `showErrorDetail` 函数，长错误信息（>80 字符）用 modal 显示完整内容，短错误降级为 toast
-- **P1-3 长文本 modal 可读性**：角色卡编辑 textarea 行数增大（人格 5→8、场景/范例 4→6、开场白 3→4），line-height 1.6，readonly textarea 使用等宽字体
+**状态栏智能纠正（A+B+C+D 方案）：**
+- **方案A 动态字段白名单**：L4 正则改为动态构建，支持用户自定义字段名；分隔符扩展 `[：:=→]` 覆盖非标准格式
+- **方案B 部分提取+历史值融合**：L5 阈值从 ≥2 降为 ≥1，即使只匹配到 1 个字段也保留 LLM 值，其余用历史值补全
+- **方案C LLM 智能提取（实验性）**：L1-L5 全失败时调用轻量 LLM 做结构化提取，3s 超时保护，配置开关控制（默认关闭）
+- **方案D Prompt 增强**：状态栏协议加入格式强制强调 + 负例展示 + 正确示例，从源头减少格式错误
 
 ### v5.0.1 — UX 优化与安全加固
 
