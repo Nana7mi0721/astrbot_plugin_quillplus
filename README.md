@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
 [![Version](https://img.shields.io/badge/version-5.0.2-green.svg)]()
-[![License](https://img.shields.io/badge/license-MIT-orange.svg)]()
+[![License](https://img.shields.io/badge/license-MIT-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
 ---

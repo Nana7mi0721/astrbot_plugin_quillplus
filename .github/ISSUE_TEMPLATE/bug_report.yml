@@ -1,0 +1,106 @@
+name: 🐛 Bug 报告
+description: 提交一个 Bug 报告帮助我们改进
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你花时间提交 Bug 报告！请尽量填写完整以下信息，这能极大提升排查效率。
+
+  - type: input
+    id: astrbot-version
+    attributes:
+      label: AstrBot 版本
+      description: 可在 AstrBot 启动日志或 /version 命令中查看
+      placeholder: "例如: 4.26.0"
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本
+      description: 可在 README 徽章或 metadata.yaml 中查看
+      placeholder: "例如: 5.0.2"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python 版本
+      placeholder: "例如: 3.10.11"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: 涉及模块
+      description: 选择出问题的模块（可多选）
+      multiple: true
+      options:
+        - 世界书 (WorldBook)
+        - 写作素材库 (KB)
+        - 角色卡 (Persona)
+        - 文档知识库 (RAG)
+        - 动态记忆 (Memory)
+        - 状态栏 (Status Bar)
+        - Web 管理面板
+        - 配置 (Config)
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 简要说明遇到了什么问题，预期行为与实际行为分别是什么
+      placeholder: "例如: 在群聊使用 /quill switch 切换角色卡后，状态栏字段没有更新..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 详细描述如何触发这个 Bug
+      placeholder: |
+        1. 进入群聊 XXX
+        2. 发送 /quill switch 角色名
+        3. 发送一条消息触发回复
+        4. 观察到状态栏字段...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 错误日志
+      description: 请粘贴 AstrBot 控制台中与此问题相关的日志（可用 /quill debug 开启调试日志获取更详细信息）。注意隐去敏感信息如 API Key。
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置
+      description: 如果与配置有关，请粘贴相关配置片段（注意隐去 admin_users 等敏感信息）
+      render: yaml
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: 确认事项
+      options:
+        - label: 我已查看 README 中的 FAQ 和已知问题
+          required: true
+        - label: 我已搜索现有 Issues，确认这不是重复提交
+          required: true
+        - label: 我已隐去日志和配置中的敏感信息（API Key、账号 ID 等）
+          required: true
