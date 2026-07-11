@@ -319,6 +319,7 @@ select option {
 
 /* ── Persona 角色卡 (独立 CRUD) ── */
 .persona-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 14px; }
+.persona-list-view { display: flex; flex-direction: column; gap: 8px; }
 .persona-card { display: flex; align-items: center; gap: 14px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; transition: box-shadow var(--transition), border-color var(--transition); }
 .persona-card:hover { box-shadow: var(--shadow-md); border-color: var(--primary-light); }
 .persona-card-left { flex-shrink: 0; }
@@ -587,6 +588,170 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
   background: var(--surface) !important;
   border-color: transparent !important;
 }
+
+/* 11. 配置页锚点导航与分区标题 */
+.config-nav {
+  position: sticky;
+  top: -24px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin: 0 0 20px 0;
+  display: flex;
+  gap: 6px;
+  z-index: 15;
+  box-shadow: var(--shadow-sm);
+  overflow-x: auto;
+}
+.config-nav a {
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background .15s, color .15s;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.config-nav a:hover { background: var(--primary-light); color: var(--primary); }
+.config-nav a.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+.config-section { margin-bottom: 28px; scroll-margin-top: 16px; }
+.config-section-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 14px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid var(--primary-light);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.config-section-title .num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.config-section-title .hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
+/* 健康度紧凑横条 */
+.health-compact {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.health-compact .health-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.health-compact .health-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.health-compact .health-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--primary);
+  line-height: 1.2;
+}
+.health-compact .health-detail {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.health-compact .health-divider {
+  width: 1px;
+  height: 36px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .config-nav { top: 0; }
+}
+
+/* 12. 页面统计条 + sticky 工具栏 */
+.page-stats-bar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.page-stats-bar .stat-item { display: flex; align-items: center; gap: 4px; }
+.page-stats-bar .stat-value { font-weight: 600; color: var(--text); }
+.page-stats-bar .stat-divider { width: 1px; height: 14px; background: var(--border); }
+
+.sticky-toolbar {
+  position: sticky;
+  top: -24px;
+  z-index: 10;
+  background: var(--bg);
+  padding: 6px 0;
+  margin-bottom: 14px;
+}
+
+/* 视图切换按钮组 */
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--card);
+}
+.view-toggle button {
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.view-toggle button:hover { background: var(--surface); }
+.view-toggle button.active { background: var(--primary); color: #fff; }
+
+/* RAG 统计卡片紧凑 */
+.rag-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.rag-stat-item {
+  text-align: center;
+  padding: 10px 6px;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+}
+.rag-stat-value { font-size: 22px; font-weight: 700; color: var(--primary); }
+.rag-stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+@media (max-width: 600px) {
+  .rag-stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
 </style>
 </head>
 <body>
@@ -611,9 +776,10 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
   <!-- KB Tab -->
   <div class="tab-content active" id="tab-kb">
-    <h2 style="margin-bottom:16px">写作素材库</h2>
+    <h2 style="margin-bottom:12px">写作素材库 <span id="kb-stats-bar" style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:8px"></span></h2>
+    <div class="page-stats-bar" id="kb-page-stats"><span class="stat-item">加载中...</span></div>
     <!-- 顶部筛选器（原"匹配测试"移到此）-->
-    <div class="kb-filter-bar">
+    <div class="kb-filter-bar sticky-toolbar">
       <input type="text" id="kb-filter-input" placeholder="全局检索：输入关键词、分类、内容..." style="flex:1;max-width:400px" oninput="onKBSearchInput()">
       <select id="kb-cat-filter" onchange="loadKB()" style="width:auto"><option value="">全部分类</option></select>
       <label style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:0 12px;border:1px solid var(--border);border-radius:var(--radius-sm);height:36px;cursor:pointer;margin:0;">
@@ -632,8 +798,10 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
   <!-- WB Tab -->
   <div class="tab-content" id="tab-wb">
-    <h2 style="margin-bottom:16px">世界书</h2>
-    <div class="toolbar">
+    <h2 style="margin-bottom:12px">世界书 <span id="wb-stats-bar" style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:8px"></span></h2>
+    <div class="page-stats-bar" id="wb-page-stats"><span class="stat-item">加载中...</span></div>
+    <div class="toolbar sticky-toolbar">
+      <input type="text" id="wb-filter-input" placeholder="搜索世界书名称或描述..." style="flex:1;max-width:300px" oninput="onWBSearchInput()">
       <button class="btn btn-primary" onclick="openWBCreateModal()">+ 新建世界书</button>
       <label style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:0 12px;border:1px solid var(--border);border-radius:var(--radius-sm);height:36px;cursor:pointer;margin:0;">
         <div class="toggle" style="transform:scale(0.8);margin:0;"><input type="checkbox" id="wb-constant-filter" onchange="toggleWBConstantFilter()"><span class="toggle-slider"></span></div>
@@ -647,8 +815,14 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
   <!-- Persona Tab (独立角色卡管理 + V2 兼容) -->
   <div class="tab-content" id="tab-persona">
-    <h2 style="margin-bottom:16px">角色卡</h2>
-    <div class="toolbar">
+    <h2 style="margin-bottom:12px">角色卡 <span id="persona-stats-bar" style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:8px"></span></h2>
+    <div class="page-stats-bar" id="persona-page-stats"><span class="stat-item">加载中...</span></div>
+    <div class="toolbar sticky-toolbar">
+      <input type="text" id="persona-filter-input" placeholder="搜索角色卡名称..." style="flex:1;max-width:300px" oninput="onPersonaSearchInput()">
+      <div class="view-toggle">
+        <button id="persona-view-grid" class="active" onclick="switchPersonaView('grid')">网格</button>
+        <button id="persona-view-list" onclick="switchPersonaView('list')">列表</button>
+      </div>
       <button class="btn btn-primary" onclick="openPersonaModal(null)">+ 新建角色卡</button>
       <button class="btn btn-outline" onclick="loadPersonas()">⟳ 刷新</button>
       <label class="btn btn-outline" style="cursor:pointer">导入 V2 角色卡<input type="file" accept=".png,.jpg,.jpeg,.webp,.json" hidden onchange="importPersona(this)"></label>
@@ -659,28 +833,40 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
   <!-- RAG Tab -->
   <div class="tab-content" id="tab-rag">
-    <h2 style="margin-bottom:16px">文档知识库</h2>
-    <div class="card" id="rag-model-info-card" style="margin-bottom:16px">
-      <h3>RAG 模型配置</h3>
-      <div class="mem-provider-info" id="rag-model-info"><span class="skeleton" style="width:200px">&nbsp;</span></div>
+    <h2 style="margin-bottom:12px">文档知识库 <span id="rag-stats-bar" style="font-size:13px;font-weight:400;color:var(--text-muted);margin-left:8px"></span></h2>
+    <div class="form-row" style="margin-bottom:16px">
+      <div class="form-group" style="flex:1.2">
+        <div class="card" style="height:100%" id="rag-model-info-card">
+          <h3>模型配置</h3>
+          <div class="mem-provider-info" id="rag-model-info"><span class="skeleton" style="width:200px">&nbsp;</span></div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:10px;padding-top:10px;border-top:1px solid var(--border-light)">分块策略等配置请前往【配置】页</div>
+        </div>
+      </div>
+      <div class="form-group" style="flex:1">
+        <div class="card" style="height:100%">
+          <h3>文档统计</h3>
+          <div class="rag-stats-grid" id="rag-stats-grid">
+            <div class="rag-stat-item"><div class="rag-stat-value" id="rag-stat-docs">—</div><div class="rag-stat-label">文档数</div></div>
+            <div class="rag-stat-item"><div class="rag-stat-value" id="rag-stat-chunks">—</div><div class="rag-stat-label">总分块</div></div>
+            <div class="rag-stat-item"><div class="rag-stat-value" id="rag-stat-vectors">—</div><div class="rag-stat-label">向量数</div></div>
+          </div>
+        </div>
+      </div>
     </div>
-    <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">
-      分块策略与模型等配置，请前往侧边栏的【全局设置】。
-    </p>
     <div class="card">
-      <h3>上传文档</h3>
-      <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">支持 .txt / .md / .pdf 格式。</p>
-      <div id="rag-upload-zone" style="border:2px dashed var(--border);border-radius:var(--radius);padding:32px;text-align:center;cursor:pointer;color:var(--text-muted)"
+      <h3>文档管理 <span style="font-weight:normal;font-size:12px;color:var(--text-muted);margin-left:8px">上传 + 已上传列表</span></h3>
+      <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">支持 .txt / .md / .pdf 格式。拖拽或点击上传。</p>
+      <div id="rag-upload-zone" style="border:2px dashed var(--border);border-radius:var(--radius);padding:24px;text-align:center;cursor:pointer;color:var(--text-muted)"
            ondragover="this.style.borderColor='var(--primary)'" ondragleave="this.style.borderColor=''" ondrop="handleRAGDrop(event)" onclick="qs('#rag-file-input').click()">
-        <div style="font-size:32px;margin-bottom:8px">📄</div>
+        <div style="font-size:28px;margin-bottom:6px">📄</div>
         <div>拖拽文件到此处，或点击选择多份文件</div>
         <input type="file" id="rag-file-input" hidden accept=".txt,.md,.pdf" multiple onchange="handleRAGFileSelect(this)">
       </div>
       <div id="rag-upload-status" style="margin-top:10px;text-align:center;font-size:13px"></div>
-    </div>
-    <div class="card">
-      <h3>已上传文档</h3>
-      <div id="rag-doc-list"><span class="skeleton" style="width:200px">&nbsp;</span></div>
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border-light)">
+        <h4 style="font-size:13px;font-weight:600;margin-bottom:10px">已上传文档</h4>
+        <div id="rag-doc-list"><span class="skeleton" style="width:200px">&nbsp;</span></div>
+      </div>
     </div>
     <div class="card" style="background:var(--bg);border:none;">
       <h3 style="margin-bottom:16px;">知识库检索</h3>
@@ -736,8 +922,22 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
       </div>
     </div>
     <div class="mem-sub-pane" id="mem-sub-io">
-      <div class="card"><h3>备份记忆库</h3><button class="btn btn-primary" onclick="exportMemories()">导出 JSON</button></div>
-      <div class="card"><h3>恢复记忆库</h3><label class="btn btn-outline" style="cursor:pointer">选择 JSON 文件<input type="file" accept=".json" hidden onchange="importMemories(this)"></label></div>
+      <div class="form-row">
+        <div class="form-group">
+          <div class="card" style="height:100%">
+            <h3>备份记忆库</h3>
+            <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">将当前所有动态记忆导出为 JSON 文件。</p>
+            <button class="btn btn-primary" onclick="exportMemories()">导出 JSON</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="card" style="height:100%">
+            <h3>恢复记忆库</h3>
+            <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">从 JSON 文件导入记忆，会合并到现有记忆库。</p>
+            <label class="btn btn-outline" style="cursor:pointer">选择 JSON 文件<input type="file" accept=".json" hidden onchange="importMemories(this)"></label>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="mem-sub-pane" id="mem-sub-vector">
       <div class="card"><h3>向量检索 (Debug)</h3>
@@ -750,23 +950,107 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
   <!-- Config Tab -->
   <div class="tab-content" id="tab-config">
-    <h2 style="margin-bottom:16px">全局核心设置</h2>
+    <!-- 锚点导航 -->
+    <nav class="config-nav" id="config-nav">
+      <a data-target="sec-basic" class="active">基础配置</a>
+      <a data-target="sec-statusbar">状态栏</a>
+      <a data-target="sec-rag">RAG 与记忆</a>
+      <a data-target="sec-system">系统与安全</a>
+    </nav>
 
-    <!-- P1-4: 系统健康度卡片 -->
-    <div class="card" id="health-card" style="margin-bottom:16px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <h3 style="margin:0">系统健康度</h3>
-        <span style="font-size:12px;color:var(--text-muted)">滑动窗口最近 20 次</span>
-      </div>
-      <div class="mem-dashboard" id="health-dashboard">
-        <div class="mem-dash-card"><div class="mem-dash-value" id="health-rag-rate">—</div><div class="mem-dash-label">RAG 检索成功率</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px" id="health-rag-detail">— / —</div></div>
-        <div class="mem-dash-card"><div class="mem-dash-value" id="health-status-rate">—</div><div class="mem-dash-label">状态栏解析成功率</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px" id="health-status-detail">— / —</div></div>
-      </div>
-    </div>
+    <!-- ════ 1. 基础配置 ════ -->
+    <section class="config-section" id="sec-basic">
+      <h2 class="config-section-title"><span class="num">1</span>基础配置 <span class="hint">世界书 · 素材库 · 输出控制</span></h2>
 
-    <div class="card">
-      <h3>RAG 与动态记忆 <span style="font-weight:normal;font-size:13px;color:var(--text-muted);margin-left:8px">(依赖底层向量库引擎)</span></h3>
-      <div style="border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:16px;background:var(--surface);">
+      <div class="form-row">
+        <div class="form-group">
+          <div class="card" style="height:100%">
+            <h3>世界书注入策略</h3>
+            <div class="form-check" style="margin-bottom:16px;">
+              <label class="toggle"><input type="checkbox" id="c-wb-enabled"><span class="toggle-slider"></span></label>
+              <span style="font-weight:500">启用世界书匹配</span>
+            </div>
+            <div class="form-group"><label>注入 Token 估算上限</label><input type="number" id="c-wb-token" value="4000"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">建议 3000-4000。太高会导致忘掉状态栏。</span></div>
+            <div class="form-group"><label>单次触发条目上限</label><input type="number" id="c-wb-max" value="4"></div>
+            <div class="form-group"><label>提示词注入位置</label><select id="c-wb-pos"><option value="user_prefix">贴脸输出 (user_prefix) - 推荐</option><option value="system_end">系统末尾 (system_end)</option></select></div>
+            <div class="form-group"><label>匹配灵敏度</label><div class="range-wrap"><input type="range" id="c-wb-sens" min="0" max="1" step="0.1" value="0.7" oninput="this.nextElementSibling.textContent=this.value"><span class="range-value">0.7</span></div></div>
+            <div class="form-check" style="margin-top:16px;">
+              <label class="toggle"><input type="checkbox" id="c-wb-always"><span class="toggle-slider"></span></label>
+              <span style="font-weight:500">全局常驻激活</span>
+            </div>
+            <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">开启后，每次对话都强制注入系统提示词和状态栏，无需触发激活词。适合纯RP场景。</span>
+            <div class="form-check" style="margin-top:16px;">
+              <label class="toggle"><input type="checkbox" id="c-wb-show-log"><span class="toggle-slider"></span></label>
+              <div><span style="font-weight:500">显示触发日志</span><span style="font-size:12px;color:var(--text-muted);margin-left:8px">在 /info 指令中显示最新命中的词条（调试用）。</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <div class="card" style="height:100%">
+            <h3>写作素材库控制</h3>
+            <div class="form-check" style="margin-bottom:16px;">
+              <label class="toggle"><input type="checkbox" id="c-kb-enabled"><span class="toggle-slider"></span></label>
+              <span style="font-weight:500">启用素材库指引</span>
+            </div>
+            <div class="form-group"><label>最大注入条数</label><input type="number" id="c-kb-max" value="4"></div>
+            <div class="form-group"><label>无匹配时保底回退条数</label><input type="number" id="c-kb-fallback" value="2"></div>
+            <div class="form-group"><label>同分类去重上限</label><input type="number" id="c-kb-dedup" value="3"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <div class="card" style="height:100%">
+            <h3>表现控制</h3>
+            <div class="form-group"><label>强制回复最低字数</label><input type="number" id="c-perf-min" value="400"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">建议400-800，防大模型变短聊。</span></div>
+            <div class="form-group"><label>要求回复最高字数</label><input type="number" id="c-perf-max" value="0"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">填 0 表示不限制。防止大模型无限发散啰嗦。</span></div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <div class="card" style="height:100%">
+            <h3>应急反拒绝协议</h3>
+            <div class="form-check" style="margin-bottom:16px;">
+              <label class="toggle"><input type="checkbox" id="c-ref-enabled"><span class="toggle-slider"></span></label>
+              <span style="font-weight:500">启用拒绝阻断检测</span>
+            </div>
+            <div class="form-group"><label>触发拦截词 (每行一个)</label><textarea id="c-ref-pat" rows="6"></textarea></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════ 2. 状态栏 ════ -->
+    <section class="config-section" id="sec-statusbar">
+      <h2 class="config-section-title"><span class="num">2</span>状态栏 <span class="hint">沉浸式属性追踪</span></h2>
+      <div class="card">
+        <h3>状态栏配置</h3>
+        <div class="form-check" style="margin-bottom:16px;">
+          <label class="toggle"><input type="checkbox" id="c-sb-enabled"><span class="toggle-slider"></span></label>
+          <span style="font-weight:500">启用 [LOVE_DATA] 状态栏</span>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>状态栏字段 (6个, 用|隔开)</label><input type="text" id="c-sb-fields" value="好感度|关系阶段|心情|位置|穿着|当前想法"></div>
+          <div class="form-group"><label>剧情走向选项 (用|隔开)</label><input type="text" id="c-sb-plots" value="继续当前话题|转换场景|结束互动"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">空字符串则不显示。</span></div>
+        </div>
+        <div class="form-group"><label>渲染 Markdown 模板</label><textarea id="c-sb-tpl" rows="3"></textarea></div>
+        <div class="form-check" style="margin:16px 0 0;padding:12px;background:var(--surface);border-radius:var(--radius-sm);border:1px solid var(--border-light);">
+          <label class="toggle"><input type="checkbox" id="c-sb-llm-extract"><span class="toggle-slider"></span></label>
+          <div style="flex:1">
+            <div style="font-weight:500">LLM 智能提取（实验性）</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.5">当大模型输出的状态栏格式完全不符合规范、5 级解析全部失败时，再调用一次轻量 LLM 从文本中智能识别并提取状态字段。有 3 秒超时保护，失败自动放弃，不影响正常对话。<b style="color:var(--warning)">注意：开启后每次失败都会额外消耗一次 LLM 调用。</b></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════ 3. RAG 与动态记忆 ════ -->
+    <section class="config-section" id="sec-rag">
+      <h2 class="config-section-title"><span class="num">3</span>RAG 与动态记忆 <span class="hint">文档知识库与长期记忆</span></h2>
+      <div class="card">
+        <h3>RAG 与动态记忆 <span style="font-weight:normal;font-size:13px;color:var(--text-muted);margin-left:8px">(依赖底层向量库引擎)</span></h3>
         <div class="form-row">
           <div class="form-group"><label>Embedding 模型</label><select id="c-rag-emb"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">用于文本向量化。留空使用本地 bge-small。注意：切换提供商会导致维度变化，已上传文档需重新上传。</span></div>
           <div class="form-group"><label>Rerank 重排模型</label><select id="c-rag-rerank"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">对向量初筛候选二次打分，极大提升检准率。建议配置。</span></div>
@@ -792,117 +1076,67 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
           </div>
         </div>
       </div>
-    </div>
+    </section>
 
-    <div class="form-row">
-      <div class="form-group">
-        <div class="card" style="height:100%">
-          <h3>世界书注入策略</h3>
-          <div class="form-check" style="margin-bottom:16px;">
-            <label class="toggle"><input type="checkbox" id="c-wb-enabled"><span class="toggle-slider"></span></label>
-            <span style="font-weight:500">启用世界书匹配</span>
-          </div>
-          <div class="form-group"><label>注入 Token 估算上限</label><input type="number" id="c-wb-token" value="4000"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">建议 3000-4000。太高会导致忘掉状态栏。</span></div>
-          <div class="form-group"><label>单次触发条目上限</label><input type="number" id="c-wb-max" value="4"></div>
-          <div class="form-group"><label>提示词注入位置</label><select id="c-wb-pos"><option value="user_prefix">贴脸输出 (user_prefix) - 推荐</option><option value="system_end">系统末尾 (system_end)</option></select></div>
-          <div class="form-group"><label>匹配灵敏度</label><div class="range-wrap"><input type="range" id="c-wb-sens" min="0" max="1" step="0.1" value="0.7" oninput="this.nextElementSibling.textContent=this.value"><span class="range-value">0.7</span></div></div>
-          <div class="form-check" style="margin-top:16px;">
-            <label class="toggle"><input type="checkbox" id="c-wb-always"><span class="toggle-slider"></span></label>
-            <span style="font-weight:500">全局常驻激活</span>
-          </div>
-          <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">开启后，每次对话都强制注入系统提示词和状态栏，无需触发激活词。适合纯RP场景。</span>
-          <div class="form-check" style="margin-top:16px;">
-            <label class="toggle"><input type="checkbox" id="c-wb-show-log"><span class="toggle-slider"></span></label>
-            <div><span style="font-weight:500">显示触发日志</span><span style="font-size:12px;color:var(--text-muted);margin-left:8px">在 /info 指令中显示最新命中的词条（调试用）。</span></div>
+    <!-- ════ 4. 系统与安全 ════ -->
+    <section class="config-section" id="sec-system">
+      <h2 class="config-section-title"><span class="num">4</span>系统与安全 <span class="hint">健康度 · 权限 · 调试</span></h2>
+
+      <div class="form-row">
+        <div class="form-group">
+          <div class="card" style="height:100%" id="health-card">
+            <h3>系统健康度</h3>
+            <div class="health-compact" id="health-dashboard">
+              <div class="health-item">
+                <span class="health-label">RAG 检索成功率</span>
+                <span class="health-value" id="health-rag-rate">—</span>
+                <span class="health-detail" id="health-rag-detail">— / —</span>
+              </div>
+              <div class="health-divider"></div>
+              <div class="health-item">
+                <span class="health-label">状态栏解析成功率</span>
+                <span class="health-value" id="health-status-rate">—</span>
+                <span class="health-detail" id="health-status-detail">— / —</span>
+              </div>
+            </div>
+            <span style="font-size:11px;color:var(--text-muted);margin-top:10px;display:block">滑动窗口最近 20 次，重启后清零</span>
           </div>
         </div>
-      </div>
 
-      <div class="form-group">
-        <div class="card" style="height:100%">
-          <h3>写作素材库控制</h3>
-          <div class="form-check" style="margin-bottom:16px;">
-            <label class="toggle"><input type="checkbox" id="c-kb-enabled"><span class="toggle-slider"></span></label>
-            <span style="font-weight:500">启用素材库指引</span>
-          </div>
-          <div class="form-group"><label>最大注入条数</label><input type="number" id="c-kb-max" value="4"></div>
-          <div class="form-group"><label>无匹配时保底回退条数</label><input type="number" id="c-kb-fallback" value="2"></div>
-          <div class="form-group"><label>同分类去重上限</label><input type="number" id="c-kb-dedup" value="3"></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="form-row" style="margin-bottom:30px;">
-      <div class="form-group">
-        <div class="card" style="height:100%">
-          <h3>表现与状态栏</h3>
-          <div class="form-group"><label>强制回复最低字数</label><input type="number" id="c-perf-min" value="400"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">建议400-800，防大模型变短聊。</span></div>
-          <div class="form-group"><label>要求回复最高字数</label><input type="number" id="c-perf-max" value="0"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">填 0 表示不限制。防止大模型无限发散啰嗦。</span></div>
-          <div class="form-check" style="margin:16px 0 10px;">
-            <label class="toggle"><input type="checkbox" id="c-sb-enabled"><span class="toggle-slider"></span></label>
-            <span style="font-weight:500">启用 [LOVE_DATA] 状态栏</span>
-          </div>
-          <div class="form-group"><label>状态栏字段 (6个, 用|隔开)</label><input type="text" id="c-sb-fields" value="好感度|关系阶段|心情|位置|穿着|当前想法"></div>
-          <div class="form-group"><label>剧情走向选项 (用|隔开)</label><input type="text" id="c-sb-plots" value="继续当前话题|转换场景|结束互动"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">状态栏末尾的三个选项，空字符串则不显示。</span></div>
-          <div class="form-group"><label>渲染 Markdown 模板</label><textarea id="c-sb-tpl" rows="3"></textarea></div>
-          <div class="form-check" style="margin:16px 0 0;padding:12px;background:var(--surface);border-radius:var(--radius-sm);border:1px solid var(--border-light);">
-            <label class="toggle"><input type="checkbox" id="c-sb-llm-extract"><span class="toggle-slider"></span></label>
-            <div style="flex:1">
-              <div style="font-weight:500">LLM 智能提取（实验性）</div>
-              <div style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.5">当大模型输出的状态栏格式完全不符合规范、5 级解析全部失败时，再调用一次轻量 LLM 从文本中智能识别并提取状态字段。有 3 秒超时保护，失败自动放弃，不影响正常对话。<b style="color:var(--warning)">注意：开启后每次失败都会额外消耗一次 LLM 调用。</b></div>
+        <div class="form-group">
+          <div class="card" style="height:100%">
+            <h3>调试与维护</h3>
+            <div class="form-check" style="margin-bottom:16px;">
+              <label class="toggle"><input type="checkbox" id="c-debug-enabled"><span class="toggle-slider"></span></label>
+              <div>
+                <span style="font-weight:500">启用调试日志</span>
+                <span style="font-size:12px;color:var(--text-muted);margin-left:8px">开启后在控制台打印详细的匹配详情与注入流程。非排错时建议关闭，日志量较大。</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>面板主题</label>
+              <select id="c-debug-theme">
+                <option value="light">浅色 (light)</option>
+                <option value="dark">深色 (dark)</option>
+              </select>
+              <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">切换后需刷新页面生效。</span>
             </div>
           </div>
         </div>
       </div>
 
-      <div class="form-group">
-        <div class="card" style="height:100%">
-          <h3>应急反拒绝协议</h3>
-          <div class="form-check" style="margin-bottom:16px;">
-            <label class="toggle"><input type="checkbox" id="c-ref-enabled"><span class="toggle-slider"></span></label>
-            <span style="font-weight:500">启用拒绝阻断检测</span>
-          </div>
-          <div class="form-group"><label>触发拦截词 (每行一个)</label><textarea id="c-ref-pat" rows="6"></textarea></div>
+      <div class="card">
+        <h3>安全与权限控制</h3>
+        <div style="background:var(--surface);border-left:3px solid var(--warning, #f59e0b);padding:8px 12px;margin-bottom:12px;font-size:12px;color:var(--text-muted);border-radius:4px;">
+          ⚠️ <b>建议配置</b>：留空时群聊写指令（切卡/清记忆/改流式等）将被拦截。私聊与 Web 面板编辑不受限制。
+        </div>
+        <div class="form-group">
+          <label>管理员白名单 (QQ号/用户ID)</label>
+          <textarea id="c-perm-admins" rows="4" placeholder="例如:&#10;123456789&#10;987654321"></textarea>
+          <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">支持多行、逗号或竖线分隔。仅作用于群聊写指令权限控制，Web 面板已由 AstrBot 鉴权保护。</span>
         </div>
       </div>
-    </div>
-
-    <div class="form-row" style="margin-bottom:30px;">
-      <div class="form-group">
-        <div class="card" style="height:100%">
-          <h3>🛡️ 安全与权限控制</h3>
-          <div style="background:var(--surface);border-left:3px solid var(--warning, #f59e0b);padding:8px 12px;margin-bottom:12px;font-size:12px;color:var(--text-muted);border-radius:4px;">
-            ⚠️ <b>建议配置</b>：留空时群聊写指令（切卡/清记忆/改流式等）将被拦截。私聊与 Web 面板编辑不受限制。
-          </div>
-          <div class="form-group">
-            <label>管理员白名单 (QQ号/用户ID)</label>
-            <textarea id="c-perm-admins" rows="4" placeholder="例如:&#10;123456789&#10;987654321"></textarea>
-            <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">支持多行、逗号或竖线分隔。仅作用于群聊写指令权限控制，Web 面板已由 AstrBot 鉴权保护。</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="form-group">
-        <div class="card" style="height:100%">
-          <h3>🔧 调试与维护</h3>
-          <div class="form-check" style="margin-bottom:16px;">
-            <label class="toggle"><input type="checkbox" id="c-debug-enabled"><span class="toggle-slider"></span></label>
-            <div>
-              <span style="font-weight:500">启用调试日志</span>
-              <span style="font-size:12px;color:var(--text-muted);margin-left:8px">开启后在控制台打印详细的匹配详情与注入流程。非排错时建议关闭，日志量较大。</span>
-            </div>
-          </div>
-          <div class="form-group">
-            <label>面板主题</label>
-            <select id="c-debug-theme">
-              <option value="light">浅色 (light)</option>
-              <option value="dark">深色 (dark)</option>
-            </select>
-            <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">切换后需刷新页面生效。</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    </section>
 
     <div class="config-sticky-footer">
       <div style="font-size:13px; color:var(--text-muted);">
@@ -1223,6 +1457,37 @@ qsa('.nav-item').forEach(btn => {
 });
 qsa('.memory-subnav-item').forEach(btn => { btn.addEventListener('click', () => switchMemSub(btn.dataset.memSub)); });
 
+// ── 配置页锚点导航 ──
+qsa('.config-nav a').forEach(a => {
+  a.addEventListener('click', (e) => {
+    e.preventDefault();
+    const target = document.getElementById(a.dataset.target);
+    if (!target) return;
+    const content = qs('.content');
+    const navHeight = 48; // 导航栏高度 + 间距
+    const top = target.offsetTop - navHeight;
+    if (content) content.scrollTo({ top, behavior: 'smooth' });
+    else window.scrollTo({ top, behavior: 'smooth' });
+  });
+});
+// 滚动时自动高亮当前分区
+let _configNavObserver = null;
+function initConfigNavObserver() {
+  if (_configNavObserver) _configNavObserver.disconnect();
+  const sections = qsa('.config-section');
+  if (!sections.length) return;
+  _configNavObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        qsa('.config-nav a').forEach(a => a.classList.toggle('active', a.dataset.target === id));
+      }
+    });
+  }, { rootMargin: '-60px 0px -70% 0px', threshold: 0 });
+  sections.forEach(s => _configNavObserver.observe(s));
+}
+initConfigNavObserver();
+
 // ── Tag Input ──
 function createTagInput(containerId, initialTags, placeholder) {
   const container = document.getElementById(containerId);
@@ -1298,7 +1563,26 @@ async function loadKB() {
     kbState.total = data.total;
     renderKBGrid();
     renderKBPagination();
+    updateKBStats(data);
   } catch (e) { showToast(e.message); }
+}
+
+function updateKBStats(data) {
+  const total = data.total ?? 0;
+  const enabled = data.items?.filter(e => e.enabled !== false).length ?? 0;
+  const constant = data.items?.filter(e => e.is_constant).length ?? 0;
+  const bar = qs('#kb-page-stats');
+  if (bar) {
+    bar.innerHTML = `<span class="stat-item">共 <span class="stat-value">${total}</span> 条</span>
+      <span class="stat-divider"></span>
+      <span class="stat-item">当前页 <span class="stat-value">${data.items?.length || 0}</span></span>
+      <span class="stat-divider"></span>
+      <span class="stat-item">启用 <span class="stat-value">${enabled}</span></span>
+      <span class="stat-divider"></span>
+      <span class="stat-item">常驻 <span class="stat-value">${constant}</span></span>`;
+  }
+  const titleBar = qs('#kb-stats-bar');
+  if (titleBar) titleBar.textContent = `· ${total} 条`;
 }
 
 let _kbExpandedId = null;
@@ -1519,6 +1803,7 @@ async function importKB(input) {
 }
 
 // ── Worldbook ──
+let wbAllCache = []; // 全量缓存用于搜索过滤
 async function loadWB(forceOpenName = null) {
   const el = qs('#wb-list');
   let currentOpenName = forceOpenName;
@@ -1526,17 +1811,47 @@ async function loadWB(forceOpenName = null) {
      const header = _wbOpenItem.querySelector('.wb-header');
      if (header) currentOpenName = header.getAttribute('data-wb-name');
   }
-  try { const data = await api('/wb/list'); const wbs = data.worldbooks || []; wbCache = {};
-    if (!wbs.length) { el.innerHTML = '<div class="empty">没有世界书</div>'; _wbOpenItem = null; return; }
-    el.innerHTML = wbs.map(wb => { wbCache[wb.name] = wb; const ne = wb.entries?.length || 0;
-      return `<div class="wb-item"><div class="wb-header" data-wb-name="${esc(wb.name)}" onclick="toggleWB('${jsAttr(wb.name)}')"><div class="wb-header-left"><span class="arrow">▶</span><span class="wb-name">${esc(wb.name)}</span>${wb.description ? `<span class="wb-desc">${esc(wb.description)}</span>` : ''}</div><div style="display:flex;align-items:center;gap:12px"><span class="wb-meta">${ne} 条</span><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWB('${jsAttr(wb.name)}')">删除</button></div></div><div class="wb-body"><div class="wb-inner"><div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${jsAttr(wb.name)}', null)">+ 新建条目</button><span style="color:var(--text-muted)">点击上方展开</span></div></div></div></div>`;
-    }).join('');
-    _wbOpenItem = null;
-    if (currentOpenName && wbs.some(w => w.name === currentOpenName)) {
-        toggleWB(currentOpenName);
-    }
-    // 删除强制展开第一本逻辑：默认全部收起
+  try { const data = await api('/wb/list'); const wbs = data.worldbooks || []; wbCache = {}; wbAllCache = wbs;
+    updateWBStats(wbs);
+    renderWBList(wbs, currentOpenName);
   } catch (e) { el.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`; }
+}
+
+function updateWBStats(wbs) {
+  const total = wbs.length;
+  const totalEntries = wbs.reduce((s, w) => s + (w.entries?.length || 0), 0);
+  const totalConstant = wbs.reduce((s, w) => s + (w.entries?.filter(e => e.is_constant)?.length || 0), 0);
+  const bar = qs('#wb-page-stats');
+  if (bar) {
+    bar.innerHTML = `<span class="stat-item">共 <span class="stat-value">${total}</span> 本</span>
+      <span class="stat-divider"></span>
+      <span class="stat-item">总条目 <span class="stat-value">${totalEntries}</span></span>
+      <span class="stat-divider"></span>
+      <span class="stat-item">常驻 <span class="stat-value">${totalConstant}</span></span>`;
+  }
+  const titleBar = qs('#wb-stats-bar');
+  if (titleBar) titleBar.textContent = `· ${total} 本 · ${totalEntries} 条`;
+}
+
+function renderWBList(wbs, currentOpenName) {
+  const el = qs('#wb-list');
+  if (!wbs.length) { el.innerHTML = '<div class="empty">没有世界书</div>'; _wbOpenItem = null; return; }
+  el.innerHTML = wbs.map(wb => { wbCache[wb.name] = wb; const ne = wb.entries?.length || 0;
+    return `<div class="wb-item"><div class="wb-header" data-wb-name="${esc(wb.name)}" onclick="toggleWB('${jsAttr(wb.name)}')"><div class="wb-header-left"><span class="arrow">▶</span><span class="wb-name">${esc(wb.name)}</span>${wb.description ? `<span class="wb-desc">${esc(wb.description)}</span>` : ''}</div><div style="display:flex;align-items:center;gap:12px"><span class="wb-meta">${ne} 条</span><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWB('${jsAttr(wb.name)}')">删除</button></div></div><div class="wb-body"><div class="wb-inner"><div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${jsAttr(wb.name)}', null)">+ 新建条目</button><span style="color:var(--text-muted)">点击上方展开</span></div></div></div></div>`;
+  }).join('');
+  _wbOpenItem = null;
+  if (currentOpenName && wbs.some(w => w.name === currentOpenName)) {
+      toggleWB(currentOpenName);
+  }
+}
+
+function onWBSearchInput() {
+  const q = (qs('#wb-filter-input')?.value || '').trim().toLowerCase();
+  if (!q) { renderWBList(wbAllCache, null); return; }
+  const filtered = wbAllCache.filter(wb => {
+    return (wb.name || '').toLowerCase().includes(q) || (wb.description || '').toLowerCase().includes(q);
+  });
+  renderWBList(filtered, null);
 }
 
 async function refreshWB() { try { await api('/wb/reload', { method: 'POST' }); await loadWB(); qs('#btn-refresh-wb').textContent = '✓'; setTimeout(() => { qs('#btn-refresh-wb').textContent = '⟳ 刷新'; }, 1500); } catch (e) { showToast(e.message); } }
@@ -1700,6 +2015,8 @@ function openWBEntryModal(wbName, entryId) {
 let _personaData = null;  // 当前编辑中的角色卡数据
 let _personaMode = null;  // 'create' | 'edit'
 let state_personas = [];  // 全局角色卡列表缓存
+let _personaViewMode = 'grid';  // 'grid' | 'list'
+let _personaSearchQuery = '';
 
 let _personaShowCount = 20;  // C1: 客户端分页，初始显示 20 张
 
@@ -1708,6 +2025,7 @@ async function loadPersonas() {
   try {
     const personas = await api('/persona/list');
     state_personas = personas || [];
+    updatePersonaStats();
     if (!state_personas.length) {
       container.innerHTML = '<div class="empty">暂无角色卡<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="openPersonaModal(null)">+ 新建角色卡</button></div>';
       return;
@@ -1719,15 +2037,51 @@ async function loadPersonas() {
   }
 }
 
+function updatePersonaStats() {
+  const total = state_personas.length;
+  const bar = qs('#persona-page-stats');
+  if (bar) {
+    bar.innerHTML = `<span class="stat-item">共 <span class="stat-value">${total}</span> 张</span>
+      <span class="stat-divider"></span>
+      <span class="stat-item">视图 <span class="stat-value">${_personaViewMode === 'grid' ? '网格' : '列表'}</span></span>`;
+  }
+  const titleBar = qs('#persona-stats-bar');
+  if (titleBar) titleBar.textContent = `· ${total} 张`;
+}
+
+function onPersonaSearchInput() {
+  _personaSearchQuery = (qs('#persona-filter-input')?.value || '').trim().toLowerCase();
+  _personaShowCount = 20;
+  renderPersonaPage();
+}
+
+function switchPersonaView(mode) {
+  _personaViewMode = mode;
+  qs('#persona-view-grid')?.classList.toggle('active', mode === 'grid');
+  qs('#persona-view-list')?.classList.toggle('active', mode === 'list');
+  updatePersonaStats();
+  renderPersonaPage();
+}
+
+function getFilteredPersonas() {
+  if (!_personaSearchQuery) return state_personas;
+  return state_personas.filter(p => (p.name || '').toLowerCase().includes(_personaSearchQuery));
+}
+
 function renderPersonaPage() {
   const container = qs('#persona-list');
-  const personas = state_personas;
-  const visible = personas.slice(0, _personaShowCount);
-  const hasMore = personas.length > _personaShowCount;
+  const filtered = getFilteredPersonas();
+  if (!filtered.length) {
+    container.innerHTML = `<div class="empty">${_personaSearchQuery ? '未找到匹配的角色卡' : '暂无角色卡'}<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="openPersonaModal(null)">+ 新建角色卡</button></div>`;
+    return;
+  }
+  const visible = filtered.slice(0, _personaShowCount);
+  const hasMore = filtered.length > _personaShowCount;
 
   // 第一步：渲染基础骨架（不含超长 Base64，避免 innerHTML 解析崩溃）
   window.__quillPids = window.__quillPids || {};
-  let html = '<div class="persona-grid">' + visible.map((p, index) => {
+  const gridClass = _personaViewMode === 'list' ? 'persona-list-view' : 'persona-grid';
+  let html = '<div class="' + gridClass + '">' + visible.map((p, index) => {
       const pid = p.id;
       window.__quillPids[index] = pid;
       const name = esc(p.name || pid);
@@ -1763,7 +2117,7 @@ function renderPersonaPage() {
 
   // C1/P1-5: 无限滚动 — IntersectionObserver 监听哨兵元素
   if (hasMore) {
-    html += `<div id="persona-sentinel" style="text-align:center;padding:16px;color:var(--text-muted);font-size:13px"><span class="skeleton" style="width:120px">&nbsp;</span> 滚动加载更多（${personas.length - _personaShowCount} 张剩余）</div>`;
+    html += `<div id="persona-sentinel" style="text-align:center;padding:16px;color:var(--text-muted);font-size:13px"><span class="skeleton" style="width:120px">&nbsp;</span> 滚动加载更多（${filtered.length - _personaShowCount} 张剩余）</div>`;
   }
   container.innerHTML = html;
 
@@ -2137,7 +2491,20 @@ async function importFromText() {
 
 // ── RAG ──
 async function loadRAG() {
-  try { const data = await api('/rag/documents'); const docs = data.documents || []; const c = qs('#rag-doc-list'); c.innerHTML = docs.length ? docs.map(d => `<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-light)"><div><strong>${esc(d.source)}</strong><div style="font-size:12px;color:var(--text-muted)">${d.chunk_count} 分块</div></div><button class="btn btn-outline btn-sm" onclick="deleteRAGDocument('${jsAttr(d.source)}')">删除</button></div>`).join('') : '<div class="empty">暂无文档<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="qs(\'#rag-file-input\').click()">立即上传</button></div>'; } catch (e) { qs('#rag-doc-list').innerHTML = `<div style="color:var(--danger)">加载失败</div>`; }
+  try {
+    const data = await api('/rag/documents');
+    const docs = data.documents || [];
+    const c = qs('#rag-doc-list');
+    c.innerHTML = docs.length ? docs.map(d => `<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-light)"><div><strong>${esc(d.source)}</strong><div style="font-size:12px;color:var(--text-muted)">${d.chunk_count} 分块</div></div><button class="btn btn-outline btn-sm" onclick="deleteRAGDocument('${jsAttr(d.source)}')">删除</button></div>`).join('') : '<div class="empty">暂无文档<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="qs(\'#rag-file-input\').click()">立即上传</button></div>';
+    // 更新统计
+    const totalDocs = docs.length;
+    const totalChunks = docs.reduce((s, d) => s + (d.chunk_count || 0), 0);
+    const elDocs = qs('#rag-stat-docs'); if (elDocs) elDocs.textContent = totalDocs;
+    const elChunks = qs('#rag-stat-chunks'); if (elChunks) elChunks.textContent = totalChunks;
+    const elVectors = qs('#rag-stat-vectors'); if (elVectors) elVectors.textContent = totalChunks; // 向量数 = 分块数
+    const bar = qs('#rag-stats-bar');
+    if (bar) bar.textContent = `· ${totalDocs} 文档 · ${totalChunks} 分块`;
+  } catch (e) { qs('#rag-doc-list').innerHTML = `<div style="color:var(--danger)">加载失败</div>`; }
 }
 
 // C2 缓存：/rag/config 在 Memory overview 和 RAG tab 重复请求，缓存 60 秒
