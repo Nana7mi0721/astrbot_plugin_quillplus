@@ -752,6 +752,18 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
   <div class="tab-content" id="tab-config">
     <h2 style="margin-bottom:16px">全局核心设置</h2>
 
+    <!-- P1-4: 系统健康度卡片 -->
+    <div class="card" id="health-card" style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">系统健康度</h3>
+        <span style="font-size:12px;color:var(--text-muted)">滑动窗口最近 20 次</span>
+      </div>
+      <div class="mem-dashboard" id="health-dashboard">
+        <div class="mem-dash-card"><div class="mem-dash-value" id="health-rag-rate">—</div><div class="mem-dash-label">RAG 检索成功率</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px" id="health-rag-detail">— / —</div></div>
+        <div class="mem-dash-card"><div class="mem-dash-value" id="health-status-rate">—</div><div class="mem-dash-label">状态栏解析成功率</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px" id="health-status-detail">— / —</div></div>
+      </div>
+    </div>
+
     <div class="card">
       <h3>RAG 与动态记忆 <span style="font-weight:normal;font-size:13px;color:var(--text-muted);margin-left:8px">(依赖底层向量库引擎)</span></h3>
       <div style="border:1px solid var(--border-light);border-radius:var(--radius-sm);padding:16px;background:var(--surface);">
@@ -1199,7 +1211,7 @@ qsa('.nav-item').forEach(btn => {
     if (btn.dataset.tab === 'memory') switchMemSub('overview');
     // persona tab: no JS needed (static info page)
     if (btn.dataset.tab === 'persona') loadPersonas();
-    if (btn.dataset.tab === 'config') loadGlobalSettings();
+    if (btn.dataset.tab === 'config') { loadGlobalSettings(); loadHealth(); }
   });
 });
 qsa('.memory-subnav-item').forEach(btn => { btn.addEventListener('click', () => switchMemSub(btn.dataset.memSub)); });
@@ -1722,7 +1734,7 @@ function renderPersonaPage() {
       const modeLabels = { 'auto': 'Auto', 'custom': 'Custom', 'disabled': 'Off' };
       return `<div class="persona-card">
         <div class="persona-card-left">
-          <img id="avatar-img-${index}" class="persona-avatar-img" style="display:none" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <img id="avatar-img-${index}" class="persona-avatar-img" loading="lazy" style="display:none" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
           <div id="avatar-letter-${index}" class="persona-avatar-letter">${esc((p.name || '?').charAt(0))}</div>
         </div>
         <div class="persona-card-body">
@@ -1742,11 +1754,25 @@ function renderPersonaPage() {
       </div>`;
     }).join('') + '</div>';
 
-  // C1: 分页"加载更多"按钮
+  // C1/P1-5: 无限滚动 — IntersectionObserver 监听哨兵元素
   if (hasMore) {
-    html += `<div style="text-align:center;padding:16px"><button class="btn btn-outline btn-sm" onclick="loadMorePersonas()">加载更多（${personas.length - _personaShowCount} 张剩余）</button></div>`;
+    html += `<div id="persona-sentinel" style="text-align:center;padding:16px;color:var(--text-muted);font-size:13px"><span class="skeleton" style="width:120px">&nbsp;</span> 滚动加载更多（${personas.length - _personaShowCount} 张剩余）</div>`;
   }
   container.innerHTML = html;
+
+  // P1-5: IntersectionObserver 无限滚动
+  if (hasMore) {
+    const sentinel = qs('#persona-sentinel');
+    if (sentinel && 'IntersectionObserver' in window) {
+      const io = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) {
+          io.disconnect();
+          loadMorePersonas();
+        }
+      }, { rootMargin: '200px' });
+      io.observe(sentinel);
+    }
+  }
 
   // 第二步：通过原生 DOM 赋值，安全挂载 MB 级别的 Base64 数据
   visible.forEach((p, index) => {
@@ -2403,6 +2429,39 @@ async function testMemoryVectorSearch() {
 }
 
 // ── Provider Config ──
+// P1-4: 加载系统健康度数据
+async function loadHealth() {
+  try {
+    const info = await api('/info');
+    const h = info?.health;
+    if (!h) {
+      qs('#health-rag-rate').textContent = 'N/A';
+      qs('#health-status-rate').textContent = 'N/A';
+      return;
+    }
+    // RAG 成功率
+    const ragRate = h.rag?.rate;
+    qs('#health-rag-rate').textContent = ragRate !== null && ragRate !== undefined ? ragRate + '%' : '—';
+    qs('#health-rag-detail').textContent = `${h.rag?.success || 0} / ${h.rag?.total || 0}`;
+    // 状态栏成功率
+    const stRate = h.status_bar?.rate;
+    qs('#health-status-rate').textContent = stRate !== null && stRate !== undefined ? stRate + '%' : '—';
+    qs('#health-status-detail').textContent = `${h.status_bar?.success || 0} / ${h.status_bar?.total || 0}`;
+    // 颜色阈值：>=80% 绿，>=50% 橙，<50% 红
+    function rateColor(rate) {
+      if (rate === null || rate === undefined) return 'var(--text-muted)';
+      if (rate >= 80) return 'var(--success, #10b981)';
+      if (rate >= 50) return 'var(--warning, #f59e0b)';
+      return 'var(--danger)';
+    }
+    qs('#health-rag-rate').style.color = rateColor(ragRate);
+    qs('#health-status-rate').style.color = rateColor(stRate);
+  } catch (e) {
+    qs('#health-rag-rate').textContent = 'N/A';
+    qs('#health-status-rate').textContent = 'N/A';
+  }
+}
+
 // 全局配置中心：加载所有设置
 let _rawConfig = {};
 async function loadGlobalSettings() {

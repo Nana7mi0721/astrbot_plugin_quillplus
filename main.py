@@ -91,6 +91,48 @@ _RAW_STATUS_RE = re.compile(
 )
 
 
+class HealthTracker:
+    """P1-4: 轻量级健康度追踪器 — 滑动窗口记录最近 N 次事件的成功/失败。
+
+    线程安全：所有操作在事件循环线程内完成，无需加锁（单线程异步模型）。
+    持久化：仅内存，重启后清零（符合"最近健康度"语义）。
+    """
+
+    def __init__(self, window_size: int = 20):
+        self._window_size = window_size
+        self._rag_results: list[bool] = []      # True=成功, False=失败
+        self._status_results: list[bool] = []
+
+    def record_rag(self, success: bool) -> None:
+        self._rag_results.append(success)
+        if len(self._rag_results) > self._window_size:
+            self._rag_results.pop(0)
+
+    def record_status(self, success: bool) -> None:
+        self._status_results.append(success)
+        if len(self._status_results) > self._window_size:
+            self._status_results.pop(0)
+
+    def stats(self) -> dict:
+        def _rate(lst):
+            if not lst:
+                return None
+            return round(sum(lst) / len(lst) * 100, 1)
+        return {
+            "rag": {
+                "total": len(self._rag_results),
+                "success": sum(self._rag_results),
+                "rate": _rate(self._rag_results),
+            },
+            "status_bar": {
+                "total": len(self._status_results),
+                "success": sum(self._status_results),
+                "rate": _rate(self._status_results),
+            },
+            "window_size": self._window_size,
+        }
+
+
 def strip_markdown(text: str) -> str:
     """Remove common Markdown formatting, leaving clean plain text."""
     if not text:
@@ -104,7 +146,7 @@ def strip_markdown(text: str) -> str:
     "astrbot_plugin_quillplus",
     "Nana7mi0721 & Gemini & GLM & DeepSeek",
     "羽笔 v5.0 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 增强插件",
-    "5.0.2",
+    "5.0.3",
     "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(Star):
@@ -133,6 +175,8 @@ class QuillPlugin(Star):
         self.plugin_dir = os.path.dirname(__file__)
         # F5 修复：保留后台 task 引用，防止被 GC 中断
         self._bg_tasks: set = set()
+        # P1-4: 健康度追踪器（内存滑动窗口，重启清零）
+        self.health_tracker = HealthTracker(window_size=20)
 
         # --- Activation ---
         activation_path = os.path.join(self.plugin_dir, "activation_triggers.yaml")
@@ -611,6 +655,10 @@ class QuillPlugin(Star):
             preview = (text or "")[:200].replace("\n", "\\n")
             logger.debug(f"[Quill] 状态栏解析失败，兜底注入将触发 | target={target_id} | preview={preview!r}")
 
+        # P1-4: 记录状态栏解析成功率（仅在 status_bar_enabled 时计入）
+        if self.status_bar_enabled:
+            self.health_tracker.record_status(handled)
+
         return new_text, updates, handled
 
     async def _persist_status_vars(self, updates: dict, target_id: str) -> None:
@@ -891,8 +939,12 @@ class QuillPlugin(Star):
             if rag_context:
                 dynamic_prompt += "\n\n" + rag_context
                 logger.info(f"[Quill RAG] 注入上下文: {len(rag_context)} 字符")
+            # P1-4: 记录 RAG 检索成功
+            self.health_tracker.record_rag(True)
         except Exception as e:
             logger.warning(f"[Quill RAG] 检索失败: {e}")
+            # P1-4: 记录 RAG 检索失败
+            self.health_tracker.record_rag(False)
 
         return dynamic_prompt
 

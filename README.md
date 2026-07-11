@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.0.2-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.0.3-green.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)]()
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -275,6 +275,13 @@ A: 切换提供商会导致向量维度变化，插件会自动检测并重建 F
 ---
 
 ## Changelog
+
+### v5.0.3 — P1 感知与性能优化
+
+扩展 P1 级优化，新增系统健康度感知与角色卡网格性能改进：
+
+- **P1-4 RAG 异常感知面板**：配置页新增「系统健康度」卡片，滑动窗口记录最近 20 次 RAG 检索成功率与状态栏解析成功率，三色阈值（绿≥80% / 橙≥50% / 红<50%）
+- **P1-5 角色卡网格懒加载**：`<img loading="lazy">` 延迟加载屏幕外头像，IntersectionObserver 无限滚动替代手动"加载更多"按钮
 
 ### v5.0.2 — P1 体验打磨
 

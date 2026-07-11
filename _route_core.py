@@ -338,8 +338,8 @@ async def handle_wb_import_st(wb_manager, name=None, upload_data=None):
 # ── Info handler ─────────────────────────────────────────────────
 
 async def handle_info(kb_manager, wb_manager, persona_count=0,
-                       show_trigger_log=False):
-    """返回插件状态信息（含可用世界书列表 + 触发日志）。"""
+                       show_trigger_log=False, health_tracker=None):
+    """返回插件状态信息（含可用世界书列表 + 触发日志 + 健康度）。"""
     kb_count = 0
     categories = {}
     if kb_manager:
@@ -361,6 +361,8 @@ async def handle_info(kb_manager, wb_manager, persona_count=0,
                 trigger_log = await asyncio.to_thread(wb_manager.get_trigger_log)
             except Exception:
                 pass
+    # P1-4: 健康度数据
+    health = health_tracker.stats() if health_tracker else None
     return ok({
         "kb_count": kb_count,
         "wb_count": len(available_wb),
@@ -369,6 +371,7 @@ async def handle_info(kb_manager, wb_manager, persona_count=0,
         "version": "Quill v5.0",
         "available_worldbooks": available_wb,
         "trigger_log": trigger_log,
+        "health": health,
     })
 
 
