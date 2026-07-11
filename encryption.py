@@ -9,7 +9,6 @@ sees only the encoded form; this module decodes it back for the user.
 
 import base64
 import re
-from typing import Tuple, Optional
 
 try:
     from astrbot.api import logger

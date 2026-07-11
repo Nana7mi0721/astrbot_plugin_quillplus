@@ -137,13 +137,6 @@ class QuillPersonaManager:
     async def _write_file(self, path: str, data: dict):
         await asyncio.to_thread(self._sync_write_file, path, data)
 
-    async def invalidate_cache(self):
-        """清除缓存（供文件外部变动或 reload 后调用）。"""
-        # S2-7: 加锁保护，避免与正在进行的 load/create/delete 竞争
-        async with self._cache_lock:
-            self._cache.clear()
-            self._cache_loaded = False
-
     async def load_all(self) -> list[dict]:
         """加载所有角色卡，按 ID 排序返回（优先读缓存）。
 

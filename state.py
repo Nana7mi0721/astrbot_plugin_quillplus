@@ -301,13 +301,6 @@ class StateManager:
                 return ""
             return st.persona_id
 
-    async def is_first_message_injected(self, user_id: str) -> bool:
-        async with self._lock:
-            st = self._states.get(user_id)
-            if st is None:
-                return False
-            return st.first_message_injected
-
     async def mark_first_message_injected(self, user_id: str) -> None:
         async with self._lock:
             st = self._states.get(user_id)

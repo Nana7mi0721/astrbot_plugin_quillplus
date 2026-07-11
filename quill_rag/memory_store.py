@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import struct
 import threading
-from typing import List, Optional
 
 import numpy as np
 
@@ -276,21 +274,6 @@ class MemoryStore:
             ]
         except Exception as e:
             logger.warning("[Quill Memory] get_chat_logs_after 失败: %s", e)
-            return []
-
-    def list_sessions(self) -> list[dict]:
-        """列出所有有记忆的 session。"""
-        try:
-            rows = self._exec_fetchall(
-                "SELECT session_id, COUNT(*) as count, MIN(timestamp) as first, "
-                "MAX(timestamp) as last FROM memories GROUP BY session_id"
-            )
-            return [
-                {"session_id": r[0], "count": r[1], "first": r[2], "last": r[3]}
-                for r in rows
-            ]
-        except Exception as e:
-            logger.warning("[Quill Memory] list_sessions 失败: %s", e)
             return []
 
     def list_memories(self, session_id: str, limit: int = 50) -> list[dict]:

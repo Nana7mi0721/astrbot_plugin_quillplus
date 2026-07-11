@@ -706,7 +706,7 @@ async def quill_status(plugin, event: AstrMessageEvent):
     if plugin.rag_vector_store:
         try:
             vs_stats = await asyncio.to_thread(plugin.rag_vector_store.get_stats)
-            doc_count = vs_stats.get("total_documents", 0)
+            doc_count = vs_stats.get("total_docs", 0)
             lines.append(f"  Doc RAG: {doc_count} 条向量")
         except Exception:
             lines.append("  Doc RAG: 查询失败")

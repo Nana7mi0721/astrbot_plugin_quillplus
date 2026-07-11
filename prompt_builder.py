@@ -73,7 +73,6 @@ class PromptBuilder:
             self.min_output_length: int = config.min_output_length
             self.max_output_length: int = getattr(config, 'max_output_length', 0)
             self.status_bar_enabled: bool = config.status_bar_enabled
-            self.status_bar_prompt_template: str = ""
         else:
             perf = (config or {}).get("performance", {})
             self.max_prompt_length: int = perf.get("max_prompt_length", 50000)
@@ -81,7 +80,6 @@ class PromptBuilder:
             self.max_output_length: int = perf.get("max_output_length", 0)
             sb_cfg = (config or {}).get("status_bar", {})
             self.status_bar_enabled: bool = sb_cfg.get("enabled", False)
-            self.status_bar_prompt_template: str = sb_cfg.get("prompt_template", "")
 
         self.token_ratio: float = 1.5
 

@@ -11,6 +11,7 @@
 <style>
 /* ── Design Tokens (100% 不透明实色) ── */
 :root, [data-theme="light"] {
+  color-scheme: light;
   --primary: #6366f1;
   --primary-hover: #4f46e5;
   --primary-light: rgba(99,102,241,.15);
@@ -44,25 +45,26 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --primary: #818cf8;
   --primary-hover: #6366f1;
   --primary-light: rgba(129,140,248,.18);
   --accent: #34d399;
   --danger: #f87171;
   --danger-light: rgba(248,113,113,.14);
-  --info: #38bdf8;
-  --info-light: rgba(56,189,248,.14);
   --success: #4ade80;
   --success-light: rgba(74,222,128,.14);
   --warning: #fbbf24;
   --warning-light: rgba(251,191,36,.14);
+  --info: #38bdf8;
+  --info-light: rgba(56,189,248,.14);
 
-  --bg: #0f1117;
+  --bg: #121620;
   --card: #1a1f2e;
   --surface: #222838;
   --text: #e1e5ee;
   --text-secondary: #9ca3b8;
-  --text-muted: #7c8498; /* V3: 提升对比度至 5.1:1 */
+  --text-muted: #7c8498; /* V3: 提升对比度至 5.1:1，满足 WCAG AA */
   --border: #2d3548;
   --border-light: #262d3d;
 
@@ -113,7 +115,7 @@ header .spacer { flex: 1; }
   transition: background .15s, color .15s;
 }
 .nav-item:hover { background: var(--primary-light); color: var(--text); }
-.nav-item.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
+.nav-item.active { color: var(--primary); font-weight: 600; }
 
 /* ── 右侧内容区（唯一可滚动区域）── */
 .content {
@@ -139,7 +141,7 @@ header .spacer { flex: 1; }
 .kb-card-id { font-size: 12px; color: var(--text-muted); font-family: "SFMono-Regular", Consolas, monospace; margin-top: 3px; }
 .kb-card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .kb-card-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.kb-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-light); margin-top: 8px; }
+.kb-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-light); }
 .kb-card-actions { display: flex; gap: 6px; }
 .kb-expanded { animation: fadeIn 200ms ease; padding-top: 8px; border-top: 1px solid var(--border-light); margin-top: 8px; }
 .kb-expanded .form-group { margin-bottom: 8px; }
@@ -173,16 +175,14 @@ header .spacer { flex: 1; }
 
 /* ── Badges / Chips / Tags ── */
 .badge { display: inline-block; padding: 3px 12px; border-radius: var(--radius-pill); font-size: 12px; font-weight: 600; }
-.badge-enabled { background: var(--success-light); color: var(--success); }
 .badge-disabled { background: var(--danger-light); color: var(--danger); }
 .badge-constant { background: var(--warning-light); color: var(--warning); }
 .cat-chip { display: inline-block; padding: 2px 12px; border-radius: var(--radius-pill); font-size: 12px; font-weight: 500; color: #fff; }
-.tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; background: var(--primary-light); border-radius: var(--radius-sm); font-size: 12px; color: var(--primary); }
+.tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; background: var(--primary-light); border-radius: var(--radius-sm); font-size: 12px; }
 .tag-del { cursor: pointer; font-size: 14px; line-height: 1; margin-left: 2px; opacity: .6; }
 
 /* ── Empty / Loading ── */
 .empty { text-align: center; padding: 48px 24px; color: var(--text-muted); font-size: 15px; }
-.loading { text-align: center; padding: 24px; color: var(--text-muted); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
 .skeleton { display: inline-block; background: var(--surface); border-radius: var(--radius-sm); animation: pulse 1.5s ease-in-out infinite; }
 
@@ -225,9 +225,6 @@ select { cursor: pointer; appearance: auto; }
 
 /* ── Pagination ── */
 .pagination { display: flex; gap: 6px; align-items: center; justify-content: center; margin: 20px 0; }
-.pagination button { padding: 8px 16px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--card); cursor: pointer; font-size: 13px; color: var(--text); }
-.pagination button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
-.pagination span { font-size: 13px; color: var(--text-muted); }
 
 /* ── Toast ── */
 .toast-container { position: fixed; top: 20px; right: 20px; z-index: 999; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
@@ -254,9 +251,8 @@ pre { background: var(--surface); border: 1px solid var(--border); border-radius
 .wb-meta { color: var(--text-muted); font-size: 13px; }
 .wb-body { overflow: hidden; max-height: 0; transition: max-height 300ms ease; }
 .wb-body.open { max-height: none; }
-.wb-inner { padding: 12px 0 0 0; }
 .wb-inner .toolbar { margin-bottom: 12px; }
-.wb-entry-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 8px; }
+.wb-entry-card { border-radius: var(--radius); padding: 14px 16px; margin-bottom: 8px; }
 .wb-entry-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .wb-entry-title { font-weight: 600; font-size: 14px; }
 .wb-entry-id { font-size: 12px; color: var(--text-muted); font-family: "SFMono-Regular", Consolas, monospace; }
@@ -353,16 +349,7 @@ select option {
 .avatar-upload-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 16px; text-align: center; cursor: pointer; transition: border-color var(--transition); background: var(--surface); }
 .avatar-upload-zone:hover { border-color: var(--primary); }
 
-/* ── 角色卡扩展多选区 ── */
-.checkbox-group-scroll {
-  max-height: 140px;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 8px 12px;
-  background: var(--surface);
-}
-.checkbox-group-scroll .form-check { margin-bottom: 8px; }
+/* ── 角色卡扩展多选区（样式见下方 !important 覆盖区）── */
 
 /* ── RAG ── */
 .rag-search-layout { display: flex; gap: 16px; align-items: stretch; margin-bottom: 16px; }
@@ -552,8 +539,10 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
   margin: 0 -28px -24px -28px;
   border-top: 1px solid var(--border);
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 12px;
   align-items: center;
+  justify-content: center;
   z-index: 20;
 }
 [data-theme="dark"] .config-sticky-footer {
@@ -593,7 +582,263 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
   margin-bottom: 8px !important;
   background: var(--surface) !important;
   border-color: transparent !important;
+  width: 100%;
+  border-radius: 6px;
+  padding: 8px 12px;
 }
+
+/* ── 工具 class（抽取自原内联 style，界面完全不变）── */
+.text-muted-12 { font-size: 12px; color: var(--text-muted); }
+.text-muted-13 { font-size: 13px; color: var(--text-muted); }
+.hint-block { font-size: 12px; color: var(--text-muted); margin-top: 4px; display: block; }
+.inline-hint { font-size: 12px; color: var(--text-muted); margin-left: 8px; }
+.fw-500 { font-weight: 500; }
+.cursor-ptr { cursor: pointer; }
+.margin-0 { margin: 0; }
+.h-100 { height: 100%; }
+.danger-box {
+  background: var(--danger-light);
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.constant-filter-label {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface); padding: 0 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  height: 36px; cursor: pointer; margin: 0;
+}
+.toggle--compact { transform: scale(0.8); margin: 0; }
+.toggle-label-text { font-size: 13px; font-weight: 500; user-select: none; }
+.import-textarea {
+  width: 100%; min-height: 280px; resize: vertical;
+  padding: 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface);
+  color: var(--text); font-size: 14px; font-family: inherit;
+  outline: none; transition: border-color var(--transition);
+}
+
+/* =========================================================
+   P0-P3 + 进阶 UI/UX 优化样式
+   ========================================================= */
+
+/* P0: 危险操作描边按钮 — 降低列表中红色视觉侵略性 */
+.btn-danger-outline {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+.btn-danger-outline:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* P1: 侧边栏分组 + 图标 */
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+.sidebar-section:last-child { border-bottom: none; }
+.sidebar-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  padding: 4px 12px 6px;
+}
+.nav-item-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: opacity var(--transition);
+}
+.nav-item:hover .nav-item-icon,
+.nav-item.active .nav-item-icon { opacity: 1; }
+
+/* P1: 侧边栏折叠 */
+.sidebar-toggle {
+  background: none;
+  border: none;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition), color var(--transition);
+}
+.sidebar-toggle:hover { background: var(--surface); color: var(--text); }
+.sidebar.collapsed { width: 52px; }
+.sidebar.collapsed .sidebar-label,
+.sidebar.collapsed .nav-item span { display: none; }
+.sidebar.collapsed .nav-item { justify-content: center; padding: 10px 0; }
+.sidebar.collapsed .sidebar-section { padding: 8px 0; }
+
+/* P1: 微交互动画 */
+@keyframes modalIn {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+.wb-item {
+  transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+}
+.card:hover, .kb-card:hover, .persona-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.tab-content.active { animation: fadeIn 0.3s ease; }
+.modal-dialog { animation: modalIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+/* P2: 页面标题统一 */
+.page-title {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.page-title-stats {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  background: var(--surface);
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
+}
+
+/* P2: 空状态富文本 */
+.empty-state {
+  text-align: center;
+  padding: 60px 24px;
+  color: var(--text-muted);
+  grid-column: 1 / -1;
+}
+.empty-state-icon {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 16px;
+  opacity: 0.5;
+  color: var(--text-muted);
+}
+.empty-state-icon svg { width: 100%; height: 100%; }
+.empty-state-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.empty-state-description {
+  font-size: 14px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+/* P2: 回到顶部按钮 */
+.back-to-top {
+  position: fixed;
+  bottom: 24px;
+  left: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s, background 0.2s, color 0.2s;
+  z-index: 40;
+}
+.back-to-top.visible { opacity: 1; pointer-events: auto; }
+.back-to-top:hover {
+  transform: translateY(-3px);
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+@media (max-width: 768px) {
+  .back-to-top { left: auto; right: 24px; bottom: 80px; }
+}
+
+/* P3: 卡片变体 */
+
+/* P3: 骨架屏统一 */
+.skeleton-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }
+.skeleton-card { height: 120px; background: var(--surface); border-radius: var(--radius); animation: pulse 1.5s ease-in-out infinite; }
+.skeleton-list { display: flex; flex-direction: column; gap: 8px; }
+.skeleton-item { height: 60px; background: var(--surface); border-radius: var(--radius); animation: pulse 1.5s ease-in-out infinite; }
+
+/* P3: 统计数字语义色 */
+.stat-value--success { color: var(--success); }
+.stat-value--warning { color: var(--warning); }
+.stat-value--danger { color: var(--danger); }
+
+/* P3: 表单提示文字（使用 .hint-block / .inline-hint）*/
+
+/* 进阶 A2: 焦点可见性 (WCAG 2.4.7) */
+.btn:focus-visible,
+.nav-item:focus-visible,
+.toggle:focus-within,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* 进阶 A3: 尊重用户减少动画偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 进阶 C2: 卡片折叠 */
+.card.collapsible h3 { display: flex; align-items: center; gap: 8px; }
+.card.collapsible .card-collapse-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 4px;
+  margin-left: auto;
+  transition: transform var(--transition), color var(--transition);
+  display: inline-flex;
+  align-items: center;
+}
+.card.collapsible .card-collapse-toggle:hover { color: var(--text); }
+.card.collapsible.collapsed .card-collapse-toggle { transform: rotate(-90deg); }
+.card.collapsible.collapsed .card-body { display: none; }
+.card-collapse-toggle svg { width: 16px; height: 16px; }
+
+/* Toast 关闭按钮 + 图标样式 */
+.toast-icon { font-weight: 700; font-size: 16px; }
+.toast-close {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,.8);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 0 4px;
+  margin-left: 4px;
+  line-height: 1;
+}
+.toast-close:hover { color: #fff; }
 
 /* 11. 配置页锚点导航与分区标题 */
 .config-nav {
@@ -758,108 +1003,6 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 @media (max-width: 600px) {
   .rag-stats-grid { grid-template-columns: repeat(2, 1fr); }
 }
-
-/* ── P0: E3 - 危险操作视觉强化 ── */
-.btn-danger-outline {
-  background: transparent;
-  border: 1px solid var(--danger);
-  color: var(--danger);
-}
-.btn-danger-outline:hover:not(:disabled) {
-  background: var(--danger);
-  color: #fff;
-}
-
-/* ── P1: U1 - 侧边栏图标+分组 ── */
-.sidebar-section {
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border-light);
-}
-.sidebar-section:last-child { border-bottom: none; }
-.sidebar-label {
-  font-size: 11px; font-weight: 600; color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: 0.5px;
-  padding: 4px 16px; margin-bottom: 4px;
-}
-.nav-item-icon {
-  width: 18px; height: 18px; margin-right: 10px; opacity: 0.7;
-}
-
-/* ── P1: V1 - 微交互动画 ── */
-.card, .kb-card, .persona-card, .wb-item { transition: all 0.2s ease; }
-.card:hover, .kb-card:hover, .persona-card:hover {
-  transform: translateY(-2px); box-shadow: var(--shadow-md);
-}
-.tab-content { animation: fadeIn 0.3s ease; }
-.modal-dialog { animation: modalIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1); }
-@keyframes modalIn {
-  from { transform: scale(0.9); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
-}
-
-/* ── P2: U2 - 页面标题统一 ── */
-.page-title {
-  font-size: 24px; font-weight: 700; color: var(--text);
-  margin-bottom: 20px; display: flex; align-items: center; gap: 12px;
-}
-.page-title-stats {
-  font-size: 14px; font-weight: 400; color: var(--text-muted);
-  background: var(--surface); padding: 4px 12px; border-radius: var(--radius-sm);
-}
-
-/* ── P2: V2 - 空状态优化 ── */
-.empty-state { text-align: center; padding: 60px 20px; color: var(--text-muted); }
-.empty-state-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.5; }
-.empty-state-title { font-size: 18px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
-.empty-state-description { font-size: 14px; margin-bottom: 20px; line-height: 1.6; }
-
-/* ── P2: E5 - 回到顶部 ── */
-.back-to-top {
-  position: fixed; bottom: 24px; right: 24px;
-  width: 44px; height: 44px; border-radius: 50%;
-  background: var(--primary); color: #fff; border: none; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  box-shadow: var(--shadow-md); opacity: 0; pointer-events: none;
-  transition: all 0.3s ease; z-index: 100;
-}
-.back-to-top.visible { opacity: 1; pointer-events: auto; }
-.back-to-top:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
-
-/* ── P3: U4 - 卡片变体 ── */
-.card--surface { background: var(--surface); border: none; }
-.card--compact { padding: 16px; }
-
-/* ── P3: V4 - 骨架屏统一 ── */
-.skeleton-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-.skeleton-card { height: 120px; background: var(--surface); border-radius: var(--radius); animation: pulse 1.5s ease-in-out infinite; }
-.skeleton-list { display: flex; flex-direction: column; gap: 12px; }
-.skeleton-item { height: 60px; background: var(--surface); border-radius: var(--radius); animation: pulse 1.5s ease-in-out infinite; }
-
-/* ── P3: V5 - 统计数字语义化 ── */
-.stat-value--success { color: var(--success); }
-.stat-value--warning { color: var(--warning); }
-.stat-value--danger { color: var(--danger); }
-.stat-value--info { color: var(--info); }
-
-/* ── P3: E4 - hint 文字优化 ── */
-.form-hint {
-  font-size: 13px; color: var(--text-muted); margin-top: 4px;
-  display: flex; align-items: flex-start; gap: 6px;
-}
-.form-hint::before { content: "ⓘ"; font-size: 12px; opacity: 0.6; flex-shrink: 0; margin-top: 1px; }
-
-/* ── P3: E1 - 侧边栏折叠 ── */
-.sidebar.collapsed { width: 52px; }
-.sidebar.collapsed .sidebar-label,
-.sidebar.collapsed .nav-item span { display: none; }
-.sidebar.collapsed .nav-item { justify-content: center; padding: 10px; }
-.sidebar.collapsed .nav-item-icon { margin-right: 0; }
-.sidebar-toggle {
-  background: none; border: none; cursor: pointer; color: var(--text-muted);
-  padding: 8px; display: flex; align-items: center; justify-content: center;
-  transition: color 0.15s;
-}
-.sidebar-toggle:hover { color: var(--text); }
 </style>
 </head>
 <body>
@@ -871,8 +1014,8 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 </header>
 <div class="layout">
   <aside class="sidebar" id="sidebar">
-    <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" title="折叠/展开侧边栏">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" title="折叠/展开侧边栏" aria-label="折叠侧边栏">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="3" y1="12" x2="21" y2="12"></line>
         <line x1="3" y1="6" x2="21" y2="6"></line>
         <line x1="3" y1="18" x2="21" y2="18"></line>
@@ -882,21 +1025,21 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
       <div class="sidebar-section">
         <div class="sidebar-label">内容管理</div>
         <button class="nav-item active" data-tab="kb">
-          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
             <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
           </svg>
           <span>写作素材库</span>
         </button>
         <button class="nav-item" data-tab="wb">
-          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
             <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
           </svg>
           <span>世界书</span>
         </button>
         <button class="nav-item" data-tab="persona">
-          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
             <circle cx="12" cy="7" r="4"></circle>
           </svg>
@@ -906,7 +1049,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
       <div class="sidebar-section">
         <div class="sidebar-label">知识系统</div>
         <button class="nav-item" data-tab="rag">
-          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
             <polyline points="14 2 14 8 20 8"></polyline>
             <line x1="16" y1="13" x2="8" y2="13"></line>
@@ -915,9 +1058,9 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
           <span>文档知识库</span>
         </button>
         <button class="nav-item" data-tab="memory">
-          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
             <line x1="12" y1="17" x2="12.01" y2="17"></line>
           </svg>
           <span>动态记忆</span>
@@ -926,7 +1069,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
       <div class="sidebar-section">
         <div class="sidebar-label">系统</div>
         <button class="nav-item" data-tab="config">
-          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
           </svg>
@@ -945,16 +1088,16 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
     <div class="kb-filter-bar sticky-toolbar">
       <input type="text" id="kb-filter-input" placeholder="全局检索：输入关键词、分类、内容..." style="flex:1;max-width:400px" oninput="onKBSearchInput()">
       <select id="kb-cat-filter" onchange="loadKB()" style="width:auto"><option value="">全部分类</option></select>
-      <label style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:0 12px;border:1px solid var(--border);border-radius:var(--radius-sm);height:36px;cursor:pointer;margin:0;">
-        <div class="toggle" style="transform:scale(0.8);margin:0;"><input type="checkbox" id="kb-constant-filter" onchange="onKBSearchInput()"><span class="toggle-slider"></span></div>
-        <span style="font-size:13px;font-weight:500;user-select:none;">仅常驻</span>
+      <label class="constant-filter-label">
+        <div class="toggle toggle--compact"><input type="checkbox" id="kb-constant-filter" onchange="onKBSearchInput()"><span class="toggle-slider"></span></div>
+        <span class="toggle-label-text">仅常驻</span>
       </label>
       <button class="btn btn-primary" onclick="openKBModal(null)">+ 新建条目</button>
       <button class="btn btn-outline" onclick="exportKB()">导出</button>
-      <label class="btn btn-outline" style="cursor:pointer">导入<input type="file" accept=".json" hidden onchange="importKB(this)"></label>
+      <label class="btn btn-outline cursor-ptr">导入<input type="file" accept=".json" hidden onchange="importKB(this)"></label>
     </div>
     <div class="kb-grid" id="kb-grid">
-      <div class="loading" style="grid-column:1/-1"><span class="skeleton" style="width:200px">&nbsp;</span></div>
+      <div class="skeleton-grid" style="grid-column:1/-1"><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div></div>
     </div>
     <div class="pagination" id="kb-pagination"></div>
   </div>
@@ -966,14 +1109,14 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
     <div class="toolbar sticky-toolbar">
       <input type="text" id="wb-filter-input" placeholder="搜索世界书名称或描述..." style="flex:1;max-width:300px" oninput="onWBSearchInput()">
       <button class="btn btn-primary" onclick="openWBCreateModal()">+ 新建世界书</button>
-      <label style="display:flex;align-items:center;gap:8px;background:var(--surface);padding:0 12px;border:1px solid var(--border);border-radius:var(--radius-sm);height:36px;cursor:pointer;margin:0;">
-        <div class="toggle" style="transform:scale(0.8);margin:0;"><input type="checkbox" id="wb-constant-filter" onchange="toggleWBConstantFilter()"><span class="toggle-slider"></span></div>
-        <span style="font-size:13px;font-weight:500;user-select:none;">仅常驻</span>
+      <label class="constant-filter-label">
+        <div class="toggle toggle--compact"><input type="checkbox" id="wb-constant-filter" onchange="toggleWBConstantFilter()"><span class="toggle-slider"></span></div>
+        <span class="toggle-label-text">仅常驻</span>
       </label>
-      <label class="btn btn-outline" style="cursor:pointer">导入 (原生/ST)<input type="file" accept=".json" hidden onchange="importWB_ST(this)"></label>
+      <label class="btn btn-outline cursor-ptr">导入 (原生/ST)<input type="file" accept=".json" hidden onchange="importWB_ST(this)"></label>
       <button class="btn btn-outline" onclick="refreshWB()" id="btn-refresh-wb">⟳ 刷新</button>
     </div>
-    <div id="wb-list"><div class="loading"><span class="skeleton" style="width:240px">&nbsp;</span></div></div>
+    <div id="wb-list"><div class="skeleton-list"><div class="skeleton-item"></div><div class="skeleton-item"></div><div class="skeleton-item"></div></div></div>
   </div>
 
   <!-- Persona Tab (独立角色卡管理 + V2 兼容) -->
@@ -988,10 +1131,10 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
       </div>
       <button class="btn btn-primary" onclick="openPersonaModal(null)">+ 新建角色卡</button>
       <button class="btn btn-outline" onclick="loadPersonas()">⟳ 刷新</button>
-      <label class="btn btn-outline" style="cursor:pointer">导入 V2 角色卡<input type="file" accept=".png,.jpg,.jpeg,.webp,.json" hidden onchange="importPersona(this)"></label>
+      <label class="btn btn-outline cursor-ptr">导入 V2 角色卡<input type="file" accept=".png,.jpg,.jpeg,.webp,.json" hidden onchange="importPersona(this)"></label>
       <button class="btn btn-outline" onclick="openImportTextModal()">文本粘贴导入</button>
     </div>
-    <div id="persona-list"><div class="loading"><span class="skeleton" style="width:200px">&nbsp;</span></div></div>
+    <div id="persona-list"><div class="skeleton-list"><div class="skeleton-item"></div><div class="skeleton-item"></div><div class="skeleton-item"></div></div></div>
   </div>
 
   <!-- RAG Tab -->
@@ -999,14 +1142,14 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
     <h2 class="page-title">文档知识库 <span class="page-title-stats" id="rag-stats-bar"></span></h2>
     <div class="form-row" style="margin-bottom:16px">
       <div class="form-group" style="flex:1.2">
-        <div class="card" style="height:100%" id="rag-model-info-card">
+        <div class="card" class="h-100" id="rag-model-info-card">
           <h3>模型配置</h3>
           <div class="mem-provider-info" id="rag-model-info"><span class="skeleton" style="width:200px">&nbsp;</span></div>
           <div style="font-size:12px;color:var(--text-muted);margin-top:10px;padding-top:10px;border-top:1px solid var(--border-light)">分块策略等配置请前往【配置】页</div>
         </div>
       </div>
       <div class="form-group" style="flex:1">
-        <div class="card" style="height:100%">
+        <div class="card h-100">
           <h3>文档统计</h3>
           <div class="rag-stats-grid" id="rag-stats-grid">
             <div class="rag-stat-item"><div class="rag-stat-value" id="rag-stat-docs">—</div><div class="rag-stat-label">文档数</div></div>
@@ -1070,7 +1213,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
     <div class="mem-sub-pane" id="mem-sub-browser">
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-          <h3 style="margin:0">记忆浏览</h3>
+          <h3 class="margin-0">记忆浏览</h3>
           <button class="btn btn-outline btn-sm" onclick="pruneMemories()">修剪低分记忆</button>
         </div>
         <div class="form-group"><input type="text" id="mem-search" placeholder="搜索 session_id 或关键词..." oninput="handleMemSearch()"></div>
@@ -1087,17 +1230,17 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
     <div class="mem-sub-pane" id="mem-sub-io">
       <div class="form-row">
         <div class="form-group">
-          <div class="card" style="height:100%">
+          <div class="card h-100">
             <h3>备份记忆库</h3>
             <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">将当前所有动态记忆导出为 JSON 文件。</p>
             <button class="btn btn-primary" onclick="exportMemories()">导出 JSON</button>
           </div>
         </div>
         <div class="form-group">
-          <div class="card" style="height:100%">
+          <div class="card h-100">
             <h3>恢复记忆库</h3>
             <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">从 JSON 文件导入记忆，会合并到现有记忆库。</p>
-            <label class="btn btn-outline" style="cursor:pointer">选择 JSON 文件<input type="file" accept=".json" hidden onchange="importMemories(this)"></label>
+            <label class="btn btn-outline cursor-ptr">选择 JSON 文件<input type="file" accept=".json" hidden onchange="importMemories(this)"></label>
           </div>
         </div>
       </div>
@@ -1127,34 +1270,34 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
       <div class="form-row">
         <div class="form-group">
-          <div class="card" style="height:100%">
+          <div class="card h-100">
             <h3>世界书注入策略</h3>
             <div class="form-check" style="margin-bottom:16px;">
               <label class="toggle"><input type="checkbox" id="c-wb-enabled"><span class="toggle-slider"></span></label>
-              <span style="font-weight:500">启用世界书匹配</span>
+              <span class="fw-500">启用世界书匹配</span>
             </div>
-            <div class="form-group"><label>注入 Token 估算上限</label><input type="number" id="c-wb-token" value="4000"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">建议 3000-4000。太高会导致忘掉状态栏。</span></div>
+            <div class="form-group"><label>注入 Token 估算上限</label><input type="number" id="c-wb-token" value="4000"><span class="hint-block">建议 3000-4000。太高会导致忘掉状态栏。</span></div>
             <div class="form-group"><label>单次触发条目上限</label><input type="number" id="c-wb-max" value="4"></div>
             <div class="form-group"><label>提示词注入位置</label><select id="c-wb-pos"><option value="user_prefix">贴脸输出 (user_prefix) - 推荐</option><option value="system_end">系统末尾 (system_end)</option></select></div>
             <div class="form-group"><label>匹配灵敏度</label><div class="range-wrap"><input type="range" id="c-wb-sens" min="0" max="1" step="0.1" value="0.7" oninput="this.nextElementSibling.textContent=this.value"><span class="range-value">0.7</span></div></div>
             <div class="form-check" style="margin-top:16px;">
               <label class="toggle"><input type="checkbox" id="c-wb-always"><span class="toggle-slider"></span></label>
-              <span style="font-weight:500">全局常驻激活</span>
+              <span class="fw-500">全局常驻激活</span>
             </div>
-            <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">开启后，每次对话都强制注入系统提示词和状态栏，无需触发激活词。适合纯RP场景。</span>
+            <span class="hint-block">开启后，每次对话都强制注入系统提示词和状态栏，无需触发激活词。适合纯RP场景。</span>
             <div class="form-check" style="margin-top:16px;">
               <label class="toggle"><input type="checkbox" id="c-wb-show-log"><span class="toggle-slider"></span></label>
-              <div><span style="font-weight:500">显示触发日志</span><span style="font-size:12px;color:var(--text-muted);margin-left:8px">在 /info 指令中显示最新命中的词条（调试用）。</span></div>
+              <div><span class="fw-500">显示触发日志</span><span class="inline-hint">在 /info 指令中显示最新命中的词条（调试用）。</span></div>
             </div>
           </div>
         </div>
 
         <div class="form-group">
-          <div class="card" style="height:100%">
+          <div class="card h-100">
             <h3>写作素材库控制</h3>
             <div class="form-check" style="margin-bottom:16px;">
               <label class="toggle"><input type="checkbox" id="c-kb-enabled"><span class="toggle-slider"></span></label>
-              <span style="font-weight:500">启用素材库指引</span>
+              <span class="fw-500">启用素材库指引</span>
             </div>
             <div class="form-group"><label>最大注入条数</label><input type="number" id="c-kb-max" value="4"></div>
             <div class="form-group"><label>无匹配时保底回退条数</label><input type="number" id="c-kb-fallback" value="2"></div>
@@ -1165,19 +1308,19 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
       <div class="form-row">
         <div class="form-group">
-          <div class="card" style="height:100%">
+          <div class="card h-100">
             <h3>表现控制</h3>
-            <div class="form-group"><label>强制回复最低字数</label><input type="number" id="c-perf-min" value="400"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">建议400-800，防大模型变短聊。</span></div>
-            <div class="form-group"><label>要求回复最高字数</label><input type="number" id="c-perf-max" value="0"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">填 0 表示不限制。防止大模型无限发散啰嗦。</span></div>
+            <div class="form-group"><label>强制回复最低字数</label><input type="number" id="c-perf-min" value="400"><span class="hint-block">建议400-800，防大模型变短聊。</span></div>
+            <div class="form-group"><label>要求回复最高字数</label><input type="number" id="c-perf-max" value="0"><span class="hint-block">填 0 表示不限制。防止大模型无限发散啰嗦。</span></div>
           </div>
         </div>
 
         <div class="form-group">
-          <div class="card" style="height:100%">
+          <div class="card h-100">
             <h3>应急反拒绝协议</h3>
             <div class="form-check" style="margin-bottom:16px;">
               <label class="toggle"><input type="checkbox" id="c-ref-enabled"><span class="toggle-slider"></span></label>
-              <span style="font-weight:500">启用拒绝阻断检测</span>
+              <span class="fw-500">启用拒绝阻断检测</span>
             </div>
             <div class="form-group"><label>触发拦截词 (每行一个)</label><textarea id="c-ref-pat" rows="6"></textarea></div>
           </div>
@@ -1188,23 +1331,25 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
     <!-- ════ 2. 状态栏 ════ -->
     <section class="config-section" id="sec-statusbar">
       <h2 class="config-section-title"><span class="num">2</span>状态栏 <span class="hint">沉浸式属性追踪</span></h2>
-      <div class="card">
-        <h3>状态栏配置</h3>
+      <div class="card collapsible">
+        <h3>状态栏配置 <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
+        <div class="card-body">
         <div class="form-check" style="margin-bottom:16px;">
           <label class="toggle"><input type="checkbox" id="c-sb-enabled"><span class="toggle-slider"></span></label>
-          <span style="font-weight:500">启用 [LOVE_DATA] 状态栏</span>
+          <span class="fw-500">启用 [LOVE_DATA] 状态栏</span>
         </div>
         <div class="form-row">
           <div class="form-group"><label>状态栏字段 (6个, 用|隔开)</label><input type="text" id="c-sb-fields" value="好感度|关系阶段|心情|位置|穿着|当前想法"></div>
-          <div class="form-group"><label>剧情走向选项 (用|隔开)</label><input type="text" id="c-sb-plots" value="继续当前话题|转换场景|结束互动"><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">空字符串则不显示。</span></div>
+          <div class="form-group"><label>剧情走向选项 (用|隔开)</label><input type="text" id="c-sb-plots" value="继续当前话题|转换场景|结束互动"><span class="hint-block">空字符串则不显示。</span></div>
         </div>
         <div class="form-group"><label>渲染 Markdown 模板</label><textarea id="c-sb-tpl" rows="3"></textarea></div>
         <div class="form-check" style="margin:16px 0 0;padding:12px;background:var(--surface);border-radius:var(--radius-sm);border:1px solid var(--border-light);">
           <label class="toggle"><input type="checkbox" id="c-sb-llm-extract"><span class="toggle-slider"></span></label>
           <div style="flex:1">
-            <div style="font-weight:500">LLM 智能提取（实验性）</div>
+            <div class="fw-500">LLM 智能提取（实验性）</div>
             <div style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.5">当大模型输出的状态栏格式完全不符合规范、5 级解析全部失败时，再调用一次轻量 LLM 从文本中智能识别并提取状态字段。有 3 秒超时保护，失败自动放弃，不影响正常对话。<b style="color:var(--warning)">注意：开启后每次失败都会额外消耗一次 LLM 调用。</b></div>
           </div>
+        </div>
         </div>
       </div>
     </section>
@@ -1212,12 +1357,13 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
     <!-- ════ 3. RAG 与动态记忆 ════ -->
     <section class="config-section" id="sec-rag">
       <h2 class="config-section-title"><span class="num">3</span>RAG 与动态记忆 <span class="hint">文档知识库与长期记忆</span></h2>
-      <div class="card">
-        <h3>RAG 与动态记忆 <span style="font-weight:normal;font-size:13px;color:var(--text-muted);margin-left:8px">(依赖底层向量库引擎)</span></h3>
+      <div class="card collapsible">
+        <h3>RAG 与动态记忆 <span style="font-weight:normal;font-size:13px;color:var(--text-muted);margin-left:8px">(依赖底层向量库引擎)</span> <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
+        <div class="card-body">
         <div class="form-row">
-          <div class="form-group"><label>Embedding 模型</label><select id="c-rag-emb"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">用于文本向量化。留空使用本地 bge-small。注意：切换提供商会导致维度变化，已上传文档需重新上传。</span></div>
-          <div class="form-group"><label>Rerank 重排模型</label><select id="c-rag-rerank"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">对向量初筛候选二次打分，极大提升检准率。建议配置。</span></div>
-          <div class="form-group"><label>摘要 LLM 模型</label><select id="c-rag-llm"></select><span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">用于后台将长对话压缩为记忆摘要。留空则用简单文本截断。</span></div>
+          <div class="form-group"><label>Embedding 模型</label><select id="c-rag-emb"></select><span class="hint-block">用于文本向量化。留空使用本地 bge-small。注意：切换提供商会导致维度变化，已上传文档需重新上传。</span></div>
+          <div class="form-group"><label>Rerank 重排模型</label><select id="c-rag-rerank"></select><span class="hint-block">对向量初筛候选二次打分，极大提升检准率。建议配置。</span></div>
+          <div class="form-group"><label>摘要 LLM 模型</label><select id="c-rag-llm"></select><span class="hint-block">用于后台将长对话压缩为记忆摘要。留空则用简单文本截断。</span></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>文档分块大小</label><input type="number" id="c-rag-chunk" value="500"></div>
@@ -1226,17 +1372,18 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
         </div>
         <div class="form-check" style="margin-top:10px;">
           <label class="toggle"><input type="checkbox" id="c-rag-memory"><span class="toggle-slider"></span></label>
-          <div><span style="font-weight:500">启用动态记忆</span><span style="font-size:12px;color:var(--text-muted);margin-left:8px">后台自动提取历史并跨会话保留。</span></div>
+          <div><span class="fw-500">启用动态记忆</span><span class="inline-hint">后台自动提取历史并跨会话保留。</span></div>
         </div>
         <div class="form-row" style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border-light)">
           <div class="form-check" style="flex:1">
             <label class="toggle"><input type="checkbox" id="c-rag-log"><span class="toggle-slider"></span></label>
-            <div><span style="font-weight:500">保存原始对话日志</span><span style="font-size:12px;color:var(--text-muted);margin-left:8px">用于导出剧本和增量学习</span></div>
+            <div><span class="fw-500">保存原始对话日志</span><span class="inline-hint">用于导出剧本和增量学习</span></div>
           </div>
           <div class="form-group" style="flex:1; margin-bottom:0">
             <label style="display:inline-block; margin-right:8px; font-size:14px; font-weight:500;">日志保留天数</label>
             <input type="number" id="c-rag-log-days" value="30" style="width:80px; padding:4px 8px;">
           </div>
+        </div>
         </div>
       </div>
     </section>
@@ -1247,7 +1394,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
       <div class="form-row">
         <div class="form-group">
-          <div class="card" style="height:100%" id="health-card">
+          <div class="card" class="h-100" id="health-card">
             <h3>系统健康度</h3>
             <div class="health-compact" id="health-dashboard">
               <div class="health-item">
@@ -1267,13 +1414,13 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
         </div>
 
         <div class="form-group">
-          <div class="card" style="height:100%">
+          <div class="card h-100">
             <h3>调试与维护</h3>
             <div class="form-check" style="margin-bottom:16px;">
               <label class="toggle"><input type="checkbox" id="c-debug-enabled"><span class="toggle-slider"></span></label>
               <div>
-                <span style="font-weight:500">启用调试日志</span>
-                <span style="font-size:12px;color:var(--text-muted);margin-left:8px">开启后在控制台打印详细的匹配详情与注入流程。非排错时建议关闭，日志量较大。</span>
+                <span class="fw-500">启用调试日志</span>
+                <span class="inline-hint">开启后在控制台打印详细的匹配详情与注入流程。非排错时建议关闭，日志量较大。</span>
               </div>
             </div>
             <div class="form-group">
@@ -1282,7 +1429,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
                 <option value="light">浅色 (light)</option>
                 <option value="dark">深色 (dark)</option>
               </select>
-              <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">切换后需刷新页面生效。</span>
+              <span class="hint-block">切换后需刷新页面生效。</span>
             </div>
           </div>
         </div>
@@ -1296,7 +1443,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
         <div class="form-group">
           <label>管理员白名单 (QQ号/用户ID)</label>
           <textarea id="c-perm-admins" rows="4" placeholder="例如:&#10;123456789&#10;987654321"></textarea>
-          <span style="font-size:12px;color:var(--text-muted);margin-top:4px;display:block">支持多行、逗号或竖线分隔。仅作用于群聊写指令权限控制，Web 面板已由 AstrBot 鉴权保护。</span>
+          <span class="hint-block">支持多行、逗号或竖线分隔。仅作用于群聊写指令权限控制，Web 面板已由 AstrBot 鉴权保护。</span>
         </div>
       </div>
     </section>
@@ -1334,7 +1481,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
       </p>
       <textarea id="import-textarea" rows="16"
         placeholder='例如：&#10;Name = "白芷"&#10;Personality: 傲娇、外冷内热&#10;Scenario: 现代校园，同桌关系&#10;First Message: "哼，你来干什么？"...'
-        style="width:100%;min-height:280px;resize:vertical;padding:12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-size:14px;font-family:inherit;outline:none;transition:border-color var(--transition);"
+        class="import-textarea"
         onfocus="this.style.borderColor='var(--primary)'" onblur="this.style.borderColor='var(--border)'"></textarea>
       <div style="display:flex;gap:8px;margin-top:12px;color:var(--text-muted);font-size:12px">
         <span>✓ V2 JSON 格式</span><span>✓ W++ 标签格式</span><span>✓ 正则智能匹配</span>
@@ -1349,16 +1496,6 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 
 <script>
 const PLUGIN_NAME = "astrbot_plugin_quillplus";
-
-function getAvatarUrl(avatarPath) {
-  if (!avatarPath) return '';
-  const fname = avatarPath.replace('quill_avatars/', '');
-  if (getBridge()) {
-    const token = new URLSearchParams(window.location.search).get('asset_token') || '';
-    return `/api/v1/plugins/extensions/${PLUGIN_NAME}/avatar/${encodeURIComponent(fname)}?asset_token=${token}`;
-  }
-  return `/api/avatar/${encodeURIComponent(fname)}`;
-}
 
 function getBridge() { return window.AstrBotPluginPage || null; }
 async function waitForBridge(timeoutMs = 5000) { const s = Date.now(); while (Date.now() - s < timeoutMs) { if (window.AstrBotPluginPage) return window.AstrBotPluginPage; await new Promise(r => setTimeout(r, 100)); } return null; }
@@ -1377,7 +1514,6 @@ const handleMemSearch = debounce(loadMemoryBrowser, 300);
 function qs(s) { return document.querySelector(s); }
 function qsa(s) { return document.querySelectorAll(s); }
 function esc(s) { return s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
-function escAttr(s) { return esc(s); }
 function jsesc(s) { return s == null ? '' : String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"').replace(/\n/g,'\\n').replace(/\r/g,'\\r'); }
 // B3 修复：onclick/onchange 等 HTML 属性内 JS 字符串上下文专用转义。
 // 先 jsesc 保护 JS 字符串（' → \'），再 esc 保护 HTML 属性（" → &quot;），双重安全。
@@ -1395,7 +1531,36 @@ function showToast(msg, type = 'error') {
   // 限制最多 5 条堆叠
   const all = container.querySelectorAll('.toast');
   if (all.length > 5) all[0].remove();
-  setTimeout(() => el.remove(), 3500);
+  // 分级时长：success 2s / info 3s / warning 4s / error 不自动消失
+  const durations = { success: 2000, info: 3000, warning: 4000, error: 0 };
+  const dur = durations[type] || 3500;
+  if (dur > 0) setTimeout(() => el.remove(), dur);
+}
+
+// ── JS helper：renderWBEntryCard（抽取自重复的 WB 条目模板）──
+function renderWBEntryCard(wbName, e) {
+  const jsName = jsAttr(wbName);
+  const jsEid = jsAttr(e.id || '');
+  return `<div class="wb-entry-card">
+          <div class="wb-entry-header">
+            <div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
+            <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${jsName}','${jsEid}')">✎</button><button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWBEntry('${jsName}','${jsEid}')">×</button></div>
+          </div>
+          ${(e.keys||[]).length ? `<div class="wb-entry-keys">${e.keys.map(k => `<span class="tag">${esc(k)}</span>`).join('')}</div>` : ''}
+          ${e.content ? `<div class="wb-entry-content">${esc(e.content.substring(0,200))}${e.content.length>200?'…':''}</div>` : ''}
+        </div>`;
+}
+
+// ── JS helper：apiPost / downloadJSON（抽取自重复模式）──
+async function apiPost(url, body) {
+  return api(url, { method: 'POST', body: JSON.stringify(body) });
+}
+function downloadJSON(data, filename) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
 }
 
 // P1-2: 错误详情展示 — 长错误信息用 modal 显示，短错误降级为 toast
@@ -1406,7 +1571,7 @@ function showErrorDetail(title, msg) {
   // 长错误信息用 modal 显示完整内容
   qs('#dialogTitle').textContent = '⚠️ ' + title;
   qs('#dialogBody').innerHTML = `
-    <div style="background:var(--danger-light);border:1px solid var(--danger);border-radius:6px;padding:12px 16px;">
+    <div class="danger-box" style="padding:12px 16px">
       <pre style="margin:0;white-space:pre-wrap;word-wrap:break-word;font-size:13px;line-height:1.6;color:var(--text);max-height:50vh;overflow-y:auto;">${esc(msg)}</pre>
     </div>
   `;
@@ -1539,22 +1704,24 @@ function closeDialog() {
 }
 
 window.sandboxConfirm = function(msg, callback, isDanger = false) {
+  const btn = qs('#dialogConfirmBtn');
+  // 每次打开统一重置 disabled 状态，避免上一次危险操作残留
+  btn.disabled = false;
   // P0-2: 高危操作要求输入确认词（confirmWord 非空时启用）
   if (isDanger && arguments[3]) {
     const confirmWord = arguments[3];
     qs('#dialogTitle').textContent = '⚠️ 危险操作确认';
     qs('#dialogBody').innerHTML = `
       <div style="color:var(--danger);font-weight:600;margin-bottom:8px;">${esc(msg)}</div>
-      <div style="background:var(--danger-light);border:1px solid var(--danger);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:13px;">
+      <div class="danger-box" style="margin-bottom:12px">
         此操作<b>不可逆</b>。为防止误操作，请输入 <b style="color:var(--danger)">${esc(confirmWord)}</b> 以确认：
       </div>
       <input id="danger-confirm-input" class="tag-input-field" style="border:2px solid var(--danger)!important;padding:8px!important;width:100%;box-sizing:border-box;" placeholder="请输入确认词">
       <div id="danger-confirm-hint" style="font-size:12px;color:var(--danger);margin-top:4px;display:none;">确认词不匹配</div>
     `;
-    const btn = qs('#dialogConfirmBtn');
     btn.className = 'btn btn-danger';
     btn.textContent = '执行不可逆操作';
-    btn.disabled = true;
+    btn.disabled = true;  // 初始禁用，输入匹配后启用
     btn.onclick = () => {
       const val = qs('#danger-confirm-input').value.trim();
       if (val === confirmWord) {
@@ -1565,13 +1732,23 @@ window.sandboxConfirm = function(msg, callback, isDanger = false) {
       }
     };
     qs('#dialogOverlay').classList.add('open');
-    setTimeout(() => qs('#danger-confirm-input').focus(), 50);
+    setTimeout(() => {
+      const input = qs('#danger-confirm-input');
+      if (input) {
+        input.focus();
+        // 监听输入：匹配确认词时启用按钮，否则禁用
+        input.addEventListener('input', function() {
+          const matched = this.value.trim() === confirmWord;
+          btn.disabled = !matched;
+          if (matched) qs('#danger-confirm-hint').style.display = 'none';
+        });
+      }
+    }, 50);
     return;
   }
   qs('#dialogTitle').textContent = '操作确认';
   qs('#dialogBody').innerHTML = `<div style="color:${isDanger ? 'var(--danger)' : 'var(--text)'}">${esc(msg)}</div>`;
 
-  const btn = qs('#dialogConfirmBtn');
   btn.className = `btn ${isDanger ? 'btn-danger' : 'btn-primary'}`;
   btn.textContent = isDanger ? '删除' : '确定';
 
@@ -1613,7 +1790,6 @@ qsa('.nav-item').forEach(btn => {
     if (btn.dataset.tab === 'wb') { loadWB(); }
     if (btn.dataset.tab === 'rag') { loadRAG(); loadRAGModelInfo(); }
     if (btn.dataset.tab === 'memory') switchMemSub('overview');
-    // persona tab: no JS needed (static info page)
     if (btn.dataset.tab === 'persona') loadPersonas();
     if (btn.dataset.tab === 'config') { loadGlobalSettings(); loadHealth(); }
   });
@@ -1752,7 +1928,7 @@ let _kbExpandedId = null;
 
 function renderKBGrid() {
   const grid = qs('#kb-grid');
-  if (!kbState.entries.length) { grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="empty-state-icon">📭</div><div class="empty-state-title">还没有素材条目</div><div class="empty-state-description">点击上方"新建条目"按钮开始创建</div></div>'; return; }
+  if (!kbState.entries.length) { grid.innerHTML = renderEmptyState('book', '还没有素材条目', '点击上方"新建条目"按钮开始创建'); return; }
   grid.innerHTML = kbState.entries.map((e) => {
     const escId = esc(e.entry_id);
     const jsId = jsAttr(e.entry_id);  // B3: onclick 上下文用双重转义
@@ -1764,7 +1940,7 @@ function renderKBGrid() {
         <div><div class="kb-card-title">${esc(e.name || e.entry_id)}</div><div class="kb-card-id">${escId}</div></div>
         <div class="kb-card-meta">
           <span class="cat-chip" style="background:${catColor(e.category)}">${esc(e.category)}</span>
-          <span style="font-size:13px;color:var(--text-muted)">P${e.priority != null ? e.priority : '-'}</span>
+          <span class="text-muted-13">P${e.priority != null ? e.priority : '-'}</span>
         </div>
       </div>
       ${isOpen ? renderKBExpanded(e) : (kw || more) ? `<div class="kb-card-tags">${kw}${more}</div>` : ''}
@@ -1786,7 +1962,7 @@ function renderKBExpanded(e) {
   const kwTags = (e.keywords || []).map(k => `<span class="tag" style="margin:0 2px 2px 0">${esc(k)} <span class="tag-del" onclick="removeKBInlineTag('${jsId}','${jsAttr(k)}')">×</span></span>`).join('');
   return `<div class="kb-expanded" onclick="event.stopPropagation()">
     <div class="form-row">
-      <div class="form-group"><label>分类</label><input value="${esc(e.category||'')}" onchange="kbInlineDirty=true"></div>
+      <div class="form-group"><label>分类</label><input value="${esc(e.category||'')}"></div>
       <div class="form-group" style="flex:0 0 120px"><label>权重</label><div class="range-wrap"><input type="range" min="1" max="10" value="${e.priority||5}" oninput="this.nextElementSibling.textContent=this.value"><span class="range-value">${e.priority||5}</span></div></div>
     </div>
     <div class="form-group"><label>关键词</label><div>${kwTags || '<span style="color:var(--text-muted)">无</span>'}</div>
@@ -1800,7 +1976,6 @@ function renderKBExpanded(e) {
   </div>`;
 }
 
-let kbInlineDirty = false;
 let _kbInlineTagCache = {};
 
 function toggleKBExpand(eid) {
@@ -1820,7 +1995,7 @@ async function saveKBInline(eid) {
   const is_const = card.querySelector('.kb-inline-const-cb')?.checked || false;
   const priority = parseInt(card.querySelector('input[type="range"]')?.value) || entry.priority || 5;
   const body = { entry_id: eid, category: card.querySelector('input')?.value || entry.category, name: card.querySelector('.kb-card-title')?.textContent, keywords: _kbInlineTagCache[eid] || entry.keywords, content: card.querySelector('textarea')?.value || '', priority: priority, is_constant: is_const, enabled: entry.enabled };
-  try { await api('/kb/update', { method: 'POST', body: JSON.stringify(body) }); showToast('已保存', 'success'); _kbExpandedId = null; loadKB(); } catch (e) { showToast(e.message); }
+  try { await apiPost('/kb/update', body); showToast('已保存', 'success'); _kbExpandedId = null; loadKB(); } catch (e) { showToast(e.message); }
 }
 
 function renderKBPagination() {
@@ -1835,7 +2010,7 @@ function renderKBPagination() {
     <button class="btn btn-outline btn-sm" ${page>=tp?'disabled':''} onclick="goKBPage(${page+1})">下一页</button>
     <button class="btn btn-outline btn-sm" ${page>=tp?'disabled':''} onclick="goKBPage(${tp})">尾页</button>
     <div class="kb-jump-box">
-      <span style="font-size:13px;color:var(--text-muted)">跳至</span>
+      <span class="text-muted-13">跳至</span>
       <input type="number" id="kb-page-jump" min="1" max="${tp}" value="${page}" class="tag-input-field" style="width:50px;text-align:center;border:1px solid var(--border)!important;padding:4px!important;" onkeydown="if(event.key==='Enter')goKBPage(parseInt(this.value)||1)">
       <button class="btn btn-outline btn-sm" onclick="goKBPage(parseInt(qs('#kb-page-jump').value)||1)">GO</button>
     </div>
@@ -1860,7 +2035,7 @@ async function loadKBCategories() {
 async function openKBModal(entryId) {
   modalMode = entryId ? 'edit' : 'create';
   let data = { category: '', entry_id: '', name: '', keywords: [], content: '', priority: 5, is_constant: false, enabled: true };
-  if (entryId) { try { data = await api('/kb/get', { method: 'POST', body: JSON.stringify({ entry_id: entryId }) }); if (typeof data.keywords === 'string') data.keywords = data.keywords.split(/[,，\s]+/).filter(Boolean); } catch (e) { showToast(e.message); return; } }
+  if (entryId) { try { data = await apiPost('/kb/get', { entry_id: entryId }); if (typeof data.keywords === 'string') data.keywords = data.keywords.split(/[,，\s]+/).filter(Boolean); } catch (e) { showToast(e.message); return; } }
   qs('#modalTitle').textContent = modalMode === 'create' ? '新建条目' : '编辑条目';
   qs('#modalBody').innerHTML = `
     <div class="form-row"><div class="form-group" style="flex:2"><label>条目ID</label><input id="f-eid" value="${esc(data.entry_id||'')}" ${modalMode==='edit'?'readonly':''} placeholder="唯一标识"></div><div class="form-group"><label>分类</label><input id="f-cat" value="${esc(data.category||'')}"></div></div>
@@ -1891,8 +2066,8 @@ async function saveModal() {
     const enabled = qs('#f-we-enabled')?.checked !== false;
     const entry = { id, title, keys, content, is_constant: is_const, enabled };
     try {
-      if (modalState.mode === 'create') await api('/wb/entry/create', { method: 'POST', body: JSON.stringify({ name, entry }) });
-      else await api('/wb/entry/update', { method: 'POST', body: JSON.stringify({ name, entry_id: id, entry }) });
+      if (modalState.mode === 'create') await apiPost('/wb/entry/create', { name, entry });
+      else await apiPost('/wb/entry/update', { name, entry_id: id, entry });
       showToast('条目已保存', 'success');
       closeModal();
       await reloadSingleWB(name);  // 局部刷新保持展开状态
@@ -1905,7 +2080,7 @@ async function saveModal() {
     const name = qs('#f-wb-name').value.trim();
     const desc = qs('#f-wb-desc').value.trim();
     if (!name) { showToast('请输入名称'); return; }
-    try { await api('/wb/create', { method: 'POST', body: JSON.stringify({ name, description: desc }) }); showToast('世界书已创建', 'success'); closeModal(); await loadWB(name); } catch (e) { showToast(e.message); }
+    try { await apiPost('/wb/create', { name, description: desc }); showToast('世界书已创建', 'success'); closeModal(); await loadWB(name); } catch (e) { showToast(e.message); }
     return;
   }
   // KB 保存
@@ -1921,8 +2096,8 @@ async function saveModal() {
   if (!entry_id || !category || !content) { showToast('请填写条目ID、分类和内容'); return; }
   try {
     const body = { entry_id, category, name, keywords, content, priority, is_constant, enabled };
-    if (modalMode === 'create') { await api('/kb/create', { method: 'POST', body: JSON.stringify(body) }); showToast('条目已创建', 'success'); }
-    else { await api('/kb/update', { method: 'POST', body: JSON.stringify(body) }); showToast('条目已更新', 'success'); }
+    if (modalMode === 'create') { await apiPost('/kb/create', body); showToast('条目已创建', 'success'); }
+    else { await apiPost('/kb/update', body); showToast('条目已更新', 'success'); }
     closeModal();
     loadKB();
   } catch (e) { showToast(e.message); }
@@ -1930,17 +2105,14 @@ async function saveModal() {
 
 function deleteKBEntry(entryId) {
   sandboxConfirm(`确定删除 "${entryId}" 吗？`, async () => {
-    try { await api('/kb/delete', { method: 'POST', body: JSON.stringify({ entry_id: entryId }) }); showToast('已删除', 'success'); loadKB(); } catch (e) { showToast(e.message); }
+    try { await apiPost('/kb/delete', { entry_id: entryId }); showToast('已删除', 'success'); loadKB(); } catch (e) { showToast(e.message); }
   }, true);
 }
-async function toggleKBEntry(entryId, enabled) { try { await api('/kb/toggle', { method: 'POST', body: JSON.stringify({ entry_id: entryId, enabled }) }); loadKB(); } catch (e) { showToast(e.message); } }
+async function toggleKBEntry(entryId, enabled) { try { await apiPost('/kb/toggle', { entry_id: entryId, enabled }); loadKB(); } catch (e) { showToast(e.message); } }
 async function exportKB() {
   try {
     const data = await api('/kb/export');
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'quill_kb_export.json'; a.click();
-    URL.revokeObjectURL(url);
+    downloadJSON(data, 'quill_kb_export.json');
     showToast('导出成功', 'success');
   } catch (e) { showToast('导出失败: ' + e.message); }
 }
@@ -1958,7 +2130,7 @@ async function importKB(input) {
       throw new Error("JSON 格式错误，缺少有效的条目信息 (必须包含 content 字段)。");
     }
     entries.forEach((e, i) => { if(!e.entry_id) e.entry_id = 'import_' + Date.now() + '_' + i; });
-    const res = await api('/kb/import', { method: 'POST', body: JSON.stringify({ entries }) });
+    const res = await apiPost('/kb/import', { entries });
     showToast(`导入完成：${res.imported} 成功`, res.failed ? 'error' : 'success');
     loadKB();
   } catch (e) { showToast(e.message); }
@@ -1998,7 +2170,7 @@ function updateWBStats(wbs) {
 
 function renderWBList(wbs, currentOpenName) {
   const el = qs('#wb-list');
-  if (!wbs.length) { el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📖</div><div class="empty-state-title">还没有世界书</div><div class="empty-state-description">点击上方"新建世界书"按钮开始创建</div></div>'; _wbOpenItem = null; return; }
+  if (!wbs.length) { el.innerHTML = renderEmptyState('worldbook', '还没有世界书', '点击上方"新建世界书"按钮开始创建'); _wbOpenItem = null; return; }
   el.innerHTML = wbs.map(wb => { wbCache[wb.name] = wb; const ne = wb.entries?.length || 0;
     return `<div class="wb-item"><div class="wb-header" data-wb-name="${esc(wb.name)}" onclick="toggleWB('${jsAttr(wb.name)}')"><div class="wb-header-left"><span class="arrow">▶</span><span class="wb-name">${esc(wb.name)}</span>${wb.description ? `<span class="wb-desc">${esc(wb.description)}</span>` : ''}</div><div style="display:flex;align-items:center;gap:12px"><span class="wb-meta">${ne} 条</span><button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWB('${jsAttr(wb.name)}')">删除</button></div></div><div class="wb-body"><div class="wb-inner"><div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${jsAttr(wb.name)}', null)">+ 新建条目</button><span style="color:var(--text-muted)">点击上方展开</span></div></div></div></div>`;
   }).join('');
@@ -2036,7 +2208,7 @@ function toggleWBConstantFilter() {
 
 async function reloadSingleWB(wbName) {
   try {
-    const data = await api('/wb/get', { method: 'POST', body: JSON.stringify({ name: wbName }) });
+    const data = await apiPost('/wb/get', { name: wbName });
     const wb = data;
     if (!wb) return;
     wbCache[wbName] = wb;
@@ -2055,15 +2227,7 @@ async function reloadSingleWB(wbName) {
           <input type="text" placeholder="搜索本世界书设定..." oninput="filterWBEntries(this, '${jsAttr(wbName)}')" style="flex:1; margin-right:8px;">
           <span style="color:var(--text-muted);flex-shrink:0">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span>
         </div>
-        ${displayEntries.length === 0 ? '<div class="empty">没有条目</div>' : displayEntries.map(e => `
-        <div class="wb-entry-card">
-          <div class="wb-entry-header">
-            <div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
-            <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${jsAttr(wbName)}','${jsAttr(e.id||'')}')">✎</button><button class="btn btn-sm btn-danger btn-icon" onclick="event.stopPropagation();deleteWBEntry('${jsAttr(wbName)}','${jsAttr(e.id||'')}')">×</button></div>
-          </div>
-          ${(e.keys||[]).length ? `<div class="wb-entry-keys">${e.keys.map(k => '<span class="tag">' + esc(k) + '</span>').join('')}</div>` : ''}
-          ${e.content ? '<div class="wb-entry-content">' + esc(e.content.substring(0,200)) + (e.content.length>200?'…':'') + '</div>' : ''}
-        </div>`).join('')}
+        ${displayEntries.length === 0 ? renderEmptyState('book', '没有条目', '点击上方"+ 新建条目"按钮添加') : displayEntries.map(e => renderWBEntryCard(wbName, e)).join('')}
       `;
     }
   } catch (e) { showToast('刷新失败: ' + e.message); }
@@ -2094,20 +2258,13 @@ async function toggleWB(name) {
     const entries = wb.entries || [];
     const displayEntries = wbShowConstantOnly ? entries.filter(e => e.is_constant) : entries;
     inner.innerHTML = `<div class="toolbar"><button class="btn btn-sm btn-primary" onclick="openWBEntryModal('${jsAttr(name)}', null)">+ 新建条目</button><input type="text" placeholder="搜索本世界书设定..." oninput="filterWBEntries(this, '${jsAttr(name)}')" style="flex:1; margin-right:8px;"><span style="color:var(--text-muted);flex-shrink:0">${wbShowConstantOnly ? `显示 ${displayEntries.length} 条常驻 / ` : ''}共 ${entries.length} 条</span></div>` +
-      (displayEntries.length === 0 ? '<div class="empty">没有条目</div>' : displayEntries.map(e => `
-      <div class="wb-entry-card">
-        <div class="wb-entry-header"><div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
-          <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${jsAttr(name)}','${jsAttr(e.id||'')}')">✎</button><button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWBEntry('${jsAttr(name)}','${jsAttr(e.id||'')}')">×</button></div>
-        </div>
-        ${(e.keys||[]).length ? `<div class="wb-entry-keys">${e.keys.map(k => `<span class="tag">${esc(k)}</span>`).join('')}</div>` : ''}
-        ${e.content ? `<div class="wb-entry-content">${esc(e.content.substring(0,200))}${e.content.length>200?'…':''}</div>` : ''}
-      </div>`).join(''));
+      (displayEntries.length === 0 ? renderEmptyState('book', '没有条目', '点击上方"+ 新建条目"按钮添加') : displayEntries.map(e => renderWBEntryCard(name, e)).join(''));
   }
 }
 
 function deleteWB(name) {
   sandboxConfirm(`确定删除世界书 "${name}"？此操作不可逆！\n所有绑定此世界书的角色将自动解绑。`, async () => {
-    try { await api('/wb/delete', { method: 'POST', body: JSON.stringify({ name }) }); showToast('已删除', 'success'); await loadWB(); } catch (e) { showToast(e.message); }
+    try { await apiPost('/wb/delete', { name }); showToast('已删除', 'success'); await loadWB(); } catch (e) { showToast(e.message); }
   }, true, name);
 }
 function importWB_ST(input) {
@@ -2123,7 +2280,7 @@ function importWB_ST(input) {
     try {
       // 读取为文本通过 JSON 发送（绕过沙盒 FormData 限制）
       const text = await file.text();
-      await api('/wb/import_json', { method: 'POST', body: JSON.stringify({ name, data: text }) });
+      await apiPost('/wb/import_json', { name, data: text });
 
       showToast('导入成功', 'success'); await loadWB(name);
     } catch(e) { showToast('导入失败: ' + e.message); }
@@ -2134,7 +2291,7 @@ function importWB_ST(input) {
 function deleteWBEntry(wbName, entryId) {
   sandboxConfirm('确定删除此条目？', async () => {
     try {
-      await api('/wb/entry/delete', { method: 'POST', body: JSON.stringify({ name: wbName, entry_id: entryId }) });
+      await apiPost('/wb/entry/delete', { name: wbName, entry_id: entryId });
       showToast('已删除', 'success');
       await reloadSingleWB(wbName);
     } catch (e) { showToast(e.message); }
@@ -2190,7 +2347,7 @@ async function loadPersonas() {
     state_personas = personas || [];
     updatePersonaStats();
     if (!state_personas.length) {
-      container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">👤</div><div class="empty-state-title">还没有角色卡</div><div class="empty-state-description">点击上方"新建角色卡"按钮开始创建</div><button class="btn btn-primary" onclick="openPersonaModal(null)">+ 新建角色卡</button></div>';
+      container.innerHTML = renderEmptyState('persona', '暂无角色卡', '点击上方"新建角色卡"按钮开始创建', '<button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="openPersonaModal(null)">+ 新建角色卡</button>');
       return;
     }
     _personaShowCount = 20;  // 重置分页
@@ -2235,7 +2392,7 @@ function renderPersonaPage() {
   const container = qs('#persona-list');
   const filtered = getFilteredPersonas();
   if (!filtered.length) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🔍</div><div class="empty-state-title">未找到匹配的角色卡</div><div class="empty-state-description">尝试调整搜索关键词</div></div>`;
+    container.innerHTML = renderEmptyState('persona', _personaSearchQuery ? '未找到匹配的角色卡' : '暂无角色卡', _personaSearchQuery ? '尝试更换关键词或清空搜索' : '点击上方"新建角色卡"按钮开始创建', '<button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="openPersonaModal(null)">+ 新建角色卡</button>');
     return;
   }
   const visible = filtered.slice(0, _personaShowCount);
@@ -2273,7 +2430,7 @@ function renderPersonaPage() {
         <div class="persona-card-actions">
           <button class="btn btn-sm btn-outline" onclick="openPersonaModal(window.__quillPids[${index}])">编辑</button>
           <button class="btn btn-sm btn-outline" onclick="exportPersona(window.__quillPids[${index}])">导出</button>
-          <button class="btn btn-sm btn-danger-outline" onclick="deletePersona(window.__quillPids[${index}])">删除</button>
+          <button class="btn btn-sm btn-danger" onclick="deletePersona(window.__quillPids[${index}])">删除</button>
         </div>
       </div>`;
     }).join('') + '</div>';
@@ -2387,14 +2544,14 @@ async function openPersonaModal(personaId) {
     <div class="persona-form-tab-content" id="ptab-ext">
       <div class="form-group">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <label style="margin:0">世界书 (Worldbook)</label>
+          <label class="margin-0">世界书 (Worldbook)</label>
           <select id="pf-wb-mode" style="width:170px;padding:4px 8px" onchange="toggleExtList('wb')">
             <option value="auto" ${wbMode==='auto'?'selected':''}>全库激活 (Auto)</option>
             <option value="custom" ${wbMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
             <option value="disabled" ${wbMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
            </select>
         </div>
-        <input type="text" class="ext-search-input" placeholder="搜索世界书..." oninput="filterCheckboxes(this, 'pf-wb-list')" style="width:100%; border-radius:6px; padding:8px 12px;">
+        <input type="text" class="ext-search-input" placeholder="搜索世界书..." oninput="filterCheckboxes(this, 'pf-wb-list')">
         <div id="pf-wb-list" class="checkbox-group-scroll" style="${wbMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
           ${allWbs.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用世界书</div>' :
             allWbs.map(w => `<label class="form-check"><input type="checkbox" class="cb-wb-bind" value="${esc(w)}" ${boundWbs.includes(w)?'checked':''}> ${esc(w)}</label>`).join('')}
@@ -2404,16 +2561,16 @@ async function openPersonaModal(personaId) {
 
       <div class="form-group">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <label style="margin:0">文档知识库 (Doc RAG)</label>
+          <label class="margin-0">文档知识库 (Doc RAG)</label>
           <select id="pf-rag-mode" style="width:170px;padding:4px 8px" onchange="toggleExtList('rag')">
             <option value="auto" ${ragMode==='auto'?'selected':''}>全库检索 (Auto)</option>
             <option value="custom" ${ragMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
             <option value="disabled" ${ragMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
            </select>
         </div>
-        <input type="text" class="ext-search-input" placeholder="搜索文档..." oninput="filterCheckboxes(this, 'pf-rag-list')" style="width:100%; border-radius:6px; padding:8px 12px;">
+        <input type="text" class="ext-search-input" placeholder="搜索文档..." oninput="filterCheckboxes(this, 'pf-rag-list')">
         <div id="pf-rag-list" class="checkbox-group-scroll" style="${ragMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
-          ${ragDocs.length === 0 ? '<div class="empty">暂无已上传的外部文档<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="qs(\'#rag-file-input\').click()">立即上传</button></div>' :
+          ${ragDocs.length === 0 ? renderEmptyState('doc', '暂无已上传的外部文档', '支持 .txt / .md / .pdf 格式', '<button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="qs(\'#rag-file-input\').click()">立即上传</button>') :
             ragDocs.map(d => `<label class="form-check"><input type="checkbox" class="cb-rag-bind" value="${esc(d.source)}" ${boundRagDocs.includes(d.source)?'checked':''}> ${esc(d.source)}</label>`).join('')}
         </div>
         <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">Auto=检索全库 | Custom=仅检索勾选文档 | Disabled=不检索任何文档</span>
@@ -2421,14 +2578,14 @@ async function openPersonaModal(personaId) {
 
       <div class="form-group">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <label style="margin:0">写作素材库 (Knowledge Base)</label>
+          <label class="margin-0">写作素材库 (Knowledge Base)</label>
           <select id="pf-kb-mode" style="width:170px;padding:4px 8px" onchange="toggleExtList('kb')">
             <option value="auto" ${kbMode==='auto'?'selected':''}>全局匹配 (Auto)</option>
             <option value="custom" ${kbMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
             <option value="disabled" ${kbMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
            </select>
         </div>
-        <input type="text" class="ext-search-input" placeholder="搜索分类..." oninput="filterCheckboxes(this, 'pf-kb-list')" style="width:100%; border-radius:6px; padding:8px 12px;">
+        <input type="text" class="ext-search-input" placeholder="搜索分类..." oninput="filterCheckboxes(this, 'pf-kb-list')">
         <div id="pf-kb-list" class="checkbox-group-scroll" style="${kbMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
           ${kbCats.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用分类</div>' :
             kbCats.map(c => `<label class="form-check"><input type="checkbox" class="cb-kb-bind" value="${esc(c)}" ${boundKbs.includes(c)?'checked':''}> ${esc(c)}</label>`).join('')}
@@ -2490,10 +2647,10 @@ async function savePersona() {
   };
   try {
     if (_personaMode === 'create') {
-      await api('/persona/create', { method: 'POST', body: JSON.stringify(body) });
+      await apiPost('/persona/create', body);
       showToast('角色卡已创建', 'success');
     } else {
-      await api('/persona/update', { method: 'POST', body: JSON.stringify(body) });
+      await apiPost('/persona/update', body);
       showToast('角色卡已更新', 'success');
     }
     closeModal();
@@ -2503,7 +2660,7 @@ async function savePersona() {
 
 function deletePersona(personaId) {
   sandboxConfirm(`确定删除角色卡 "${personaId}"？此操作不可逆！\n相关头像与世界书绑定将一并清除。`, async () => {
-    try { await api('/persona/delete', { method: 'POST', body: JSON.stringify({ id: personaId }) }); showToast('已删除', 'success'); loadPersonas(); } catch (e) { showToast(e.message); }
+    try { await apiPost('/persona/delete', { id: personaId }); showToast('已删除', 'success'); loadPersonas(); } catch (e) { showToast(e.message); }
   }, true, personaId);
 }
 
@@ -2555,7 +2712,7 @@ async function importPersona(input) {
   if (file.size > 5 * 1024 * 1024) { showToast('文件过大（最大 5MB）'); return; }
 
   const container = qs('#persona-list');
-  container.innerHTML = '<div class="loading"><span class="skeleton" style="width:200px">&nbsp;</span></div>';
+  container.innerHTML = '<div class="skeleton-list"><div class="skeleton-item"></div><div class="skeleton-item"></div></div>';
 
   try {
     const reader = new FileReader();
@@ -2658,7 +2815,7 @@ async function loadRAG() {
     const data = await api('/rag/documents');
     const docs = data.documents || [];
     const c = qs('#rag-doc-list');
-    c.innerHTML = docs.length ? docs.map(d => `<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-light)"><div><strong>${esc(d.source)}</strong><div style="font-size:12px;color:var(--text-muted)">${d.chunk_count} 分块</div></div><button class="btn btn-outline btn-sm" onclick="deleteRAGDocument('${jsAttr(d.source)}')">删除</button></div>`).join('') : '<div class="empty">暂无文档<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="qs(\'#rag-file-input\').click()">立即上传</button></div>';
+    c.innerHTML = docs.length ? docs.map(d => `<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-light)"><div><strong>${esc(d.source)}</strong><div class="text-muted-12">${d.chunk_count} 分块</div></div><button class="btn btn-outline btn-sm" onclick="deleteRAGDocument('${jsAttr(d.source)}')">删除</button></div>`).join('') : '<div class="empty">暂无文档<br><button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="qs(\'#rag-file-input\').click()">立即上传</button></div>';
     // 更新统计
     const totalDocs = docs.length;
     const totalChunks = docs.reduce((s, d) => s + (d.chunk_count || 0), 0);
@@ -2744,7 +2901,7 @@ async function processMultipleRAGFiles(fileList) {
 
 function deleteRAGDocument(source) {
   sandboxConfirm(`确定删除文档 "${source}"？`, async () => {
-    try { await api('/rag/delete', { method: 'POST', body: JSON.stringify({ source }) }); showToast('已删除', 'success'); loadRAG(); } catch (e) { showToast(e.message); }
+    try { await apiPost('/rag/delete', { source }); showToast('已删除', 'success'); loadRAG(); } catch (e) { showToast(e.message); }
   }, true);
 }
 
@@ -2753,9 +2910,9 @@ async function testRAGSearch() {
   const topK = parseInt(qs('#rag-test-topk').value) || 5;
   const r = qs('#rag-test-results');
   if (!q) { r.innerHTML = '<span style="color:var(--text-muted)">请输入查询</span>'; return; }
-  r.innerHTML = '<div class="loading"><span class="skeleton" style="width:120px">&nbsp;</span></div>';
+  r.innerHTML = '<div class="skeleton-list"><div class="skeleton-item"></div></div>';
   try {
-    const data = await api('/rag/search', { method: 'POST', body: JSON.stringify({ query: q, top_k: topK }) });
+    const data = await apiPost('/rag/search', { query: q, top_k: topK });
     const items = data.results || [];
     r.innerHTML = items.length ? items.map((it, i) => `
       <div class="rag-result-card">
@@ -2769,19 +2926,17 @@ async function testRAGSearch() {
         </div>
         <div class="rag-result-content">${esc(it.content)}</div>
       </div>
-    `).join('') : '<div class="empty">无匹配结果</div>';
+    `).join('') : renderEmptyState('search', '无匹配结果', '尝试更换检索词或调整 Top-K 参数');
   } catch (e) {
     r.innerHTML = `<span style="color:var(--danger)">${esc(e.message)}</span>`;
   }
 }
 
 // ── Memory ──
-let _memCurrentSub = 'overview';
 let _memPage = 1;
 let _memPerPage = 50;
 let _memTotalPages = 1;
 function switchMemSub(sub) {
-  _memCurrentSub = sub;
   qsa('.memory-subnav-item').forEach(b => b.classList.toggle('active', b.dataset.memSub === sub));
   qsa('.mem-sub-pane').forEach(p => p.classList.toggle('active', p.id === 'mem-sub-' + sub));
   if (sub === 'overview') loadMemoryOverview();
@@ -2834,7 +2989,7 @@ async function loadMemoryBrowser() {
             ${m.is_active ? '<span class="tag" style="background:#e2e8f0;color:#475569">主动记忆</span>' : ''}
           </div>
         </td>
-        <td style="font-size:12px;color:var(--text-muted)">${timeStr}</td>
+        <td class="text-muted-12">${timeStr}</td>
         <td>
           <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="showMemoryDetail(${m.id})">详情</button>
           <button class="btn btn-outline btn-sm" onclick="deleteMemory(${m.id})">删除</button>
@@ -2885,7 +3040,7 @@ async function showMemoryDetail(id) {
 
 function deleteMemory(id) {
   sandboxConfirm('确定删除此记忆？', async () => {
-    try { await api('/memory/delete', { method: 'POST', body: JSON.stringify({ memory_id: id }) }); showToast('已删除', 'success'); loadMemoryBrowser(); } catch (e) { showToast(e.message); }
+    try { await apiPost('/memory/delete', { memory_id: id }); showToast('已删除', 'success'); loadMemoryBrowser(); } catch (e) { showToast(e.message); }
   }, true);
 }
 
@@ -2922,10 +3077,7 @@ async function pruneMemories() {
 async function exportMemories() {
   try {
     const data = await api('/memory/export');
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'quill_memories_export.json'; a.click();
-    URL.revokeObjectURL(url);
+    downloadJSON(data, 'quill_memories_export.json');
     showToast('导出成功', 'success');
   } catch (e) { showToast('导出失败: ' + e.message); }
 }
@@ -2943,7 +3095,7 @@ async function importMemories(input) {
     // A3 前置校验
     if (!data || typeof data !== 'object') throw new Error('无效的 JSON 格式');
     if (!data.memories || !Array.isArray(data.memories)) throw new Error('JSON 缺少 memories 数组');
-    const res = await api('/memory/import', { method: 'POST', body: JSON.stringify(data) });
+    const res = await apiPost('/memory/import', data);
     showToast('导入完成: ' + (res.message || ''), 'success');
     // A3 自动切换到记忆浏览子页签，让用户看到结果
     switchMemSub('browser');
@@ -2962,7 +3114,7 @@ async function testMemoryVectorSearch() {
   const resultsDiv = qs('#mem-vector-results');
   if (!q) { resultsDiv.innerHTML = '<span style="color:var(--text-muted)">请输入查询</span>'; return; }
   resultsDiv.innerHTML = '<span style="color:var(--text-muted)">检索中...</span>';
-  try { const data = await api('/memory/vector_search', { method: 'POST', body: JSON.stringify({ query: q, top_k: 5 }) }); rawPre.style.display = 'block'; rawPre.textContent = JSON.stringify(data, null, 2); const items = data.results || []; resultsDiv.innerHTML = items.length ? items.map((r, i) => `<div style="padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px"><strong>#${i+1}</strong> ${esc(r.summary?.substring(0,60)||'')} <span style="color:var(--primary)">score:${r.score.toFixed(4)}</span></div>`).join('') : '<span style="color:var(--text-muted)">无结果</span>'; } catch (e) { resultsDiv.innerHTML = `<span style="color:var(--danger)">${e.message}</span>`; }
+  try { const data = await apiPost('/memory/vector_search', { query: q, top_k: 5 }); rawPre.style.display = 'block'; rawPre.textContent = JSON.stringify(data, null, 2); const items = data.results || []; resultsDiv.innerHTML = items.length ? items.map((r, i) => `<div style="padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px"><strong>#${i+1}</strong> ${esc(r.summary?.substring(0,60)||'')} <span style="color:var(--primary)">score:${r.score.toFixed(4)}</span></div>`).join('') : '<span style="color:var(--text-muted)">无结果</span>'; } catch (e) { resultsDiv.innerHTML = `<span style="color:var(--danger)">${e.message}</span>`; }
 }
 
 // ── Provider Config ──
@@ -2984,15 +3136,24 @@ async function loadHealth() {
     const stRate = h.status_bar?.rate;
     qs('#health-status-rate').textContent = stRate !== null && stRate !== undefined ? stRate + '%' : '—';
     qs('#health-status-detail').textContent = `${h.status_bar?.success || 0} / ${h.status_bar?.total || 0}`;
-    // 颜色阈值：>=80% 绿，>=50% 橙，<50% 红
-    function rateColor(rate) {
-      if (rate === null || rate === undefined) return 'var(--text-muted)';
-      if (rate >= 80) return 'var(--success, #10b981)';
-      if (rate >= 50) return 'var(--warning, #f59e0b)';
-      return 'var(--danger)';
+    // 语义化颜色 class：>=80% success，>=50% warning，<50% danger
+    function rateClass(rate) {
+      if (rate === null || rate === undefined) return '';
+      if (rate >= 80) return 'stat-value--success';
+      if (rate >= 50) return 'stat-value--warning';
+      return 'stat-value--danger';
     }
-    qs('#health-rag-rate').style.color = rateColor(ragRate);
-    qs('#health-status-rate').style.color = rateColor(stRate);
+    // 清除旧的语义 class，应用新的
+    const ragEl = qs('#health-rag-rate');
+    ragEl.classList.remove('stat-value--success', 'stat-value--warning', 'stat-value--danger');
+    ragEl.style.color = '';  // 清除旧的内联 style
+    const ragCls = rateClass(ragRate);
+    if (ragCls) ragEl.classList.add(ragCls);
+    const stEl = qs('#health-status-rate');
+    stEl.classList.remove('stat-value--success', 'stat-value--warning', 'stat-value--danger');
+    stEl.style.color = '';
+    const stCls = rateClass(stRate);
+    if (stCls) stEl.classList.add(stCls);
   } catch (e) {
     qs('#health-rag-rate').textContent = 'N/A';
     qs('#health-status-rate').textContent = 'N/A';
@@ -3129,7 +3290,7 @@ async function saveAllChanges() {
     }
 
     for (const u of updates) {
-      await api('/config/save', { method: 'POST', body: JSON.stringify(u) });
+      await apiPost('/config/save', u);
       changedCount++;
     }
 
@@ -3216,80 +3377,154 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
 <!-- 预置的全局 Toast 提示容器 -->
 <div class="toast-container" id="toast-container"></div>
 
-<!-- P2: E5 - 回到顶部按钮 -->
-<button class="back-to-top" id="back-to-top" onclick="document.querySelector('.content').scrollTo({top:0,behavior:'smooth'})">
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+<!-- 回到顶部按钮 -->
+<button class="back-to-top" id="back-to-top" title="回到顶部" aria-label="回到顶部" onclick="document.querySelector('.content').scrollTo({top:0,behavior:'smooth'})">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <polyline points="18 15 12 9 6 15"></polyline>
   </svg>
 </button>
 
 <script>
-// P2: E5 - 回到顶部按钮可见性
-(function() {
-  const content = document.querySelector('.content');
-  const btn = document.getElementById('back-to-top');
-  if (content && btn) {
-    content.addEventListener('scroll', function() {
-      btn.classList.toggle('visible', content.scrollTop > 300);
-    });
+  // ── 空状态渲染 helper（SVG 图标，不用 emoji）──
+  const _emptyIcons = {
+    book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+    worldbook: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>',
+    persona: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+    search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+  };
+  function renderEmptyState(iconType, title, description, extraHtml) {
+    const icon = _emptyIcons[iconType] || _emptyIcons.book;
+    return `<div class="empty-state"><div class="empty-state-icon">${icon}</div><div class="empty-state-title">${esc(title)}</div><div class="empty-state-description">${esc(description)}</div>${extraHtml || ''}</div>`;
   }
-})();
 
-// P3: E1 - 侧边栏折叠
-function toggleSidebar() {
-  const sidebar = document.getElementById('sidebar');
-  if (sidebar) {
-    sidebar.classList.toggle('collapsed');
-    localStorage.setItem('quill-sidebar-collapsed', sidebar.classList.contains('collapsed'));
-  }
-}
-// 恢复侧边栏状态
-(function() {
-  const collapsed = localStorage.getItem('quill-sidebar-collapsed');
-  if (collapsed === 'true') {
+  // ── 回到顶部按钮可见性控制 ──
+  (function() {
+    const content = document.querySelector('.content');
+    const btn = document.getElementById('back-to-top');
+    if (content && btn) {
+      content.addEventListener('scroll', function() {
+        btn.classList.toggle('visible', content.scrollTop > 300);
+      });
+    }
+  })();
+
+  // ── 侧边栏折叠 ──
+  function toggleSidebar() {
     const sidebar = document.getElementById('sidebar');
-    if (sidebar) sidebar.classList.add('collapsed');
+    if (sidebar) {
+      sidebar.classList.toggle('collapsed');
+      localStorage.setItem('quill-sidebar-collapsed', sidebar.classList.contains('collapsed'));
+    }
   }
-})();
+  (function() {
+    const collapsed = localStorage.getItem('quill-sidebar-collapsed');
+    if (collapsed === 'true') {
+      const sidebar = document.getElementById('sidebar');
+      if (sidebar) sidebar.classList.add('collapsed');
+    }
+  })();
 
-// P3: E2 - 键盘快捷键
-document.addEventListener('keydown', function(e) {
-  // Esc: 关闭 Modal
-  if (e.key === 'Escape') {
-    const openModal = document.querySelector('.modal-overlay.open');
-    if (openModal) {
-      openModal.classList.remove('open');
+  // ── 键盘快捷键 ──
+  document.addEventListener('keydown', function(e) {
+    // Esc: 关闭当前 Modal
+    if (e.key === 'Escape') {
+      const openModal = document.querySelector('.modal-overlay.open');
+      if (openModal) { openModal.classList.remove('open'); return; }
+    }
+    // 忽略输入框中的快捷键（Esc 除外）
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+    if (e.ctrlKey || e.metaKey) return;  // 不拦截 Ctrl 组合（浏览器原生快捷键）
+
+    // Alt+1~6: 切换 Tab
+    if (e.altKey && /^[1-6]$/.test(e.key)) {
+      e.preventDefault();
+      const tabs = ['kb', 'wb', 'persona', 'rag', 'memory', 'config'];
+      const idx = parseInt(e.key) - 1;
+      if (idx < tabs.length) {
+        const nav = document.querySelector(`.nav-item[data-tab="${tabs[idx]}"]`);
+        if (nav) nav.click();
+      }
       return;
     }
-  }
-  // Ctrl+S: 保存配置
-  if (e.ctrlKey && e.key === 's') {
-    e.preventDefault();
-    const saveBtn = document.getElementById('btn-save-config');
-    if (saveBtn && !saveBtn.disabled) saveBtn.click();
-  }
-  // /: 聚焦搜索框
-  if (e.key === '/' && !e.ctrlKey && !e.metaKey) {
-    const activeTab = document.querySelector('.tab-content.active');
-    if (activeTab) {
-      const searchInput = activeTab.querySelector('input[type="text"]');
-      if (searchInput && document.activeElement !== searchInput) {
+
+    // /: 聚焦搜索框
+    if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      const activeTab = document.querySelector('.tab-content.active');
+      if (activeTab) {
+        const searchInput = activeTab.querySelector('input[type="text"]');
+        if (searchInput) { searchInput.focus(); searchInput.select(); }
+      }
+      return;
+    }
+  });
+
+  // Ctrl/Cmd+S: 保存配置（全局拦截浏览器默认保存）
+  document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+      const activeTab = document.querySelector('.tab-content.active');
+      if (activeTab && activeTab.id === 'tab-config') {
         e.preventDefault();
-        searchInput.focus();
+        const btn = document.getElementById('btn-save-all');
+        if (btn) btn.click();
       }
     }
-  }
-  // Alt+1-6: 切换 Tab
-  if (e.altKey && !e.ctrlKey && !e.metaKey) {
-    const tabMap = {'1':'kb','2':'wb','3':'persona','4':'rag','5':'memory','6':'config'};
-    const tabId = tabMap[e.key];
-    if (tabId) {
-      e.preventDefault();
-      const btn = document.querySelector('.nav-item[data-tab="' + tabId + '"]');
-      if (btn) btn.click();
+  });
+
+  // ── Toast 时长分级已在 showToast 函数内实现 ──
+
+  // ── 未保存变更检测 ──
+  let _configDirty = false;
+  (function() {
+    const configTab = document.getElementById('tab-config');
+    if (!configTab) return;
+    configTab.addEventListener('change', function() { _configDirty = true; }, true);
+    configTab.addEventListener('input', function(e) {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
+        _configDirty = true;
+      }
+    }, true);
+    // 保存后清除 dirty 标记
+    const origSave = window.saveAllChanges;
+    if (typeof origSave === 'function') {
+      window.saveAllChanges = async function() {
+        await origSave.apply(this, arguments);
+        _configDirty = false;
+      };
     }
-  }
-});
+    // 切换 Tab 时警告
+    document.addEventListener('click', function(e) {
+      if (!_configDirty) return;
+      const navItem = e.target.closest('.nav-item[data-tab]');
+      if (navItem && !navItem.dataset.tab) return;
+      if (navItem && navItem.dataset.tab !== 'config') {
+        if (!confirm('配置页有未保存的修改，确定要离开吗？')) {
+          e.preventDefault();
+          e.stopPropagation();
+        } else {
+          _configDirty = false;
+        }
+      }
+    }, true);
+    // 关闭页面时警告
+    window.addEventListener('beforeunload', function(e) {
+      if (_configDirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+  })();
+
+  // ── 卡片折叠（配置页 collapsible 卡片）──
+  document.addEventListener('click', function(e) {
+    const toggle = e.target.closest('.card-collapse-toggle');
+    if (toggle) {
+      const card = toggle.closest('.card.collapsible');
+      if (card) card.classList.toggle('collapsed');
+    }
+  });
 </script>
 </body>
 </html>

@@ -7,57 +7,6 @@ AstrBot 启动时扫描 _conf_schema.json，实例化 AstrBotConfig(dict) 注入
 
 from __future__ import annotations
 
-from typing import List, Optional
-
-
-# ── 默认值（与 _conf_schema.json 中的 default 保持一致，双重保险） ──
-
-_DEFAULTS = {
-    "rag": {
-        "llm_provider_id": "",
-        "embedding_provider_id": "",
-        "rerank_provider_id": "",
-        "enable_local_embedding": True,
-        "chunk_size": 500,
-        "chunk_overlap": 50,
-        "top_k": 3,
-        "dense_top_k": 5,
-        "enable_memory": False,
-    },
-    "worldbook": {
-        "enabled": True,
-        "max_dynamic_entries": 4,
-        "max_token_limit": 4000,
-        "match_sensitivity": 0.7,
-        "injection_position": "system_end",
-        "show_trigger_log": False,
-    },
-    "knowledge_base": {
-        "enabled": True,
-        "max_entries": 4,
-        "fallback_top_count": 2,
-        "category_dedup_limit": 3,
-    },
-    "performance": {
-        "max_prompt_length": 50000,
-        "min_output_length": 400,
-    },
-    "status_bar": {
-        "enabled": True,
-        "fields": "好感度|关系阶段|心情|位置|穿着|当前想法",
-        "format_template": "**状态栏**\n```\n{content}\n```",
-    },
-    "refusal": {
-        "enabled": True,
-        "patterns": "我不能\n我无法\n这违反\n我不应该\n这不合适\n我拒绝",
-    },
-    "debug": {
-        "enabled": False,
-    },
-    "permissions": {
-        "admin_users": "",
-    },
-}
 
 # 状态栏默认字段（当 config 解析失败时的硬编码回退）
 _DEFAULT_LOVE_FIELDS = ["好感度", "关系阶段", "心情", "位置", "穿着", "当前想法"]

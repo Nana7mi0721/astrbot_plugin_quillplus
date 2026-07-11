@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,14 @@ class QuillReranker:
             except Exception as e:
                 logger.warning(f"[Quill RAG] Rerank provider 失败: {e}")
 
-        # 2. fallback: 按原始 score 排序
+        # 2. fallback: 尝试 LLM 评分，再按原始 score 排序
+        if self.fallback_llm_id and self.context:
+            try:
+                llm_provider = self.context.get_provider_by_id(self.fallback_llm_id)
+                if llm_provider:
+                    return await self._rerank_with_llm(query, candidates, top_k, llm_provider)
+            except Exception as e:
+                logger.warning(f"[Quill RAG] LLM fallback provider 获取失败: {e}")
         return sorted(candidates, key=lambda x: x.get('score', 0), reverse=True)[:top_k]
 
     async def _rerank_with_provider(self, query, candidates, top_k, provider) -> list[dict]:
@@ -88,6 +94,52 @@ class QuillReranker:
         except Exception as e:
             logger.warning(f"[Quill RAG] Rerank 调用失败: {e}")
         return candidates[:top_k]
+
+    async def _rerank_with_llm(self, query: str, candidates: list[dict], top_k: int, provider) -> list[dict]:
+        """使用 LLM 对候选列表打分（fallback 方案）。
+
+        当 rerank provider 不可用时，让 LLM 对候选内容按相关性打分。
+        失败时回退到按原始 score 排序。
+        """
+        import re
+        try:
+            # 构建编号列表（截断避免 token 过长）
+            items = []
+            for i, c in enumerate(candidates):
+                content = (c.get('content', '') or '')[:200]
+                items.append(f"[{i}] {content}\n")
+
+            system_prompt = (
+                "你是一个文档相关性评估助手。根据用户查询，为每个候选文档打分（0-10，10最相关）。"
+                "只返回分数列表，格式：[0]=分数 [1]=分数 [2]=分数 ..."
+            )
+            prompt = (
+                f"用户查询：{query}\n\n"
+                f"候选文档列表：\n{''.join(items)}\n"
+                f"请为每个文档打分（0-10）："
+            )
+
+            response = await provider.text_chat(
+                prompt=prompt,
+                system_prompt=system_prompt,
+            )
+            text = getattr(response, "completion_text", "") or str(response)
+
+            # 解析 [idx]=score 格式
+            scores = {}
+            for match in re.finditer(r'\[(\d+)\]\s*=\s*([\d.]+)', text):
+                idx = int(match.group(1))
+                score = float(match.group(2))
+                if 0 <= idx < len(candidates):
+                    scores[idx] = score
+
+            if scores:
+                for idx, cand in enumerate(candidates):
+                    cand['llm_score'] = scores.get(idx, 0.0)
+                return sorted(candidates, key=lambda x: x.get('llm_score', 0), reverse=True)[:top_k]
+        except Exception as e:
+            logger.warning(f"[Quill RAG] LLM 降级重排失败: {e}")
+        return sorted(candidates, key=lambda x: x.get('score', 0), reverse=True)[:top_k]
 
     def get_status(self) -> dict:
         """返回 reranker 状态。"""
