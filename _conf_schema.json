@@ -216,6 +216,13 @@
         "description": "LLM 智能提取（实验性）",
         "default": false,
         "hint": "当 L1-L5 解析全部失败时，调用轻量 LLM 从文本中智能提取状态字段。有 3s 超时保护，失败自动放弃。默认关闭。"
+      },
+      "llm_provider_id": {
+        "type": "string",
+        "description": "状态栏提取 LLM 提供商",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "状态栏智能提取所使用的 LLM。留空则回退到 RAG 摘要 LLM。建议配置轻量/便宜的模型以降低成本。"
       }
     }
   },

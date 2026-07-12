@@ -104,6 +104,8 @@ class QuillConfig:
             self.status_bar_fields.append("")
         # 方案C: LLM 智能提取开关（默认关闭，高成本兜底）
         self.status_bar_llm_extract: bool = bool(sb.get("llm_extract", False))
+        # P0-2: 状态栏 LLM 提取独立 provider（留空回退到 RAG 摘要 LLM）
+        self.status_bar_llm_provider_id: str = str(sb.get("llm_provider_id", "") or "").strip()
 
         # ── refusal ──
         ref = _get_nested(self._raw, "refusal", {}) or {}

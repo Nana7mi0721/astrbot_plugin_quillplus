@@ -767,8 +767,10 @@ class QuillPlugin(Star):
         if keyword_hits < 2:
             return None
 
-        # 复用 RAG summarizer 的 provider_id 和 context 获取 provider
-        provider_id = getattr(self.rag_summarizer, 'provider_id', '') if self.rag_summarizer else ''
+        # P0-2: 模型路由 — 优先使用状态栏独立 provider，留空回退到 RAG summarizer
+        provider_id = getattr(self.config, 'status_bar_llm_provider_id', '') or ''
+        if not provider_id:
+            provider_id = getattr(self.rag_summarizer, 'provider_id', '') if self.rag_summarizer else ''
         if not provider_id or not self.context:
             return None
         try:
@@ -1045,7 +1047,12 @@ class QuillPlugin(Star):
             mem_results = await self.rag_retriever.search_memories(mem_session_id, user_input)
             logger.info(f"[Quill RAG] 记忆检索: {len(mem_results)} 条 (Session: {mem_session_id})")
 
-            rag_context = self.rag_retriever.format_for_prompt(doc_results, mem_results)
+            # 核心记忆：无条件注入，不参与 Top-K 竞争
+            core_mems = await self.rag_retriever.get_core_memories(mem_session_id)
+            if core_mems:
+                logger.info(f"[Quill RAG] 核心记忆: {len(core_mems)} 条 (Session: {mem_session_id})")
+
+            rag_context = self.rag_retriever.format_for_prompt(doc_results, mem_results, core_mems)
             if rag_context:
                 dynamic_prompt += "\n\n" + rag_context
                 logger.info(f"[Quill RAG] 注入上下文: {len(rag_context)} 字符")
@@ -1421,7 +1428,7 @@ class QuillPlugin(Star):
 
     @filter.command("wb")
     async def cmd_wb(self, event: AstrMessageEvent, arg1: str = "", arg2: str = ""):
-        """世界书管理。用法：/wb | /wb <名字> | /wb off | /wb info <名字> | /wb reload"""
+        """世界书管理。用法：/wb | /wb bind <序号|名字> | /wb unbind <序号|名字> | /wb info <序号|名字> | /wb reload"""
         await _cmds.wb_dispatch(self, event, arg1, arg2)
 
     @filter.command("char")
@@ -1434,10 +1441,13 @@ class QuillPlugin(Star):
         self, event: AstrMessageEvent,
         arg1: str = "", rest: GreedyStr = ""
     ):
-        """Quill 系统总览与测试。用法：/quill | /quill help | /quill test <kb|wb|mem> <文字>"""
+        """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill test <kb|wb|mem> <文字>"""
         arg1_lower = (arg1 or "").strip().lower()
         if arg1_lower == "help":
             await _cmds.quill_help(event)
+            return
+        if arg1_lower == "reset":
+            await _cmds.quill_reset(self, event)
             return
         if arg1_lower == "test":
             text = (rest or "").strip()
@@ -1464,7 +1474,7 @@ class QuillPlugin(Star):
 
     @filter.command("doc")
     async def cmd_doc(self, event: AstrMessageEvent, arg1: str = "", arg2: str = ""):
-        """外部文档 RAG 管理。用法：/doc list | /doc search <关键词>"""
+        """外部文档 RAG 管理。用法：/doc list | /doc bind <序号> | /doc unbind <序号> | /doc search <关键词> | /doc reload"""
         await _cmds.doc_dispatch(self, event, arg1, arg2)
 
     @filter.command("stream")

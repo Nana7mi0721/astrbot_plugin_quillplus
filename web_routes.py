@@ -32,6 +32,7 @@ _ALLOWED_CONFIG_KEYS: set = {
     # status_bar
     ("status_bar", "enabled"), ("status_bar", "fields"),
     ("status_bar", "format_template"), ("status_bar", "plot_paths"),
+    ("status_bar", "llm_extract"), ("status_bar", "llm_provider_id"),
     # refusal
     ("refusal", "enabled"), ("refusal", "patterns"),
     # debug
@@ -166,6 +167,7 @@ class QuillRoutes:
 
         # ── Persona 角色卡 (独立 Quill 管理 + V2 兼容) ──
         _r(f"/{PLUGIN_NAME}/persona/list",          self.persona_list,   ["GET"],    "列出角色卡")
+        _r(f"/{PLUGIN_NAME}/persona/avatar",        self.persona_avatar, ["GET"],    "获取角色卡头像(懒加载)")
         _r(f"/{PLUGIN_NAME}/persona/create",        self.persona_create, ["POST"],   "创建角色卡")
         _r(f"/{PLUGIN_NAME}/persona/update",        self.persona_update, ["POST"],   "更新角色卡")
         _r(f"/{PLUGIN_NAME}/persona/delete",        self.persona_delete, ["POST"],   "删除角色卡")
@@ -200,6 +202,7 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/memory/stats",     self.memory_stats,   ["GET"],    "记忆存储统计")
         _r(f"/{PLUGIN_NAME}/memory/get",       self.memory_get,     ["GET"],    "获取单条记忆详情")
         _r(f"/{PLUGIN_NAME}/memory/delete",    self.memory_delete,  ["POST"],   "删除记忆")
+        _r(f"/{PLUGIN_NAME}/memory/pin",       self.memory_pin,     ["POST"],   "钉住/取消钉住核心记忆")
         _r(f"/{PLUGIN_NAME}/memory/vector_search", self.memory_vector_search, ["POST"], "向量检索(Debug)")
 
         # ── Provider 列表 (配置面板下拉) ──
@@ -217,6 +220,10 @@ class QuillRoutes:
         # ── Panel 主题（F8 修复：从 config_all 死代码区前移至此）──
         _r(f"/{PLUGIN_NAME}/panel/theme",      self.panel_theme_get,  ["GET"],   "获取面板主题")
         _r(f"/{PLUGIN_NAME}/panel/theme",      self.panel_theme_save, ["POST"],  "保存面板主题")
+
+        # ── 流式模式批量控制 ──
+        _r(f"/{PLUGIN_NAME}/stream/stats",     self.stream_stats,     ["GET"],   "流式模式统计")
+        _r(f"/{PLUGIN_NAME}/stream/all",       self.stream_set_all,   ["POST"],  "批量设置流式模式")
 
     # ── Info ──────────────────────────────────────────────────
 
@@ -290,6 +297,38 @@ class QuillRoutes:
         if hasattr(self, 'plugin') and self.plugin:
             self.plugin.save_plugin_config("debug", "panel_theme", theme)
         return json_response({"theme": theme, "message": "主题已保存"})
+
+    # ── 流式模式批量控制 ───────────────────────────────────────
+
+    @_api_handler
+    async def stream_stats(self):
+        """返回所有 session 的流式模式统计。"""
+        plugin = self.plugin
+        if plugin is None or plugin.state_manager is None:
+            return json_response({"auto": 0, "on": 0, "off": 0, "total": 0})
+        stats = await plugin.state_manager.get_stream_mode_stats()
+        return json_response(stats)
+
+    @_api_handler
+    async def stream_set_all(self):
+        """批量设置所有 session 的流式模式。"""
+        plugin = self.plugin
+        if plugin is None or plugin.state_manager is None:
+            return error_response("插件实例不可用", status_code=500)
+        data = await request.json(default={})
+        mode = (data.get("mode") or "").strip().lower()
+        if mode not in ("auto", "on", "off"):
+            return error_response("无效模式，可选: auto/on/off", status_code=400)
+        count = await plugin.state_manager.set_stream_mode_all(mode)
+        mode_names = {"auto": "自动", "on": "强制流式", "off": "强制关闭"}
+        return json_response({
+            "status": "ok",
+            "data": {
+                "affected": count,
+                "mode": mode,
+                "message": f"已将 {count} 个会话的流式模式设为: {mode_names[mode]}"
+            }
+        })
 
     # ── RAG ───────────────────────────────────────────────────
 
@@ -507,6 +546,25 @@ class QuillRoutes:
         return json_response(
             await handle_memory_delete(memory_store, data.get("memory_id"), data.get("session_id"))
         )
+
+    @_api_handler
+    async def memory_pin(self):
+        """钉住/取消钉住核心记忆。is_core=1 的记忆不参与 Top-K 竞争，直接注入 prompt。"""
+        memory_store = self.rag.get('memory_store')
+        if memory_store is None:
+            return error_response("记忆未初始化", status_code=500)
+        data = await request.json(default={})
+        memory_id = data.get("memory_id")
+        is_core = bool(data.get("is_core", False))
+        if not memory_id:
+            return error_response("缺少 memory_id", status_code=400)
+        ok = await asyncio.to_thread(memory_store.set_core, int(memory_id), is_core)
+        if not ok:
+            return error_response("记忆不存在或更新失败", status_code=404)
+        return json_response({
+            "status": "ok",
+            "data": {"memory_id": memory_id, "is_core": is_core}
+        })
 
     # ── Chat Log ──────────────────────────────────────────────
 
@@ -768,27 +826,53 @@ class QuillRoutes:
 
     @_api_handler
     async def persona_list(self):
-        """返回所有角色卡（完整 JSON 结构，含头像 base64 data URL）。"""
+        """返回所有角色卡（含头像 Base64 data URL）。"""
         if not self.persona_manager:
             return json_response([])
+        import base64 as _b64
         personas = await self.persona_manager.load_all()
-        # 为每个有头像的角色卡嵌入 base64 data URL，避免 <img> 跨域请求
         for p in personas:
             avatar_path = p.get("avatar_path", "")
-            if avatar_path and avatar_path.startswith("quill_avatars/"):
+            p["has_avatar"] = bool(avatar_path and avatar_path.startswith("quill_avatars/"))
+            # 直接内联 Base64 头像数据（退回优化前方案，避免懒加载 bug）
+            if p["has_avatar"]:
                 fname = avatar_path[len("quill_avatars/"):]
                 data = await self.persona_manager.read_avatar(fname)
                 if data:
-                    import base64
                     ext = os.path.splitext(fname)[1].lower()
-                    mime_map = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif'}
+                    mime_map = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                                '.webp': 'image/webp', '.gif': 'image/gif'}
                     mime = mime_map.get(ext, 'image/png')
-                    p["avatar_url"] = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+                    p["avatar_url"] = f"data:{mime};base64,{_b64.b64encode(data).decode('ascii')}"
                 else:
                     p["avatar_url"] = ""
             else:
                 p["avatar_url"] = ""
         return json_response(personas)
+
+    @_api_handler
+    async def persona_avatar(self):
+        """单独获取某个角色卡的头像（Base64 data URL），供前端懒加载。"""
+        if not self.persona_manager:
+            return error_response("Persona manager not available", status_code=500)
+        persona_id = (request.query.get("id") or "").strip()
+        if not persona_id:
+            return error_response("缺少角色 ID", status_code=400)
+        persona = await self.persona_manager.get_persona(persona_id)
+        if not persona:
+            return error_response("角色卡不存在", status_code=404)
+        avatar_path = persona.get("avatar_path", "")
+        if not avatar_path or not avatar_path.startswith("quill_avatars/"):
+            return json_response({"avatar_url": ""})
+        fname = avatar_path[len("quill_avatars/"):]
+        data = await self.persona_manager.read_avatar(fname)
+        if not data:
+            return json_response({"avatar_url": ""})
+        import base64
+        ext = os.path.splitext(fname)[1].lower()
+        mime_map = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif'}
+        mime = mime_map.get(ext, 'image/png')
+        return json_response({"avatar_url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"})
 
     @_api_handler
     async def persona_create(self):
@@ -992,7 +1076,7 @@ class QuillRoutes:
         if not self.persona_manager:
             return error_response("Persona manager not available", status_code=500)
 
-        persona_id = request.args.get("id", "").strip()
+        persona_id = (request.query.get("id") or "").strip()
         if not persona_id:
             return error_response("缺少角色 ID", status_code=400)
 

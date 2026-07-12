@@ -83,6 +83,7 @@ class MemoryStore:
                 "ALTER TABLE memories ADD COLUMN useful_count INTEGER DEFAULT 0",
                 "ALTER TABLE memories ADD COLUMN useful_score REAL DEFAULT 0.0",
                 "ALTER TABLE memories ADD COLUMN is_active INTEGER DEFAULT 0",
+                "ALTER TABLE memories ADD COLUMN is_core INTEGER DEFAULT 0",
             ):
                 try:
                     self._conn.execute(stmt)
@@ -138,7 +139,7 @@ class MemoryStore:
             rows = self._exec_fetchall(
                 """SELECT id, summary, chat_summary, vector, dim, timestamp,
                           strength, useful_count, useful_score, is_active,
-                          (julianday('now') - julianday(timestamp)) AS age_days
+                          (julianday('now') - julianday(timestamp)) AS age_days, is_core
                    FROM memories WHERE session_id = ? ORDER BY timestamp DESC LIMIT 500""",
                 (session_id,)
             )
@@ -240,11 +241,11 @@ class MemoryStore:
             logger.warning(f"[Quill Memory] 更新记忆有用性失败: {e}")
 
     def prune_memories(self) -> int:
-        """分档遗忘清理任务（无情斩杀低价值记忆）。"""
+        """分档遗忘清理任务（无情斩杀低价值记忆）。核心记忆(is_core=1)永不清理。"""
         try:
             cursor = self._exec_write("""
                 DELETE FROM memories
-                WHERE is_active = 0 AND (
+                WHERE is_active = 0 AND is_core = 0 AND (
                     (useful_score < 3 AND julianday('now') - julianday(timestamp) > 3)
                     OR
                     (useful_score >= 3 AND useful_score < 10 AND julianday('now') - julianday(timestamp) > 9)
@@ -282,19 +283,46 @@ class MemoryStore:
             return []
         try:
             rows = self._exec_fetchall(
-                "SELECT id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active FROM memories "
+                "SELECT id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active, is_core FROM memories "
                 "WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?",
                 (session_id, limit)
             )
             return [
                 {
                     "id": r[0], "summary": r[1], "chat_summary": r[2], "timestamp": r[3],
-                    "strength": r[4], "useful_count": r[5], "useful_score": r[6], "is_active": r[7]
+                    "strength": r[4], "useful_count": r[5], "useful_score": r[6], "is_active": r[7],
+                    "is_core": r[8]
                 }
                 for r in rows
             ]
         except Exception as e:
             logger.warning("[Quill Memory] list_memories 失败: %s", e)
+            return []
+
+    def set_core(self, memory_id: int, is_core: bool) -> bool:
+        """设置/取消记忆的核心锚定状态。核心记忆不参与 Top-K 竞争，直接注入 prompt。"""
+        try:
+            cursor = self._exec_write(
+                "UPDATE memories SET is_core = ? WHERE id = ?",
+                (1 if is_core else 0, memory_id)
+            )
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.warning("[Quill Memory] set_core 失败: %s", e)
+            return False
+
+    def get_core_memories(self, session_id: str) -> list[dict]:
+        """获取某 session 的所有核心记忆（is_core=1），无条件注入 prompt。"""
+        if not session_id:
+            return []
+        try:
+            rows = self._exec_fetchall(
+                "SELECT id, summary FROM memories WHERE session_id = ? AND is_core = 1 ORDER BY timestamp DESC",
+                (session_id,)
+            )
+            return [{"id": r[0], "summary": r[1]} for r in rows]
+        except Exception as e:
+            logger.warning("[Quill Memory] get_core_memories 失败: %s", e)
             return []
 
     def delete_session_memories(self, session_id: str) -> int:
@@ -306,6 +334,24 @@ class MemoryStore:
             return cursor.rowcount
         except Exception as e:
             logger.warning("[Quill Memory] delete_session_memories 失败: %s", e)
+            return 0
+
+    def delete_all_session_memories(self, target_id: str) -> int:
+        """删除某 target_id 下所有 session 的记忆（含 target_id 本身和 target_id::* 所有 persona）。
+
+        用于 /quill reset 场景：用户可能切换过多个角色卡，每个 persona 有独立的
+        mem_session_id（target_id::persona_id）。此方法一次性清理全部。
+        """
+        if not target_id:
+            return 0
+        try:
+            cursor = self._exec_write(
+                "DELETE FROM memories WHERE session_id = ? OR session_id LIKE ?",
+                (target_id, target_id + "::%"),
+            )
+            return cursor.rowcount
+        except Exception as e:
+            logger.warning("[Quill Memory] delete_all_session_memories 失败: %s", e)
             return 0
 
     def get_recent_chat_logs(self, session_id: str, limit: int = 8) -> list[dict]:
@@ -405,6 +451,24 @@ class MemoryStore:
             logger.warning("[Quill Memory] delete_session_chat_logs 失败: %s", e)
             return 0
 
+    def delete_all_session_chat_logs(self, target_id: str) -> int:
+        """删除某 target_id 下所有 session 的对话日志（含 target_id 本身和 target_id::* 所有 persona）。
+
+        用于 /quill reset 场景：清理所有角色卡的对话日志，防止切换角色卡后
+        Context Restoration 垫入旧上下文。
+        """
+        if not target_id:
+            return 0
+        try:
+            cursor = self._exec_write(
+                "DELETE FROM chat_logs WHERE session_id = ? OR session_id LIKE ?",
+                (target_id, target_id + "::%"),
+            )
+            return cursor.rowcount
+        except Exception as e:
+            logger.warning("[Quill Memory] delete_all_session_chat_logs 失败: %s", e)
+            return 0
+
     def delete_memory(self, memory_id: int) -> bool:
         """删除单条记忆。"""
         try:
@@ -433,7 +497,7 @@ class MemoryStore:
         """列出全部记忆（跨 session），按创建时间倒序，支持分页。"""
         try:
             rows = self._exec_fetchall(
-                "SELECT id, session_id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active FROM memories "
+                "SELECT id, session_id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active, is_core FROM memories "
                 "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 (limit, offset)
             )
@@ -441,7 +505,7 @@ class MemoryStore:
                 {
                     "id": r[0], "session_id": r[1], "summary": r[2], "chat_summary": r[3],
                     "timestamp": r[4], "strength": r[5], "useful_count": r[6],
-                    "useful_score": r[7], "is_active": r[8]
+                    "useful_score": r[7], "is_active": r[8], "is_core": r[9]
                 }
                 for r in rows
             ]
@@ -462,7 +526,7 @@ class MemoryStore:
         try:
             row = self._exec_fetchone(
                 "SELECT id, session_id, summary, chat_summary, timestamp, "
-                "strength, useful_count, useful_score, is_active FROM memories WHERE id = ?",
+                "strength, useful_count, useful_score, is_active, is_core FROM memories WHERE id = ?",
                 (memory_id,)
             )
             if not row:
@@ -471,7 +535,7 @@ class MemoryStore:
                 "id": row[0], "session_id": row[1], "summary": row[2],
                 "chat_summary": row[3], "timestamp": row[4],
                 "strength": row[5], "useful_count": row[6],
-                "useful_score": row[7], "is_active": row[8]
+                "useful_score": row[7], "is_active": row[8], "is_core": row[9]
             }
         except Exception as e:
             logger.warning("[Quill Memory] get_memory_by_id 失败: %s", e)
