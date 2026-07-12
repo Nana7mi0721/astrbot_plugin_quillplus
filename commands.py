@@ -12,6 +12,7 @@ import json
 
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.message.message_event_result import MessageEventResult
+from astrbot.core.platform.message_type import MessageType
 
 try:
     from astrbot.api import logger
@@ -31,18 +32,16 @@ def _check_group_permission(plugin, event: AstrMessageEvent) -> bool:
     """群聊写权限校验。私聊始终返回 True。
 
     F2 修复：原实现用 `sender_id in target_id` 子串匹配，群号含于用户 ID 时越权。
-    现改为：私聊场景要求 unified_msg_origin 尾部精确匹配 sender_id；群聊仅 admin 放行。
+    现改为：私聊场景直接放行；群聊仅 admin 放行。
     S2-5 修复：admin_users 未配置时群聊默认拒绝（fail-close），避免公网裸奔。
+    Bug 修复：AstrBot 所有适配器统一使用 MessageType.FRIEND_MESSAGE 表示私聊，
+    原代码误用字符串 "PrivateMessage" 判断导致私聊永不进入私聊分支。
     """
     admin_users = getattr(plugin.config, "admin_users", []) or []
     sender_id = str(event.get_sender_id())
-    target_id = _get_target_id(event)
-    # 私聊：unified_msg_origin 形如 "aiocqhttp:PrivateMessage:<uid>"，尾部应严格等于 sender_id
-    if "PrivateMessage" in target_id:
-        if target_id.endswith(":" + sender_id):
-            return True
-        logger.debug(f"[Quill] 私聊权限校验：target_id={target_id} 末段与 sender_id={sender_id} 不符，拒绝")
-        return False
+    # 私聊：直接放行（与 AstrBot 内置 /reset 策略对齐：私聊默认 member）
+    if event.get_message_type() == MessageType.FRIEND_MESSAGE:
+        return True
     # 群聊：仅 admin 放行；admin 未配置时 fail-close
     if not admin_users:
         logger.warning("[Quill] admin_users 未配置，群聊写操作已拒绝。请在配置面板设置 admin_users。")
@@ -425,7 +424,7 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
     if link_info:
         msg_parts.append("已自动挂载：")
         msg_parts.append("；".join(link_info))
-    msg_parts.append("\n建议使用 /reset 清空上下文，防止旧对话影响新角色。")
+    msg_parts.append("\n建议使用 /quill reset + /reset 清空 Quill 侧状态与上下文，防止旧对话影响新角色。")
 
     event.set_result(MessageEventResult().message("\n".join(msg_parts)))
 
@@ -610,38 +609,42 @@ async def quill_help(event: AstrMessageEvent):
         "━━━ 羽笔 QuillPlus 指令速查 ━━━",
         "",
         "【🎭 角色卡 /char】",
-        "  /char              查看当前角色",
-        "  /char <名字>       切换角色",
+        "  /char              列出所有角色卡",
+        "  /char <序号|名字>   切换角色",
         "  /char unset        取消当前角色",
-        "  /char info         角色详情",
-        "  /char export       导出 V2 卡",
-        "  /char import       导入 V2 卡",
+        "  /char info [序号|名字]  角色详情",
+        "  /char export [序号|名字]  导出 V2 卡",
+        "  /char import <JSON>  导入 V2 卡",
         "",
         "【📖 世界书 /wb】",
-        "  /wb                查看已绑定世界书",
-        "  /wb <名字>         绑定世界书",
-        "  /wb off            解绑世界书",
-        "  /wb info <名字>    世界书详情",
+        "  /wb                列出所有世界书",
+        "  /wb bind <序号|名字>  绑定到当前角色",
+        "  /wb unbind <序号|名字> 解绑从当前角色",
+        "  /wb info <序号|名字>  世界书详情",
         "  /wb reload         重载世界书",
         "",
         "【🧠 动态记忆 /memory】",
         "  /memory            记忆统计",
-        "  /memory list       记忆列表",
+        "  /memory list [页码]  记忆列表",
         "  /memory del <序号>  删除记忆",
         "  /memory clear      清空当前会话记忆",
-        "  /memory learn <内容> 手动添加记忆",
+        "  /memory learn [内容] 手动添加/增量总结",
         "  /memory search <词>  搜索记忆",
         "",
         "【📄 文档RAG /doc】",
         "  /doc list          文档列表",
-        "  /doc del <名字>     删除文档",
-        "  /doc rebuild       重建索引",
+        "  /doc bind <序号>    绑定到当前角色",
+        "  /doc unbind <序号>  解绑从当前角色",
+        "  /doc search <关键词>  检索文档",
+        "  /doc reload        重载索引",
         "",
         "【⚙️ 系统 /quill】",
         "  /quill             系统总览",
         "  /quill help        本帮助",
+        "  /quill reset       清空记忆+日志+注入状态(配合/reset)",
         "  /quill test <kb|wb|mem> <文字>  系统测试",
-        "  /stream on|off     流式模式开关",
+        "  /stream on|off|auto  流式模式开关",
+        "  /reinject          重置注入状态",
         "",
         "━━━ 私聊不受权限限制 ━━━",
     ]
@@ -873,6 +876,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             f"     /memory del <序号> 删除记忆",
             f"     /memory clear 清空当前会话",
             f"     /memory learn <内容> 添加记忆",
+            f"     /memory search <词> 搜索记忆",
         ]
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
         return
@@ -1316,3 +1320,57 @@ async def reinject_dispatch(plugin, event: AstrMessageEvent):
     event.set_result(MessageEventResult().message(
         "已重置注入状态。下次触发 Quill 时将重新注入全部常驻素材。"
     ))
+
+
+# ================================================================
+# /quill reset — 清空 Quill 侧会话状态（记忆 + 对话日志 + 注入计数）
+# ================================================================
+
+async def quill_reset(plugin, event: AstrMessageEvent):
+    """/quill reset — 清空 Quill 侧会话状态，配合 /reset 实现完整重置。
+
+    清理内容：
+    - 动态记忆（memories 表中当前 session 的所有记忆）
+    - 对话日志（chat_logs 表中当前 session 的所有记录，避免 Context Restoration 垫入旧上下文）
+    - quill_rounds（注入轮次归零，下次重新注入常驻素材）
+    - unsummarized_turns（反思计数器归零）
+
+    注意：本命令不清理 AstrBot 核心的对话历史（contexts），
+    如需完整重置请额外执行 /reset。
+    """
+    if not _check_group_permission(plugin, event):
+        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行重置。"))
+        return
+
+    target_id = _get_target_id(event)
+    persona_id = await plugin.state_manager.get_persona_id(target_id)
+    mem_session_id = plugin._get_memory_session_id(target_id, persona_id)
+
+    mem_deleted = 0
+    log_deleted = 0
+    if plugin.rag_retriever and plugin.rag_retriever.memory_store:
+        try:
+            # 批量清理：删除 target_id 下所有 session 的记忆和日志
+            # （含 target_id 本身和 target_id::* 所有 persona），
+            # 防止切换角色卡后 Context Restoration 垫入旧上下文
+            mem_deleted = await asyncio.to_thread(
+                plugin.rag_retriever.memory_store.delete_all_session_memories, target_id
+            )
+            log_deleted = await asyncio.to_thread(
+                plugin.rag_retriever.memory_store.delete_all_session_chat_logs, target_id
+            )
+        except Exception as e:
+            logger.warning(f"[Quill] /quill reset 清理记忆失败: {e}")
+
+    await plugin.state_manager.reset_quill_rounds(target_id)
+    await plugin.state_manager.reset_unsummarized_turns(target_id)
+    await plugin.state_manager.update_last_learned_id(target_id, 0)
+
+    msg = "✅ Quill 会话已重置\n"
+    msg += f"  · 动态记忆: 已清空 {mem_deleted} 条\n"
+    msg += f"  · 对话日志: 已清空 {log_deleted} 条\n"
+    msg += f"  · 注入轮次: 已归零\n"
+    msg += f"  · 反思计数: 已归零\n"
+    msg += "\n⚠️ 如需完整重置（含 AstrBot 对话历史），请额外执行 /reset"
+    event.set_result(MessageEventResult().message(msg))
+

@@ -1,5 +1,37 @@
 # Changelog
 
+## v5.0.4 — 核心记忆锚定 + 模型路由 + 多项 Bug 修复
+
+本版本新增两项核心功能（P0 级升级）并修复多个影响体验的 Bug，无破坏性变更。
+
+**P0-1 核心记忆锚定（Core Memory Anchoring）：**
+- 新增 `is_core` 字段（SQLite 热迁移，兼容老数据库），支持将关键记忆钉住为核心锚定记忆
+- 核心记忆**不参与 Top-K 竞争**，无条件注入 `<core_memory>` XML 标签，类似人设基石
+- `prune_memories` 遗忘清理跳过核心记忆（`is_core=1` 永不清理）
+- Web 面板记忆列表新增钉住/取消钉住按钮 + 核心锚定标签（黄色高亮整行）
+- 记忆详情弹窗显示核心锚定状态
+- 新增 API：`POST /memory/pin`（`{memory_id, is_core}`）
+
+**P0-2 模型路由（Model Routing）：**
+- 状态栏 LLM 智能提取支持独立配置 provider（`status_bar.llm_provider_id`）
+- 留空时自动回退到 RAG 摘要 LLM（`rag.llm_provider_id`），向后兼容
+- 建议配置轻量/便宜的模型（如 GPT-4o-mini）做 JSON 提取，降低成本
+- 前端状态栏配置卡片新增 LLM 模型下拉框
+
+**Bug 修复：**
+- **私聊管理员权限误判**：`_check_group_permission` 用字符串 `"PrivateMessage"` 判断私聊，但 AstrBot 统一使用 `MessageType.FRIEND_MESSAGE` 枚举，导致私聊用户被误判为无权限；改用枚举判断
+- **`/quill reset` 后旧记忆残留**：reset 时 `persona_id` 为空只清理了 `target_id` 的日志，未清理 `target_id::persona_id` 的旧日志；新增 `delete_all_session_memories` 和 `delete_all_session_chat_logs`，用 SQL `LIKE target_id::%` 批量清理
+- **流式控制按钮报错**：后端返回扁平结构 `{"status":"ok","message":...}` 但前端 `api()` 期望 `result.data` 字段；统一为 `{"status":"ok","data":{...}}` 格式
+- **头像裁剪 `request.args` 报错**：`PluginRequest` 对象没有 `args` 属性；`persona_avatar` 和 `persona_export` 端点改用 `request.query.get()`
+- **头像重新裁剪只能基于小图**：裁剪后的 300×300 小图覆盖了 `avatar_path`，重新裁剪时拿到的是已裁剪的小图；新增 `_originalAvatarDataUrl` 缓存，上传时缓存原图，重新裁剪时优先用缓存
+- **删除确认按钮无法点击**：角色名含特殊字符（如 `│`）时全名匹配失败；改为首词匹配（输入第一个空格前的单词即可确认）
+- **管理员白名单重载后丢失**：前端发送 `permission.admin_users` 但后端 schema 定义为 `permissions.admin_users`，键名不匹配；统一为 `permissions`
+
+**新功能：**
+- **Web 面板流式输出控制**：基础配置区域新增流式模式批量控制卡片，支持一键设置所有会话的流式模式（自动/开启/关闭），含统计信息
+- **头像自定义裁剪**：Web 面板角色卡编辑弹窗内置裁剪器，支持拖拽移动 + 滚轮缩放，Canvas 生成 300×300 方形 PNG 上传
+- **指令回复文本全面修正**：全量核查 3 个文件（commands.py / main.py / _route_core.py）共 15 处不一致，修复 9 处
+
 ## v5.0.3 — UI 优化 + 代码冗余清理
 
 本版本聚焦于前端管理面板的 UI/UX 打磨与全代码库的冗余清理，无破坏性变更。

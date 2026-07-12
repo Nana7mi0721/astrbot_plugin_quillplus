@@ -559,6 +559,44 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
   box-shadow: var(--shadow-sm);
 }
 
+/* ── 头像裁剪器 ── */
+.avatar-crop-container {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--bg-secondary, #1a1a1a);
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+.avatar-crop-container.dragging { cursor: grabbing; }
+.avatar-crop-container img {
+  position: absolute;
+  top: 0; left: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+  max-width: none;
+}
+.avatar-crop-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.5);
+  border: 2px solid #fff;
+  box-sizing: border-box;
+}
+.avatar-crop-hint {
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 12px;
+  line-height: 1.6;
+}
+
 /* 优化角色卡高级扩展多选框 UI */
 .checkbox-group-scroll {
   max-height: 180px;
@@ -1304,6 +1342,25 @@ a:focus-visible {
             <div class="form-group"><label>同分类去重上限</label><input type="number" id="c-kb-dedup" value="3"></div>
           </div>
         </div>
+
+        <div class="form-group">
+          <div class="card h-100">
+            <h3>流式输出控制</h3>
+            <div class="form-check" style="margin-bottom:12px;">
+              <span class="fw-500">当前会话分布</span>
+              <span class="hint-block" id="stream-stats-hint">加载中...</span>
+            </div>
+            <div class="form-group">
+              <label>批量设置所有会话</label>
+              <div style="display:flex;gap:8px;">
+                <button type="button" class="btn btn-sm btn-outline" id="stream-btn-auto" onclick="setStreamModeAll('auto')">自动</button>
+                <button type="button" class="btn btn-sm btn-outline" id="stream-btn-on" onclick="setStreamModeAll('on')">强制流式</button>
+                <button type="button" class="btn btn-sm btn-outline" id="stream-btn-off" onclick="setStreamModeAll('off')">强制关闭</button>
+              </div>
+              <span class="hint-block">auto=激活时关闭(默认)；on=始终流式；off=始终非流式。仅影响已有会话，新会话默认 auto。单聊可用 /stream 指令覆盖。</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="form-row">
@@ -1348,6 +1405,7 @@ a:focus-visible {
           <div style="flex:1">
             <div class="fw-500">LLM 智能提取（实验性）</div>
             <div style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.5">当大模型输出的状态栏格式完全不符合规范、5 级解析全部失败时，再调用一次轻量 LLM 从文本中智能识别并提取状态字段。有 3 秒超时保护，失败自动放弃，不影响正常对话。<b style="color:var(--warning)">注意：开启后每次失败都会额外消耗一次 LLM 调用。</b></div>
+            <div class="form-group" style="margin-top:10px;margin-bottom:0"><label>状态栏提取 LLM 模型</label><select id="c-sb-llm"></select><span class="hint-block">状态栏智能提取专用 LLM。留空则回退到 RAG 摘要 LLM。建议配置轻量/便宜的模型。</span></div>
           </div>
         </div>
         </div>
@@ -1498,7 +1556,7 @@ a:focus-visible {
 const PLUGIN_NAME = "astrbot_plugin_quillplus";
 
 function getBridge() { return window.AstrBotPluginPage || null; }
-async function waitForBridge(timeoutMs = 5000) { const s = Date.now(); while (Date.now() - s < timeoutMs) { if (window.AstrBotPluginPage) return window.AstrBotPluginPage; await new Promise(r => setTimeout(r, 100)); } return null; }
+async function waitForBridge(timeoutMs = 5000) { const s = Date.now(); while (Date.now() - s < timeoutMs) { if (window.AstrBotPluginPage) return window.AstrBotPluginPage; await new Promise(r => setTimeout(r, 16)); } return null; }
 
 let kbState = { entries: [], total: 0, page: 1, perPage: 9 };
 let wbCache = {};
@@ -1708,23 +1766,26 @@ window.sandboxConfirm = function(msg, callback, isDanger = false) {
   // 每次打开统一重置 disabled 状态，避免上一次危险操作残留
   btn.disabled = false;
   // P0-2: 高危操作要求输入确认词（confirmWord 非空时启用）
+  // 简化匹配：只需输入确认词的第一个单词即可通过，避免特殊字符/组合字符导致的不匹配
   if (isDanger && arguments[3]) {
     const confirmWord = arguments[3];
+    const expectedFirstWord = (confirmWord || '').trim().split(/\s+/)[0].normalize('NFC');
     qs('#dialogTitle').textContent = '⚠️ 危险操作确认';
     qs('#dialogBody').innerHTML = `
       <div style="color:var(--danger);font-weight:600;margin-bottom:8px;">${esc(msg)}</div>
       <div class="danger-box" style="margin-bottom:12px">
-        此操作<b>不可逆</b>。为防止误操作，请输入 <b style="color:var(--danger)">${esc(confirmWord)}</b> 以确认：
+        此操作<b>不可逆</b>。为防止误操作，请输入确认词的第一个单词 <b style="color:var(--danger)">${esc(expectedFirstWord)}</b> 以确认：
       </div>
-      <input id="danger-confirm-input" class="tag-input-field" style="border:2px solid var(--danger)!important;padding:8px!important;width:100%;box-sizing:border-box;" placeholder="请输入确认词">
-      <div id="danger-confirm-hint" style="font-size:12px;color:var(--danger);margin-top:4px;display:none;">确认词不匹配</div>
+      <input id="danger-confirm-input" class="tag-input-field" style="border:2px solid var(--danger)!important;padding:8px!important;width:100%;box-sizing:border-box;" placeholder="请输入第一个单词">
+      <div id="danger-confirm-hint" style="font-size:12px;color:var(--danger);margin-top:4px;display:none;">输入的第一个单词不匹配</div>
     `;
     btn.className = 'btn btn-danger';
     btn.textContent = '执行不可逆操作';
     btn.disabled = true;  // 初始禁用，输入匹配后启用
     btn.onclick = () => {
-      const val = qs('#danger-confirm-input').value.trim();
-      if (val === confirmWord) {
+      const val = (qs('#danger-confirm-input').value || '').trim().normalize('NFC');
+      const inputFirstWord = val.split(/\s+/)[0].normalize('NFC');
+      if (inputFirstWord && inputFirstWord === expectedFirstWord) {
         closeDialog();
         if (callback) callback();
       } else {
@@ -1736,9 +1797,11 @@ window.sandboxConfirm = function(msg, callback, isDanger = false) {
       const input = qs('#danger-confirm-input');
       if (input) {
         input.focus();
-        // 监听输入：匹配确认词时启用按钮，否则禁用
+        // 监听输入：第一个单词匹配时启用按钮，否则禁用
         input.addEventListener('input', function() {
-          const matched = this.value.trim() === confirmWord;
+          const v = (this.value || '').trim().normalize('NFC');
+          const inpFirst = v.split(/\s+/)[0].normalize('NFC');
+          const matched = inpFirst && inpFirst === expectedFirstWord;
           btn.disabled = !matched;
           if (matched) qs('#danger-confirm-hint').style.display = 'none';
         });
@@ -2455,7 +2518,7 @@ function renderPersonaPage() {
     }
   }
 
-  // 第二步：通过原生 DOM 赋值，安全挂载 MB 级别的 Base64 数据
+  // 头像：通过原生 DOM 赋值，安全挂载 Base64 数据（退回优化前方案）
   visible.forEach((p, index) => {
     if (p.avatar_url) {
       const img = document.getElementById(`avatar-img-${index}`);
@@ -2490,6 +2553,8 @@ window.toggleExtList = function(sys) {
 async function openPersonaModal(personaId) {
   _personaMode = personaId ? 'edit' : 'create';
   _personaData = null;
+  // 清空原图缓存：每次打开编辑器时重新开始
+  _originalAvatarDataUrl = null;
   let data = { id: '', name: '', avatar_path: '', summary: '', core_prompts: { personality: '', scenario: '', examples_of_dialogue: '', first_message: '' }, quill_extensions: { wb_mode: 'disabled', bound_worldbooks: [], rag_mode: 'disabled', bound_rag_docs: [], kb_mode: 'disabled', bound_knowledge_base: [] } };
 
   if (personaId) {
@@ -2532,6 +2597,9 @@ async function openPersonaModal(personaId) {
           <img id="avatar-preview-img" style="display:none;">
         </div>
         <input type="hidden" id="pf-avatar" value="${esc(data.avatar_path||'')}">
+        <div id="avatar-recrop-zone" style="margin-top:8px;${(data.avatar_path && _personaMode === 'edit') ? '' : 'display:none;'}">
+          <button type="button" class="btn btn-sm btn-outline" onclick="recropAvatar()">重新裁剪当前头像</button>
+        </div>
       </div>
       <div class="form-group"><label>简介</label><textarea id="pf-summary" rows="3" placeholder="简短介绍，显示在卡片上">${esc(data.summary||'')}</textarea></div>
     </div>
@@ -2605,6 +2673,7 @@ async function openPersonaModal(personaId) {
   });
 
   if (_personaMode === 'edit' && data.avatar_url) {
+    // 直接从 list 数据取头像 Base64（退回优化前方案）
     const avatarImg = qs('#avatar-preview-img');
     const placeholder = qs('#avatar-preview-placeholder');
     if (avatarImg && placeholder) {
@@ -2666,6 +2735,220 @@ function deletePersona(personaId) {
 
 // ── Persona 扩展功能 ──────────────────────────────────────
 
+// 头像裁剪器状态
+let _cropState = null;
+// 原始头像缓存：上传图片时缓存原图 dataUrl，重新裁切时优先使用，避免在裁切后的小图上反复裁切
+let _originalAvatarDataUrl = null;
+
+function closeCropDialog() {
+  qs('#cropOverlay').classList.remove('open');
+  // 清理状态，防止内存泄漏
+  _cropState = null;
+  const cropImg = qs('#cropImg');
+  if (cropImg) cropImg.src = '';
+  // 清理事件监听器引用
+  document.removeEventListener('mousemove', _onCropMouseMove);
+  document.removeEventListener('mouseup', _onCropMouseUp);
+}
+
+// 打开裁剪对话框：dataUrl 为图片 data URL，onConfirm(croppedDataUrl) 确认裁剪回调，onSkip() 使用原图回调
+function openCropDialog(dataUrl, filename, onConfirm, onSkip) {
+  const cropImg = qs('#cropImg');
+  const container = qs('#cropContainer');
+  const CROP_SIZE = 300; // 裁剪框尺寸
+
+  cropImg.onload = () => {
+    const natW = cropImg.naturalWidth;
+    const natH = cropImg.naturalHeight;
+
+    // 初始缩放：让图片最短边恰好填满裁剪框（cover 策略）
+    const initScale = Math.max(CROP_SIZE / natW, CROP_SIZE / natH);
+    // 缩放上下限：不能小于刚好填满裁剪框，不能大于原图放大 3 倍
+    const minScale = initScale;
+    const maxScale = initScale * 3;
+
+    // 初始偏移：图片居中
+    const initX = (CROP_SIZE - natW * initScale) / 2;
+    const initY = (CROP_SIZE - natH * initScale) / 2;
+
+    _cropState = {
+      scale: initScale,
+      offsetX: initX,
+      offsetY: initY,
+      minScale, maxScale,
+      natW, natH,
+      dragging: false,
+      lastX: 0, lastY: 0,
+    };
+    _applyCropTransform();
+
+    qs('#cropOverlay').classList.add('open');
+  };
+  cropImg.src = dataUrl;
+
+  // ── 拖拽移动（鼠标）──
+  container.onmousedown = (e) => {
+    if (!_cropState) return;
+    _cropState.dragging = true;
+    _cropState.lastX = e.clientX;
+    _cropState.lastY = e.clientY;
+    container.classList.add('dragging');
+    e.preventDefault();
+  };
+
+  // 滚轮缩放
+  container.onwheel = _onCropWheel;
+
+  // 触摸支持
+  container.ontouchstart = _onCropTouchStart;
+  container.ontouchmove = _onCropTouchMove;
+  container.ontouchend = _onCropTouchEnd;
+
+  // 全局 mousemove/mouseup（拖拽时鼠标可能移出容器）
+  document.removeEventListener('mousemove', _onCropMouseMove);
+  document.removeEventListener('mouseup', _onCropMouseUp);
+  document.addEventListener('mousemove', _onCropMouseMove);
+  document.addEventListener('mouseup', _onCropMouseUp);
+
+  // 绑定按钮事件
+  const confirmBtn = qs('#cropConfirmBtn');
+  const skipBtn = qs('#cropSkipBtn');
+  // 无 onSkip 回调时隐藏"使用原图"按钮
+  skipBtn.style.display = onSkip ? '' : 'none';
+  // 先移除旧监听器（避免重复绑定）
+  const newConfirm = confirmBtn.cloneNode(true);
+  const newSkip = skipBtn.cloneNode(true);
+  confirmBtn.parentNode.replaceChild(newConfirm, confirmBtn);
+  skipBtn.parentNode.replaceChild(newSkip, skipBtn);
+  newConfirm.addEventListener('click', () => {
+    const croppedDataUrl = _generateCroppedDataUrl();
+    closeCropDialog();
+    if (croppedDataUrl && onConfirm) onConfirm(croppedDataUrl);
+  });
+  newSkip.addEventListener('click', () => {
+    closeCropDialog();
+    if (onSkip) onSkip();
+  });
+}
+
+function _onCropMouseMove(e) {
+  if (!_cropState || !_cropState.dragging) return;
+  const dx = e.clientX - _cropState.lastX;
+  const dy = e.clientY - _cropState.lastY;
+  _cropState.lastX = e.clientX;
+  _cropState.lastY = e.clientY;
+  _cropState.offsetX += dx;
+  _cropState.offsetY += dy;
+  // 边界约束
+  const CROP_SIZE = 300;
+  const imgW = _cropState.natW * _cropState.scale;
+  const imgH = _cropState.natH * _cropState.scale;
+  _cropState.offsetX = Math.min(0, Math.max(CROP_SIZE - imgW, _cropState.offsetX));
+  _cropState.offsetY = Math.min(0, Math.max(CROP_SIZE - imgH, _cropState.offsetY));
+  _applyCropTransform();
+}
+
+function _onCropMouseUp() {
+  if (!_cropState) return;
+  _cropState.dragging = false;
+  qs('#cropContainer').classList.remove('dragging');
+}
+
+function _applyCropTransform() {
+  if (!_cropState) return;
+  const cropImg = qs('#cropImg');
+  if (!cropImg) return;
+  cropImg.style.width = (_cropState.natW * _cropState.scale) + 'px';
+  cropImg.style.height = (_cropState.natH * _cropState.scale) + 'px';
+  cropImg.style.left = _cropState.offsetX + 'px';
+  cropImg.style.top = _cropState.offsetY + 'px';
+}
+
+// 滚轮缩放（绑定到容器，用 closure 访问 _cropState）
+function _onCropWheel(e) {
+  if (!_cropState) return;
+  e.preventDefault();
+  const container = qs('#cropContainer');
+  const CROP_SIZE = 300;
+  const rect = container.getBoundingClientRect();
+  // 鼠标相对裁剪框的位置（0~CROP_SIZE）
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const oldScale = _cropState.scale;
+  const delta = e.deltaY > 0 ? 0.9 : 1.1;
+  let newScale = oldScale * delta;
+  newScale = Math.max(_cropState.minScale, Math.min(_cropState.maxScale, newScale));
+  if (newScale === oldScale) return;
+
+  // 以鼠标位置为中心缩放：保持鼠标点对应的图片像素不变
+  // 鼠标点在图片坐标系中的位置（缩放前）
+  const imgPxX = (mx - _cropState.offsetX) / oldScale;
+  const imgPxY = (my - _cropState.offsetY) / oldScale;
+  _cropState.scale = newScale;
+  // 缩放后让该图片像素仍位于鼠标下
+  _cropState.offsetX = mx - imgPxX * newScale;
+  _cropState.offsetY = my - imgPxY * newScale;
+  // 边界约束
+  const imgW = _cropState.natW * newScale;
+  const imgH = _cropState.natH * newScale;
+  _cropState.offsetX = Math.min(0, Math.max(CROP_SIZE - imgW, _cropState.offsetX));
+  _cropState.offsetY = Math.min(0, Math.max(CROP_SIZE - imgH, _cropState.offsetY));
+  _applyCropTransform();
+}
+
+// 触摸支持（移动端）
+function _onCropTouchStart(e) {
+  if (!_cropState || e.touches.length !== 1) return;
+  _cropState.dragging = true;
+  _cropState.lastX = e.touches[0].clientX;
+  _cropState.lastY = e.touches[0].clientY;
+  qs('#cropContainer').classList.add('dragging');
+  e.preventDefault();
+}
+
+function _onCropTouchMove(e) {
+  if (!_cropState || !_cropState.dragging || e.touches.length !== 1) return;
+  const CROP_SIZE = 300;
+  const dx = e.touches[0].clientX - _cropState.lastX;
+  const dy = e.touches[0].clientY - _cropState.lastY;
+  _cropState.lastX = e.touches[0].clientX;
+  _cropState.lastY = e.touches[0].clientY;
+  _cropState.offsetX += dx;
+  _cropState.offsetY += dy;
+  const imgW = _cropState.natW * _cropState.scale;
+  const imgH = _cropState.natH * _cropState.scale;
+  _cropState.offsetX = Math.min(0, Math.max(CROP_SIZE - imgW, _cropState.offsetX));
+  _cropState.offsetY = Math.min(0, Math.max(CROP_SIZE - imgH, _cropState.offsetY));
+  _applyCropTransform();
+  e.preventDefault();
+}
+
+function _onCropTouchEnd() {
+  if (!_cropState) return;
+  _cropState.dragging = false;
+  qs('#cropContainer').classList.remove('dragging');
+}
+
+// Canvas 裁剪：从当前状态生成 300x300 的 data URL
+function _generateCroppedDataUrl() {
+  if (!_cropState) return null;
+  const CROP_SIZE = 300;
+  const s = _cropState;
+  const canvas = document.createElement('canvas');
+  canvas.width = CROP_SIZE;
+  canvas.height = CROP_SIZE;
+  const ctx = canvas.getContext('2d');
+  // 计算原图上对应的裁剪区域
+  const sx = (-s.offsetX) / s.scale;
+  const sy = (-s.offsetY) / s.scale;
+  const sSize = CROP_SIZE / s.scale;
+  const img = qs('#cropImg');
+  ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, CROP_SIZE, CROP_SIZE);
+  return canvas.toDataURL('image/png');
+}
+
+// 上传头像主入口：选图后打开裁剪器
 async function uploadAvatarFile(input) {
   const file = input.files[0];
   if (!file) return;
@@ -2673,34 +2956,72 @@ async function uploadAvatarFile(input) {
   if (!['png','jpg','jpeg','webp','gif'].includes(ext)) { showToast('不支持的图片格式'); return; }
   if (file.size > 5 * 1024 * 1024) { showToast('图片文件过大（最大 5MB）'); return; }
 
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const dataUrl = e.target.result;
+    // 缓存原始大图，供后续"重新裁剪"使用
+    _originalAvatarDataUrl = dataUrl;
+    // 打开裁剪对话框
+    openCropDialog(dataUrl, file.name, async (croppedDataUrl) => {
+      await _doUploadAvatar(croppedDataUrl, file.name);
+    }, async () => {
+      // 使用原图
+      await _doUploadAvatar(dataUrl, file.name);
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+// 实际上传逻辑
+async function _doUploadAvatar(dataUrl, filename) {
   const placeholder = qs('#avatar-preview-placeholder');
   placeholder.innerHTML = '<div>上传中...</div>';
-
   try {
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const base64 = e.target.result.split(',')[1];
-        const result = await api('/upload_avatar_base64', {
-          method: 'POST',
-          body: JSON.stringify({ filename: file.name, b64_data: base64 })
-        });
-        qs('#pf-avatar').value = result.path;
-        // 显示预览（使用原始 data URL）
-        const img = qs('#avatar-preview-img');
-        img.src = e.target.result;
-        img.style.display = 'block';
-        placeholder.style.display = 'none';
-        showToast('头像上传成功', 'success');
-      } catch (err) {
-        showToast('上传失败: ' + err.message);
-        placeholder.innerHTML = '<div style="font-size:24px;margin-bottom:4px">📷</div><div>点击上传头像</div>';
-      }
-    };
-    reader.readAsDataURL(file);
-  } catch (e) {
-    showToast('读取文件失败: ' + e.message);
+    const base64 = dataUrl.split(',')[1];
+    const result = await api('/upload_avatar_base64', {
+      method: 'POST',
+      body: JSON.stringify({ filename: filename, b64_data: base64 })
+    });
+    qs('#pf-avatar').value = result.path;
+    const img = qs('#avatar-preview-img');
+    img.src = dataUrl;
+    img.style.display = 'block';
+    placeholder.style.display = 'none';
+    showToast('头像上传成功', 'success');
+  } catch (err) {
+    showToast('上传失败: ' + err.message);
     placeholder.innerHTML = '<div style="font-size:24px;margin-bottom:4px">📷</div><div>点击上传头像</div>';
+  }
+}
+
+// 重新裁剪当前头像
+async function recropAvatar() {
+  // 优先使用缓存的原始大图（上传时缓存），避免在裁切后的小图上反复裁切
+  if (_originalAvatarDataUrl) {
+    const avatarPath = qs('#pf-avatar').value || '';
+    const filename = avatarPath.split('/').pop() || 'avatar.png';
+    openCropDialog(_originalAvatarDataUrl, filename, async (croppedDataUrl) => {
+      await _doUploadAvatar(croppedDataUrl, filename);
+    }, null);
+    return;
+  }
+  // 无缓存（编辑已有角色卡时）：从后端获取当前头像
+  const personaId = _personaData?.id;
+  if (!personaId) { showToast('未找到角色卡 ID'); return; }
+  try {
+    showToast('正在加载当前头像...', 'info');
+    const res = await api('/persona/avatar?id=' + encodeURIComponent(personaId));
+    if (!res || !res.avatar_url) { showToast('当前角色卡未设置头像'); return; }
+    const dataUrl = res.avatar_url;
+    // 缓存后端返回的图（可能是原图，也可能是上次裁切的小图）
+    _originalAvatarDataUrl = dataUrl;
+    const avatarPath = qs('#pf-avatar').value || '';
+    const filename = avatarPath.split('/').pop() || 'avatar.png';
+    openCropDialog(dataUrl, filename, async (croppedDataUrl) => {
+      await _doUploadAvatar(croppedDataUrl, filename);
+    }, null);
+  } catch (e) {
+    showToast('加载头像失败: ' + e.message);
   }
 }
 
@@ -2978,7 +3299,8 @@ async function loadMemoryBrowser() {
       const scoreBg = isDanger ? 'var(--danger-light)' : 'var(--warning-light)';
       const timeStr = (m.timestamp||'').split('.')[0].replace('T', ' ');
 
-      return `<tr>
+      const isCore = !!m.is_core;
+      return `<tr${isCore ? ' style="background:var(--warning-light)"' : ''}>
         <td><span class="cell-session" title="${esc(m.session_id||'')}">${esc(formatSessionId(m.session_id))}</span></td>
         <td>
           <div class="cell-summary" style="margin-bottom:6px">${esc((m.summary||'—').substring(0,60))}</div>
@@ -2987,10 +3309,12 @@ async function loadMemoryBrowser() {
             <span class="tag" style="background:var(--success-light);color:var(--success)" title="被大模型召回引用的次数">引用 ${m.useful_count||0}次</span>
             <span class="tag" style="background:${scoreBg};color:${scoreColor}" title="当前价值分">价值分 ${(m.useful_score||0).toFixed(1)}</span>
             ${m.is_active ? '<span class="tag" style="background:#e2e8f0;color:#475569">主动记忆</span>' : ''}
+            ${isCore ? '<span class="tag" style="background:#fef3c7;color:#d97706" title="核心记忆，无条件注入 prompt，不参与 Top-K 竞争">核心锚定</span>' : ''}
           </div>
         </td>
         <td class="text-muted-12">${timeStr}</td>
         <td>
+          <button class="btn btn-sm ${isCore ? 'btn-primary' : 'btn-outline'}" style="margin-right:4px" onclick="toggleMemoryPin(${m.id}, ${isCore})" title="${isCore ? '取消核心锚定' : '设为核心锚定记忆'}">${isCore ? '取消钉住' : '钉住'}</button>
           <button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="showMemoryDetail(${m.id})">详情</button>
           <button class="btn btn-outline btn-sm" onclick="deleteMemory(${m.id})">删除</button>
         </td>
@@ -3031,6 +3355,7 @@ async function showMemoryDetail(id) {
         <div class="form-group" style="flex:1;min-width:100px"><label>引用次数</label><input readonly value="${m.useful_count||0}"></div>
         <div class="form-group" style="flex:1;min-width:100px"><label>价值分</label><input readonly value="${(m.useful_score||0).toFixed(1)}"></div>
         <div class="form-group" style="flex:1;min-width:100px"><label>状态</label><input readonly value="${m.is_active ? '主动记忆' : '被动记忆'}"></div>
+        <div class="form-group" style="flex:1;min-width:100px"><label>核心锚定</label><input readonly value="${m.is_core ? '是（无条件注入）' : '否'}"></div>
       </div>
     `;
     qs('#modalSaveBtn').style.display = 'none';
@@ -3042,6 +3367,16 @@ function deleteMemory(id) {
   sandboxConfirm('确定删除此记忆？', async () => {
     try { await apiPost('/memory/delete', { memory_id: id }); showToast('已删除', 'success'); loadMemoryBrowser(); } catch (e) { showToast(e.message); }
   }, true);
+}
+
+// P0-1: 核心记忆锚定 — 钉住/取消钉住。核心记忆不参与 Top-K 竞争，无条件注入 prompt。
+async function toggleMemoryPin(id, currentIsCore) {
+  const next = !currentIsCore;
+  try {
+    await apiPost('/memory/pin', { memory_id: id, is_core: next });
+    showToast(next ? '已设为核心锚定记忆，将无条件注入 prompt' : '已取消核心锚定', 'success');
+    loadMemoryBrowser();
+  } catch (e) { showToast('设置失败: ' + e.message); }
 }
 
 // P0-1: 将 target_id::persona_id 复合键渲染为人类可读格式
@@ -3162,72 +3497,133 @@ async function loadHealth() {
 
 // 全局配置中心：加载所有设置
 let _rawConfig = {};
+const _SETTINGS_CACHE_TTL = 5 * 60 * 1000;  // 5 分钟
+function _cacheGet(key) {
+  try {
+    const raw = localStorage.getItem('quill_cache_' + key);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (Date.now() - obj.t > _SETTINGS_CACHE_TTL) return null;
+    return obj.v;
+  } catch (e) { return null; }
+}
+function _cacheSet(key, val) {
+  try { localStorage.setItem('quill_cache_' + key, JSON.stringify({ t: Date.now(), v: val })); } catch (e) {}
+}
+function _cacheDel(key) {
+  try { localStorage.removeItem('quill_cache_' + key); } catch (e) {}
+}
+function _applySettings(p, cfg) {
+  const mkOpt = (arr, def) => '<option value="">' + def + '</option>' + (arr || []).map(x => '<option value="' + esc(x.id) + '">' + esc(x.id) + (x.model ? ' - ' + esc(x.model) : '') + '</option>').join('');
+  qs('#c-rag-emb').innerHTML = mkOpt(p.embedding, '（默认本地模型）');
+  qs('#c-rag-rerank').innerHTML = mkOpt(p.rerank, '（不使用重排）');
+  qs('#c-rag-llm').innerHTML = mkOpt(p.llm, '（使用文本截断）');
+  qs('#c-sb-llm').innerHTML = mkOpt(p.llm, '（回退到 RAG 摘要 LLM）');
+  _rawConfig = cfg || {};
+  const safeGet = (g, k, d) => (cfg[g] && cfg[g][k] !== undefined) ? cfg[g][k] : d;
+
+  // RAG
+  qs('#c-rag-emb').value = safeGet('rag', 'embedding_provider_id', '');
+  qs('#c-rag-rerank').value = safeGet('rag', 'rerank_provider_id', '');
+  qs('#c-rag-llm').value = safeGet('rag', 'llm_provider_id', '');
+  qs('#c-rag-chunk').value = safeGet('rag', 'chunk_size', 500);
+  qs('#c-rag-overlap').value = safeGet('rag', 'chunk_overlap', 50);
+  qs('#c-rag-topk').value = safeGet('rag', 'top_k', 3);
+  qs('#c-rag-memory').checked = safeGet('rag', 'enable_memory', false);
+
+  // 世界书
+  qs('#c-wb-enabled').checked = safeGet('worldbook', 'enabled', true);
+  qs('#c-wb-token').value = safeGet('worldbook', 'max_token_limit', 4000);
+  qs('#c-wb-max').value = safeGet('worldbook', 'max_dynamic_entries', 4);
+  qs('#c-wb-pos').value = safeGet('worldbook', 'injection_position', 'user_prefix');
+  const sens = safeGet('worldbook', 'match_sensitivity', 0.7);
+  qs('#c-wb-sens').value = sens;
+  const sensEl = qs('#c-wb-sens');
+  if (sensEl && sensEl.nextElementSibling) sensEl.nextElementSibling.textContent = sens;
+
+  // 全局常驻激活
+  qs('#c-wb-always').checked = safeGet('worldbook', 'always_activate', false);
+
+  // 素材库
+  qs('#c-kb-enabled').checked = safeGet('knowledge_base', 'enabled', true);
+  qs('#c-kb-max').value = safeGet('knowledge_base', 'max_entries', 4);
+  qs('#c-kb-fallback').value = safeGet('knowledge_base', 'fallback_top_count', 2);
+  qs('#c-kb-dedup').value = safeGet('knowledge_base', 'category_dedup_limit', 3);
+
+  // 性能与状态栏
+  qs('#c-perf-min').value = safeGet('performance', 'min_output_length', 400);
+  qs('#c-sb-enabled').checked = safeGet('status_bar', 'enabled', true);
+  qs('#c-sb-fields').value = safeGet('status_bar', 'fields', '好感度|关系阶段|心情|位置|穿着|当前想法');
+  qs('#c-sb-tpl').value = safeGet('status_bar', 'format_template', '**状态栏**\n```\n{content}\n```');
+  qs('#c-sb-plots').value = safeGet('status_bar', 'plot_paths', '继续当前话题|转换场景|结束互动');
+  qs('#c-sb-llm-extract').checked = safeGet('status_bar', 'llm_extract', false);
+  qs('#c-sb-llm').value = safeGet('status_bar', 'llm_provider_id', '');
+  qs('#c-perf-max').value = safeGet('performance', 'max_output_length', 0);
+  qs('#c-rag-log').checked = safeGet('rag', 'enable_chat_logging', true);
+  qs('#c-rag-log-days').value = safeGet('rag', 'chat_log_retention_days', 30);
+  qs('#c-wb-show-log').checked = safeGet('worldbook', 'show_trigger_log', false);
+
+  // 反拒绝
+  qs('#c-ref-enabled').checked = safeGet('refusal', 'enabled', true);
+  qs('#c-ref-pat').value = safeGet('refusal', 'patterns', '我不能\n我无法\n这违反\n我不应该\n这不合适\n我拒绝');
+
+  // 权限白名单
+  qs('#c-perm-admins').value = safeGet('permissions', 'admin_users', '');
+
+  // 调试与维护
+  qs('#c-debug-enabled').checked = safeGet('debug', 'enabled', false);
+  qs('#c-debug-theme').value = safeGet('debug', 'panel_theme', 'light');
+}
+
 async function loadGlobalSettings() {
   try {
-    // 1. 加载提供商列表
-    const p = await api('/provider/list');
-    const mkOpt = (arr, def) => '<option value="">' + def + '</option>' + (arr || []).map(x => '<option value="' + esc(x.id) + '">' + esc(x.id) + (x.model ? ' - ' + esc(x.model) : '') + '</option>').join('');
-    qs('#c-rag-emb').innerHTML = mkOpt(p.embedding, '（默认本地模型）');
-    qs('#c-rag-rerank').innerHTML = mkOpt(p.rerank, '（不使用重排）');
-    qs('#c-rag-llm').innerHTML = mkOpt(p.llm, '（使用文本截断）');
+    // 首屏：读缓存秒渲染，后台静默刷新
+    const cachedP = _cacheGet('provider_list');
+    const cachedCfg = _cacheGet('config_all');
+    if (cachedP && cachedCfg) {
+      _applySettings(cachedP, cachedCfg);
+    }
+    // 并行加载最新数据（无依赖关系），同时拉取流式模式统计
+    const [p, cfg, streamStats] = await Promise.all([
+      api('/provider/list'), api('/config/all'), api('/stream/stats').catch(() => null)
+    ]);
+    _applySettings(p, cfg);
+    _cacheSet('provider_list', p);
+    _cacheSet('config_all', cfg);
+    if (streamStats) updateStreamStats(streamStats);
+  } catch (e) {
+    showToast('读取配置失败: ' + e.message);
+  }
+}
 
-    // 2. 加载底层全量配置
-    const cfg = await api('/config/all');
-    _rawConfig = cfg || {};
-    const safeGet = (g, k, d) => (cfg[g] && cfg[g][k] !== undefined) ? cfg[g][k] : d;
+// 流式模式统计渲染
+function updateStreamStats(stats) {
+  const hint = qs('#stream-stats-hint');
+  if (!hint) return;
+  const total = stats.total || 0;
+  if (total === 0) {
+    hint.textContent = '暂无活跃会话';
+    return;
+  }
+  hint.textContent = `共 ${total} 个会话 | 自动: ${stats.auto||0} · 流式: ${stats.on||0} · 关闭: ${stats.off||0}`;
+}
 
-    // RAG
-    qs('#c-rag-emb').value = safeGet('rag', 'embedding_provider_id', '');
-    qs('#c-rag-rerank').value = safeGet('rag', 'rerank_provider_id', '');
-    qs('#c-rag-llm').value = safeGet('rag', 'llm_provider_id', '');
-    qs('#c-rag-chunk').value = safeGet('rag', 'chunk_size', 500);
-    qs('#c-rag-overlap').value = safeGet('rag', 'chunk_overlap', 50);
-    qs('#c-rag-topk').value = safeGet('rag', 'top_k', 3);
-    qs('#c-rag-memory').checked = safeGet('rag', 'enable_memory', false);
-
-    // 世界书
-    qs('#c-wb-enabled').checked = safeGet('worldbook', 'enabled', true);
-    qs('#c-wb-token').value = safeGet('worldbook', 'max_token_limit', 4000);
-    qs('#c-wb-max').value = safeGet('worldbook', 'max_dynamic_entries', 4);
-    qs('#c-wb-pos').value = safeGet('worldbook', 'injection_position', 'user_prefix');
-    const sens = safeGet('worldbook', 'match_sensitivity', 0.7);
-    qs('#c-wb-sens').value = sens;
-    const sensEl = qs('#c-wb-sens');
-    if (sensEl && sensEl.nextElementSibling) sensEl.nextElementSibling.textContent = sens;
-
-    // 全局常驻激活
-    qs('#c-wb-always').checked = safeGet('worldbook', 'always_activate', false);
-
-    // 素材库
-    qs('#c-kb-enabled').checked = safeGet('knowledge_base', 'enabled', true);
-    qs('#c-kb-max').value = safeGet('knowledge_base', 'max_entries', 4);
-    qs('#c-kb-fallback').value = safeGet('knowledge_base', 'fallback_top_count', 2);
-    qs('#c-kb-dedup').value = safeGet('knowledge_base', 'category_dedup_limit', 3);
-
-    // 性能与状态栏
-    qs('#c-perf-min').value = safeGet('performance', 'min_output_length', 400);
-    qs('#c-sb-enabled').checked = safeGet('status_bar', 'enabled', true);
-    qs('#c-sb-fields').value = safeGet('status_bar', 'fields', '好感度|关系阶段|心情|位置|穿着|当前想法');
-    qs('#c-sb-tpl').value = safeGet('status_bar', 'format_template', '**状态栏**\n```\n{content}\n```');
-    qs('#c-sb-plots').value = safeGet('status_bar', 'plot_paths', '继续当前话题|转换场景|结束互动');
-    qs('#c-sb-llm-extract').checked = safeGet('status_bar', 'llm_extract', false);
-    qs('#c-perf-max').value = safeGet('performance', 'max_output_length', 0);
-    qs('#c-rag-log').checked = safeGet('rag', 'enable_chat_logging', true);
-    qs('#c-rag-log-days').value = safeGet('rag', 'chat_log_retention_days', 30);
-    qs('#c-wb-show-log').checked = safeGet('worldbook', 'show_trigger_log', false);
-
-    // 反拒绝
-    qs('#c-ref-enabled').checked = safeGet('refusal', 'enabled', true);
-    qs('#c-ref-pat').value = safeGet('refusal', 'patterns', '我不能\n我无法\n这违反\n我不应该\n这不合适\n我拒绝');
-
-    // 权限白名单
-    qs('#c-perm-admins').value = safeGet('permission', 'admin_users', '');
-
-    // 调试与维护
-    qs('#c-debug-enabled').checked = safeGet('debug', 'enabled', false);
-    qs('#c-debug-theme').value = safeGet('debug', 'panel_theme', 'light');
-
-  } catch (e) { showToast('读取配置失败: ' + e.message); }
+// 批量设置流式模式
+async function setStreamModeAll(mode) {
+  try {
+    const res = await apiPost('/stream/all', { mode });
+    // api() bridge 路径会解包 result.data，res 即 data 对象
+    if (res && res.message) {
+      showToast(res.message, 'success');
+      // 刷新统计
+      const stats = await api('/stream/stats');
+      if (stats) updateStreamStats(stats);
+    } else {
+      showToast('设置成功', 'success');
+    }
+  } catch (e) {
+    showToast('设置失败: ' + e.message);
+  }
 }
 
 // 全局配置中心：差异保存（只提交项）
@@ -3275,6 +3671,7 @@ async function saveAllChanges() {
       add('status_bar', 'format_template', qs('#c-sb-tpl').value);
       add('status_bar', 'plot_paths', qs('#c-sb-plots').value);
       add('status_bar', 'llm_extract', qs('#c-sb-llm-extract').checked);
+      add('status_bar', 'llm_provider_id', qs('#c-sb-llm').value);
       add('performance', 'max_output_length', parseInt(qs('#c-perf-max').value) || 0);
       add('rag', 'enable_chat_logging', qs('#c-rag-log').checked);
       add('rag', 'chat_log_retention_days', parseInt(qs('#c-rag-log-days').value) || 30);
@@ -3283,12 +3680,15 @@ async function saveAllChanges() {
       add('refusal', 'enabled', qs('#c-ref-enabled').checked);
       add('refusal', 'patterns', qs('#c-ref-pat').value);
 
-      add('permission', 'admin_users', qs('#c-perm-admins').value);
+      add('permissions', 'admin_users', qs('#c-perm-admins').value);
 
       add('debug', 'enabled', qs('#c-debug-enabled').checked);
       add('debug', 'panel_theme', qs('#c-debug-theme').value);
     }
 
+    // 写操作前清缓存，确保 loadGlobalSettings 重新拉取最新数据
+    _cacheDel('provider_list');
+    _cacheDel('config_all');
     for (const u of updates) {
       await apiPost('/config/save', u);
       changedCount++;
@@ -3370,6 +3770,28 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeDialog()">取消</button>
       <button class="btn btn-primary" id="dialogConfirmBtn">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 头像裁剪对话框 -->
+<div class="modal-overlay" id="cropOverlay">
+  <div class="modal-dialog dialog-sm" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>裁剪头像</h2>
+      <button class="modal-close" onclick="closeCropDialog()">×</button>
+    </div>
+    <div class="modal-body" style="text-align:center;">
+      <div class="avatar-crop-container" id="cropContainer">
+        <img id="cropImg" alt="待裁剪图片">
+        <div class="avatar-crop-overlay"></div>
+      </div>
+      <div class="avatar-crop-hint">拖拽移动图片位置 · 滚轮缩放 · 裁剪框内即最终头像</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeCropDialog()">取消</button>
+      <button class="btn btn-outline" id="cropSkipBtn">使用原图</button>
+      <button class="btn btn-primary" id="cropConfirmBtn">确认裁剪</button>
     </div>
   </div>
 </div>

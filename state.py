@@ -267,6 +267,27 @@ class StateManager:
             st.stream_mode = mode
             self._mark_dirty()
 
+    async def set_stream_mode_all(self, mode: str) -> int:
+        """批量设置所有 session 的流式模式，返回受影响数量。"""
+        async with self._lock:
+            count = 0
+            for st in self._states.values():
+                st.stream_mode = mode
+                count += 1
+            if count:
+                self._mark_dirty()
+            return count
+
+    async def get_stream_mode_stats(self) -> dict:
+        """返回各流式模式的 session 数量统计。"""
+        async with self._lock:
+            stats = {"auto": 0, "on": 0, "off": 0, "total": len(self._states)}
+            for st in self._states.values():
+                m = st.stream_mode or "auto"
+                if m in stats:
+                    stats[m] += 1
+            return stats
+
     async def update_session_vars(self, user_id: str, updates: dict) -> dict:
         async with self._lock:
             st = self._states.get(user_id)

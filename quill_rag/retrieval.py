@@ -90,6 +90,16 @@ class QuillRetriever:
             logger.warning(f"[Quill Memory] 记忆检索失败: {e}")
             return []
 
+    async def get_core_memories(self, session_id: str) -> list[dict]:
+        """获取核心记忆（is_core=1），无条件注入，不参与 Top-K 竞争。"""
+        if not self.memory_store or not session_id:
+            return []
+        try:
+            return await asyncio.to_thread(self.memory_store.get_core_memories, session_id)
+        except Exception as e:
+            logger.warning(f"[Quill Memory] 核心记忆获取失败: {e}")
+            return []
+
     async def log_chat_message(self, session_id: str, role: str, content: str):
         """存储一条原始对话记录（在线程池中执行）"""
         if not self.memory_store or not session_id or not content:
@@ -194,9 +204,14 @@ class QuillRetriever:
 
         return summary
 
-    def format_for_prompt(self, doc_results: list[dict], memory_results: list[dict]) -> str:
-        """将检索结果格式化为 XML 规范文本。"""
+    def format_for_prompt(self, doc_results: list[dict], memory_results: list[dict], core_memories: list[dict] = None) -> str:
+        """将检索结果格式化为 XML 规范文本。核心记忆优先注入，不参与 Top-K 竞争。"""
         parts = []
+        # 核心记忆优先注入（无条件，类似人设基石）
+        if core_memories:
+            core_texts = [f"  [{i+1}] {r['summary']}" for i, r in enumerate(core_memories)]
+            parts.append("<core_memory>\n" + "\n".join(core_texts) + "\n</core_memory>")
+
         if doc_results:
             doc_texts = [f"  [{i+1}] [文档-{r.get('source', '?')}] {r['content']}" for i, r in enumerate(doc_results)]
             parts.append("<documents>\n" + "\n".join(doc_texts) + "\n</documents>")
@@ -209,6 +224,11 @@ class QuillRetriever:
             parts.append("<memories>\n" + "\n".join(mem_texts) + "\n</memories>")
 
         if parts:
-            parts.append("请自然地结合上述 <memories> 和 <documents> 提供的信息进行回复，保持设定的连贯性。")
+            tag_hint = "、".join(filter(None, [
+                "<core_memory>" if core_memories else None,
+                "<memories>" if memory_results else None,
+                "<documents>" if doc_results else None,
+            ]))
+            parts.append(f"请自然地结合上述 {tag_hint} 提供的信息进行回复，保持设定的连贯性。")
 
         return "\n\n".join(parts)
