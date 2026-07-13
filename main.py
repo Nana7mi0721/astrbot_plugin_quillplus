@@ -84,7 +84,7 @@ _STATUS_RE = re.compile(r'\[STATUS\]([\s\S]*?)\[/STATUS\]')
 _LOVE_DATA_RE = re.compile(r'\[LOVE_DATA\]\s*(.+)')
 _STATUS_BLOCK_RE = re.compile(r'\*\*状态栏\*\*[\s\S]*?```([\s\S]*?)```')
 _PLOT_PATH_RE = re.compile(
-    r'>>>\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*<<<\s*(.+?)\s*<<<\s*(?:Select|请选择|选择)\s*>>>',
+    r'[>|]{2,}\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*[|<]{2,}\s*(.+?)\s*[|<]{2,}\s*(?:Select|请选择|选择)\s*[>|]{2,}',
     re.DOTALL | re.IGNORECASE
 )
 _RAW_STATUS_RE = re.compile(
@@ -533,7 +533,7 @@ class QuillPlugin(Star):
         (re.compile(r'\[LOVE_DATA\]\s*.+'), ''),
         (re.compile(r'\[STATUS\][\s\S]*?\[/STATUS\]'), ''),
         (re.compile(
-            r'>>>\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*<<<\s*.+?\s*<<<\s*(?:Select|请选择|选择)\s*>>>',
+            r'[>|]{2,}\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*[|<]{2,}\s*.+?\s*[|<]{2,}\s*(?:Select|请选择|选择)\s*[>|]{2,}',
             re.DOTALL | re.IGNORECASE
         ), ''),
         (re.compile(
@@ -623,8 +623,10 @@ class QuillPlugin(Star):
 
         # 4. Raw key:value lines — 方案A: 动态字段白名单 + 分隔符扩展
         if not handled:
+            # 预处理：移除 LLM 可能添加的 --- 分隔线干扰（仅用于解析，不影响输出文本）
+            clean_text_for_parse = re.sub(r'^[-*_]{3,}[ \t]*$', '', text, flags=re.MULTILINE)
             raw_re = _build_raw_status_re(self.love_fields)
-            raw_matches = raw_re.findall(text)
+            raw_matches = raw_re.findall(clean_text_for_parse)
             if raw_matches:
                 current_vars = await self.state_manager.get_session_vars(target_id)
                 matched_fields = set()
@@ -1065,8 +1067,15 @@ class QuillPlugin(Star):
 
         return dynamic_prompt
 
-    async def _rewrite_smt_tool_description(self, req: ProviderRequest) -> None:
-        """改写 send_message_to_user 工具描述。状态栏指令通过 system prompt + tail message 注入。"""
+    async def _rewrite_smt_tool_description(self, req: ProviderRequest, persona_id: str = "") -> None:
+        """改写 send_message_to_user 工具描述。状态栏指令通过 system prompt + tail message 注入。
+
+        无角色卡时不重写：原始描述不会强制 "MUST call IMMEDIATELY"，
+        避免 LLM 在无人设约束时进入 Agent 死循环（连续调用工具）。
+        """
+        if not persona_id:
+            # 无角色卡时跳过重写，避免 LLM 失控循环
+            return
         if not (req.func_tool and not req.func_tool.empty()):
             return
         smt_tool = req.func_tool.get_tool("send_message_to_user")
@@ -1077,7 +1086,7 @@ class QuillPlugin(Star):
                 "You MUST call this tool to send ANY reply text — do NOT output text in the content field. "
                 "Call this tool IMMEDIATELY as your first action — do not call any other tools before sending your message."
             )
-            logger.info(f"[Quill] 已重写 send_message_to_user 描述")
+            logger.info(f"[Quill] 已重写 send_message_to_user 描述 (persona={persona_id})")
 
     @filter.on_llm_request(priority=100)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -1159,7 +1168,8 @@ class QuillPlugin(Star):
                 logger.info(f"[Quill] 连续第 {quill_rounds} 轮激活，跳过 Layer 1 常驻")
 
             # 改写 send_message_to_user 描述（含状态栏强制要求）
-            await self._rewrite_smt_tool_description(req)
+            # 无角色卡时跳过：避免 LLM 在无人设约束时进入 Agent 死循环
+            await self._rewrite_smt_tool_description(req, persona_id)
 
             if kb_activated and self.kb_manager and self.debug:
                 try:
@@ -1216,7 +1226,7 @@ class QuillPlugin(Star):
                 if self.status_bar_enabled:
                     fields_format = " | ".join(f"{{{f}}}" for f in self.love_fields)
                     tail = (
-                        "\n\n[System] 本轮回复末尾必须严格按以下格式追加状态栏和剧情选项：\n"
+                        "\n\n[System] 本轮回复末尾必须严格按以下格式追加状态栏和剧情选项，禁止使用其他格式：\n"
                         f"[LOVE_DATA] {fields_format}\n"
                         f"示例：[LOVE_DATA] 55/100（好感说明） | 朋友 | 放松 | 教室 | 校服 | 希望今天也能见到他...\n"
                         "之后输出：\n"
@@ -1224,7 +1234,8 @@ class QuillPlugin(Star):
                         "1. 继续当前话题\n"
                         "2. 转换场景\n"
                         "3. 结束互动\n"
-                        "<<< 请选择 >>>"
+                        "<<< 请选择 >>>\n"
+                        "禁止使用 --- 分隔线、> 块引用、```代码块```、或其他格式。必须使用上述 [LOVE_DATA] 和 >>> <<< 标记。"
                     )
                 else:
                     tail = (
