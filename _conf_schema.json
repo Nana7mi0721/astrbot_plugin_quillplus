@@ -126,7 +126,7 @@
       }
     }
   },
-  "knowledge_base": {
+  "writing_resource": {
     "type": "object",
     "description": "[写作素材库] 风格指引注入",
     "hint": "管理写作风格、动作控制。通过关键词匹配按需注入。",

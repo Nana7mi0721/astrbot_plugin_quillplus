@@ -41,7 +41,7 @@ except ImportError:
 from .config import QuillConfig
 from .activation import ActivationDetector
 from .state import StateManager
-from .kb import KnowledgeBaseManager
+from .kb import WritingResourceManager
 from .worldbook import WorldbookManager
 from .prompt_builder import PromptBuilder
 from . import commands as _cmds
@@ -168,7 +168,7 @@ def strip_markdown(text: str) -> str:
     "astrbot_plugin_quillplus",
     "Nana7mi0721 & Gemini & GLM & DeepSeek",
     "羽笔 v5.0 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 增强插件",
-    "5.0.3",
+    "5.0.4",
     "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(Star):
@@ -209,10 +209,10 @@ class QuillPlugin(Star):
         os.makedirs(data_dir, exist_ok=True)
         self.state_manager = StateManager(data_dir=data_dir)
 
-        # --- Knowledge Base (deferred to initialize()) ---
-        self.kb_manager = None
-        self.kb_max_entries = self.config.kb_max_entries
-        self.kb_fallback_top_count = self.config.kb_fallback_top
+        # --- Writing Resource (deferred to initialize()) ---
+        self.wr_manager = None
+        self.wr_max_entries = self.config.wr_max_entries
+        self.wr_fallback_top_count = self.config.wr_fallback_top
 
         # --- Worldbook ---
         wb_dir = os.path.join(self.plugin_dir, "worldbooks")
@@ -262,28 +262,37 @@ class QuillPlugin(Star):
     # ================================================================
 
     async def initialize(self) -> None:
-        """异步初始化：KB 载入、Web 路由注册、RAG 索引构建、过期日志清理。
+        """异步初始化：WR 载入、Web 路由注册、RAG 索引构建、过期日志清理。
 
         生命周期阶段一。完成以下工作：
-        - 知识库（KB）懒加载
+        - 写作素材库（WR）懒加载
         - Web 面板 API 路由注册
         - RAG 检索器与 FAISS 索引初始化
         - 过期对话日志清理与低价值记忆修剪
         """
-        if self.config.kb_enabled:
-            kb_path = os.path.join(self.plugin_dir, "knowledge", "quill_kb.db")
+        if self.config.wr_enabled:
+            wr_path = os.path.join(self.plugin_dir, "knowledge", "quill_wr.db")
+            # 迁移旧数据库文件名
+            old_kb_path = os.path.join(self.plugin_dir, "knowledge", "quill_kb.db")
+            if not os.path.exists(wr_path) and os.path.exists(old_kb_path):
+                try:
+                    os.rename(old_kb_path, wr_path)
+                    logger.info("[Quill] 写作素材库数据库已迁移: quill_kb.db → quill_wr.db")
+                except Exception as e:
+                    logger.warning(f"[Quill] 数据库迁移失败，使用旧文件: {e}")
+                    wr_path = old_kb_path
             try:
-                category_dedup_limit = self.config.kb_dedup_limit
-                self.kb_manager = KnowledgeBaseManager(kb_path, category_dedup_limit=category_dedup_limit)
-                await self.kb_manager.initialize()
-                stats = await self.kb_manager.get_stats()
+                category_dedup_limit = self.config.wr_dedup_limit
+                self.wr_manager = WritingResourceManager(wr_path, category_dedup_limit=category_dedup_limit)
+                await self.wr_manager.initialize()
+                stats = await self.wr_manager.get_stats()
                 logger.info(
                     f"[Quill] 写作素材库已加载: {stats['total_entries']} 条 "
                     f"(启用 {stats['enabled_entries']} 条)"
                 )
-                logger.info(f"[Quill] 最大注入: {self.kb_max_entries} 条")
+                logger.info(f"[Quill] 最大注入: {self.wr_max_entries} 条")
             except Exception as e:
-                self.kb_manager = None
+                self.wr_manager = None
                 logger.warning(f"[Quill] 写作素材库初始化失败: {e}")
         else:
             logger.info("[Quill] 写作素材库已禁用")
@@ -300,7 +309,7 @@ class QuillPlugin(Star):
             'summarizer': self.rag_summarizer,
         }
         try:
-            QuillRoutes(self.kb_manager, self.wb_manager, self.context, self.config,
+            QuillRoutes(self.wr_manager, self.wb_manager, self.context, self.config,
                         rag_components=rag_components, plugin=self,
                         persona_manager=self.persona_manager).register_all()
             logger.info("[Quill] 已注册全部 Web API 路由 (register_web_api)")
@@ -420,9 +429,9 @@ class QuillPlugin(Star):
                 logger.info("[Quill] 状态已持久化")
             except Exception as e:
                 logger.warning(f"[Quill] 状态持久化失败: {e}")
-        if self.kb_manager:
+        if self.wr_manager:
             try:
-                await self.kb_manager.close()
+                await self.wr_manager.close()
             except Exception as e:
                 logger.warning(f"[Quill] 写作素材库关闭失败: {e}")
         if self.rag_retriever and self.rag_retriever.memory_store:
@@ -454,8 +463,8 @@ class QuillPlugin(Star):
 
             # 热重载：更新内存中所有配置派生属性
             self.config = QuillConfig(self._raw_config)
-            self.kb_max_entries = self.config.kb_max_entries
-            self.kb_fallback_top_count = self.config.kb_fallback_top
+            self.wr_max_entries = self.config.wr_max_entries
+            self.wr_fallback_top_count = self.config.wr_fallback_top
             self.wb_max_entries = self.config.worldbook_max_dynamic
             self.status_bar_enabled = self.config.status_bar_enabled
             self.status_bar_format_template = self.config.status_bar_format
@@ -699,7 +708,7 @@ class QuillPlugin(Star):
         # P1-1: 所有降级解析均失败时，记录原始文本片段便于调试（不暴露给用户）
         if not handled and self.status_bar_enabled:
             preview = (text or "")[:200].replace("\n", "\\n")
-            logger.debug(f"[Quill] 状态栏解析失败，兜底注入将触发 | target={target_id} | preview={preview!r}")
+            logger.info(f"[Quill] 状态栏解析失败（L1-L5 全部未匹配），使用兜底默认状态栏 | target={target_id} | preview={preview!r}")
 
         # P1-4: 记录状态栏解析成功率（仅在 status_bar_enabled 时计入）
         if self.status_bar_enabled:
@@ -896,12 +905,12 @@ class QuillPlugin(Star):
                 if pm is not None:
                     platform = (getattr(pm, "name", "") or "").lower()
             except Exception:
-                pass
+                logger.debug("[Quill] platform_meta.name 获取失败", exc_info=True)
             if not platform:
                 try:
                     platform = (event.get_platform_name() or "").lower()
                 except Exception:
-                    pass
+                    logger.debug("[Quill] get_platform_name() 获取失败", exc_info=True)
 
             # 记录原始类型以便正确回写
             messages_raw = tool_args.get("messages", [])
@@ -990,37 +999,37 @@ class QuillPlugin(Star):
         return persona_id, persona_data
 
     async def _check_activation(self, user_input: str, context_text: str, persona_data) -> tuple:
-        """检查激活状态（激活词 / 括号 / KB关键词）。返回 (activated, kb_activated)。"""
+        """检查激活状态（激活词 / 括号 / WR关键词）。返回 (activated, wr_activated)。"""
         activated = self.activation_detector.should_activate(user_input)
         has_bracket = self.activation_detector.check_brackets(user_input)
 
-        kb_activated = False
-        if not (activated or has_bracket) and self.kb_manager:
+        wr_activated = False
+        if not (activated or has_bracket) and self.wr_manager:
             try:
                 ext = persona_data.get("quill_extensions", {}) if persona_data else {}
-                kb_mode = ext.get("kb_mode", "disabled")
-                bound_kbs = ext.get("bound_knowledge_base", []) if kb_mode == "custom" else None
+                wr_mode = ext.get("wr_mode", "disabled")
+                bound_wrs = ext.get("bound_writing_resource", []) if wr_mode == "custom" else None
 
-                logger.info(f"[Quill] 写作素材库模式: {kb_mode}，绑定分类: {bound_kbs if bound_kbs is not None else 'Auto (全局匹配)'}")
+                logger.info(f"[Quill] 写作素材库模式: {wr_mode}，绑定分类: {bound_wrs if bound_wrs is not None else 'Auto (全局匹配)'}")
 
-                if kb_mode != "disabled":
-                    fetch_count = 7 if bound_kbs is not None else 3
-                    matched = await self.kb_manager.match(context_text, top_k=fetch_count, log_match=False)
+                if wr_mode != "disabled":
+                    fetch_count = 7 if bound_wrs is not None else 3
+                    matched = await self.wr_manager.match(context_text, top_k=fetch_count, log_match=False)
 
-                    if bound_kbs is not None:
-                        matched = [m for m in matched if m.get("category") in bound_kbs]
+                    if bound_wrs is not None:
+                        matched = [m for m in matched if m.get("category") in bound_wrs]
 
-                    kb_activated = len(matched) > 0
-                    if kb_activated:
+                    wr_activated = len(matched) > 0
+                    if wr_activated:
                         logger.info(f"[Quill] 写作素材库关键词触发激活: {len(matched)} 条匹配 (context)")
                     else:
                         logger.info(f"[Quill] 写作素材库未匹配到内容")
                 else:
                     logger.info(f"[Quill] 写作素材库模式: disabled，跳过素材检索")
             except Exception as e:
-                logger.warning(f"[Quill] KB 匹配失败: {e}")
+                logger.warning(f"[Quill] WR 匹配失败: {e}")
 
-        return activated, kb_activated
+        return activated, wr_activated
 
     async def _run_rag_retrieval(self, event: AstrMessageEvent, req: ProviderRequest, user_input: str, persona_data, dynamic_prompt: str) -> str:
         """执行 RAG 检索（Doc + Memory），返回更新后的 dynamic_prompt。"""
@@ -1097,7 +1106,7 @@ class QuillPlugin(Star):
         - 激活检测：决定本次请求是否进入 RP 模式
         - Context Restoration：req.contexts 为空时从 chat_logs 捞取最近 N 条垫入
         - First Message 智能抑制：避免重启后突兀复读开场白
-        - 4 层 Prompt 装配：系统/角色/世界书/KB/RAG 多源注入
+        - 4 层 Prompt 装配：系统/角色/世界书/WR/RAG 多源注入
         - 状态栏降级解析：5 级兜底（STATUS 块→LOVE_DATA→legacy→RAW→lenient）
         """
         try:
@@ -1137,7 +1146,7 @@ class QuillPlugin(Star):
                 recent_msgs = [c for c in req.contexts[-12:] if c.get("role") in ("user", "assistant")]
                 event.set_extra("_quill_recent_msgs", recent_msgs)
 
-            # Build multi-turn context for KB matching
+            # Build multi-turn context for WR matching
             context_text = user_input
             if req.contexts and isinstance(req.contexts, list):
                 recent = req.contexts[-4:]
@@ -1149,16 +1158,16 @@ class QuillPlugin(Star):
                         parts.append(content)
                 context_text = "\n".join(parts)
 
-            activated, kb_activated = await self._check_activation(user_input, context_text, persona_data)
+            activated, wr_activated = await self._check_activation(user_input, context_text, persona_data)
             has_bracket = self.activation_detector.check_brackets(user_input)
 
             # 全局常驻模式：跳过激活检测
             always_activate = getattr(self.config, "worldbook_always_activate", False)
             if always_activate:
                 activated = True
-                kb_activated = False
+                wr_activated = False
 
-            if not (activated or has_bracket or kb_activated):
+            if not (activated or has_bracket or wr_activated):
                 await self.state_manager.reset_quill_rounds(target_id)
                 return
 
@@ -1171,17 +1180,17 @@ class QuillPlugin(Star):
             # 无角色卡时跳过：避免 LLM 在无人设约束时进入 Agent 死循环
             await self._rewrite_smt_tool_description(req, persona_id)
 
-            if kb_activated and self.kb_manager and self.debug:
+            if wr_activated and self.wr_manager and self.debug:
                 try:
-                    debug_match = await self.kb_manager.match(context_text, top_k=10, log_match=False)
+                    debug_match = await self.wr_manager.match(context_text, top_k=10, log_match=False)
                     for e in debug_match:
                         logger.info(
-                            f"[Quill] KB 匹配: {e.get('entry_id','')} "
+                            f"[Quill] WR 匹配: {e.get('entry_id','')} "
                             f"(score={e.get('match_score',0)}, "
                             f"kw={e.get('keywords',[])})"
                         )
                 except Exception:
-                    logger.debug("[Quill] 调试 KB 匹配失败", exc_info=True)
+                    logger.debug("[Quill] 调试 WR 匹配失败", exc_info=True)
 
             emergency = await self.state_manager.should_inject_emergency(target_id)
 
@@ -1191,8 +1200,8 @@ class QuillPlugin(Star):
                 "persona_id": persona_id,
                 "persona_data": persona_data,
                 "user_id": target_id,
-                "kb_max_entries": self.kb_max_entries,
-                "kb_fallback_top_count": self.kb_fallback_top_count,
+                "wr_max_entries": self.wr_max_entries,
+                "wr_fallback_top_count": self.wr_fallback_top_count,
                 "wb_max_entries": self.wb_max_entries,
                 "wb_sensitivity": self.config.worldbook_sensitivity,
                 "wb_max_token": self.config.worldbook_max_token,
@@ -1201,7 +1210,7 @@ class QuillPlugin(Star):
             }
 
             stable_prompt, dynamic_prompt = await self.prompt_builder.build_system_prompt(
-                self.kb_manager, self.wb_manager, extra_info, emergency=emergency
+                self.wr_manager, self.wb_manager, extra_info, emergency=emergency
             )
 
             # ── RAG 检索（Doc RAG + 动态记忆）──
@@ -1253,7 +1262,7 @@ class QuillPlugin(Star):
             await self.state_manager.update_activity(target_id)
             await self.state_manager.clear_refusal(target_id)
 
-            trigger = "激活词" if activated else ("括号" if has_bracket else "KB关键词")
+            trigger = "激活词" if activated else ("括号" if has_bracket else "WR关键词")
             _es = event.get_extra("enable_streaming")
             if _es is True:
                 streaming_status = "强制流式"
@@ -1452,7 +1461,7 @@ class QuillPlugin(Star):
         self, event: AstrMessageEvent,
         arg1: str = "", rest: GreedyStr = ""
     ):
-        """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill test <kb|wb|mem> <文字>"""
+        """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill test <wr|wb|mem> <文字>"""
         arg1_lower = (arg1 or "").strip().lower()
         if arg1_lower == "help":
             await _cmds.quill_help(event)
@@ -1462,17 +1471,17 @@ class QuillPlugin(Star):
             return
         if arg1_lower == "test":
             text = (rest or "").strip()
-            # 解析: /quill test kb <文字> 或 /quill test <文字>
+            # 解析: /quill test wr <文字> 或 /quill test <文字>
             parts = text.split(None, 1) if text else []
-            if len(parts) >= 2 and parts[0].lower() in ("kb", "wb", "mem"):
+            if len(parts) >= 2 and parts[0].lower() in ("wr", "wb", "mem"):
                 system = parts[0]
                 test_text = parts[1]
             else:
-                system = "kb"
+                system = "wr"
                 test_text = text
             if not test_text:
                 from astrbot.core.message.message_event_result import MessageEventResult
-                event.set_result(MessageEventResult().message("用法: /quill test <kb|wb|mem> <文字>"))
+                event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem> <文字>"))
                 return
             await _cmds.quill_test(self, event, system, test_text)
             return

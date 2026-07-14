@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -141,25 +141,25 @@ header .spacer { flex: 1; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 20px; }
 .card h3 { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
 
-/* ── KB Grid ── */
-.kb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; margin-bottom: 20px; }
-.kb-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; transition: box-shadow var(--transition), border-color var(--transition); }
-.kb-card:hover { box-shadow: var(--shadow-md); border-color: var(--primary-light); }
-.kb-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; gap: 12px; cursor: pointer; }
-.kb-card.expanded { border-color: var(--primary-light); }
-.kb-card-title { font-size: 15px; font-weight: 600; color: var(--text); word-break: break-word; }
-.kb-card-id { font-size: 12px; color: var(--text-muted); font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace; margin-top: 3px; }
-.kb-card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-.kb-card-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.kb-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-light); }
-.kb-card-actions { display: flex; gap: 6px; }
-.kb-expanded { animation: fadeIn 200ms ease; padding-top: 8px; border-top: 1px solid var(--border-light); margin-top: 8px; }
-.kb-expanded .form-group { margin-bottom: 8px; }
-.kb-expanded .form-group label { font-size: 12px; margin-bottom: 3px; }
+/* ── WR Grid ── */
+.wr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.wr-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; transition: box-shadow var(--transition), border-color var(--transition); }
+.wr-card:hover { box-shadow: var(--shadow-md); border-color: var(--primary-light); }
+.wr-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; gap: 12px; cursor: pointer; }
+.wr-card.expanded { border-color: var(--primary-light); }
+.wr-card-title { font-size: 15px; font-weight: 600; color: var(--text); word-break: break-word; }
+.wr-card-id { font-size: 12px; color: var(--text-muted); font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace; margin-top: 3px; }
+.wr-card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.wr-card-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.wr-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-light); }
+.wr-card-actions { display: flex; gap: 6px; }
+.wr-expanded { animation: fadeIn 200ms ease; padding-top: 8px; border-top: 1px solid var(--border-light); margin-top: 8px; }
+.wr-expanded .form-group { margin-bottom: 8px; }
+.wr-expanded .form-group label { font-size: 12px; margin-bottom: 3px; }
 
 /* ── Toolbar ── */
 .toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
-.kb-filter-bar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+.wr-filter-bar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
 
 /* ── Buttons ── */
 .btn { padding: 8px 18px; border: none; border-radius: var(--radius-sm); font-size: 14px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background var(--transition), box-shadow var(--transition), border-color var(--transition); font-family: inherit; font-weight: 500; }
@@ -386,7 +386,7 @@ select option {
   .sidebar { width: 100%; height: auto; flex-direction: row; border-right: none; border-bottom: 1px solid var(--border); }
   .nav-menu { flex-direction: row; flex: none; padding: 8px; overflow-x: auto; }
   .nav-item { white-space: nowrap; }
-  .kb-grid { grid-template-columns: 1fr; }
+  .wr-grid { grid-template-columns: 1fr; }
   .form-row { flex-direction: column; gap: 0; }
 }
 
@@ -406,7 +406,7 @@ select option {
 }
 
 /* ── 规范化底部分页悬浮样式 ── */
-.kb-pagination-wrapper {
+.wr-pagination-wrapper {
   position: sticky;
   bottom: -24px;
   background: var(--bg);
@@ -419,7 +419,7 @@ select option {
   align-items: center;
   justify-content: center;
 }
-.kb-jump-box {
+.wr-jump-box {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -429,12 +429,12 @@ select option {
 }
 
 /* ── 写作素材库专属 Flex 布局 ── */
-#tab-kb.active {
+#tab-wr.active {
   display: flex;
   flex-direction: column;
   min-height: 100%;
 }
-#kb-grid {
+#wr-grid {
   flex: 1;
   align-content: start;
   padding-bottom: 20px;
@@ -451,7 +451,7 @@ select option {
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 /* 2. 卡片立体感与悬浮反馈 (Google 风格：依赖边框和色调对比，不依赖深度) */
-.card, .kb-card, .persona-card {
+.card, .wr-card, .persona-card {
   box-shadow: none;
   transition: border-color var(--transition), box-shadow var(--transition);
 }
@@ -475,7 +475,7 @@ input:not([type="checkbox"]):not([type="range"]):focus, textarea:focus, select:f
 }
 
 /* 5. 工具栏吸顶 */
-.kb-filter-bar, .toolbar {
+.wr-filter-bar, .toolbar {
   position: sticky;
   top: -24px;
   background: rgba(248, 249, 250, 0.9);
@@ -486,13 +486,13 @@ input:not([type="checkbox"]):not([type="range"]):focus, textarea:focus, select:f
   margin-top: -16px;
   border-bottom: 1px solid var(--border-light);
 }
-[data-theme="dark"] .kb-filter-bar, [data-theme="dark"] .toolbar {
+[data-theme="dark"] .wr-filter-bar, [data-theme="dark"] .toolbar {
   background: rgba(22, 22, 22, 0.9);
 }
 
 /* 6. 统一卡片底部排版 */
-.kb-card { display: flex; flex-direction: column; }
-.kb-card-footer { margin-top: auto; }
+.wr-card { display: flex; flex-direction: column; }
+.wr-card-footer { margin-top: auto; }
 
 /* 7. 世界书层级视觉优化 */
 .wb-inner {
@@ -737,7 +737,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 .wb-item {
   transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
 }
-.card:hover, .kb-card:hover, .persona-card:hover {
+.card:hover, .wr-card:hover, .persona-card:hover {
   box-shadow: var(--shadow-sm);
 }
 .tab-content.active { animation: fadeIn 0.3s ease; }
@@ -1110,13 +1110,13 @@ header .sub { font-size: 13px; color: var(--text-muted); font-weight: 400; }
 .content { padding: 24px 32px; }
 
 /* ── Card Enhancement ── */
-.card, .kb-card, .persona-card {
+.card, .wr-card, .persona-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--card);
   padding: 20px 24px;
 }
-.card:hover, .kb-card:hover, .persona-card:hover {
+.card:hover, .wr-card:hover, .persona-card:hover {
   border-color: var(--primary);
   box-shadow: var(--shadow-md);
 }
@@ -1194,11 +1194,11 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 
 /* ── Toolbar / Filter Bar ── */
-.toolbar, .kb-filter-bar {
+.toolbar, .wr-filter-bar {
   gap: 12px;
   padding: 12px 0;
 }
-.toolbar input, .kb-filter-bar input, .kb-filter-bar select {
+.toolbar input, .wr-filter-bar input, .wr-filter-bar select {
   border-radius: var(--radius-pill);
   padding: 8px 16px;
 }
@@ -1423,12 +1423,12 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   color: #fff;
 }
 
-/* ── 6. KB card left category color bar ── */
-.kb-card {
+/* ── 6. WR card left category color bar ── */
+.wr-card {
   border-left: 3px solid var(--border);
   position: relative;
 }
-.kb-card .kb-cat-bar {
+.wr-card .wr-cat-bar {
   position: absolute;
   left: 0; top: 0; bottom: 0;
   width: 3px;
@@ -1482,14 +1482,14 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
 
 /* ── 9. Dark mode card border enhancement ── */
 [data-theme="dark"] .card,
-[data-theme="dark"] .kb-card,
+[data-theme="dark"] .wr-card,
 [data-theme="dark"] .persona-card,
 [data-theme="dark"] .mem-dash-card {
   border-color: #3a3a3a;
   box-shadow: 0 1px 2px rgba(0,0,0,0.15);
 }
 [data-theme="dark"] .card:hover,
-[data-theme="dark"] .kb-card:hover,
+[data-theme="dark"] .wr-card:hover,
 [data-theme="dark"] .persona-card:hover {
   border-color: var(--primary);
   box-shadow: 0 2px 6px rgba(0,0,0,0.3);
@@ -1517,13 +1517,13 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
     <nav class="nav-menu">
       <div class="sidebar-section">
         <div class="sidebar-label">内容管理</div>
-        <button class="nav-item active" data-tab="kb">
+        <button class="nav-item active" data-tab="wr">
           <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
             <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
           </svg>
           <span>写作素材库</span>
-          <span class="nav-item-badge" id="nav-badge-kb" style="display:none">0</span>
+          <span class="nav-item-badge" id="nav-badge-wr" style="display:none">0</span>
         </button>
         <button class="nav-item" data-tab="wb">
           <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1576,26 +1576,26 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   </aside>
   <main class="content">
 
-  <!-- KB Tab -->
-  <div class="tab-content active" id="tab-kb">
-    <h2 class="page-title">写作素材库 <span class="page-title-stats" id="kb-stats-bar"></span></h2>
-    <div class="page-stats-bar" id="kb-page-stats"><span class="stat-item">加载中...</span></div>
+  <!-- WR Tab -->
+  <div class="tab-content active" id="tab-wr">
+    <h2 class="page-title">写作素材库 <span class="page-title-stats" id="wr-stats-bar"></span></h2>
+    <div class="page-stats-bar" id="wr-page-stats"><span class="stat-item">加载中...</span></div>
     <!-- 顶部筛选器（原"匹配测试"移到此）-->
-    <div class="kb-filter-bar sticky-toolbar">
-      <input type="text" id="kb-filter-input" placeholder="全局检索：输入关键词、分类、内容..." style="flex:1;max-width:400px" oninput="onKBSearchInput()">
-      <select id="kb-cat-filter" onchange="loadKB()" style="width:auto"><option value="">全部分类</option></select>
+    <div class="wr-filter-bar sticky-toolbar">
+      <input type="text" id="wr-filter-input" placeholder="全局检索：输入关键词、分类、内容..." style="flex:1;max-width:400px" oninput="onWRSearchInput()">
+      <select id="wr-cat-filter" onchange="loadWR()" style="width:auto"><option value="">全部分类</option></select>
       <label class="constant-filter-label">
-        <div class="toggle toggle--compact"><input type="checkbox" id="kb-constant-filter" onchange="onKBSearchInput()"><span class="toggle-slider"></span></div>
+        <div class="toggle toggle--compact"><input type="checkbox" id="wr-constant-filter" onchange="onWRSearchInput()"><span class="toggle-slider"></span></div>
         <span class="toggle-label-text">仅常驻</span>
       </label>
-      <button class="btn btn-primary" onclick="openKBModal(null)">+ 新建条目</button>
-      <button class="btn btn-outline" onclick="exportKB()">导出</button>
-      <label class="btn btn-outline cursor-ptr">导入<input type="file" accept=".json" hidden onchange="importKB(this)"></label>
+      <button class="btn btn-primary" onclick="openWRModal(null)">+ 新建条目</button>
+      <button class="btn btn-outline" onclick="exportWR()">导出</button>
+      <label class="btn btn-outline cursor-ptr">导入<input type="file" accept=".json" hidden onchange="importWR(this)"></label>
     </div>
-    <div class="kb-grid" id="kb-grid">
+    <div class="wr-grid" id="wr-grid">
       <div class="skeleton-grid" style="grid-column:1/-1"><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div></div>
     </div>
-    <div class="pagination" id="kb-pagination"></div>
+    <div class="pagination" id="wr-pagination"></div>
   </div>
 
   <!-- WB Tab -->
@@ -1609,7 +1609,7 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
         <div class="toggle toggle--compact"><input type="checkbox" id="wb-constant-filter" onchange="toggleWBConstantFilter()"><span class="toggle-slider"></span></div>
         <span class="toggle-label-text">仅常驻</span>
       </label>
-      <label class="btn btn-outline cursor-ptr">导入 (原生/ST)<input type="file" accept=".json" hidden onchange="importWB_ST(this)"></label>
+      <label class="btn btn-outline cursor-ptr">导入 (原生/ST)<input type="file" accept=".json" hidden onchange="importWBSt(this)"></label>
       <button class="btn btn-outline" onclick="refreshWB()" id="btn-refresh-wb">⟳ 刷新</button>
     </div>
     <div id="wb-list"><div class="skeleton-list"><div class="skeleton-item"></div><div class="skeleton-item"></div><div class="skeleton-item"></div></div></div>
@@ -1712,13 +1712,13 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
           <h3 class="margin-0">记忆浏览</h3>
           <button class="btn btn-outline btn-sm" onclick="pruneMemories()">修剪低分记忆</button>
         </div>
-        <div class="form-group"><input type="text" id="mem-search" placeholder="搜索 session_id 或关键词..." oninput="handleMemSearch()"></div>
+        <div class="form-group"><input type="text" id="mem-search" placeholder="搜索 session_id 或关键词..." oninput="handleMemorySearch()"></div>
         <div class="table-wrap"><table class="data-table" id="mem-table"><thead><tr><th>Session ID</th><th>摘要</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="mem-table-body"></tbody></table></div>
         <div id="mem-pagination" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:13px;color:var(--text-muted);">
           <span id="mem-page-info"></span>
           <div style="display:flex;gap:6px">
-            <button class="btn btn-outline btn-sm" id="mem-prev-btn" onclick="changeMemPage(-1)">上一页</button>
-            <button class="btn btn-outline btn-sm" id="mem-next-btn" onclick="changeMemPage(1)">下一页</button>
+            <button class="btn btn-outline btn-sm" id="mem-prev-btn" onclick="changeMemoryPage(-1)">上一页</button>
+            <button class="btn btn-outline btn-sm" id="mem-next-btn" onclick="changeMemoryPage(1)">下一页</button>
           </div>
         </div>
       </div>
@@ -1760,6 +1760,11 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
       <a data-target="sec-system">系统与安全</a>
     </nav>
 
+    <div class="config-search-box" style="margin-bottom: 12px;">
+        <input type="text" id="configSearchInput" placeholder="搜索配置项..."
+               style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color, #ddd); border-radius: 6px; background: var(--card-bg, #fff); color: var(--text-color, #333); font-size: 14px;">
+    </div>
+
     <!-- ════ 1. 基础配置 ════ -->
     <section class="config-section" id="sec-basic">
       <h2 class="config-section-title"><span class="num">1</span>基础配置 <span class="hint">世界书 · 素材库 · 输出控制</span></h2>
@@ -1792,12 +1797,12 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
           <div class="card h-100">
             <h3>写作素材库控制</h3>
             <div class="form-check" style="margin-bottom:16px;">
-              <label class="toggle"><input type="checkbox" id="c-kb-enabled"><span class="toggle-slider"></span></label>
+              <label class="toggle"><input type="checkbox" id="c-wr-enabled"><span class="toggle-slider"></span></label>
               <span class="fw-500">启用素材库指引</span>
             </div>
-            <div class="form-group"><label>最大注入条数</label><input type="number" id="c-kb-max" value="4"></div>
-            <div class="form-group"><label>无匹配时保底回退条数</label><input type="number" id="c-kb-fallback" value="2"></div>
-            <div class="form-group"><label>同分类去重上限</label><input type="number" id="c-kb-dedup" value="3"></div>
+            <div class="form-group"><label>最大注入条数</label><input type="number" id="c-wr-max" value="4"></div>
+            <div class="form-group"><label>无匹配时保底回退条数</label><input type="number" id="c-wr-fallback" value="2"></div>
+            <div class="form-group"><label>同分类去重上限</label><input type="number" id="c-wr-dedup" value="3"></div>
           </div>
         </div>
 
@@ -2063,15 +2068,15 @@ const PLUGIN_NAME = "astrbot_plugin_quillplus";
 function getBridge() { return window.AstrBotPluginPage || null; }
 async function waitForBridge(timeoutMs = 5000) { const s = Date.now(); while (Date.now() - s < timeoutMs) { if (window.AstrBotPluginPage) return window.AstrBotPluginPage; await new Promise(r => setTimeout(r, 16)); } return null; }
 
-let kbState = { entries: [], total: 0, page: 1, perPage: 9 };
+let wrState = { entries: [], total: 0, page: 1, perPage: 9 };
 let wbCache = {};
 let modalState = null;
 let modalMode = null;
-let _kbTagInput = null;   // 写作素材库标签输入
+let _wrTagInput = null;   // 写作素材库标签输入
 let _wbEntryTagInput = null;  // 世界书条目标签输入
 
 function debounce(fn, ms) { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }
-const handleMemSearch = debounce(loadMemoryBrowser, 300);
+const handleMemorySearch = debounce(loadMemoryBrowser, 300);
 function qs(s) { return document.querySelector(s); }
 function qsa(s) { return document.querySelectorAll(s); }
 function esc(s) { return s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -2376,15 +2381,15 @@ qsa('.nav-item').forEach(btn => {
     qsa('.tab-content').forEach(t => t.classList.remove('active'));
     btn.classList.add('active');
     qs('#tab-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'kb') loadKB();
+    if (btn.dataset.tab === 'wr') loadWR();
     if (btn.dataset.tab === 'wb') { loadWB(); }
     if (btn.dataset.tab === 'rag') { loadRAG(); loadRAGModelInfo(); }
-    if (btn.dataset.tab === 'memory') switchMemSub('overview');
+    if (btn.dataset.tab === 'memory') switchMemorySub('overview');
     if (btn.dataset.tab === 'persona') loadPersonas();
     if (btn.dataset.tab === 'config') { loadGlobalSettings(); loadHealth(); }
   });
 });
-qsa('.memory-subnav-item').forEach(btn => { btn.addEventListener('click', () => switchMemSub(btn.dataset.memSub)); });
+qsa('.memory-subnav-item').forEach(btn => { btn.addEventListener('click', () => switchMemorySub(btn.dataset.memSub)); });
 
 qsa('.config-nav a').forEach(a => {
   a.addEventListener('click', (e) => {
@@ -2443,7 +2448,7 @@ function createTagInput(containerId, initialTags, placeholder) {
 }
 
 function calcDynamicPerPage() {
-  const grid = qs('#kb-grid');
+  const grid = qs('#wr-grid');
   if (!grid) return 9;
   const gridWidth = grid.clientWidth || (window.innerWidth - 256);
   const cols = Math.max(1, Math.floor(gridWidth / 374));
@@ -2458,45 +2463,45 @@ function calcDynamicPerPage() {
 // 监听窗口大小改变，动态调整分页数量
 window.addEventListener('resize', debounce(() => {
   const newPerPage = calcDynamicPerPage();
-  if (kbState.perPage !== newPerPage && qs('#tab-kb').classList.contains('active')) {
-    kbState.perPage = newPerPage;
-    kbState.page = 1;
-    loadKB();
+  if (wrState.perPage !== newPerPage && qs('#tab-wr').classList.contains('active')) {
+    wrState.perPage = newPerPage;
+    wrState.page = 1;
+    loadWR();
   }
 }, 300));
 
 // 统一的全局搜索触发器 (防抖触发)
-const handleKBSearch = debounce(loadKB, 300);
-function onKBSearchInput() {
-  kbState.page = 1;
-  handleKBSearch();
+const handleWRSearch = debounce(loadWR, 300);
+function onWRSearchInput() {
+  wrState.page = 1;
+  handleWRSearch();
 }
 
-async function loadKB() {
-  const search = qs('#kb-filter-input')?.value || '';
-  const category = qs('#kb-cat-filter').value;
-  const isConstant = qs('#kb-constant-filter')?.checked;
-  kbState.perPage = calcDynamicPerPage();
-  const page = kbState.page;
+async function loadWR() {
+  const search = qs('#wr-filter-input')?.value || '';
+  const category = qs('#wr-cat-filter').value;
+  const isConstant = qs('#wr-constant-filter')?.checked;
+  wrState.perPage = calcDynamicPerPage();
+  const page = wrState.page;
   try {
-    const params = new URLSearchParams({ page, per_page: kbState.perPage });
+    const params = new URLSearchParams({ page, per_page: wrState.perPage });
     if (search) params.set('search', search);
     if (category) params.set('category', category);
     if (isConstant) params.set('is_constant', 'true');
-    const data = await api('/kb/list?' + params.toString());
-    kbState.entries = data.items;
-    kbState.total = data.total;
-    renderKBGrid();
-    renderKBPagination();
-    updateKBStats(data);
+    const data = await api('/wr/list?' + params.toString());
+    wrState.entries = data.items;
+    wrState.total = data.total;
+    renderWRGrid();
+    renderWRPagination();
+    updateWRStats(data);
   } catch (e) { showToast(e.message); }
 }
 
-function updateKBStats(data) {
+function updateWRStats(data) {
   const total = data.total ?? 0;
   const enabled = data.items?.filter(e => e.enabled !== false).length ?? 0;
   const constant = data.items?.filter(e => e.is_constant).length ?? 0;
-  const bar = qs('#kb-page-stats');
+  const bar = qs('#wr-page-stats');
   if (bar) {
     bar.innerHTML = `<span class="stat-item">共 <span class="stat-value">${total}</span> 条</span>
       <span class="stat-divider"></span>
@@ -2506,122 +2511,122 @@ function updateKBStats(data) {
       <span class="stat-divider"></span>
       <span class="stat-item">常驻 <span class="stat-value">${constant}</span></span>`;
   }
-  const titleBar = qs('#kb-stats-bar');
+  const titleBar = qs('#wr-stats-bar');
   if (titleBar) titleBar.textContent = `· ${total} 条`;
-  updateNavBadge('nav-badge-kb', total);
+  updateNavBadge('nav-badge-wr', total);
 }
 
-let _kbExpandedId = null;
+let _wrExpandedId = null;
 
-function renderKBGrid() {
-  const grid = qs('#kb-grid');
-  if (!kbState.entries.length) { grid.innerHTML = renderEmptyState('book', '还没有素材条目', '点击上方"新建条目"按钮开始创建'); return; }
-  grid.innerHTML = kbState.entries.map((e) => {
+function renderWRGrid() {
+  const grid = qs('#wr-grid');
+  if (!wrState.entries.length) { grid.innerHTML = renderEmptyState('book', '还没有素材条目', '点击上方"新建条目"按钮开始创建'); return; }
+  grid.innerHTML = wrState.entries.map((e) => {
     const escId = esc(e.entry_id);
     const jsId = jsAttr(e.entry_id);  // B3: onclick 上下文用双重转义
     const kw = (e.keywords || []).slice(0, 6).map(k => `<span class="tag">${esc(k)}</span>`).join('');
     const more = (e.keywords || []).length > 6 ? ` <span style="color:var(--text-muted);font-size:11px">+${(e.keywords || []).length - 6}</span>` : '';
-    const isOpen = _kbExpandedId === e.entry_id;
-    return `<div class="kb-card${isOpen ? ' expanded' : ''}" data-eid="${escId}" style="border-left-color:${catColor(e.category)}">
-      <div class="kb-card-header" onclick="${isOpen ? '' : "toggleKBExpand('" + jsId + "')"}">
-        <div><div class="kb-card-title">${esc(e.name || e.entry_id)}</div><div class="kb-card-id">${escId}</div></div>
-        <div class="kb-card-meta">
+    const isOpen = _wrExpandedId === e.entry_id;
+    return `<div class="wr-card${isOpen ? ' expanded' : ''}" data-eid="${escId}" style="border-left-color:${catColor(e.category)}">
+      <div class="wr-card-header" onclick="${isOpen ? '' : "toggleWRExpand('" + jsId + "')"}">
+        <div><div class="wr-card-title">${esc(e.name || e.entry_id)}</div><div class="wr-card-id">${escId}</div></div>
+        <div class="wr-card-meta">
           <span class="cat-chip" style="background:${catColor(e.category)}">${esc(e.category)}</span>
           <span class="text-muted-13">P${e.priority != null ? e.priority : '-'}</span>
         </div>
       </div>
-      ${isOpen ? renderKBExpanded(e) : (kw || more) ? `<div class="kb-card-tags">${kw}${more}</div>` : ''}
-      <div class="kb-card-footer">
-        <label class="toggle"><input type="checkbox" ${e.enabled !== false ? 'checked' : ''} onchange="toggleKBEntry('${jsId}', this.checked)"><span class="toggle-slider"></span></label>
-        <div class="kb-card-actions">
-          ${isOpen ? `<button class="btn btn-sm btn-outline btn-icon" onclick="saveKBInline('${jsId}')">✓</button>` : ''}
-          <button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openKBModal('${jsId}')" title="编辑">✎</button>
-          <button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteKBEntry('${jsId}')" title="删除">×</button>
+      ${isOpen ? renderWRExpanded(e) : (kw || more) ? `<div class="wr-card-tags">${kw}${more}</div>` : ''}
+      <div class="wr-card-footer">
+        <label class="toggle"><input type="checkbox" ${e.enabled !== false ? 'checked' : ''} onchange="toggleWREntry('${jsId}', this.checked)"><span class="toggle-slider"></span></label>
+        <div class="wr-card-actions">
+          ${isOpen ? `<button class="btn btn-sm btn-outline btn-icon" onclick="saveWRInline('${jsId}')">✓</button>` : ''}
+          <button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWRModal('${jsId}')" title="编辑">✎</button>
+          <button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWREntry('${jsId}')" title="删除">×</button>
         </div>
       </div>
     </div>`;
   }).join('');
 }
 
-function renderKBExpanded(e) {
+function renderWRExpanded(e) {
   const escId = esc(e.entry_id);
   const jsId = jsAttr(e.entry_id);  // B3: onclick 上下文用双重转义
-  const kwTags = (e.keywords || []).map(k => `<span class="tag" style="margin:0 2px 2px 0">${esc(k)} <span class="tag-del" onclick="removeKBInlineTag('${jsId}','${jsAttr(k)}')">×</span></span>`).join('');
-  return `<div class="kb-expanded" onclick="event.stopPropagation()">
+  const kwTags = (e.keywords || []).map(k => `<span class="tag" style="margin:0 2px 2px 0">${esc(k)} <span class="tag-del" onclick="removeWRInlineTag('${jsId}','${jsAttr(k)}')">×</span></span>`).join('');
+  return `<div class="wr-expanded" onclick="event.stopPropagation()">
     <div class="form-row">
       <div class="form-group"><label>分类</label><input value="${esc(e.category||'')}"></div>
       <div class="form-group" style="flex:0 0 120px"><label>权重</label><div class="range-wrap"><input type="range" min="1" max="10" value="${e.priority||5}" oninput="this.nextElementSibling.textContent=this.value"><span class="range-value">${e.priority||5}</span></div></div>
     </div>
     <div class="form-group"><label>关键词</label><div>${kwTags || '<span style="color:var(--text-muted)">无</span>'}</div>
-      <input style="flex:1" placeholder="添加关键词" onkeydown="if(event.key==='Enter'){addKBInlineTag('${jsId}',this.value);this.value=''}"></div>
+      <input style="flex:1" placeholder="添加关键词" onkeydown="if(event.key==='Enter'){addWRInlineTag('${jsId}',this.value);this.value=''}"></div>
     <div class="form-group"><label>内容</label><textarea rows="4">${esc(e.content||'')}</textarea></div>
     <div style="display:flex;gap:8px;align-items:center">
-      <label class="form-check" style="margin-bottom:0"><input type="checkbox" class="kb-inline-const-cb" ${e.is_constant?'checked':''}> 常驻</label>
-      <button class="btn btn-sm btn-primary" onclick="saveKBInline('${jsId}')" style="margin-left:auto">保存</button>
-      <button class="btn btn-sm btn-outline" onclick="toggleKBExpand('${jsId}')">收起</button>
+      <label class="form-check" style="margin-bottom:0"><input type="checkbox" class="wr-inline-const-cb" ${e.is_constant?'checked':''}> 常驻</label>
+      <button class="btn btn-sm btn-primary" onclick="saveWRInline('${jsId}')" style="margin-left:auto">保存</button>
+      <button class="btn btn-sm btn-outline" onclick="toggleWRExpand('${jsId}')">收起</button>
     </div>
   </div>`;
 }
 
-let _kbInlineTagCache = {};
+let _wrInlineTagCache = {};
 
-function toggleKBExpand(eid) {
-  if (_kbExpandedId === eid) { _kbExpandedId = null; renderKBGrid(); return; }
-  _kbExpandedId = eid;
-  _kbInlineTagCache[eid] = [...(kbState.entries.find(e => e.entry_id === eid)?.keywords || [])];
-  renderKBGrid();
+function toggleWRExpand(eid) {
+  if (_wrExpandedId === eid) { _wrExpandedId = null; renderWRGrid(); return; }
+  _wrExpandedId = eid;
+  _wrInlineTagCache[eid] = [...(wrState.entries.find(e => e.entry_id === eid)?.keywords || [])];
+  renderWRGrid();
 }
 
-function addKBInlineTag(eid, val) { val = val.trim().replace(/,/g, ''); if (!val) return; if (!_kbInlineTagCache[eid]) _kbInlineTagCache[eid] = []; if (!_kbInlineTagCache[eid].includes(val)) _kbInlineTagCache[eid].push(val); const entry = kbState.entries.find(e => e.entry_id === eid); if (entry) entry.keywords = [..._kbInlineTagCache[eid]]; renderKBGrid(); }
-function removeKBInlineTag(eid, val) { if (_kbInlineTagCache[eid]) _kbInlineTagCache[eid] = _kbInlineTagCache[eid].filter(t => t !== val); const entry = kbState.entries.find(e => e.entry_id === eid); if (entry) entry.keywords = [..._kbInlineTagCache[eid]]; renderKBGrid(); }
+function addWRInlineTag(eid, val) { val = val.trim().replace(/,/g, ''); if (!val) return; if (!_wrInlineTagCache[eid]) _wrInlineTagCache[eid] = []; if (!_wrInlineTagCache[eid].includes(val)) _wrInlineTagCache[eid].push(val); const entry = wrState.entries.find(e => e.entry_id === eid); if (entry) entry.keywords = [..._wrInlineTagCache[eid]]; renderWRGrid(); }
+function removeWRInlineTag(eid, val) { if (_wrInlineTagCache[eid]) _wrInlineTagCache[eid] = _wrInlineTagCache[eid].filter(t => t !== val); const entry = wrState.entries.find(e => e.entry_id === eid); if (entry) entry.keywords = [..._wrInlineTagCache[eid]]; renderWRGrid(); }
 
-async function saveKBInline(eid) {
+async function saveWRInline(eid) {
   const card = document.querySelector(`[data-eid="${CSS.escape(eid)}"]`);
   if (!card) return;
-  const entry = kbState.entries.find(e => e.entry_id === eid);
-  const is_const = card.querySelector('.kb-inline-const-cb')?.checked || false;
+  const entry = wrState.entries.find(e => e.entry_id === eid);
+  const is_const = card.querySelector('.wr-inline-const-cb')?.checked || false;
   const priority = parseInt(card.querySelector('input[type="range"]')?.value) || entry.priority || 5;
-  const body = { entry_id: eid, category: card.querySelector('input')?.value || entry.category, name: card.querySelector('.kb-card-title')?.textContent, keywords: _kbInlineTagCache[eid] || entry.keywords, content: card.querySelector('textarea')?.value || '', priority: priority, is_constant: is_const, enabled: entry.enabled };
-  try { await apiPost('/kb/update', body); showToast('已保存', 'success'); _kbExpandedId = null; loadKB(); } catch (e) { showToast(e.message); }
+  const body = { entry_id: eid, category: card.querySelector('input')?.value || entry.category, name: card.querySelector('.wr-card-title')?.textContent, keywords: _wrInlineTagCache[eid] || entry.keywords, content: card.querySelector('textarea')?.value || '', priority: priority, is_constant: is_const, enabled: entry.enabled };
+  try { await apiPost('/wr/update', body); showToast('已保存', 'success'); _wrExpandedId = null; loadWR(); } catch (e) { showToast(e.message); }
 }
 
-function renderKBPagination() {
-  const el = qs('#kb-pagination');
-  const { page, perPage, total } = kbState;
+function renderWRPagination() {
+  const el = qs('#wr-pagination');
+  const { page, perPage, total } = wrState;
   const tp = Math.ceil(total / perPage) || 1;
-  el.className = 'kb-pagination-wrapper';
+  el.className = 'wr-pagination-wrapper';
   el.innerHTML = `
-    <button class="btn btn-outline btn-sm" ${page<=1?'disabled':''} onclick="goKBPage(1)">首页</button>
-    <button class="btn btn-outline btn-sm" ${page<=1?'disabled':''} onclick="goKBPage(${page-1})">上一页</button>
+    <button class="btn btn-outline btn-sm" ${page<=1?'disabled':''} onclick="goWRPage(1)">首页</button>
+    <button class="btn btn-outline btn-sm" ${page<=1?'disabled':''} onclick="goWRPage(${page-1})">上一页</button>
     <span style="font-size:13px;color:var(--text-muted);margin:0 8px;">${page} / ${tp} (共${total})</span>
-    <button class="btn btn-outline btn-sm" ${page>=tp?'disabled':''} onclick="goKBPage(${page+1})">下一页</button>
-    <button class="btn btn-outline btn-sm" ${page>=tp?'disabled':''} onclick="goKBPage(${tp})">尾页</button>
-    <div class="kb-jump-box">
+    <button class="btn btn-outline btn-sm" ${page>=tp?'disabled':''} onclick="goWRPage(${page+1})">下一页</button>
+    <button class="btn btn-outline btn-sm" ${page>=tp?'disabled':''} onclick="goWRPage(${tp})">尾页</button>
+    <div class="wr-jump-box">
       <span class="text-muted-13">跳至</span>
-      <input type="number" id="kb-page-jump" min="1" max="${tp}" value="${page}" class="tag-input-field" style="width:50px;text-align:center;border:1px solid var(--border)!important;padding:4px!important;" onkeydown="if(event.key==='Enter')goKBPage(parseInt(this.value)||1)">
-      <button class="btn btn-outline btn-sm" onclick="goKBPage(parseInt(qs('#kb-page-jump').value)||1)">GO</button>
+      <input type="number" id="wr-page-jump" min="1" max="${tp}" value="${page}" class="tag-input-field" style="width:50px;text-align:center;border:1px solid var(--border)!important;padding:4px!important;" onkeydown="if(event.key==='Enter')goWRPage(parseInt(this.value)||1)">
+      <button class="btn btn-outline btn-sm" onclick="goWRPage(parseInt(qs('#wr-page-jump').value)||1)">GO</button>
     </div>
   `;
 }
 
-function goKBPage(p) {
-  const tp = Math.ceil(kbState.total / kbState.perPage) || 1;
+function goWRPage(p) {
+  const tp = Math.ceil(wrState.total / wrState.perPage) || 1;
   if (isNaN(p) || p < 1) p = 1;
   if (p > tp) p = tp;
-  if (p === kbState.page) return;
-  kbState.page = p;
-  loadKB();
+  if (p === wrState.page) return;
+  wrState.page = p;
+  loadWR();
   qs('.content').scrollTop = 0;
 }
 
-async function loadKBCategories() {
-  try { const data = await api('/kb/categories'); const sel = qs('#kb-cat-filter'); sel.innerHTML = '<option value="">全部分类</option>' + (data.categories || []).map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join(''); } catch (_) {}
+async function loadWRCategories() {
+  try { const data = await api('/wr/categories'); const sel = qs('#wr-cat-filter'); sel.innerHTML = '<option value="">全部分类</option>' + (data.categories || []).map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join(''); } catch (_) {}
 }
 
-async function openKBModal(entryId) {
+async function openWRModal(entryId) {
   modalMode = entryId ? 'edit' : 'create';
   let data = { category: '', entry_id: '', name: '', keywords: [], content: '', priority: 5, is_constant: false, enabled: true };
-  if (entryId) { try { data = await apiPost('/kb/get', { entry_id: entryId }); if (typeof data.keywords === 'string') data.keywords = data.keywords.split(/[,，\s]+/).filter(Boolean); } catch (e) { showToast(e.message); return; } }
+  if (entryId) { try { data = await apiPost('/wr/get', { entry_id: entryId }); if (typeof data.keywords === 'string') data.keywords = data.keywords.split(/[,，\s]+/).filter(Boolean); } catch (e) { showToast(e.message); return; } }
   qs('#modalTitle').textContent = modalMode === 'create' ? '新建条目' : '编辑条目';
   qs('#modalBody').innerHTML = `
     <div class="form-row"><div class="form-group" style="flex:2"><label>条目ID</label><input id="f-eid" value="${esc(data.entry_id||'')}" ${modalMode==='edit'?'readonly':''} placeholder="唯一标识"></div><div class="form-group"><label>分类</label><input id="f-cat" value="${esc(data.category||'')}"></div></div>
@@ -2632,7 +2637,7 @@ async function openKBModal(entryId) {
     <div class="form-check"><input type="checkbox" id="f-enabled" ${data.enabled!==false?'checked':''}><label for="f-enabled">启用</label></div>
   `;
   openModal();
-  setTimeout(() => { _kbTagInput = createTagInput('tag-input-container', data.keywords || [], '输入关键词，回车添加'); }, 50);
+  setTimeout(() => { _wrTagInput = createTagInput('tag-input-container', data.keywords || [], '输入关键词，回车添加'); }, 50);
 }
 
 async function saveModal() {
@@ -2669,7 +2674,7 @@ async function saveModal() {
     try { await apiPost('/wb/create', { name, description: desc }); showToast('世界书已创建', 'success'); closeModal(); await loadWB(name); } catch (e) { showToast(e.message); }
     return;
   }
-  // KB 保存
+  // WR 保存
   if (modalMode !== 'create' && modalMode !== 'edit') return;
   const entry_id = qs('#f-eid').value.trim();
   const category = qs('#f-cat').value.trim();
@@ -2678,31 +2683,31 @@ async function saveModal() {
   const priority = parseInt(qs('#f-prio').value) || 5;
   const is_constant = qs('#f-const')?.checked || false;
   const enabled = qs('#f-enabled')?.checked !== false;
-  const keywords = _kbTagInput ? _kbTagInput.getTags() : [];
+  const keywords = _wrTagInput ? _wrTagInput.getTags() : [];
   if (!entry_id || !category || !content) { showToast('请填写条目ID、分类和内容'); return; }
   try {
     const body = { entry_id, category, name, keywords, content, priority, is_constant, enabled };
-    if (modalMode === 'create') { await apiPost('/kb/create', body); showToast('条目已创建', 'success'); }
-    else { await apiPost('/kb/update', body); showToast('条目已更新', 'success'); }
+    if (modalMode === 'create') { await apiPost('/wr/create', body); showToast('条目已创建', 'success'); }
+    else { await apiPost('/wr/update', body); showToast('条目已更新', 'success'); }
     closeModal();
-    loadKB();
+    loadWR();
   } catch (e) { showToast(e.message); }
 }
 
-function deleteKBEntry(entryId) {
+function deleteWREntry(entryId) {
   sandboxConfirm(`确定删除 "${entryId}" 吗？`, async () => {
-    try { await apiPost('/kb/delete', { entry_id: entryId }); showToast('已删除', 'success'); loadKB(); } catch (e) { showToast(e.message); }
+    try { await apiPost('/wr/delete', { entry_id: entryId }); showToast('已删除', 'success'); loadWR(); } catch (e) { showToast(e.message); }
   }, true);
 }
-async function toggleKBEntry(entryId, enabled) { try { await apiPost('/kb/toggle', { entry_id: entryId, enabled }); loadKB(); } catch (e) { showToast(e.message); } }
-async function exportKB() {
+async function toggleWREntry(entryId, enabled) { try { await apiPost('/wr/toggle', { entry_id: entryId, enabled }); loadWR(); } catch (e) { showToast(e.message); } }
+async function exportWR() {
   try {
-    const data = await api('/kb/export');
-    downloadJSON(data, 'quill_kb_export.json');
+    const data = await api('/wr/export');
+    downloadJSON(data, 'quill_wr_export.json');
     showToast('导出成功', 'success');
   } catch (e) { showToast('导出失败: ' + e.message); }
 }
-async function importKB(input) {
+async function importWR(input) {
   const file = input.files[0]; if (!file) return;
   const btn = input.parentElement;
   const origHTML = btn.innerHTML;
@@ -2715,9 +2720,9 @@ async function importKB(input) {
       throw new Error("JSON 格式错误，缺少有效的条目信息 (必须包含 content 字段)。");
     }
     entries.forEach((e, i) => { if(!e.entry_id) e.entry_id = 'import_' + Date.now() + '_' + i; });
-    const res = await apiPost('/kb/import', { entries });
+    const res = await apiPost('/wr/import', { entries });
     showToast(`导入完成：${res.imported} 成功`, res.failed ? 'error' : 'success');
-    loadKB();
+    loadWR();
   } catch (e) { showToast(e.message); }
   finally { btn.style.pointerEvents = ''; btn.innerHTML = origHTML; input.value = ''; }
 }
@@ -2852,7 +2857,7 @@ function deleteWB(name) {
     try { await apiPost('/wb/delete', { name }); showToast('已删除', 'success'); await loadWB(); } catch (e) { showToast(e.message); }
   }, true, name);
 }
-function importWB_ST(input) {
+function importWBSt(input) {
   const file = input.files[0]; if (!file) return;
   const defaultName = file.name.replace('.json', '');
   const btn = input.parentElement;
@@ -2919,6 +2924,7 @@ let _personaViewMode = 'grid';  // 'grid' | 'list'
 let _personaSearchQuery = '';
 
 let _personaShowCount = 20;  // C1: 客户端分页，初始显示 20 张
+let _personaRenderToken = 0;  // 渲染令牌：每次 renderPersonaPage 递增，用于丢弃过期的懒加载回调
 
 async function loadPersonas() {
   const container = qs('#persona-list');
@@ -2991,12 +2997,12 @@ function renderPersonaPage() {
       const _validModes = { 'auto': true, 'custom': true, 'disabled': true };
       const wbMode = _validModes[ext.wb_mode] ? ext.wb_mode : 'disabled';
       const ragMode = _validModes[ext.rag_mode] ? ext.rag_mode : 'disabled';
-      const kbMode = _validModes[ext.kb_mode] ? ext.kb_mode : 'disabled';
+      const wrMode = _validModes[ext.wr_mode] ? ext.wr_mode : 'disabled';
       const modeLabels = { 'auto': 'Auto', 'custom': 'Custom', 'disabled': 'Off' };
       return `<div class="persona-card">
         <div class="persona-card-left">
-          <img id="avatar-img-${index}" class="persona-avatar-img" loading="lazy" style="display:none" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-          <div id="avatar-letter-${index}" class="persona-avatar-letter">${esc((p.name || '?').charAt(0))}</div>
+          <img data-persona-id="${esc(pid)}" class="persona-avatar-img" loading="lazy" style="display:none" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="persona-avatar-letter">${esc((p.name || '?').charAt(0))}</div>
         </div>
         <div class="persona-card-body">
           <div class="persona-card-name">${name}</div>
@@ -3004,7 +3010,7 @@ function renderPersonaPage() {
           <div class="persona-card-modes">
             <span class="mode-badge mode-wb mode-${wbMode}" title="世界书">世界书: ${modeLabels[wbMode]}</span>
             <span class="mode-badge mode-rag mode-${ragMode}" title="文档库">文档: ${modeLabels[ragMode]}</span>
-            <span class="mode-badge mode-kb mode-${kbMode}" title="素材库">素材: ${modeLabels[kbMode]}</span>
+            <span class="mode-badge mode-wr mode-${wrMode}" title="素材库">素材: ${modeLabels[wrMode]}</span>
           </div>
         </div>
         <div class="persona-card-actions">
@@ -3034,16 +3040,22 @@ function renderPersonaPage() {
     }
   }
 
-  // 头像：通过原生 DOM 赋值，安全挂载 Base64 数据（退回优化前方案）
-  visible.forEach((p, index) => {
-    if (p.avatar_url) {
-      const img = document.getElementById(`avatar-img-${index}`);
-      const letter = document.getElementById(`avatar-letter-${index}`);
-      if (img && letter) {
-        img.src = p.avatar_url;
-        img.style.display = 'block';
-        letter.style.display = 'none';
-      }
+  // 头像懒加载：通过 /persona/avatar 端点按需获取，用渲染令牌防止过期回调
+  const _renderToken = ++_personaRenderToken;
+  visible.forEach((p) => {
+    if (p.has_avatar) {
+      const img = container.querySelector(`img[data-persona-id="${CSS.escape(p.id)}"]`);
+      if (!img) return;
+      api('/persona/avatar?id=' + encodeURIComponent(p.id)).then(res => {
+        // 渲染令牌不匹配 → 当前 DOM 已被重新渲染，丢弃过期回调
+        if (_renderToken !== _personaRenderToken) return;
+        if (res && res.avatar_url && img.isConnected) {
+          img.src = res.avatar_url;
+          img.style.display = 'block';
+          const letter = img.nextElementSibling;
+          if (letter) letter.style.display = 'none';
+        }
+      }).catch(() => {});
     }
   });
 }
@@ -3071,7 +3083,7 @@ async function openPersonaModal(personaId) {
   _personaData = null;
   // 清空原图缓存：每次打开编辑器时重新开始
   _originalAvatarDataUrl = null;
-  let data = { id: '', name: '', avatar_path: '', summary: '', core_prompts: { personality: '', scenario: '', examples_of_dialogue: '', first_message: '' }, quill_extensions: { wb_mode: 'disabled', bound_worldbooks: [], rag_mode: 'disabled', bound_rag_docs: [], kb_mode: 'disabled', bound_knowledge_base: [] } };
+  let data = { id: '', name: '', avatar_path: '', summary: '', core_prompts: { personality: '', scenario: '', examples_of_dialogue: '', first_message: '' }, quill_extensions: { wb_mode: 'disabled', bound_worldbooks: [], rag_mode: 'disabled', bound_rag_docs: [], wr_mode: 'disabled', bound_writing_resource: [] } };
 
   if (personaId) {
     try { data = await api('/persona/list'); data = data.find(p => p.id === personaId) || data; } catch (e) { showToast(e.message); return; }
@@ -3083,16 +3095,16 @@ async function openPersonaModal(personaId) {
   const allWbs = dataInfo.available_worldbooks || [];
   const ragData = await api('/rag/documents').catch(()=>({documents:[]}));
   const ragDocs = ragData.documents || [];
-  const catsData = await api('/kb/categories').catch(()=>({categories:[]}));
-  const kbCats = catsData.categories || [];
+  const catsData = await api('/wr/categories').catch(()=>({categories:[]}));
+  const wrCats = catsData.categories || [];
 
   const ext = data.quill_extensions || {};
   const wbMode = ext.wb_mode || 'disabled';
   const ragMode = ext.rag_mode || 'disabled';
-  const kbMode = ext.kb_mode || 'disabled';
+  const wrMode = ext.wr_mode || 'disabled';
   const boundWbs = ext.bound_worldbooks || [];
   const boundRagDocs = ext.bound_rag_docs || [];
-  const boundKbs = ext.bound_knowledge_base || [];
+  const boundWrs = ext.bound_writing_resource || [];
 
   qs('#modalTitle').textContent = _personaMode === 'create' ? '新建角色卡' : '编辑角色卡';
   qs('#modalBody').innerHTML = `
@@ -3162,17 +3174,17 @@ async function openPersonaModal(personaId) {
 
       <div class="form-group">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <label class="margin-0">写作素材库 (Knowledge Base)</label>
-          <select id="pf-kb-mode" style="width:170px;padding:4px 8px" onchange="toggleExtList('kb')">
-            <option value="auto" ${kbMode==='auto'?'selected':''}>全局匹配 (Auto)</option>
-            <option value="custom" ${kbMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
-            <option value="disabled" ${kbMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
+          <label class="margin-0">写作素材库 (Writing Resource)</label>
+          <select id="pf-wr-mode" style="width:170px;padding:4px 8px" onchange="toggleExtList('wr')">
+            <option value="auto" ${wrMode==='auto'?'selected':''}>全局匹配 (Auto)</option>
+            <option value="custom" ${wrMode==='custom'?'selected':''}>隔离模式 (Custom)</option>
+            <option value="disabled" ${wrMode==='disabled'?'selected':''}>完全禁用 (Disabled)</option>
            </select>
         </div>
-        <input type="text" class="ext-search-input" placeholder="搜索分类..." oninput="filterCheckboxes(this, 'pf-kb-list')">
-        <div id="pf-kb-list" class="checkbox-group-scroll" style="${kbMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
-          ${kbCats.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用分类</div>' :
-            kbCats.map(c => `<label class="form-check"><input type="checkbox" class="cb-kb-bind" value="${esc(c)}" ${boundKbs.includes(c)?'checked':''}> ${esc(c)}</label>`).join('')}
+        <input type="text" class="ext-search-input" placeholder="搜索分类..." oninput="filterCheckboxes(this, 'pf-wr-list')">
+        <div id="pf-wr-list" class="checkbox-group-scroll" style="${wrMode==='disabled'?'opacity:0.4;pointer-events:none':''}">
+          ${wrCats.length === 0 ? '<div style="color:var(--text-muted);font-size:13px">暂无可用分类</div>' :
+            wrCats.map(c => `<label class="form-check"><input type="checkbox" class="cb-wr-bind" value="${esc(c)}" ${boundWrs.includes(c)?'checked':''}> ${esc(c)}</label>`).join('')}
         </div>
         <span style="font-size:12px;color:var(--text-muted);display:block;margin-top:4px">Auto=全局匹配素材 | Custom=仅匹配勾选分类 | Disabled=不检索任何素材</span>
       </div>
@@ -3188,14 +3200,18 @@ async function openPersonaModal(personaId) {
     });
   });
 
-  if (_personaMode === 'edit' && data.avatar_url) {
-    // 直接从 list 数据取头像 Base64（退回优化前方案）
+  if (_personaMode === 'edit' && data.has_avatar) {
+    // 懒加载：通过 /persona/avatar 端点获取头像
     const avatarImg = qs('#avatar-preview-img');
     const placeholder = qs('#avatar-preview-placeholder');
     if (avatarImg && placeholder) {
-      avatarImg.src = data.avatar_url;
-      avatarImg.style.display = 'block';
-      placeholder.style.display = 'none';
+      api('/persona/avatar?id=' + encodeURIComponent(data.id)).then(res => {
+        if (res && res.avatar_url) {
+          avatarImg.src = res.avatar_url;
+          avatarImg.style.display = 'block';
+          placeholder.style.display = 'none';
+        }
+      }).catch(() => {});
     }
   }
 
@@ -3208,7 +3224,7 @@ async function savePersona() {
 
   const boundWbs = Array.from(document.querySelectorAll('.cb-wb-bind:checked')).map(cb => cb.value);
   const boundRagDocs = Array.from(document.querySelectorAll('.cb-rag-bind:checked')).map(cb => cb.value);
-  const boundKbs = Array.from(document.querySelectorAll('.cb-kb-bind:checked')).map(cb => cb.value);
+  const boundWrs = Array.from(document.querySelectorAll('.cb-wr-bind:checked')).map(cb => cb.value);
 
   const body = {
     id: _personaMode === 'edit' ? _personaData.id : name,
@@ -3226,8 +3242,8 @@ async function savePersona() {
       bound_worldbooks: boundWbs,
       rag_mode: qs('#pf-rag-mode').value,
       bound_rag_docs: boundRagDocs,
-      kb_mode: qs('#pf-kb-mode').value,
-      bound_knowledge_base: boundKbs,
+      wr_mode: qs('#pf-wr-mode').value,
+      bound_writing_resource: boundWrs,
     },
   };
   try {
@@ -3764,7 +3780,7 @@ async function testRAGSearch() {
 let _memPage = 1;
 let _memPerPage = 50;
 let _memTotalPages = 1;
-function switchMemSub(sub) {
+function switchMemorySub(sub) {
   qsa('.memory-subnav-item').forEach(b => b.classList.toggle('active', b.dataset.memSub === sub));
   qsa('.mem-sub-pane').forEach(p => p.classList.toggle('active', p.id === 'mem-sub-' + sub));
   if (sub === 'overview') loadMemoryOverview();
@@ -3798,7 +3814,7 @@ async function loadMemoryBrowser() {
     _memTotalPages = data.total_pages || Math.max(1, Math.ceil(total / _memPerPage));
     _memPage = data.page || _memPage;
 
-    if (!memories.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">暂无记忆</td></tr>'; updateMemPagination(0, total); return; }
+    if (!memories.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">暂无记忆</td></tr>'; updateMemoryPagination(0, total); return; }
 
     tbody.innerHTML = memories.map(m => {
       const isDanger = (m.useful_score || 0) < 3 && !m.is_active;
@@ -3827,18 +3843,18 @@ async function loadMemoryBrowser() {
         </td>
       </tr>`;
     }).join('');
-    updateMemPagination(memories.length, total);
+    updateMemoryPagination(memories.length, total);
   } catch (e) { tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--danger)">${esc(e.message)}</td></tr>`; }
 }
 
-function updateMemPagination(shown, total) {
+function updateMemoryPagination(shown, total) {
   const info = qs('#mem-page-info');
   if (info) info.textContent = `共 ${total} 条，第 ${_memPage}/${_memTotalPages} 页`;
   if (qs('#mem-prev-btn')) qs('#mem-prev-btn').disabled = _memPage <= 1;
   if (qs('#mem-next-btn')) qs('#mem-next-btn').disabled = _memPage >= _memTotalPages;
 }
 
-function changeMemPage(delta) {
+function changeMemoryPage(delta) {
   _memPage += delta;
   if (_memPage < 1) _memPage = 1;
   if (_memPage > _memTotalPages) _memPage = _memTotalPages;
@@ -3935,7 +3951,7 @@ async function importMemories(input) {
     if (!data.memories || !Array.isArray(data.memories)) throw new Error('JSON 缺少 memories 数组');
     const res = await apiPost('/memory/import', data);
     showToast('导入完成: ' + (res.message || ''), 'success');
-    switchMemSub('browser');
+    switchMemorySub('browser');
   } catch (e) {
     showToast('导入失败: ' + e.message);
   } finally {
@@ -4045,10 +4061,10 @@ function _applySettings(p, cfg) {
   qs('#c-wb-always').checked = safeGet('worldbook', 'always_activate', false);
 
   // 素材库
-  qs('#c-kb-enabled').checked = safeGet('knowledge_base', 'enabled', true);
-  qs('#c-kb-max').value = safeGet('knowledge_base', 'max_entries', 4);
-  qs('#c-kb-fallback').value = safeGet('knowledge_base', 'fallback_top_count', 2);
-  qs('#c-kb-dedup').value = safeGet('knowledge_base', 'category_dedup_limit', 3);
+  qs('#c-wr-enabled').checked = safeGet('writing_resource', 'enabled', true);
+  qs('#c-wr-max').value = safeGet('writing_resource', 'max_entries', 4);
+  qs('#c-wr-fallback').value = safeGet('writing_resource', 'fallback_top_count', 2);
+  qs('#c-wr-dedup').value = safeGet('writing_resource', 'category_dedup_limit', 3);
 
   // 性能与状态栏
   qs('#c-perf-min').value = safeGet('performance', 'min_output_length', 400);
@@ -4160,10 +4176,10 @@ async function saveAllChanges() {
       add('worldbook', 'match_sensitivity', parseFloat(qs('#c-wb-sens').value) || 0.7);
       add('worldbook', 'always_activate', qs('#c-wb-always').checked);
 
-      add('knowledge_base', 'enabled', qs('#c-kb-enabled').checked);
-      add('knowledge_base', 'max_entries', parseInt(qs('#c-kb-max').value) || 4);
-      add('knowledge_base', 'fallback_top_count', parseInt(qs('#c-kb-fallback').value) || 2);
-      add('knowledge_base', 'category_dedup_limit', parseInt(qs('#c-kb-dedup').value) || 3);
+      add('writing_resource', 'enabled', qs('#c-wr-enabled').checked);
+      add('writing_resource', 'max_entries', parseInt(qs('#c-wr-max').value) || 4);
+      add('writing_resource', 'fallback_top_count', parseInt(qs('#c-wr-fallback').value) || 2);
+      add('writing_resource', 'category_dedup_limit', parseInt(qs('#c-wr-dedup').value) || 3);
 
       add('performance', 'min_output_length', parseInt(qs('#c-perf-min').value) || 400);
       add('status_bar', 'enabled', qs('#c-sb-enabled').checked);
@@ -4213,13 +4229,13 @@ async function saveAllChanges() {
 
 async function quillInit() {
   await waitForBridge(1500);
-  loadKBCategories();
-  loadKB();
+  loadWRCategories();
+  loadWR();
   loadGlobalSettings();
   loadPersonas();
   loadWB();
   setTimeout(() => {
-    const kbBadge = qs('#nav-badge-kb');
+    const wrBadge = qs('#nav-badge-wr');
     const wbBadge = qs('#nav-badge-wb');
     const personaBadge = qs('#nav-badge-persona');
     if (wbBadge && wbBadge.style.display === 'none') loadWB();
@@ -4261,6 +4277,41 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
       lbl.style.display = lbl.textContent.toLowerCase().includes(keyword) ? 'flex' : 'none';
     });
   }
+
+  // 配置面板搜索过滤
+  function initConfigSearch() {
+    const searchInput = document.getElementById('configSearchInput');
+    if (!searchInput) return;
+    searchInput.addEventListener('input', function() {
+      const query = this.value.toLowerCase().trim();
+      const configItems = document.querySelectorAll('#tab-config .card > .form-group, #tab-config .card > .form-check');
+      configItems.forEach(function(item) {
+        if (!query) { item.style.display = ''; return; }
+        const text = (item.textContent || '').toLowerCase();
+        item.style.display = text.includes(query) ? '' : 'none';
+      });
+      if (query) {
+        document.querySelectorAll('#tab-config .card').forEach(function(card) {
+          const items = card.querySelectorAll(':scope > .form-group, :scope > .form-check');
+          let hasVisible = false;
+          items.forEach(function(it) { if (it.style.display !== 'none') hasVisible = true; });
+          const title = card.querySelector('h3');
+          card.style.display = (hasVisible || (title && title.textContent.toLowerCase().includes(query))) ? '' : 'none';
+        });
+        document.querySelectorAll('#tab-config .config-section').forEach(function(section) {
+          const cards = section.querySelectorAll('.card');
+          let hasVisible = false;
+          cards.forEach(function(c) { if (c.style.display !== 'none') hasVisible = true; });
+          section.style.display = hasVisible ? '' : 'none';
+        });
+      } else {
+        document.querySelectorAll('#tab-config .card, #tab-config .config-section').forEach(function(el) {
+          el.style.display = '';
+        });
+      }
+    });
+  }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', initConfigSearch); } else { initConfigSearch(); }
 
   // 世界书条目局部搜索（B2 修复：加防抖，避免快速输入时频繁 DOM 遍历）
   let _wbFilterTimer;
@@ -4330,7 +4381,7 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
     // Alt+1~6: 切换 Tab
     if (e.altKey && /^[1-6]$/.test(e.key)) {
       e.preventDefault();
-      const tabs = ['kb', 'wb', 'persona', 'rag', 'memory', 'config'];
+      const tabs = ['wr', 'wb', 'persona', 'rag', 'memory', 'config'];
       const idx = parseInt(e.key) - 1;
       if (idx < tabs.length) {
         const nav = document.querySelector(`.nav-item[data-tab="${tabs[idx]}"]`);

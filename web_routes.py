@@ -23,9 +23,9 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("worldbook", "max_token_limit"), ("worldbook", "match_sensitivity"),
     ("worldbook", "injection_position"), ("worldbook", "show_trigger_log"),
     ("worldbook", "always_activate"),
-    # knowledge_base
-    ("knowledge_base", "enabled"), ("knowledge_base", "max_entries"),
-    ("knowledge_base", "fallback_top_count"), ("knowledge_base", "category_dedup_limit"),
+    # writing_resource
+    ("writing_resource", "enabled"), ("writing_resource", "max_entries"),
+    ("writing_resource", "fallback_top_count"), ("writing_resource", "category_dedup_limit"),
     # performance
     ("performance", "max_prompt_length"), ("performance", "min_output_length"),
     ("performance", "max_output_length"),
@@ -37,8 +37,8 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("refusal", "enabled"), ("refusal", "patterns"),
     # debug
     ("debug", "enabled"), ("debug", "panel_theme"),
-    # permissions (AstrBot may send 'permission' or 'permissions')
-    ("permissions", "admin_users"), ("permission", "admin_users"),
+    # permissions
+    ("permissions", "admin_users"),
 }
 
 import asyncio
@@ -60,16 +60,16 @@ from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 logger = logging.getLogger(__name__)
 
 from ._route_core import (
-    handle_kb_list,
-    handle_kb_get,
-    handle_kb_create,
-    handle_kb_update,
-    handle_kb_delete,
-    handle_kb_toggle,
-    handle_kb_export,
-    handle_kb_import,
-    handle_kb_test,
-    handle_kb_categories,
+    handle_wr_list,
+    handle_wr_get,
+    handle_wr_create,
+    handle_wr_update,
+    handle_wr_delete,
+    handle_wr_toggle,
+    handle_wr_export,
+    handle_wr_import,
+    handle_wr_test,
+    handle_wr_categories,
     handle_wb_list,
     handle_wb_get,
     handle_wb_create,
@@ -119,12 +119,12 @@ class QuillRoutes:
 
     用法::
 
-        QuillRoutes(kb_manager, wb_manager, context).register_all()
+        QuillRoutes(wr_manager, wb_manager, context).register_all()
     """
 
-    def __init__(self, kb_manager, wb_manager, context, config=None,
+    def __init__(self, wr_manager, wb_manager, context, config=None,
                  rag_components=None, plugin=None, persona_manager=None):
-        self.kb_manager = kb_manager
+        self.wr_manager = wr_manager
         self.wb_manager = wb_manager
         self.context = context
         self.config = config
@@ -139,17 +139,17 @@ class QuillRoutes:
         """一次性注册全部 Web API 路由（包含前端 panel 调用的全部端点）。"""
         _r = self.context.register_web_api
 
-        # ── KB 写作素材库 (11 个) ──
-        _r(f"/{PLUGIN_NAME}/kb/list",         self.kb_list,        ["GET"],    "列出写作素材库条目")
-        _r(f"/{PLUGIN_NAME}/kb/get",          self.kb_get,         ["POST"],   "获取单个写作素材库条目")
-        _r(f"/{PLUGIN_NAME}/kb/create",       self.kb_create,      ["POST"],   "创建写作素材库条目")
-        _r(f"/{PLUGIN_NAME}/kb/update",       self.kb_update,      ["POST"],   "更新写作素材库条目")
-        _r(f"/{PLUGIN_NAME}/kb/delete",       self.kb_delete,      ["POST"],   "删除写作素材库条目")
-        _r(f"/{PLUGIN_NAME}/kb/toggle",       self.kb_toggle,      ["POST"],   "启用/禁用写作素材库条目")
-        _r(f"/{PLUGIN_NAME}/kb/export",       self.kb_export,      ["GET"],    "导出写作素材库")
-        _r(f"/{PLUGIN_NAME}/kb/import",       self.kb_import,      ["POST"],   "导入写作素材库")
-        _r(f"/{PLUGIN_NAME}/kb/test",         self.kb_test,        ["POST"],   "测试写作素材库匹配")
-        _r(f"/{PLUGIN_NAME}/kb/categories",   self.kb_categories,  ["GET"],    "列出写作素材库分类")
+        # ── WR 写作素材库 (11 个) ──
+        _r(f"/{PLUGIN_NAME}/wr/list",         self.wr_list,        ["GET"],    "列出写作素材库条目")
+        _r(f"/{PLUGIN_NAME}/wr/get",          self.wr_get,         ["POST"],   "获取单个写作素材库条目")
+        _r(f"/{PLUGIN_NAME}/wr/create",       self.wr_create,      ["POST"],   "创建写作素材库条目")
+        _r(f"/{PLUGIN_NAME}/wr/update",       self.wr_update,      ["POST"],   "更新写作素材库条目")
+        _r(f"/{PLUGIN_NAME}/wr/delete",       self.wr_delete,      ["POST"],   "删除写作素材库条目")
+        _r(f"/{PLUGIN_NAME}/wr/toggle",       self.wr_toggle,      ["POST"],   "启用/禁用写作素材库条目")
+        _r(f"/{PLUGIN_NAME}/wr/export",       self.wr_export,      ["GET"],    "导出写作素材库")
+        _r(f"/{PLUGIN_NAME}/wr/import",       self.wr_import,      ["POST"],   "导入写作素材库")
+        _r(f"/{PLUGIN_NAME}/wr/test",         self.wr_test,        ["POST"],   "测试写作素材库匹配")
+        _r(f"/{PLUGIN_NAME}/wr/categories",   self.wr_categories,  ["GET"],    "列出写作素材库分类")
 
         # ── WB 世界书 (13 个：含 reload) ──
         _r(f"/{PLUGIN_NAME}/wb/list",         self.wb_list,        ["GET"],    "列出世界书")
@@ -225,6 +225,9 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/stream/stats",     self.stream_stats,     ["GET"],   "流式模式统计")
         _r(f"/{PLUGIN_NAME}/stream/all",       self.stream_set_all,   ["POST"],  "批量设置流式模式")
 
+        # ── 全量备份导出 ──
+        _r(f"/{PLUGIN_NAME}/backup/export",   self.backup_export,  ["GET"],    "全量备份导出")
+
     # ── Info ──────────────────────────────────────────────────
 
     @_api_handler
@@ -238,7 +241,7 @@ class QuillRoutes:
         if self.persona_manager:
             pc = await self.persona_manager.get_persona_count()
         return await handle_info(
-            self.kb_manager, self.wb_manager,
+            self.wr_manager, self.wb_manager,
             persona_count=pc,
             show_trigger_log=show_log,
             health_tracker=self.plugin.health_tracker if self.plugin else None,
@@ -343,6 +346,13 @@ class QuillRoutes:
         file_bytes = await upload.read()
         if len(file_bytes) > 50 * 1024 * 1024:
             return error_response("文档文件过大（最大 50MB）", status_code=413)
+        # 文件类型检测：仅支持纯文本文件
+        filename = getattr(upload, 'name', 'unknown').lower()
+        _TEXT_EXTS = {'.txt', '.md', '.markdown', '.csv', '.log', '.json', '.xml', '.yaml', '.yml', '.html', '.htm'}
+        _BINARY_EXTS = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.7z', '.png', '.jpg', '.jpeg', '.gif', '.bmp'}
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in _BINARY_EXTS:
+            return error_response(f"不支持的文件格式：{ext}。目前仅支持纯文本文件（.txt/.md/.csv/.json 等）。PDF/Word 请先转换为纯文本。", status_code=400)
         form = await request.form()
         source = form.get("source", "") or getattr(upload, 'name', 'unknown')
         chunk_size = self.config.rag_chunk_size if self.config else 500
@@ -375,6 +385,12 @@ class QuillRoutes:
             return error_response(f"Base64 解码失败: {e}", status_code=400)
         if len(file_bytes) > 50 * 1024 * 1024:
             return error_response("文档文件过大（最大 50MB）", status_code=413)
+        # 文件类型检测：仅支持纯文本文件
+        _BINARY_EXTS = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.7z', '.png', '.jpg', '.jpeg', '.gif', '.bmp'}
+        src_filename = (source or "unknown").lower()
+        src_ext = os.path.splitext(src_filename)[1].lower()
+        if src_ext in _BINARY_EXTS:
+            return error_response(f"不支持的文件格式：{src_ext}。目前仅支持纯文本文件（.txt/.md/.csv/.json 等）。PDF/Word 请先转换为纯文本。", status_code=400)
         chunk_size = self.config.rag_chunk_size if self.config else 500
         chunk_overlap = self.config.rag_chunk_overlap if self.config else 50
         embedding = self.rag.get('embedding')
@@ -598,10 +614,10 @@ class QuillRoutes:
         """列出 AstrBot 中已配置的 Embedding / Rerank 提供商。"""
         return json_response(await handle_provider_list(self.context))
 
-    # ── KB ────────────────────────────────────────────────────
+    # ── WR ────────────────────────────────────────────────────
 
     @_api_handler
-    async def kb_list(self):
+    async def wr_list(self):
         category = request.query.get("category")
         search = request.query.get("search")
         page = request.query.get("page", 1, type=int)
@@ -609,67 +625,67 @@ class QuillRoutes:
         is_constant_str = request.query.get("is_constant")
         is_constant = (is_constant_str.lower() == 'true') if is_constant_str else None
         return json_response(
-            await handle_kb_list(self.kb_manager, category, search, page, per_page, is_constant)
+            await handle_wr_list(self.wr_manager, category, search, page, per_page, is_constant)
         )
 
     @_api_handler
-    async def kb_get(self):
+    async def wr_get(self):
         data = await request.json(default={})
         return json_response(
-            await handle_kb_get(self.kb_manager, data.get("entry_id"))
+            await handle_wr_get(self.wr_manager, data.get("entry_id"))
         )
 
     @_api_handler
-    async def kb_create(self):
+    async def wr_create(self):
         return json_response(
-            await handle_kb_create(self.kb_manager, await request.json(default={}))
+            await handle_wr_create(self.wr_manager, await request.json(default={}))
         )
 
     @_api_handler
-    async def kb_update(self):
+    async def wr_update(self):
         return json_response(
-            await handle_kb_update(self.kb_manager, await request.json(default={}))
+            await handle_wr_update(self.wr_manager, await request.json(default={}))
         )
 
     @_api_handler
-    async def kb_delete(self):
+    async def wr_delete(self):
         data = await request.json(default={})
         return json_response(
-            await handle_kb_delete(self.kb_manager, data.get("entry_id"))
+            await handle_wr_delete(self.wr_manager, data.get("entry_id"))
         )
 
     @_api_handler
-    async def kb_toggle(self):
+    async def wr_toggle(self):
         data = await request.json(default={})
         return json_response(
-            await handle_kb_toggle(
-                self.kb_manager,
+            await handle_wr_toggle(
+                self.wr_manager,
                 data.get("entry_id"),
                 data.get("enabled", True),
             )
         )
 
     @_api_handler
-    async def kb_export(self):
-        return json_response(await handle_kb_export(self.kb_manager))
+    async def wr_export(self):
+        return json_response(await handle_wr_export(self.wr_manager))
 
     @_api_handler
-    async def kb_import(self):
+    async def wr_import(self):
         data = await request.json(default={})
         return json_response(
-            await handle_kb_import(self.kb_manager, data.get("entries", []))
+            await handle_wr_import(self.wr_manager, data.get("entries", []))
         )
 
     @_api_handler
-    async def kb_test(self):
+    async def wr_test(self):
         data = await request.json(default={})
         return json_response(
-            await handle_kb_test(self.kb_manager, data.get("text"))
+            await handle_wr_test(self.wr_manager, data.get("text"))
         )
 
     @_api_handler
-    async def kb_categories(self):
-        return json_response(await handle_kb_categories(self.kb_manager))
+    async def wr_categories(self):
+        return json_response(await handle_wr_categories(self.wr_manager))
 
     # ── WB ────────────────────────────────────────────────────
 
@@ -752,22 +768,22 @@ class QuillRoutes:
         files = await request.files()
         upload = files.get("file")
         if not isinstance(upload, PluginUploadFile):
-            return error_response("No file uploaded", status_code=400)
+            return error_response("未收到文件", status_code=400)
 
         form = await request.form()
         name = form.get("name")
         if not name:
-            return error_response("Worldbook name required", status_code=400)
+            return error_response("缺少世界书名称", status_code=400)
 
         # S1-8 修复：校验 name 防止路径遍历（../、/、\ 等）
         from .worldbook import _validate_name
         if not _validate_name(name):
-            return error_response("Invalid worldbook name: only alphanumeric, underscore, hyphen, CJK allowed", status_code=400)
+            return error_response("无效的世界书名称", status_code=400)
 
         # 必须先读取数据再 save（save 后文件指针在末尾，read() 返回空）
         data = await upload.read()
         if not data:
-            return error_response("Uploaded file is empty", status_code=400)
+            return error_response("上传的文件为空", status_code=400)
 
         # 写入插件数据目录备份
         target_dir = (
@@ -789,16 +805,16 @@ class QuillRoutes:
         name = data.get("name", "").strip()
         file_data = data.get("data", "")
         if not name:
-            return error_response("Worldbook name required", status_code=400)
+            return error_response("缺少世界书名称", status_code=400)
         if not file_data:
-            return error_response("No file data provided", status_code=400)
+            return error_response("未收到文件数据", status_code=400)
         # 写入临时文件供 import_from_st 解析
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                 f.write(file_data)
             if not await asyncio.to_thread(self.wb_manager.import_from_st, tmp_path, name):
-                return error_response("Failed to import worldbook", status_code=400)
+                return error_response("导入世界书失败", status_code=400)
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -819,42 +835,28 @@ class QuillRoutes:
         try:
             await asyncio.to_thread(self.wb_manager.reload_all)
         except Exception:
-            pass  # 即使 reload 失败也返回当前列表
+            logger.warning("[Quill] 世界书重载失败，返回当前缓存列表", exc_info=True)
         return json_response(await handle_wb_list(self.wb_manager))
 
     # ── Persona 角色卡 (Quill 独立管理) ──────────────────────────
 
     @_api_handler
     async def persona_list(self):
-        """返回所有角色卡（含头像 Base64 data URL）。"""
+        """返回所有角色卡（不含头像数据，前端通过 /persona/avatar 懒加载）。"""
         if not self.persona_manager:
             return json_response([])
-        import base64 as _b64
         personas = await self.persona_manager.load_all()
         for p in personas:
             avatar_path = p.get("avatar_path", "")
             p["has_avatar"] = bool(avatar_path and avatar_path.startswith("quill_avatars/"))
-            # 直接内联 Base64 头像数据（退回优化前方案，避免懒加载 bug）
-            if p["has_avatar"]:
-                fname = avatar_path[len("quill_avatars/"):]
-                data = await self.persona_manager.read_avatar(fname)
-                if data:
-                    ext = os.path.splitext(fname)[1].lower()
-                    mime_map = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-                                '.webp': 'image/webp', '.gif': 'image/gif'}
-                    mime = mime_map.get(ext, 'image/png')
-                    p["avatar_url"] = f"data:{mime};base64,{_b64.b64encode(data).decode('ascii')}"
-                else:
-                    p["avatar_url"] = ""
-            else:
-                p["avatar_url"] = ""
+            p.pop("avatar_url", None)  # 不内联 Base64，前端按需懒加载
         return json_response(personas)
 
     @_api_handler
     async def persona_avatar(self):
         """单独获取某个角色卡的头像（Base64 data URL），供前端懒加载。"""
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
         persona_id = (request.query.get("id") or "").strip()
         if not persona_id:
             return error_response("缺少角色 ID", status_code=400)
@@ -879,7 +881,7 @@ class QuillRoutes:
         """创建角色卡。"""
         data = await request.json(default={})
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
         try:
             result = await self.persona_manager.create_persona(data)
             return json_response(result)
@@ -892,9 +894,9 @@ class QuillRoutes:
         data = await request.json(default={})
         persona_id = (data.get("id") or "").strip()
         if not persona_id:
-            return error_response("id is required", status_code=400)
+            return error_response("缺少 id 参数", status_code=400)
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
         try:
             result = await self.persona_manager.update_persona(persona_id, data)
             return json_response(result)
@@ -907,9 +909,9 @@ class QuillRoutes:
         data = await request.json(default={})
         persona_id = (data.get("id") or "").strip()
         if not persona_id:
-            return error_response("id is required", status_code=400)
+            return error_response("缺少 id 参数", status_code=400)
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
         try:
             await self.persona_manager.delete_persona(persona_id)
             return json_response({"id": persona_id, "message": "Persona deleted"})
@@ -922,7 +924,7 @@ class QuillRoutes:
     async def upload_avatar(self):
         """上传头像图片（multipart/form-data）。"""
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
 
         from astrbot.api.web import PluginUploadFile
         files = await request.files()
@@ -948,7 +950,7 @@ class QuillRoutes:
     async def upload_avatar_base64(self):
         """上传头像图片（Base64 模式，绕过沙盒 FormData 拦截）。"""
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
 
         import base64
         data = await request.json(default={})
@@ -978,7 +980,7 @@ class QuillRoutes:
     async def persona_import(self):
         """导入 V2 角色卡（multipart/form-data，支持 PNG/JPG/JSON）。"""
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
 
         from astrbot.api.web import PluginUploadFile
         files = await request.files()
@@ -1000,7 +1002,7 @@ class QuillRoutes:
 
         try:
             is_image = ext in ('.png', '.jpg', '.jpeg')
-            persona_data = self.persona_manager.parse_v2_card(file_data, is_image)
+            persona_data = await asyncio.to_thread(self.persona_manager.parse_v2_card, file_data, is_image)
 
             # 如果是图片，保存为头像（头像保存失败不影响角色卡导入）
             if is_image:
@@ -1025,7 +1027,7 @@ class QuillRoutes:
     async def persona_import_base64(self):
         """导入 V2 角色卡（Base64 模式，绕过沙盒 FormData 拦截）。"""
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
 
         import base64
         data = await request.json(default={})
@@ -1049,7 +1051,7 @@ class QuillRoutes:
 
         try:
             is_image = ext in ('.png', '.jpg', '.jpeg', '.webp')
-            persona_data = self.persona_manager.parse_v2_card(file_bytes, is_image)
+            persona_data = await asyncio.to_thread(self.persona_manager.parse_v2_card, file_bytes, is_image)
 
             # 如果是图片，保存为头像（头像保存失败不影响角色卡导入）
             if is_image:
@@ -1074,7 +1076,7 @@ class QuillRoutes:
     async def persona_export(self):
         """导出 V2 角色卡。"""
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
 
         persona_id = (request.query.get("id") or "").strip()
         if not persona_id:
@@ -1117,15 +1119,15 @@ class QuillRoutes:
     async def serve_avatar(self, filename: str):
         """提供头像文件静态服务。"""
         if not self.persona_manager:
-            return error_response("Not available", status_code=500)
+            return error_response("管理器未加载", status_code=500)
 
         # 安全检查
         if not filename or '..' in filename or '/' in filename or '\\' in filename:
-            return error_response("Invalid filename", status_code=400)
+            return error_response("无效的文件名", status_code=400)
 
         data = await self.persona_manager.read_avatar(filename)
         if not data:
-            return error_response("File not found", status_code=404)
+            return error_response("文件未找到", status_code=404)
 
         # 根据扩展名设置 MIME 类型
         ext = os.path.splitext(filename)[1].lower()
@@ -1146,11 +1148,11 @@ class QuillRoutes:
     async def persona_import_text(self):
         """从剪贴板文本导入角色卡"""
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
         data = await request.json(default={})
         text = (data.get("text") or "").strip()
         if not text:
-            return error_response("text is required", status_code=400)
+            return error_response("缺少 text 参数", status_code=400)
         try:
             persona_data = self.persona_manager.parse_clipboard_text(text)
             result = await self.persona_manager.create_persona(persona_data)
@@ -1164,11 +1166,11 @@ class QuillRoutes:
     async def persona_import_text_base64(self):
         """从剪贴板文本导入角色卡（Base64 绕过沙盒）"""
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
         data = await request.json(default={})
         b64_text = (data.get("b64_text") or "").strip()
         if not b64_text:
-            return error_response("b64_text is required", status_code=400)
+            return error_response("缺少 b64_text 参数", status_code=400)
         import base64
         try:
             text = base64.b64decode(b64_text).decode('utf-8')
@@ -1187,7 +1189,7 @@ class QuillRoutes:
     async def persona_export_base64(self):
         """导出 V2 角色卡（Base64 编码，突破沙盒下载限制）。"""
         if not self.persona_manager:
-            return error_response("Persona manager not available", status_code=500)
+            return error_response("角色卡管理器未加载", status_code=500)
         data = await request.json(default={})
         persona_id = (data.get("id") or "").strip()
         if not persona_id:
@@ -1209,3 +1211,36 @@ class QuillRoutes:
             return json_response({"filename": filename, "b64_data": b64_str})
         except Exception as e:
             return error_response(f"导出失败: {e}", status_code=500)
+
+    @_api_handler
+    async def backup_export(self):
+        """全量备份导出：打包所有插件数据为 zip 下载。"""
+        import io
+        import zipfile
+        data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+        if not os.path.isdir(data_dir):
+            return error_response("数据目录不存在", status_code=404)
+
+        buf = io.BytesIO()
+        zip_count = 0
+        def _build_zip():
+            nonlocal zip_count
+            with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for root, dirs, files in os.walk(data_dir):
+                    for fname in files:
+                        fpath = os.path.join(root, fname)
+                        arcname = os.path.relpath(fpath, data_dir)
+                        # 跳过临时文件
+                        if fname.endswith('.tmp') or fname.endswith('.tmp.bak'):
+                            continue
+                        zf.write(fpath, arcname)
+                        zip_count += 1
+        await asyncio.to_thread(_build_zip)
+        buf.seek(0)
+        logger.info(f"[Quill] 全量备份导出: {zip_count} 个文件")
+        import datetime as _dt
+        return file_response(
+            buf.getvalue(),
+            filename=f"quill_backup_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            content_type="application/zip"
+        )

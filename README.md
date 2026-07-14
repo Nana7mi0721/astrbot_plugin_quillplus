@@ -278,6 +278,18 @@ A: 切换提供商会导致向量维度变化，插件会自动检测并重建 F
 
 ---
 
+### 前端面板加载说明
+
+由于 AstrBot 框架的 Plugin Pages 静态文件服务默认设置 `Cache-Control: no-store`（强制禁用缓存），前端面板每次刷新都会全量重新加载（约 200KB）。如果加载较慢，可以通过以下方式优化：
+
+1. **反向代理缓存**：在 AstrBot 前方部署 Nginx/Caddy，对 `/plugins/quillplus/` 路径添加缓存头
+2. **本地缓存**：浏览器开发者工具中禁用 "Disable cache" 选项（仅对非 DevTools 窗口生效）
+3. **减少角色卡数量**：角色卡管理页会内联所有头像数据，减少角色卡数量可加快加载
+
+> 该限制来自 AstrBot 框架层面，插件侧已通过内联 CSS/JS 和精简代码将请求数降至最低。
+
+---
+
 ## Changelog
 
 完整更新日志请见 [CHANGELOG.md](./CHANGELOG.md)。

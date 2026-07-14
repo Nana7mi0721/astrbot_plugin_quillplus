@@ -70,12 +70,12 @@ class QuillConfig:
         self.worldbook_show_log: bool = bool(wb.get("show_trigger_log", False))
         self.worldbook_always_activate: bool = bool(wb.get("always_activate", False))
 
-        # ── knowledge_base ──
-        kb = _get_nested(self._raw, "knowledge_base", {}) or {}
-        self.kb_enabled: bool = bool(kb.get("enabled", True))
-        self.kb_max_entries: int = _safe_int(kb.get("max_entries", 4), 4)
-        self.kb_fallback_top: int = _safe_int(kb.get("fallback_top_count", 2), 2)
-        self.kb_dedup_limit: int = _safe_int(kb.get("category_dedup_limit", 3), 3)
+        # ── writing_resource ──
+        wr = _get_nested(self._raw, "writing_resource", {}) or {}
+        self.wr_enabled: bool = bool(wr.get("enabled", True))
+        self.wr_max_entries: int = _safe_int(wr.get("max_entries", 4), 4)
+        self.wr_fallback_top: int = _safe_int(wr.get("fallback_top_count", 2), 2)
+        self.wr_dedup_limit: int = _safe_int(wr.get("category_dedup_limit", 3), 3)
 
         # ── performance ──
         perf = _get_nested(self._raw, "performance", {}) or {}
@@ -141,6 +141,6 @@ class QuillConfig:
     def __repr__(self) -> str:
         return (
             f"QuillConfig(wb={'on' if self.worldbook_enabled else 'off'}, "
-            f"kb={'on' if self.kb_enabled else 'off'}, "
+            f"wr={'on' if self.wr_enabled else 'off'}, "
             f"debug={'on' if self.debug_enabled else 'off'})"
         )

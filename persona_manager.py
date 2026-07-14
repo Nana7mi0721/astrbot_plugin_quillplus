@@ -104,7 +104,13 @@ class QuillPersonaManager:
     def _sanitize_id(self, raw: str) -> str:
         """将角色 ID 清理为安全的文件名。"""
         safe = re.sub(r'[^a-zA-Z0-9_\-\u4e00-\u9fff]', '_', raw)
-        return safe or "persona"
+        if not safe:
+            return "persona"
+        # 过滤 Windows 保留设备名（CON, PRN, AUX, NUL, COM1-9, LPT1-9）
+        _WIN_RESERVED = {'con', 'prn', 'aux', 'nul'} | {f'com{i}' for i in range(1, 10)} | {f'lpt{i}' for i in range(1, 10)}
+        if safe.lower() in _WIN_RESERVED:
+            safe += '_'
+        return safe
 
     def _persona_path(self, persona_id: str) -> str:
         return os.path.join(self.data_dir, f"{self._sanitize_id(persona_id)}.json")
@@ -232,8 +238,8 @@ class QuillPersonaManager:
                     "bound_worldbooks": data.get("quill_extensions", {}).get("bound_worldbooks", []),
                     "rag_mode": data.get("quill_extensions", {}).get("rag_mode", "disabled"),
                     "bound_rag_docs": data.get("quill_extensions", {}).get("bound_rag_docs", []),
-                    "kb_mode": data.get("quill_extensions", {}).get("kb_mode", "disabled"),
-                    "bound_knowledge_base": data.get("quill_extensions", {}).get("bound_knowledge_base", []),
+                    "wr_mode": data.get("quill_extensions", {}).get("wr_mode", "disabled"),
+                    "bound_writing_resource": data.get("quill_extensions", {}).get("bound_writing_resource", []),
                 },
             }
             path = self._persona_path(persona_id)
@@ -274,17 +280,18 @@ class QuillPersonaManager:
 
             if "quill_extensions" in data and isinstance(data["quill_extensions"], dict):
                 qe = existing.setdefault("quill_extensions", {})
-                for field in ("wb_mode", "rag_mode", "kb_mode"):
+                for field in ("wb_mode", "rag_mode", "wr_mode"):
                     if field in data["quill_extensions"]:
                         qe[field] = data["quill_extensions"][field]
-                for field in ("bound_worldbooks", "bound_rag_docs", "bound_knowledge_base"):
+                for field in ("bound_worldbooks", "bound_rag_docs", "bound_writing_resource"):
                     if field in data["quill_extensions"]:
                         qe[field] = data["quill_extensions"][field] or []
 
             path = self._persona_path(persona_id)
             await self._write_file(path, existing)
             # S2-6: 缓存 deepcopy，返回 deepcopy
-            self._cache[persona_id] = copy.deepcopy(existing)
+            async with self._cache_lock:
+                self._cache[persona_id] = copy.deepcopy(existing)
             logger.info(f"[QuillPersona] 已更新角色卡: {persona_id}")
             return copy.deepcopy(existing)
 
@@ -400,7 +407,7 @@ class QuillPersonaManager:
                     if s.startswith('{'):
                         return json.loads(s)
                 except Exception:
-                    pass
+                    logger.debug("[QuillPersona] V2 tEXt 块解析失败", exc_info=True)
 
         # 2. 检查 EXIF tag 37510 (UserComment) 和 270 (ImageDescription)
         try:
@@ -422,7 +429,7 @@ class QuillPersonaManager:
                                 if decoded.startswith('{'):
                                     return json.loads(decoded)
                             except Exception:
-                                pass
+                                logger.debug("[QuillPersona] V2 EXIF 解析失败", exc_info=True)
                     elif isinstance(val, str):
                         try:
                             decoded = base64.b64decode(val).decode('utf-8')
@@ -432,9 +439,9 @@ class QuillPersonaManager:
                                 try:
                                     return json.loads(val)
                                 except Exception:
-                                    pass
+                                    logger.debug("[QuillPersona] V2 EXIF 字符串解析失败", exc_info=True)
         except Exception:
-            pass
+            logger.debug("[QuillPersona] V2 图片元数据提取异常", exc_info=True)
 
         # 3. 原始字节搜索 — Base64 编码的 JSON（chara\x00 标记）
         for marker in (b'chara\x00', b'chara\x01'):
@@ -452,7 +459,7 @@ class QuillPersonaManager:
                     decoded = base64.b64decode(b64_str).decode('utf-8')
                     return json.loads(decoded)
                 except Exception:
-                    pass
+                    logger.debug("[QuillPersona] V2 Base64 原始字节搜索失败", exc_info=True)
 
         # 4. 原始字节搜索 — 直接的 JSON 结构（无 Base64 编码）
         for marker in (b'"name":', b'"name": ', b'"description":', b'"personality":',
@@ -479,7 +486,7 @@ class QuillPersonaManager:
                         json_str = image_data[brace_start:brace_end].decode('utf-8', errors='ignore')
                         return json.loads(json_str)
                     except Exception:
-                        pass
+                        logger.debug("[QuillPersona] V2 JSON 原始字节搜索失败", exc_info=True)
 
         # 判断是否为 PNG 但已被压缩（无文本块）
         is_png = image_data[:8] == b'\x89PNG\r\n\x1a\n'
@@ -512,7 +519,7 @@ class QuillPersonaManager:
             if data.get("spec") == "chara_card_v2":
                 return self.parse_v2_card(text.encode('utf-8'), is_image=False)
         except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
-            pass
+            logger.debug("[QuillPersona] 剪贴板文本非 V2 JSON，降级为纯文本解析", exc_info=True)
 
         # 2. 纯文本（W++ / Raw Text）解析
         def extract_block(label_regex: str, source_text: str) -> str:

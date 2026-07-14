@@ -2,10 +2,10 @@
 # Copyright (C) 2025 Nana7mi0721
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Async Knowledge Base Manager (aiosqlite + FTS5)
+Async Writing Resource Manager (aiosqlite + FTS5)
 ================================================
 
-Port of intimate_send v5.0 KnowledgeBaseManager to fully async I/O.
+Port of intimate_send v5.0 WritingResourceManager to fully async I/O.
 Identical table schema — compatible with existing .db files.
 """
 
@@ -23,13 +23,13 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 
-class KnowledgeBaseManager:
+class WritingResourceManager:
     """
-    Async knowledge base manager.
+    Async writing resource manager.
 
     Usage::
-        async with KnowledgeBaseManager(db_path) as kb:
-            entries = await kb.match("some text")
+        async with WritingResourceManager(db_path) as wr:
+            entries = await wr.match("some text")
     """
 
     # ------------------------------------------------------------------
@@ -61,7 +61,7 @@ class KnowledgeBaseManager:
 
         # Main table
         await c.execute("""
-            CREATE TABLE IF NOT EXISTS knowledge_base (
+            CREATE TABLE IF NOT EXISTS writing_resource (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 category VARCHAR(50) NOT NULL,
                 entry_id VARCHAR(100) UNIQUE NOT NULL,
@@ -82,27 +82,27 @@ class KnowledgeBaseManager:
         """)
 
         # Indexes
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_category ON knowledge_base(category)")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_priority ON knowledge_base(priority DESC)")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_enabled ON knowledge_base(enabled)")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_category ON writing_resource(category)")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_priority ON writing_resource(priority DESC)")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_enabled ON writing_resource(enabled)")
 
         # FTS5 virtual table
         # S3-5: 指定 trigram 分词器，改善中文子串匹配（SQLite 3.34+）。
         # 若旧 SQLite 不支持 trigram，回退到默认 unicode61 分词器。
         try:
             await c.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+                CREATE VIRTUAL TABLE IF NOT EXISTS writing_resource_fts USING fts5(
                     keywords, name, content,
-                    content=knowledge_base, content_rowid=id,
+                    content=writing_resource, content_rowid=id,
                     tokenize='trigram'
                 )
             """)
         except Exception as exc:
-            logger.warning("[KB] trigram 分词器不可用，回退默认分词器: %s", exc)
+            logger.warning("[WR] trigram 分词器不可用，回退默认分词器: %s", exc)
             await c.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+                CREATE VIRTUAL TABLE IF NOT EXISTS writing_resource_fts USING fts5(
                     keywords, name, content,
-                    content=knowledge_base, content_rowid=id
+                    content=writing_resource, content_rowid=id
                 )
             """)
 
@@ -119,37 +119,37 @@ class KnowledgeBaseManager:
 
         # Timestamp trigger
         await c.execute("""
-            CREATE TRIGGER IF NOT EXISTS update_knowledge_timestamp
-            AFTER UPDATE ON knowledge_base
+            CREATE TRIGGER IF NOT EXISTS update_writing_resource_timestamp
+            AFTER UPDATE ON writing_resource
             BEGIN
-                UPDATE knowledge_base SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+                UPDATE writing_resource SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
             END
         """)
 
         # FTS5 sync triggers
         await c.execute("""
-            CREATE TRIGGER IF NOT EXISTS knowledge_ai_insert
-            AFTER INSERT ON knowledge_base
+            CREATE TRIGGER IF NOT EXISTS writing_resource_ai_insert
+            AFTER INSERT ON writing_resource
             BEGIN
-                INSERT INTO knowledge_fts(rowid, keywords, name, content)
+                INSERT INTO writing_resource_fts(rowid, keywords, name, content)
                 VALUES (NEW.id, NEW.keywords, NEW.name, NEW.content);
             END
         """)
         await c.execute("""
-            CREATE TRIGGER IF NOT EXISTS knowledge_ai_delete
-            AFTER DELETE ON knowledge_base
+            CREATE TRIGGER IF NOT EXISTS writing_resource_ai_delete
+            AFTER DELETE ON writing_resource
             BEGIN
-                INSERT INTO knowledge_fts(knowledge_fts, rowid, keywords, name, content)
+                INSERT INTO writing_resource_fts(writing_resource_fts, rowid, keywords, name, content)
                 VALUES ('delete', OLD.id, OLD.keywords, OLD.name, OLD.content);
             END
         """)
         await c.execute("""
-            CREATE TRIGGER IF NOT EXISTS knowledge_ai_update
-            AFTER UPDATE ON knowledge_base
+            CREATE TRIGGER IF NOT EXISTS writing_resource_ai_update
+            AFTER UPDATE ON writing_resource
             BEGIN
-                INSERT INTO knowledge_fts(knowledge_fts, rowid, keywords, name, content)
+                INSERT INTO writing_resource_fts(writing_resource_fts, rowid, keywords, name, content)
                 VALUES ('delete', OLD.id, OLD.keywords, OLD.name, OLD.content);
-                INSERT INTO knowledge_fts(rowid, keywords, name, content)
+                INSERT INTO writing_resource_fts(rowid, keywords, name, content)
                 VALUES (NEW.id, NEW.keywords, NEW.name, NEW.content);
             END
         """)
@@ -159,7 +159,7 @@ class KnowledgeBaseManager:
 
     async def _migrate_schema(self):
         c = await self.conn.cursor()
-        await c.execute("PRAGMA table_info(knowledge_base)")
+        await c.execute("PRAGMA table_info(writing_resource)")
         rows = await c.fetchall()
         existing = {row[1] for row in rows}
 
@@ -169,7 +169,7 @@ class KnowledgeBaseManager:
         ]
         for col_name, col_def in migrations:
             if col_name not in existing:
-                await c.execute(f"ALTER TABLE knowledge_base ADD COLUMN {col_name} {col_def}")
+                await c.execute(f"ALTER TABLE writing_resource ADD COLUMN {col_name} {col_def}")
         await self.conn.commit()
 
     async def initialize(self):
@@ -234,7 +234,7 @@ class KnowledgeBaseManager:
         try:
             await self.conn.execute(
                 """
-                INSERT INTO knowledge_base
+                INSERT INTO writing_resource
                 (category, entry_id, name, description, keywords,
                  secondary_keywords, aliases, content, priority, is_constant)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -257,12 +257,12 @@ class KnowledgeBaseManager:
         except aiosqlite.IntegrityError:
             return False
         except Exception as e:
-            logger.warning(f"[KB] add_entry failed: {e}")
+            logger.warning(f"[WR] add_entry failed: {e}")
             return False
 
     async def get_entry(self, entry_id: str) -> Optional[Dict]:
         async with self.conn.execute(
-            "SELECT * FROM knowledge_base WHERE entry_id = ?", (entry_id,)
+            "SELECT * FROM writing_resource WHERE entry_id = ?", (entry_id,)
         ) as cursor:
             row = await cursor.fetchone()
             return self._row_to_dict(row) if row else None
@@ -287,24 +287,24 @@ class KnowledgeBaseManager:
         values.append(entry_id)
         try:
             cursor = await self.conn.execute(
-                f"UPDATE knowledge_base SET {', '.join(updates)} WHERE entry_id = ?",
+                f"UPDATE writing_resource SET {', '.join(updates)} WHERE entry_id = ?",
                 values,
             )
             await self.conn.commit()
             return cursor.rowcount > 0
         except Exception as e:
-            logger.warning(f"[KB] update_entry failed: {e}")
+            logger.warning(f"[WR] update_entry failed: {e}")
             return False
 
     async def delete_entry(self, entry_id: str) -> bool:
         try:
             cursor = await self.conn.execute(
-                "DELETE FROM knowledge_base WHERE entry_id = ?", (entry_id,)
+                "DELETE FROM writing_resource WHERE entry_id = ?", (entry_id,)
             )
             await self.conn.commit()
             return cursor.rowcount > 0
         except Exception as e:
-            logger.warning(f"[KB] delete_entry failed: {e}")
+            logger.warning(f"[WR] delete_entry failed: {e}")
             return False
 
     async def enable_entry(self, entry_id: str, enabled: bool = True) -> bool:
@@ -313,20 +313,20 @@ class KnowledgeBaseManager:
     async def set_constant(self, entry_id: str, is_constant: bool) -> bool:
         try:
             cursor = await self.conn.execute(
-                "UPDATE knowledge_base SET is_constant = ? WHERE entry_id = ?",
+                "UPDATE writing_resource SET is_constant = ? WHERE entry_id = ?",
                 (1 if is_constant else 0, entry_id),
             )
             await self.conn.commit()
             return cursor.rowcount > 0
         except Exception as e:
-            logger.warning(f"[KB] set_constant failed: {e}")
+            logger.warning(f"[WR] set_constant failed: {e}")
             return False
     # ------------------------------------------------------------------
 
     async def get_all_entries(
         self, category: Optional[str] = None, enabled_only: bool = True
     ) -> List[Dict]:
-        sql = "SELECT * FROM knowledge_base WHERE 1=1"
+        sql = "SELECT * FROM writing_resource WHERE 1=1"
         params: list = []
         if category:
             sql += " AND category = ?"
@@ -341,14 +341,14 @@ class KnowledgeBaseManager:
 
     async def get_categories(self) -> List[str]:
         async with self.conn.execute(
-            "SELECT DISTINCT category FROM knowledge_base WHERE enabled = 1 ORDER BY category"
+            "SELECT DISTINCT category FROM writing_resource WHERE enabled = 1 ORDER BY category"
         ) as cursor:
             rows = await cursor.fetchall()
         return [r[0] for r in rows]
 
     async def get_constant_entries(self) -> List[Dict]:
         async with self.conn.execute(
-            "SELECT * FROM knowledge_base WHERE enabled = 1 AND is_constant = 1 ORDER BY priority DESC"
+            "SELECT * FROM writing_resource WHERE enabled = 1 AND is_constant = 1 ORDER BY priority DESC"
         ) as cursor:
             rows = await cursor.fetchall()
         return [self._row_to_dict(r) for r in rows]
@@ -362,7 +362,7 @@ class KnowledgeBaseManager:
             conditions.append(f"{field} LIKE ?")
             params.append(f"%{query}%")
         sql = (
-            f"SELECT * FROM knowledge_base WHERE enabled = 1 "
+            f"SELECT * FROM writing_resource WHERE enabled = 1 "
             f"AND ({' OR '.join(conditions)}) ORDER BY priority DESC LIMIT 20"
         )
         async with self.conn.execute(sql, params) as cursor:
@@ -370,17 +370,17 @@ class KnowledgeBaseManager:
         return [self._row_to_dict(r) for r in rows]
 
     async def get_stats(self) -> Dict:
-        async with self.conn.execute("SELECT COUNT(*) FROM knowledge_base") as c:
+        async with self.conn.execute("SELECT COUNT(*) FROM writing_resource") as c:
             row = await c.fetchone()
             total = row[0] if row else 0
-        async with self.conn.execute("SELECT COUNT(*) FROM knowledge_base WHERE enabled = 1") as c:
+        async with self.conn.execute("SELECT COUNT(*) FROM writing_resource WHERE enabled = 1") as c:
             row = await c.fetchone()
             enabled = row[0] if row else 0
         async with self.conn.execute(
-            "SELECT category, COUNT(*) FROM knowledge_base GROUP BY category"
+            "SELECT category, COUNT(*) FROM writing_resource GROUP BY category"
         ) as c:
             by_category = {r[0]: r[1] for r in await c.fetchall()}
-        async with self.conn.execute("SELECT SUM(match_count) FROM knowledge_base") as c:
+        async with self.conn.execute("SELECT SUM(match_count) FROM writing_resource") as c:
             row = await c.fetchone()
             total_matches = (row[0] if row else 0) or 0
         async with self.conn.execute("SELECT COUNT(*) FROM match_logs") as c:
@@ -479,15 +479,15 @@ class KnowledgeBaseManager:
                 return await self.keyword_match(user_input, category)
 
             sql = """
-                SELECT kb.*, fts.rank AS fts_rank
-                FROM knowledge_fts fts
-                JOIN knowledge_base kb ON fts.rowid = kb.id
-                WHERE knowledge_fts MATCH ?
-                  AND kb.enabled = 1
+                SELECT wr.*, fts.rank AS fts_rank
+                FROM writing_resource_fts fts
+                JOIN writing_resource wr ON fts.rowid = wr.id
+                WHERE writing_resource_fts MATCH ?
+                  AND wr.enabled = 1
             """
             params: list = [safe_input]
             if category:
-                sql += " AND kb.category = ?"
+                sql += " AND wr.category = ?"
                 params.append(category)
             sql += " ORDER BY fts.rank LIMIT ?"
             params.append(top_k)
@@ -501,13 +501,13 @@ class KnowledgeBaseManager:
                 result.append(entry)
             return result
         except Exception as e:
-            logger.info(f"[KB] FTS5 match failed, falling back to keyword scan: {e}")
+            logger.info(f"[WR] FTS5 match failed, falling back to keyword scan: {e}")
             return await self.keyword_match(user_input, category)
 
     async def keyword_match(
         self, user_input: str, category: Optional[str] = None
     ) -> List[Dict]:
-        sql = "SELECT * FROM knowledge_base WHERE enabled = 1"
+        sql = "SELECT * FROM writing_resource WHERE enabled = 1"
         params: list = []
         if category:
             sql += " AND category = ?"
@@ -568,15 +568,16 @@ class KnowledgeBaseManager:
                         await self._log_match(user_input, [e["entry_id"] for e in result], len(result))
                     return result
         except Exception as e:
-            logger.info(f"[KB] FTS5 match in match() failed, using full scan: {e}")
+            logger.info(f"[WR] FTS5 match in match() failed, using full scan: {e}")
             pass
 
         # --- Fallback: full table scan ---
-        sql = "SELECT kb.*, 0 AS match_score FROM knowledge_base kb WHERE kb.enabled = 1"
+        sql = "SELECT wr.*, 0 AS match_score FROM writing_resource wr WHERE wr.enabled = 1"
         params: list = []
         if category:
-            sql += " AND kb.category = ?"
+            sql += " AND wr.category = ?"
             params.append(category)
+        sql += " LIMIT 500"
 
         async with self.conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
@@ -599,12 +600,12 @@ class KnowledgeBaseManager:
                 try:
                     for e in result:
                         await self.conn.execute(
-                            "UPDATE knowledge_base SET match_count = match_count + 1 WHERE id = ?",
+                            "UPDATE writing_resource SET match_count = match_count + 1 WHERE id = ?",
                             (e["id"],),
                         )
                     await self.conn.commit()
                 except Exception as e:
-                    logger.warning(f"[KB] match_count increment failed: {e}")
+                    logger.warning(f"[WR] match_count increment failed: {e}")
                 await self._log_match(user_input, [e["entry_id"] for e in result], len(result))
 
         return result
@@ -616,7 +617,7 @@ class KnowledgeBaseManager:
     async def get_top_entries_by_match_count(self, limit: int = 2) -> List[Dict]:
         """Return entries ordered by match_count (descending), for fallback when match=0."""
         async with self.conn.execute(
-            "SELECT * FROM knowledge_base WHERE enabled = 1 ORDER BY match_count DESC, priority DESC LIMIT ?",
+            "SELECT * FROM writing_resource WHERE enabled = 1 ORDER BY match_count DESC, priority DESC LIMIT ?",
             (limit,),
         ) as cursor:
             rows = await cursor.fetchall()
@@ -628,7 +629,7 @@ class KnowledgeBaseManager:
 
     async def _increment_match_count(self, row_id: int):
         await self.conn.execute(
-            "UPDATE knowledge_base SET match_count = match_count + 1 WHERE id = ?",
+            "UPDATE writing_resource SET match_count = match_count + 1 WHERE id = ?",
             (row_id,),
         )
         await self.conn.commit()
@@ -684,11 +685,11 @@ class KnowledgeBaseManager:
 # ==================================================================
 
 async def _self_test():
-    print("=== Async KB Manager Self-Test ===\n")
+    print("=== Async WR Manager Self-Test ===\n")
 
-    async with KnowledgeBaseManager(":memory:") as kb:
+    async with WritingResourceManager(":memory:") as wr:
         # 1 — Add entries
-        ok = await kb.add_entry(
+        ok = await wr.add_entry(
             category="action",
             entry_id="action_footjob",
             name="【足交特化】",
@@ -699,7 +700,7 @@ async def _self_test():
         assert ok, "add_entry 1 failed"
         print("✓ add_entry 1 (action_footjob)")
 
-        ok = await kb.add_entry(
+        ok = await wr.add_entry(
             category="liquid",
             entry_id="liquid_wet",
             name="【液体描写】",
@@ -711,7 +712,7 @@ async def _self_test():
         assert ok, "add_entry 2 failed"
         print("✓ add_entry 2 (liquid_wet)")
 
-        ok = await kb.add_entry(
+        ok = await wr.add_entry(
             category="action",
             entry_id="action_handjob",
             name="【手交特化】",
@@ -723,13 +724,13 @@ async def _self_test():
         print("✓ add_entry 3 (action_handjob)")
 
         # 2 — get_entry
-        entry = await kb.get_entry("action_footjob")
+        entry = await wr.get_entry("action_footjob")
         assert entry is not None and entry["entry_id"] == "action_footjob"
         assert isinstance(entry["keywords"], list) and len(entry["keywords"]) == 5
         print(f"✓ get_entry → {entry['name']}")
 
         # 3 — match (FTS5)
-        results = await kb.match("她用脚给我弄，沾满了脚", top_k=5)
+        results = await wr.match("她用脚给我弄，沾满了脚", top_k=5)
         print(f"\n✓ match('她用脚给我弄，沾满了脚') → {len(results)} results")
         for r in results:
             print(f"    {r.get('name')}: score={r.get('match_score', 0):.2f} kw={r.get('matched_keywords', [])}")
@@ -739,65 +740,65 @@ async def _self_test():
         assert results[0]["entry_id"] == "action_footjob", "footjob should be top match"
 
         # 4 — get_stats
-        stats = await kb.get_stats()
+        stats = await wr.get_stats()
         print(f"\n✓ get_stats → {stats}")
         assert stats["total_entries"] == 3
         assert stats["enabled_entries"] == 3
 
         # 5 — update / enable / set_constant
-        ok = await kb.update_entry("action_footjob", priority=9, keywords=["脚", "足", "脚交"])
+        ok = await wr.update_entry("action_footjob", priority=9, keywords=["脚", "足", "脚交"])
         assert ok, "update_entry failed"
-        entry = await kb.get_entry("action_footjob")
+        entry = await wr.get_entry("action_footjob")
         assert entry is not None
         assert entry["priority"] == 9
         assert len(entry["keywords"]) == 3
         print("✓ update_entry (priority + keywords)")
 
-        ok = await kb.enable_entry("action_footjob", False)
+        ok = await wr.enable_entry("action_footjob", False)
         assert ok, "enable_entry failed"
-        entry = await kb.get_entry("action_footjob")
+        entry = await wr.get_entry("action_footjob")
         assert entry is not None
         assert entry["enabled"] is False
         print("✓ enable_entry(False)")
-        await kb.enable_entry("action_footjob", True)  # restore
+        await wr.enable_entry("action_footjob", True)  # restore
 
-        ok = await kb.set_constant("action_footjob", True)
+        ok = await wr.set_constant("action_footjob", True)
         assert ok, "set_constant failed"
-        constants = await kb.get_constant_entries()
+        constants = await wr.get_constant_entries()
         assert len(constants) == 1 and constants[0]["entry_id"] == "action_footjob"
         print("✓ set_constant + get_constant_entries")
 
         # 6 — get_top_entries_by_match_count
-        top = await kb.get_top_entries_by_match_count(limit=2)
+        top = await wr.get_top_entries_by_match_count(limit=2)
         print(f"\n✓ get_top_entries_by_match_count → {len(top)} entries")
         for t in top:
             print(f"    {t['entry_id']} match_count={t['match_count']}")
         assert len(top) <= 2
 
         # 7 — search
-        found = await kb.search("足交")
+        found = await wr.search("足交")
         assert len(found) >= 1
         print(f"✓ search('足交') → {len(found)} results")
 
         # 8 — delete
-        ok = await kb.delete_entry("action_handjob")
+        ok = await wr.delete_entry("action_handjob")
         assert ok, "delete failed"
-        entry = await kb.get_entry("action_handjob")
+        entry = await wr.get_entry("action_handjob")
         assert entry is None
-        stats2 = await kb.get_stats()
+        stats2 = await wr.get_stats()
         assert stats2["total_entries"] == 2
         print("✓ delete_entry + verify count=2")
 
         # 9 — match_logs
-        logs = await kb.get_match_logs(limit=10)
+        logs = await wr.get_match_logs(limit=10)
         assert len(logs) >= 1
         print(f"✓ get_match_logs → {len(logs)} entries")
 
-        cleared = await kb.clear_match_logs()
+        cleared = await wr.clear_match_logs()
         print(f"✓ clear_match_logs → cleared {cleared}")
 
         # 10 — reference text
-        ref = KnowledgeBaseManager.get_reference_text(results)
+        ref = WritingResourceManager.get_reference_text(results)
         assert ref.startswith("【写作素材库参考】")
         print(f"✓ get_reference_text → {len(ref)} chars")
 
