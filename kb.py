@@ -172,10 +172,112 @@ class WritingResourceManager:
                 await c.execute(f"ALTER TABLE writing_resource ADD COLUMN {col_name} {col_def}")
         await self.conn.commit()
 
+    async def _migrate_legacy_tables(self):
+        """迁移旧表名 knowledge_base → writing_resource（kb→wr 重命名兼容）。
+
+        场景：用户旧版本使用 quill_kb.db（表名 knowledge_base），升级后文件被
+        重命名为 quill_wr.db，但表名未变。新代码查询 writing_resource 表会得到
+        空结果。此方法在 _init_db 之前执行，确保旧表被安全 rename。
+
+        三种情况：
+          1. 旧表不存在 → 无需迁移
+          2. 旧表存在、新表不存在 → 直接 rename 旧表
+          3. 新旧表共存 → 若新表空且旧表有数据，迁移数据；否则丢弃旧表
+        """
+        c = await self.conn.cursor()
+
+        # 旧触发器名（rename 主表前必须先 DROP，否则引用会失效）
+        legacy_triggers = [
+            "update_knowledge_timestamp",
+            "knowledge_base_ai_insert",
+            "knowledge_base_ai_delete",
+            "knowledge_base_ai_update",
+        ]
+
+        # 检查旧主表是否存在
+        await c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_base'"
+        )
+        old_main = await c.fetchone()
+        if not old_main:
+            return  # 情况 1：无需迁移
+
+        # 检查新主表是否存在
+        await c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='writing_resource'"
+        )
+        new_main = await c.fetchone()
+
+        if not new_main:
+            # 情况 2：旧表存在、新表不存在 → 直接 rename
+            logger.info("[WR] 迁移旧表: knowledge_base → writing_resource")
+            for t in legacy_triggers:
+                await c.execute(f"DROP TRIGGER IF EXISTS {t}")
+            await c.execute("DROP TABLE IF EXISTS knowledge_base_fts")
+            await c.execute("ALTER TABLE knowledge_base RENAME TO writing_resource")
+            await self.conn.commit()
+            logger.info("[WR] 旧表迁移完成（FTS 索引将在 _init_db 后重建）")
+            return
+
+        # 情况 3：新旧表共存
+        await c.execute("SELECT COUNT(*) FROM writing_resource")
+        new_count = (await c.fetchone())[0]
+        await c.execute("SELECT COUNT(*) FROM knowledge_base")
+        old_count = (await c.fetchone())[0]
+
+        if new_count == 0 and old_count > 0:
+            # 新表为空（_init_db 刚建的空表）、旧表有数据 → 迁移数据
+            logger.warning(
+                f"[WR] 新表为空且旧表有数据 (新={new_count}, 旧={old_count})，迁移旧表"
+            )
+            await c.execute("DROP TABLE writing_resource")
+            for t in legacy_triggers:
+                await c.execute(f"DROP TRIGGER IF EXISTS {t}")
+            await c.execute("DROP TABLE IF EXISTS knowledge_base_fts")
+            await c.execute("ALTER TABLE knowledge_base RENAME TO writing_resource")
+            await self.conn.commit()
+            logger.info("[WR] 旧表迁移完成（FTS 索引将在 _init_db 后重建）")
+        else:
+            # 新表已有数据或旧表也空 → 以新表为准，丢弃旧表
+            logger.warning(
+                f"[WR] 新旧表共存 (新={new_count}, 旧={old_count})，丢弃旧表 knowledge_base"
+            )
+            for t in legacy_triggers:
+                await c.execute(f"DROP TRIGGER IF EXISTS {t}")
+            await c.execute("DROP TABLE IF EXISTS knowledge_base_fts")
+            await c.execute("DROP TABLE IF EXISTS knowledge_base")
+            await self.conn.commit()
+
+    async def _rebuild_fts_index(self):
+        """表名迁移后 FTS 索引可能为空，检测并重建。
+
+        _init_db 用 CREATE VIRTUAL TABLE IF NOT EXISTS 创建 FTS 表，若主表刚从
+        knowledge_base rename 而来，FTS 表是新建的空表，需要手动回填索引。
+        """
+        c = await self.conn.cursor()
+        await c.execute("SELECT COUNT(*) FROM writing_resource_fts")
+        fts_count = (await c.fetchone())[0]
+        if fts_count > 0:
+            return
+        await c.execute("SELECT COUNT(*) FROM writing_resource")
+        main_count = (await c.fetchone())[0]
+        if main_count == 0:
+            return
+        logger.info(f"[WR] 重建 FTS 索引 ({main_count} 条)")
+        await c.execute(
+            """
+            INSERT INTO writing_resource_fts(rowid, keywords, name, content)
+            SELECT id, keywords, name, content FROM writing_resource
+            """
+        )
+        await self.conn.commit()
+
     async def initialize(self):
         """Explicit init for non-context-manager usage."""
         await self._connect()
+        await self._migrate_legacy_tables()
         await self._init_db()
+        await self._rebuild_fts_index()
 
     async def close(self):
         if self._conn:
