@@ -140,7 +140,11 @@ class MemoryStore:
                 """SELECT id, summary, chat_summary, vector, dim, timestamp,
                           strength, useful_count, useful_score, is_active,
                           (julianday('now') - julianday(timestamp)) AS age_days, is_core
-                   FROM memories WHERE session_id = ? ORDER BY timestamp DESC LIMIT 500""",
+                   FROM memories
+                   WHERE session_id = ?
+                     AND (is_core = 1 OR is_active = 1
+                          OR (julianday('now') - julianday(timestamp)) < 30)
+                   ORDER BY timestamp DESC LIMIT 500""",
                 (session_id,)
             )
         except Exception as e:

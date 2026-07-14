@@ -44,7 +44,7 @@ def _check_group_permission(plugin, event: AstrMessageEvent) -> bool:
         return True
     # 群聊：仅 admin 放行；admin 未配置时 fail-close
     if not admin_users:
-        logger.warning("[Quill] admin_users 未配置，群聊写操作已拒绝。请在配置面板设置 admin_users。")
+        logger.warning("[Quill] admin_users 未配置，群聊写操作已拒绝。请在配置面板设置 admin_users（留空时群聊写功能锁定）。")
         return False
     admin_set = set(str(u) for u in admin_users)
     return sender_id in admin_set
@@ -137,7 +137,7 @@ def _resolve_wb_name(plugin, arg: str) -> str | None:
 async def _wb_bind(plugin, event: AstrMessageEvent, arg: str):
     """绑定世界书到当前激活的角色卡"""
     if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以绑定世界书。"))
+        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
         return
     target_id = _get_target_id(event)
 
@@ -174,12 +174,12 @@ async def _wb_bind(plugin, event: AstrMessageEvent, arg: str):
 
     # 更新角色卡的绑定列表
     ext = persona_data.get("quill_extensions", {})
-    bound_wbs = ext.get("bound_worldbooks", [])
+    bound_worldbooks = ext.get("bound_worldbooks", [])
     entry_count = len(wb.get("entries", []))
 
-    if name not in bound_wbs:
-        bound_wbs.append(name)
-        ext["bound_worldbooks"] = bound_wbs
+    if name not in bound_worldbooks:
+        bound_worldbooks.append(name)
+        ext["bound_worldbooks"] = bound_worldbooks
         ext["wb_mode"] = "custom"  # 自动切换到 Custom 模式
         persona_data["quill_extensions"] = ext
 
@@ -198,7 +198,7 @@ async def _wb_bind(plugin, event: AstrMessageEvent, arg: str):
 async def _wb_unbind(plugin, event: AstrMessageEvent, arg: str):
     """解绑世界书从当前激活的角色卡"""
     if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以解绑世界书。"))
+        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
         return
     target_id = _get_target_id(event)
 
@@ -227,11 +227,10 @@ async def _wb_unbind(plugin, event: AstrMessageEvent, arg: str):
 
     # 更新角色卡的绑定列表
     ext = persona_data.get("quill_extensions", {})
-    bound_wbs = ext.get("bound_worldbooks", [])
-
-    if name in bound_wbs:
-        bound_wbs.remove(name)
-        ext["bound_worldbooks"] = bound_wbs
+    bound_worldbooks = ext.get("bound_worldbooks", [])
+    if name in bound_worldbooks:
+        bound_worldbooks.remove(name)
+        ext["bound_worldbooks"] = bound_worldbooks
         persona_data["quill_extensions"] = ext
 
         await plugin.persona_manager.update_persona(persona_id, persona_data)
@@ -258,14 +257,14 @@ async def _wb_list(plugin, event: AstrMessageEvent):
     persona_name = ""
     persona_mode = "disabled"
     if hasattr(plugin.state_manager, "get_persona_id"):
-        pid = await plugin.state_manager.get_persona_id(target_id)
-        if pid and plugin.persona_manager:
-            pdata = await plugin.persona_manager.get_persona(pid)
+        persona_id = await plugin.state_manager.get_persona_id(target_id)
+        if persona_id and plugin.persona_manager:
+            pdata = await plugin.persona_manager.get_persona(persona_id)
             if pdata:
                 ext = pdata.get("quill_extensions", {})
                 persona_bound = set(ext.get("bound_worldbooks", []))
                 persona_mode = ext.get("wb_mode", "disabled")
-                persona_name = pdata.get("name", pid)
+                persona_name = pdata.get("name", persona_id)
 
     lines = [f"可用世界书（✓ 已绑定 | 模式: {persona_mode}）："]
     for i, name in enumerate(books, 1):
@@ -331,7 +330,7 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
 
     if sub == "unset":
         if not _check_group_permission(plugin, event):
-            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以取消角色卡绑定。"))
+            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
             return
         target_id = _get_target_id(event)
         await plugin.state_manager.set_persona_id(target_id, "")
@@ -342,11 +341,11 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
         if not rest:
             # 查看当前角色
             target_id = _get_target_id(event)
-            pid = await plugin.state_manager.get_persona_id(target_id)
-            if not pid:
+            persona_id = await plugin.state_manager.get_persona_id(target_id)
+            if not persona_id:
                 event.set_result(MessageEventResult().message("未绑定角色卡。使用 /char 查看列表。"))
                 return
-            await _char_info(plugin, event, pid)
+            await _char_info(plugin, event, persona_id)
         else:
             resolved = await _resolve_persona_id(plugin, rest, event)
             if resolved is None:
@@ -358,11 +357,11 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
         if not rest:
             # 导出当前角色卡
             target_id = _get_target_id(event)
-            pid = await plugin.state_manager.get_persona_id(target_id)
-            if not pid:
+            persona_id = await plugin.state_manager.get_persona_id(target_id)
+            if not persona_id:
                 event.set_result(MessageEventResult().message("未绑定角色卡，无法导出。"))
                 return
-            await _char_export(plugin, event, pid)
+            await _char_export(plugin, event, persona_id)
         else:
             resolved = await _resolve_persona_id(plugin, rest, event)
             if resolved is None:
@@ -379,7 +378,7 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
 
     # /char <序号|名字> → 切换（需要权限）
     if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以切换角色卡。"))
+        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
         return
 
     resolved = await _resolve_persona_id(plugin, sub_args, event)
@@ -399,8 +398,8 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
         return
 
     target_id = _get_target_id(event)
-    pid = matched.get("id", resolved)
-    await plugin.state_manager.set_persona_id(target_id, pid)
+    persona_id = matched.get("id", resolved)
+    await plugin.state_manager.set_persona_id(target_id, persona_id)
 
     # 统计联动信息
     wbs = []
@@ -408,14 +407,14 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
     if plugin.wb_manager:
         pext = matched.get("quill_extensions", {})
         p_wb_mode = pext.get("wb_mode", "disabled")
-        p_bound_wbs = pext.get("bound_worldbooks", []) if p_wb_mode == "custom" else None
-        if p_wb_mode != "disabled":
-            active = plugin.wb_manager.get_active_worldbooks(bound_worldbooks=p_bound_wbs)
+        p_bound_worldbooks = pext.get("bound_worldbooks", []) if p_wb_mode == "custom" else None
+        if p_bound_worldbooks is not None:
+            active = plugin.wb_manager.get_active_worldbooks(bound_worldbooks=p_bound_worldbooks)
             wbs = [w.get("name", "?") for w in active]
     if matched.get("quill_extensions"):
         rag_docs = matched["quill_extensions"].get("bound_rag_docs", [])
 
-    msg_parts = [f"已切换到: {matched.get('name', pid)}"]
+    msg_parts = [f"已切换到: {matched.get('name', persona_id)}"]
     link_info = []
     if wbs:
         link_info.append(f"{len(wbs)} 本世界书: {', '.join(wbs)}")
@@ -436,14 +435,14 @@ async def _char_list(plugin, event: AstrMessageEvent):
         return
 
     target_id = _get_target_id(event)
-    current_pid = await plugin.state_manager.get_persona_id(target_id)
+    current_persona_id = await plugin.state_manager.get_persona_id(target_id)
 
     lines = ["可用角色卡："]
     for i, p in enumerate(personas, 1):
         name = p.get("name", p.get("id", "?"))
         summary = p.get("summary", "")
-        pid = p.get("id", "")
-        mark = " ← 当前" if pid == current_pid and current_pid else ""
+        persona_id = p.get("id", "")
+        mark = " ← 当前" if persona_id == current_persona_id and current_persona_id else ""
         suffix = f" — {summary[:30]}" if summary else ""
         lines.append(f"  {i}. {name}{suffix}{mark}")
     lines.append("")
@@ -500,9 +499,9 @@ async def _char_info(plugin, event: AstrMessageEvent, persona_id: str):
     if plugin.wb_manager:
         ext = pdata.get("quill_extensions", {})
         wb_mode = ext.get("wb_mode", "disabled")
-        bound_wbs = ext.get("bound_worldbooks", []) if wb_mode == "custom" else None
+        bound_worldbooks = ext.get("bound_worldbooks", []) if wb_mode == "custom" else None
         if wb_mode != "disabled":
-            active = plugin.wb_manager.get_active_worldbooks(bound_worldbooks=bound_wbs)
+            active = plugin.wb_manager.get_active_worldbooks(bound_worldbooks=bound_worldbooks)
             if active:
                 active_names = [w.get("name", "?") for w in active]
                 lines.append(f"当前生效世界书：{', '.join(active_names)}")
@@ -642,7 +641,7 @@ async def quill_help(event: AstrMessageEvent):
         "  /quill             系统总览",
         "  /quill help        本帮助",
         "  /quill reset       清空记忆+日志+注入状态(配合/reset)",
-        "  /quill test <kb|wb|mem> <文字>  系统测试",
+        "  /quill test <wr|wb|mem> <文字>  系统测试",
         "  /stream on|off|auto  流式模式开关",
         "  /reinject          重置注入状态",
         "",
@@ -666,9 +665,9 @@ async def quill_status(plugin, event: AstrMessageEvent):
         if plugin.wb_manager:
             ext = pdata.get("quill_extensions", {})
             p_wb_mode = ext.get("wb_mode", "disabled")
-            p_bound_wbs = ext.get("bound_worldbooks", []) if p_wb_mode == "custom" else None
-            if p_wb_mode != "disabled":
-                wb_count = len(plugin.wb_manager.get_active_worldbooks(bound_worldbooks=p_bound_wbs))
+            p_bound_worldbooks = ext.get("bound_worldbooks", []) if p_wb_mode == "custom" else None
+            if p_bound_worldbooks is not None:
+                wb_count = len(plugin.wb_manager.get_active_worldbooks(bound_worldbooks=p_bound_worldbooks))
 
     if persona_name:
         lines.append(f"  角色：{persona_name} (已绑 {wb_count} 本世界书)")
@@ -680,15 +679,15 @@ async def quill_status(plugin, event: AstrMessageEvent):
     lines.append(f"  流式模式：{state.stream_mode}")
 
     # 写作素材库
-    if plugin.kb_manager:
+    if plugin.wr_manager:
         try:
-            stats = await plugin.kb_manager.get_stats()
+            stats = await plugin.wr_manager.get_stats()
             ext_info = ""
             if persona_id and plugin.persona_manager and pdata:
                 ext = pdata.get("quill_extensions", {})
-                kb_cats = ext.get("bound_knowledge_base", []) if ext else []
-                if kb_cats:
-                    ext_info = f" (仅限: {', '.join(kb_cats)})"
+                wr_cats = ext.get("bound_writing_resource", []) if ext else []
+                if wr_cats:
+                    ext_info = f" (仅限: {', '.join(wr_cats)})"
             lines.append(f"  写作素材库: {stats['total_entries']} 条启用{ext_info}")
         except Exception:
             lines.append("  写作素材库: 查询失败")
@@ -723,7 +722,7 @@ async def quill_status(plugin, event: AstrMessageEvent):
 
 async def quill_test(plugin, event: AstrMessageEvent, system: str, text: str):
     """
-    /quill test kb <文本>  — 测试素材库命中
+    /quill test wr <文本>  — 测试素材库命中
     /quill test wb <文本>  — 测试世界书命中
     /quill test mem <文本> — 测试记忆检索
     """
@@ -731,31 +730,31 @@ async def quill_test(plugin, event: AstrMessageEvent, system: str, text: str):
     text = (text or "").strip()
 
     if not text:
-        event.set_result(MessageEventResult().message("用法: /quill test <kb|wb|mem> <文字>"))
+        event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem> <文字>"))
         return
 
-    if system == "kb":
-        await _test_kb(plugin, event, text)
+    if system == "wr":
+        await _test_wr(plugin, event, text)
     elif system == "wb":
         await _test_wb(plugin, event, text)
     elif system == "mem":
         await _test_mem(plugin, event, text)
     else:
-        event.set_result(MessageEventResult().message("用法: /quill test <kb|wb|mem> <文字>"))
+        event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem> <文字>"))
 
 
-async def _test_kb(plugin, event: AstrMessageEvent, text: str):
-    if not plugin.kb_manager:
+async def _test_wr(plugin, event: AstrMessageEvent, text: str):
+    if not plugin.wr_manager:
         event.set_result(MessageEventResult().message("写作素材库未加载，无法测试"))
         return
     try:
-        results = await plugin.kb_manager.match(text, top_k=5, log_match=False)
+        results = await plugin.wr_manager.match(text, top_k=5, log_match=False)
         if not results:
             event.set_result(MessageEventResult().message(
-                f"KB 未匹配到任何条目\n输入: {text[:80]}"
+                f"WR 未匹配到任何条目\n输入: {text[:80]}"
             ))
             return
-        lines = [f"[KB 测试] 匹配到 {len(results)} 条:"]
+        lines = [f"[WR 测试] 匹配到 {len(results)} 条:"]
         for r in results:
             name = r.get("name") or r.get("entry_id", "?")
             score = r.get("match_score", 0)
@@ -769,7 +768,7 @@ async def _test_kb(plugin, event: AstrMessageEvent, text: str):
         lines.append(f"输入: {text[:60]}")
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
     except Exception as e:
-        event.set_result(MessageEventResult().message(f"KB 匹配失败: {e}"))
+        event.set_result(MessageEventResult().message(f"WR 匹配失败: {e}"))
 
 
 async def _test_wb(plugin, event: AstrMessageEvent, text: str):
@@ -780,16 +779,16 @@ async def _test_wb(plugin, event: AstrMessageEvent, text: str):
         target_id = _get_target_id(event)
         # 获取当前角色卡绑定的世界书
         persona_id = await plugin.state_manager.get_persona_id(target_id) if hasattr(plugin.state_manager, "get_persona_id") else None
-        bound_wbs = None  # None = Auto mode (search all)
+        bound_worldbooks = None  # None = Auto mode (search all)
         if persona_id and plugin.persona_manager:
             pdata = await plugin.persona_manager.get_persona(persona_id)
             if pdata:
                 ext = pdata.get("quill_extensions", {})
                 wb_mode = ext.get("wb_mode", "disabled")
                 if wb_mode == "custom":
-                    bound_wbs = ext.get("bound_worldbooks", [])
-                # disabled mode: bound_wbs stays None (still allow testing)
-        results = plugin.wb_manager.match_entries(text, bound_worldbooks=bound_wbs, top_k=5)
+                    bound_worldbooks = ext.get("bound_worldbooks", [])
+                # disabled mode: bound_worldbooks stays None (still allow testing)
+        results = plugin.wb_manager.match_entries(text, bound_worldbooks=bound_worldbooks, top_k=5)
         if not results:
             event.set_result(MessageEventResult().message(
                 f"WB 未匹配到任何条目\n输入: {text[:80]}"
@@ -904,10 +903,10 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
 
         lines = [f"[记忆列表] 第 {page}/{total_pages} 页 (共 {total} 条)"]
         for idx, m in enumerate(page_items, offset + 1):
-            mid = m.get("id", "?")
+            memory_id = m.get("id", "?")
             summary = m.get("summary", "?")[:60]
             ts = m.get("timestamp", "")
-            lines.append(f"  #{idx} [{mid}] {summary}")
+            lines.append(f"  #{idx} [{memory_id}] {summary}")
             if ts:
                 lines.append(f"        {ts}")
         lines.append(f"\n使用: /memory del <序号> 删除")
@@ -916,7 +915,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
 
     if sub == "del":
         if not _check_group_permission(plugin, event):
-            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以删除记忆。"))
+            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
             return
         idx_str = (arg2 or "").strip()
         if not idx_str or not idx_str.isdigit():
@@ -926,8 +925,8 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         try:
             all_memories = await asyncio.to_thread(plugin.rag_memory_store.list_memories, session_id, max(idx, 50))
             if 0 < idx <= len(all_memories):
-                mid = all_memories[idx - 1].get("id")
-                if mid and await asyncio.to_thread(plugin.rag_memory_store.delete_memory, mid):
+                memory_id = all_memories[idx - 1].get("id")
+                if memory_id and await asyncio.to_thread(plugin.rag_memory_store.delete_memory, memory_id):
                     event.set_result(MessageEventResult().message(f"已删除记忆 #{idx}"))
                 else:
                     event.set_result(MessageEventResult().message(f"删除失败"))
@@ -939,7 +938,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
 
     if sub == "clear":
         if not _check_group_permission(plugin, event):
-            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以清空记忆。"))
+            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
             return
         try:
             deleted = await asyncio.to_thread(plugin.rag_memory_store.delete_session_memories, session_id)
@@ -956,7 +955,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
 
     if sub == "learn":
         if not _check_group_permission(plugin, event):
-            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以添加记忆。"))
+            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
             return
         if not plugin.rag_retriever or not plugin.rag_retriever.enable_memory:
             event.set_result(MessageEventResult().message(
@@ -1124,14 +1123,14 @@ async def _doc_list(plugin, event: AstrMessageEvent):
         persona_name = ""
         persona_mode = "disabled"
         if hasattr(plugin.state_manager, "get_persona_id"):
-            pid = await plugin.state_manager.get_persona_id(target_id)
-            if pid and plugin.persona_manager:
-                pdata = await plugin.persona_manager.get_persona(pid)
+            persona_id = await plugin.state_manager.get_persona_id(target_id)
+            if persona_id and plugin.persona_manager:
+                pdata = await plugin.persona_manager.get_persona(persona_id)
                 if pdata:
                     ext = pdata.get("quill_extensions", {})
                     persona_bound = set(ext.get("bound_rag_docs", []))
                     persona_mode = ext.get("rag_mode", "disabled")
-                    persona_name = pdata.get("name", pid)
+                    persona_name = pdata.get("name", persona_id)
 
         lines = [f"可用文档（✓ 已绑定 | 模式: {persona_mode}）："]
         for i, d in enumerate(docs, 1):
@@ -1157,7 +1156,7 @@ async def _doc_list(plugin, event: AstrMessageEvent):
 async def _doc_bind(plugin, event: AstrMessageEvent, arg: str):
     """绑定文档到当前激活的角色卡"""
     if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以绑定文档。"))
+        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
         return
     target_id = _get_target_id(event)
 
@@ -1218,7 +1217,7 @@ async def _doc_bind(plugin, event: AstrMessageEvent, arg: str):
 async def _doc_unbind(plugin, event: AstrMessageEvent, arg: str):
     """解绑文档从当前激活的角色卡"""
     if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以解绑文档。"))
+        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
         return
     target_id = _get_target_id(event)
 
@@ -1298,7 +1297,7 @@ async def stream_dispatch(plugin, event: AstrMessageEvent, arg: str):
         return
 
     if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以修改流式模式。"))
+        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
         return
 
     new_mode = _MODE_MAP[arg]
@@ -1339,7 +1338,7 @@ async def quill_reset(plugin, event: AstrMessageEvent):
     如需完整重置请额外执行 /reset。
     """
     if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行重置。"))
+        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
         return
 
     target_id = _get_target_id(event)

@@ -6,6 +6,10 @@ from __future__ import annotations
 import re
 
 
+# 句子结束符：中文句号、问号、感叹号、英文句号、问号、感叹号
+_SENTENCE_END_RE = re.compile(r'[。！？.!?]\s*')
+
+
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
     """将文本分块。
 
@@ -49,14 +53,32 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
 
             # 处理这个新的段落
             if len(para) > chunk_size:
-                # 单个段落本身就超长，执行固定长度切分
-                start = 0
-                while start < len(para):
-                    end = start + chunk_size
-                    chunk = para[start:end].strip()
-                    if chunk:
-                        chunks.append(chunk)
-                    start += chunk_size - overlap
+                # 单个段落本身就超长，执行句子边界优先的切分
+                sentences = _SENTENCE_END_RE.split(para)
+                current = ""
+                for sent in sentences:
+                    sent = sent.strip()
+                    if not sent:
+                        continue
+                    if len(current) + len(sent) + 1 <= chunk_size:
+                        current = (current + " " + sent) if current else sent
+                    else:
+                        if current:
+                            chunks.append(current)
+                        # 单句超长时退回固定长度切分
+                        if len(sent) > chunk_size:
+                            start = 0
+                            while start < len(sent):
+                                end = start + chunk_size
+                                chunk = sent[start:end].strip()
+                                if chunk:
+                                    chunks.append(chunk)
+                                start += chunk_size - overlap
+                            current = ""
+                        else:
+                            current = sent
+                if current:
+                    chunks.append(current)
             else:
                 # 单个段落没有超长，作为下一个块的开头
                 current_chunk = para

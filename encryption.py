@@ -4,6 +4,12 @@
 """
 Minimal Base64 codec for [B:...] markers in LLM output.
 
+NOTE: Despite the module name "encryption", this module performs Base64
+encoding/decoding only — it is NOT cryptographic encryption. The name is
+preserved for import-path backward compatibility. Base64 is used here as an
+obfuscation layer to prevent the LLM agent loop from recognizing and
+stripping its own tail text in [B:...] markers.
+
 When the agent loop continues past a send_message_to_user call, the LLM is
 instructed to wrap any tail text in [B:base64] markers. The API/audit layer
 sees only the encoded form; this module decodes it back for the user.

@@ -19,6 +19,19 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _get_plugin_version() -> str:
+    """从 metadata.yaml 读取插件版本号。"""
+    try:
+        import yaml
+        import os
+        _meta_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "metadata.yaml")
+        with open(_meta_path, "r", encoding="utf-8") as f:
+            meta = yaml.safe_load(f)
+        return str(meta.get("version", "5.0.4"))
+    except Exception:
+        return "5.0.4"
+
+
 # ── Response helpers ─────────────────────────────────────────────
 
 def ok(data: Any = None, **kw) -> dict:
@@ -34,12 +47,12 @@ def err(msg: str) -> dict:
     return {"status": "error", "message": msg}
 
 
-# ── KB handlers ──────────────────────────────────────────────────
+# ── WR handlers ──────────────────────────────────────────────────
 
-async def handle_kb_list(kb_manager, category=None, search=None, page=1, per_page=20, is_constant=None):
-    if not kb_manager:
-        return err("Knowledge base not available")
-    entries = await kb_manager.get_all_entries(enabled_only=False)
+async def handle_wr_list(wr_manager, category=None, search=None, page=1, per_page=20, is_constant=None):
+    if not wr_manager:
+        return err("写作素材库未加载")
+    entries = await wr_manager.get_all_entries(enabled_only=False)
     if category:
         entries = [e for e in entries if e.get("category") == category]
     if search:
@@ -59,31 +72,31 @@ async def handle_kb_list(kb_manager, category=None, search=None, page=1, per_pag
     return ok({"items": items, "total": total, "page": page, "per_page": per_page})
 
 
-async def handle_kb_get(kb_manager, entry_id=None):
-    if not kb_manager:
-        return err("Knowledge base not available")
+async def handle_wr_get(wr_manager, entry_id=None):
+    if not wr_manager:
+        return err("写作素材库未加载")
     if not entry_id:
-        return err("entry_id is required")
-    entry = await kb_manager.get_entry(entry_id)
+        return err("缺少 entry_id 参数")
+    entry = await wr_manager.get_entry(entry_id)
     if not entry:
-        return err("Entry not found")
+        return err("条目未找到")
     return ok(entry)
 
 
-async def handle_kb_create(kb_manager, data: dict):
-    if not kb_manager:
-        return err("Knowledge base not available")
+async def handle_wr_create(wr_manager, data: dict):
+    if not wr_manager:
+        return err("写作素材库未加载")
 
     # 必检字段（keywords 不是必需的，默认为空列表）
     for field in ("category", "entry_id", "content"):
         if field not in data or not data[field]:
-            return err(f"Missing required field: {field}")
+            return err(f"缺少必填字段: {field}")
 
     # 如果不存在，赋默认空列表
     if "keywords" not in data:
         data["keywords"] = []
 
-    success = await kb_manager.add_entry(
+    success = await wr_manager.add_entry(
         category=data["category"],
         entry_id=data["entry_id"],
         keywords=data["keywords"],
@@ -96,61 +109,61 @@ async def handle_kb_create(kb_manager, data: dict):
         is_constant=bool(data.get("is_constant", False)),
     )
     if not success:
-        return err("Failed to create entry (ID may already exist)")
+        return err("创建条目失败（ID 可能已存在）")
     return ok({"entry_id": data["entry_id"]}, message="Entry created")
 
 
-async def handle_kb_update(kb_manager, data: dict):
-    if not kb_manager:
-        return err("Knowledge base not available")
+async def handle_wr_update(wr_manager, data: dict):
+    if not wr_manager:
+        return err("写作素材库未加载")
     if not data or "entry_id" not in data:
-        return err("entry_id is required")
+        return err("缺少 entry_id 参数")
     allowed = [
         "category", "name", "description", "keywords",
         "secondary_keywords", "aliases", "content", "priority", "enabled", "is_constant",
     ]
     updates = {k: v for k, v in data.items() if k in allowed}
     if not updates:
-        return err("No valid fields to update")
-    if not await kb_manager.update_entry(data["entry_id"], **updates):
-        return err("Failed to update entry")
+        return err("没有可更新的字段")
+    if not await wr_manager.update_entry(data["entry_id"], **updates):
+        return err("更新条目失败")
     return ok({"entry_id": data["entry_id"]}, message="Entry updated")
 
 
-async def handle_kb_delete(kb_manager, entry_id=None):
-    if not kb_manager:
-        return err("Knowledge base not available")
+async def handle_wr_delete(wr_manager, entry_id=None):
+    if not wr_manager:
+        return err("写作素材库未加载")
     if not entry_id:
-        return err("entry_id is required")
-    if not await kb_manager.delete_entry(entry_id):
-        return err("Failed to delete entry")
+        return err("缺少 entry_id 参数")
+    if not await wr_manager.delete_entry(entry_id):
+        return err("删除条目失败")
     return ok({"entry_id": entry_id}, message="Entry deleted")
 
 
-async def handle_kb_toggle(kb_manager, entry_id=None, enabled=True):
-    if not kb_manager:
-        return err("Knowledge base not available")
+async def handle_wr_toggle(wr_manager, entry_id=None, enabled=True):
+    if not wr_manager:
+        return err("写作素材库未加载")
     if not entry_id:
-        return err("entry_id is required")
-    if not await kb_manager.enable_entry(entry_id, enabled):
-        return err("Failed to toggle entry")
+        return err("缺少 entry_id 参数")
+    if not await wr_manager.enable_entry(entry_id, enabled):
+        return err("切换条目状态失败")
     return ok({"entry_id": entry_id, "enabled": enabled}, message="Entry toggled")
 
 
-async def handle_kb_export(kb_manager):
-    if not kb_manager:
-        return err("Knowledge base not available")
-    entries = await kb_manager.get_all_entries(enabled_only=False)
+async def handle_wr_export(wr_manager):
+    if not wr_manager:
+        return err("写作素材库未加载")
+    entries = await wr_manager.get_all_entries(enabled_only=False)
     return ok({"entries": entries})
 
 
-async def handle_kb_import(kb_manager, entries: list):
-    if not kb_manager:
-        return err("Knowledge base not available")
+async def handle_wr_import(wr_manager, entries: list):
+    if not wr_manager:
+        return err("写作素材库未加载")
     imported = 0
     failed = 0
     for entry in entries:
-        success = await kb_manager.add_entry(
+        success = await wr_manager.add_entry(
             category=entry.get("category", "imported"),
             entry_id=entry["entry_id"],
             keywords=entry.get("keywords", []),
@@ -170,12 +183,12 @@ async def handle_kb_import(kb_manager, entries: list):
               message=f"Imported {imported} entries, {failed} failed")
 
 
-async def handle_kb_test(kb_manager, text=None):
-    if not kb_manager:
-        return err("Knowledge base not available")
+async def handle_wr_test(wr_manager, text=None):
+    if not wr_manager:
+        return err("写作素材库未加载")
     if not text:
-        return err("text is required")
-    results = await kb_manager.match(text, top_k=10)
+        return err("缺少 text 参数")
+    results = await wr_manager.match(text, top_k=10)
     safe = [
         {"entry_id": r.get("entry_id"), "name": r.get("name"),
          "keywords": r.get("keywords"), "match_score": r.get("match_score")}
@@ -184,17 +197,17 @@ async def handle_kb_test(kb_manager, text=None):
     return ok({"results": safe})
 
 
-async def handle_kb_categories(kb_manager):
-    if not kb_manager:
-        return err("Knowledge base not available")
-    return ok({"categories": await kb_manager.get_categories()})
+async def handle_wr_categories(wr_manager):
+    if not wr_manager:
+        return err("写作素材库未加载")
+    return ok({"categories": await wr_manager.get_categories()})
 
 
 # ── WB handlers ──────────────────────────────────────────────────
 
 async def handle_wb_list(wb_manager):
     if not wb_manager:
-        return err("Worldbook system not available")
+        return err("世界书管理器未加载")
     result = []
     for name in wb_manager.list_worldbooks():
         wb = wb_manager.get_worldbook(name)
@@ -213,81 +226,81 @@ async def handle_wb_list(wb_manager):
 
 async def handle_wb_get(wb_manager, name=None):
     if not wb_manager:
-        return err("Worldbook system not available")
+        return err("世界书管理器未加载")
     if not name:
-        return err("name is required")
+        return err("缺少名称")
     wb = wb_manager.get_worldbook(name)
     if not wb:
-        return err("Worldbook not found")
+        return err("世界书未找到")
     return ok(wb)
 
 
 async def handle_wb_create(wb_manager, name=None, description=""):
     if not wb_manager:
-        return err("Worldbook system not available")
+        return err("世界书管理器未加载")
     if not name:
-        return err("name is required")
+        return err("缺少名称")
     if not await asyncio.to_thread(wb_manager.create_worldbook, name, description):
-        return err("Failed to create worldbook")
+        return err("创建世界书失败")
     return ok({"name": name}, message="Worldbook created")
 
 
 async def handle_wb_delete(wb_manager, name=None):
     if not wb_manager:
-        return err("Worldbook system not available")
+        return err("世界书管理器未加载")
     if not name:
-        return err("name is required")
+        return err("缺少名称")
     if not await asyncio.to_thread(wb_manager.delete_worldbook, name):
-        return err("Failed to delete worldbook")
+        return err("删除世界书失败")
     return ok({"name": name}, message="Worldbook deleted")
 
 
 async def handle_wb_entry_create(wb_manager, name=None, entry=None):
     if not wb_manager:
-        return err("Worldbook system not available")
+        return err("世界书管理器未加载")
     if not name:
-        return err("name is required")
+        return err("缺少名称")
     entry_data = entry or {}
     if "id" not in entry_data or not entry_data["id"]:
         entry_data["id"] = str(uuid.uuid4())[:8]
     # Use atomic operation (F1 fix: read-modify-write under single lock)
     if not await asyncio.to_thread(wb_manager.add_entry_to_worldbook, name, entry_data):
-        return err("Worldbook not found")
+        return err("世界书未找到")
     return ok({"entry": entry_data}, message="Entry created")
 
 
 async def handle_wb_entry_update(wb_manager, name=None, entry_id=None, entry=None):
     if not wb_manager:
-        return err("Worldbook system not available")
+        return err("世界书管理器未加载")
     if not name or not entry_id:
-        return err("name and entry_id are required")
+        return err("缺少 name 和 entry_id 参数")
     if not entry:
-        return err("entry data is required")
+        return err("缺少 entry 数据")
     # Use atomic operation (F1 fix: read-modify-write under single lock)
     if not await asyncio.to_thread(wb_manager.update_entry_in_worldbook, name, entry_id, entry):
-        return err("Worldbook or entry not found")
+        return err("世界书或条目未找到")
     return ok({"entry_id": entry_id}, message="Entry updated")
 
 
 async def handle_wb_entry_delete(wb_manager, name=None, entry_id=None):
     if not wb_manager:
-        return err("Worldbook system not available")
+        return err("世界书管理器未加载")
     if not name or not entry_id:
-        return err("name and entry_id are required")
+        return err("缺少 name 和 entry_id 参数")
     # Use atomic operation (F1 fix: read-modify-write under single lock)
     if not await asyncio.to_thread(wb_manager.delete_entry_from_worldbook, name, entry_id):
-        return err("Worldbook or entry not found")
+        return err("世界书或条目未找到")
     return ok({"entry_id": entry_id}, message="Entry deleted")
 
 
 async def handle_wb_export_st(wb_manager, name=None):
     if not wb_manager:
-        return err("Worldbook system not available")
+        return err("世界书管理器未加载")
     if not name:
-        return err("name parameter is required")
+        return err("缺少 name 参数")
     wb = wb_manager.get_worldbook(name)
     if not wb:
-        return err("Worldbook not found")
+        return err("世界书未找到")
     st_entries = {}
     for idx, entry in enumerate(wb.get("entries", [])):
         keys = entry.get("keys", [])
@@ -315,17 +328,17 @@ async def handle_wb_export_st(wb_manager, name=None):
 async def handle_wb_import_st(wb_manager, name=None, upload_data=None):
     """Import ST lorebook from raw bytes data."""
     if not wb_manager:
-        return err("Worldbook system not available")
+        return err("世界书管理器未加载")
     if not upload_data:
-        return err("No file data provided")
+        return err("未收到文件数据")
     if not name:
-        return err("Worldbook name required")
+        return err("缺少世界书名称")
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
     try:
         with os.fdopen(tmp_fd, "wb") as tmp_f:
             tmp_f.write(upload_data)
         if not await asyncio.to_thread(wb_manager.import_from_st, tmp_path, name):
-            return err("Failed to import ST file")
+            return err("导入 ST 文件失败")
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -334,14 +347,14 @@ async def handle_wb_import_st(wb_manager, name=None, upload_data=None):
 
 # ── Info handler ─────────────────────────────────────────────────
 
-async def handle_info(kb_manager, wb_manager, persona_count=0,
+async def handle_info(wr_manager, wb_manager, persona_count=0,
                        show_trigger_log=False, health_tracker=None):
     """返回插件状态信息（含可用世界书列表 + 触发日志 + 健康度）。"""
-    kb_count = 0
+    wr_count = 0
     categories = {}
-    if kb_manager:
-        entries = await kb_manager.get_all_entries(enabled_only=False)
-        kb_count = len(entries)
+    if wr_manager:
+        entries = await wr_manager.get_all_entries(enabled_only=False)
+        wr_count = len(entries)
         for e in entries:
             c = e.get("category", "未分类")
             categories[c] = categories.get(c, 0) + 1
@@ -361,11 +374,11 @@ async def handle_info(kb_manager, wb_manager, persona_count=0,
     # P1-4: 健康度数据
     health = health_tracker.stats() if health_tracker else None
     return ok({
-        "kb_count": kb_count,
+        "wr_count": wr_count,
         "wb_count": len(available_wb),
         "persona_count": persona_count,
         "categories": categories,
-        "version": "Quill v5.0",
+        "version": f"Quill v{_get_plugin_version()}",
         "available_worldbooks": available_wb,
         "trigger_log": trigger_log,
         "health": health,

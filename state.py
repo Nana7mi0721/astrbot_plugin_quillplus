@@ -288,6 +288,9 @@ class StateManager:
                     stats[m] += 1
             return stats
 
+    # session_vars 总大小上限（JSON 序列化后），防止无界增长
+    _SESSION_VARS_MAX_BYTES = 65536
+
     async def update_session_vars(self, user_id: str, updates: dict) -> dict:
         async with self._lock:
             st = self._states.get(user_id)
@@ -296,6 +299,11 @@ class StateManager:
                 self._states[user_id] = st
 
             st.session_vars.update(updates)
+            # 限制 session_vars 总大小：超出时移除最早写入的非核心字段
+            while len(json.dumps(st.session_vars, ensure_ascii=False)) > self._SESSION_VARS_MAX_BYTES and len(st.session_vars) > 1:
+                # 移除最早写入的键（dict 保持插入顺序）
+                oldest_key = next(iter(st.session_vars))
+                st.session_vars.pop(oldest_key)
             result = dict(st.session_vars)
             self._mark_dirty()
         return result

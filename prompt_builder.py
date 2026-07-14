@@ -11,11 +11,11 @@ v5.0's fragile ``\\n---\\n\\n`` string-splitting approach.
 
 Layers:
   0 — Anti-refusal protocol + send_message_to_user usage guide (priority=0)
-  1 — Constant KB entries + worldbook entries + random pool sampling (priority=3)
+  1 — Constant WR entries + worldbook entries + random pool sampling (priority=3)
   2 — Keyword-matched entries, with match-count fallback (priority=10)
   3 — Safety wrapper emphasizing tool usage (priority=1)
 
-All kb_manager methods are async; retrieve_content_layers is async too.
+All wr_manager methods are async; retrieve_content_layers is async too.
 wb_manager methods are synchronous.
 """
 
@@ -63,7 +63,7 @@ class PromptBuilder:
     Usage::
 
         builder = PromptBuilder(config)
-        prompt = await builder.build_system_prompt(kb_mgr, wb_mgr, extra_info)
+        prompt = await builder.build_system_prompt(wr_manager, wb_manager, extra_info)
         merged = builder.inject_prompt(original_prompt, prompt)
     """
 
@@ -83,7 +83,20 @@ class PromptBuilder:
             sb_cfg = (config or {}).get("status_bar", {})
             self.status_bar_enabled: bool = sb_cfg.get("enabled", False)
 
-        self.token_ratio: float = 1.5
+        self.token_ratio: float = 1.5  # 保留用于向后兼容，新估算使用 _estimate_tokens
+
+    def _estimate_tokens(self, text: str) -> float:
+        """更精确的 Token 估算：CJK 字符 ≈ 1 token，ASCII ≈ 0.25 token。"""
+        if not text:
+            return 0.0
+        cjk_count = 0
+        ascii_count = 0
+        for ch in text:
+            if '\u4e00' <= ch <= '\u9fff' or '\u3000' <= ch <= '\u30ff' or '\uff00' <= ch <= '\uffef':
+                cjk_count += 1
+            else:
+                ascii_count += 1
+        return cjk_count + ascii_count * 0.25
 
     # ----------------------------------------------------------
     # Public API
@@ -91,7 +104,7 @@ class PromptBuilder:
 
     async def build_system_prompt(
         self,
-        kb_manager: Any,
+        wr_manager: Any,
         wb_manager: Any,
         extra_info: Optional[dict] = None,
         emergency: bool = False,
@@ -169,7 +182,7 @@ class PromptBuilder:
 
         # --- Layer 1 + Layer 2: content retrieval ---
         layer1_parts, layer2_parts, layer1_random_parts = await self.retrieve_content_layers(
-            kb_manager, wb_manager, extra_info
+            wr_manager, wb_manager, extra_info
         )
 
         # Layer 1 fixed part \u2192 stable
@@ -246,12 +259,12 @@ class PromptBuilder:
         return "\n\n".join(parts) if parts else ""
 
     # ----------------------------------------------------------
-    # Content retrieval (async — calls kb_manager async methods)
+    # Content retrieval (async — calls wr_manager async methods)
     # ----------------------------------------------------------
 
     async def retrieve_content_layers(
         self,
-        kb_manager: Any,
+        wr_manager: Any,
         wb_manager: Any,
         extra_info: Optional[dict] = None,
     ) -> tuple:
@@ -273,19 +286,19 @@ class PromptBuilder:
         ext = {}
         if extra_info.get("persona_data"):
             ext = extra_info["persona_data"].get("quill_extensions", {})
-        kb_mode = ext.get("kb_mode", "disabled")
+        wr_mode = ext.get("wr_mode", "disabled")
         wb_mode = ext.get("wb_mode", "disabled")
-        bound_kbs = ext.get("bound_knowledge_base", []) if kb_mode == "custom" else None
+        bound_wrs = ext.get("bound_writing_resource", []) if wr_mode == "custom" else None
         bound_worldbooks = ext.get("bound_worldbooks", []) if wb_mode == "custom" else None
 
         # === Layer 1: constants + random pool (skip on consecutive turns) ===
         skip_constants = extra_info.get("skip_constants", False)
-        if not skip_constants and kb_manager and kb_mode != "disabled":
+        if not skip_constants and wr_manager and wr_mode != "disabled":
             try:
-                constant_entries = await kb_manager.get_constant_entries()
+                constant_entries = await wr_manager.get_constant_entries()
                 # 过滤被绑定的分类（is not None 确保空列表也能正确过滤）
-                if bound_kbs is not None:
-                    constant_entries = [e for e in constant_entries if e.get("category") in bound_kbs]
+                if bound_wrs is not None:
+                    constant_entries = [e for e in constant_entries if e.get("category") in bound_wrs]
                 pools: Dict[str, List[str]] = {
                     "random_sensory": [],
                     "random_fluid": [],
@@ -314,7 +327,7 @@ class PromptBuilder:
                                 "\u3010\u7d20\u6750\u3011\n" + c
                             )
             except Exception as exc:
-                logger.warning("[PromptBuilder] KB constant entries failed: %s", exc)
+                logger.warning("[PromptBuilder] WR constant entries failed: %s", exc)
 
         if not skip_constants and wb_manager and wb_mode != "disabled":
             try:
@@ -330,16 +343,16 @@ class PromptBuilder:
 
         # === Layer 2: keyword matching (uses multi-turn context for richer matching) ===
         matching_text = extra_info.get("context_text") or user_input
-        if matching_text and kb_manager and kb_mode != "disabled":
+        if matching_text and wr_manager and wr_mode != "disabled":
             try:
-                max_entries = extra_info.get("kb_max_entries", 5)
+                max_entries = extra_info.get("wr_max_entries", 5)
                 # Custom 模式取多一点候选池，防止过滤后不够
-                fetch_count = max_entries * 2 if bound_kbs is not None else max_entries
-                matched = await kb_manager.match(matching_text, top_k=fetch_count)
+                fetch_count = max_entries * 2 if bound_wrs is not None else max_entries
+                matched = await wr_manager.match(matching_text, top_k=fetch_count)
 
                 # 过滤被绑定的分类（is not None 确保空列表也能正确过滤）
-                if bound_kbs is not None:
-                    matched = [e for e in matched if e.get("category") in bound_kbs]
+                if bound_wrs is not None:
+                    matched = [e for e in matched if e.get("category") in bound_wrs]
 
                 match_count = 0
                 for entry in matched:
@@ -354,11 +367,11 @@ class PromptBuilder:
                             match_count += 1
                 if match_count == 0:
                     try:
-                        fallback_limit = extra_info.get("kb_fallback_top_count", 2)
-                        top_entries = await kb_manager.get_top_entries_by_match_count(limit=fallback_limit)
+                        fallback_limit = extra_info.get("wr_fallback_top_count", 2)
+                        top_entries = await wr_manager.get_top_entries_by_match_count(limit=fallback_limit)
                         # 过滤被绑定的分类（is not None 确保空列表也能正确过滤）
-                        if bound_kbs is not None:
-                            top_entries = [e for e in top_entries if e.get("category") in bound_kbs]
+                        if bound_wrs is not None:
+                            top_entries = [e for e in top_entries if e.get("category") in bound_wrs]
                         for entry in top_entries:
                             eid = entry.get("entry_id", "")
                             if eid not in seen_ids:
@@ -369,9 +382,9 @@ class PromptBuilder:
                                         "\u3010\u7d20\u6750\u3011\n" + content
                                     )
                     except Exception as exc:
-                        logger.warning("[PromptBuilder] KB top-entries fallback failed: %s", exc)
+                        logger.warning("[PromptBuilder] WR top-entries fallback failed: %s", exc)
             except Exception as exc:
-                logger.warning("[PromptBuilder] KB keyword match failed: %s", exc)
+                logger.warning("[PromptBuilder] WR keyword match failed: %s", exc)
 
         if matching_text and wb_manager and wb_mode != "disabled":
             try:
@@ -388,8 +401,8 @@ class PromptBuilder:
                 for entry in wb_matched:
                     content = entry.get("content", "")
                     if content:
-                        # Token \u4f30\u7b97\uff1a1 token \u2248 1.5 \u4e2d\u6587\u5b57\u7b26\uff08\u4fdd\u5b88\u503c\uff09
-                        token_count = len(content) / self.token_ratio
+                        # Token 估算：CJK ≈ 1 token/字，ASCII ≈ 0.25 token/字
+                        token_count = self._estimate_tokens(content)
                         if max_token > 0 and accumulated_tokens + token_count > max_token:
                             logger.info("[PromptBuilder] WB Token \u4e0a\u9650\u5df2\u8fbe (%.0f/%d)\uff0c\u622a\u65ad\u540e\u7eed\u6761\u76ee",
                                         accumulated_tokens, max_token)
@@ -719,7 +732,7 @@ async def _self_test():
     # ----------------------------------------------------------------
     print("\n== 6. Match=0 fallback (mock) ==")
 
-    class MockKB:
+    class MockWR:
         def __init__(self):
             self._match_return = []
             self._top_entries = [
@@ -736,11 +749,11 @@ async def _self_test():
         async def get_top_entries_by_match_count(self, limit=2):
             return self._top_entries[:limit]
 
-    mock_kb = MockKB()
+    mock_wr = MockWR()
     layer1, layer2, layer1_random = await builder.retrieve_content_layers(
-        mock_kb, None, {
+        mock_wr, None, {
             "user_input": "something that matches nothing",
-            "persona_data": {"quill_extensions": {"kb_mode": "auto"}}
+            "persona_data": {"quill_extensions": {"wr_mode": "auto"}}
         }
     )
     _assert(len(layer2) == 2, f"fallback returned 2 entries (got {len(layer2)})")
@@ -752,7 +765,7 @@ async def _self_test():
     # ----------------------------------------------------------------
     print("\n== 7. skip_constants ==")
 
-    class MockKBWithConstants:
+    class MockWRWithConstants:
         def __init__(self):
             self.constants = [
                 {"entry_id": "const_1", "content": "CONSTANT_ENTRY", "category": "writing_style"},
@@ -767,23 +780,23 @@ async def _self_test():
         async def get_top_entries_by_match_count(self, limit=2):
             return []
 
-    mock_kb_const = MockKBWithConstants()
+    mock_wr_const = MockWRWithConstants()
 
     # Without skip_constants: constants appear in layer1
     l1, l2, l1r = await builder.retrieve_content_layers(
-        mock_kb_const, None, {
+        mock_wr_const, None, {
             "user_input": "test",
-            "persona_data": {"quill_extensions": {"kb_mode": "auto"}}
+            "persona_data": {"quill_extensions": {"wr_mode": "auto"}}
         }
     )
     _assert(any("CONSTANT_ENTRY" in p for p in l1), "constants appear when skip_constants=False")
 
     # With skip_constants: constants are excluded
     l1_skip, l2_skip, l1r_skip = await builder.retrieve_content_layers(
-        mock_kb_const, None, {
+        mock_wr_const, None, {
             "user_input": "test",
             "skip_constants": True,
-            "persona_data": {"quill_extensions": {"kb_mode": "auto"}}
+            "persona_data": {"quill_extensions": {"wr_mode": "auto"}}
         }
     )
     _assert(not any("CONSTANT_ENTRY" in p for p in l1_skip), "constants skipped when skip_constants=True")

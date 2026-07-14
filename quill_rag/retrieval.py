@@ -194,7 +194,7 @@ class QuillRetriever:
                         logger.info(f"[Quill Memory] 跳过重复记忆: session={session_id} similarity={mem['score']:.2f}")
                         return summary  # 已存在高度相似记忆，跳过存储
             except Exception:
-                pass  # 检查失败不影响存储
+                logger.debug("[Quill Memory] 重复记忆检查失败，继续存储", exc_info=True)
 
         await asyncio.to_thread(
             self.memory_store.add, session_id, summary, vector[0],

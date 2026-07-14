@@ -228,17 +228,33 @@ class FaissVectorStore:
 
             results = []
             try:
+                # 收集有效的 faiss_id 及对应 score
+                valid_pairs = []  # [(faiss_id, score), ...]
                 for score, idx in zip(scores[0], ids[0]):
                     if idx < 0:
                         continue
-                    row = self._exec_fetchone(
-                        "SELECT content, source, chunk_index, faiss_id FROM chunks WHERE faiss_id = ?",
-                        (int(idx),)
-                    )
+                    valid_pairs.append((int(idx), float(score)))
 
+                if not valid_pairs:
+                    return results
+
+                # 批量查询（单次 SQL 替代 N 次）
+                faiss_ids = [p[0] for p in valid_pairs]
+                placeholders = ",".join("?" * len(faiss_ids))
+                rows = self._exec_fetchall(
+                    f"SELECT content, source, chunk_index, faiss_id FROM chunks WHERE faiss_id IN ({placeholders})",
+                    faiss_ids
+                )
+                # 构建 faiss_id → row 映射
+                row_map = {}
+                for row in rows:
+                    row_map[row[3]] = row
+
+                # 按 score 排序遍历
+                for faiss_id, score in valid_pairs:
+                    row = row_map.get(faiss_id)
                     if row:
                         # F11 修复：过滤 faiss_id 无效的孤儿行（pending 行 faiss_id=-1）
-                        # S1-3 修复后 row_id 从 1 开始，0 不再是合法 ID，但仍用 < 0 过滤更安全
                         if row[3] is not None and row[3] < 0:
                             continue
                         doc_source = row[1]
@@ -249,7 +265,7 @@ class FaissVectorStore:
                             "content": row[0],
                             "source": doc_source,
                             "chunk_index": row[2],
-                            "score": float(score),
+                            "score": score,
                         })
 
                         if len(results) >= top_k:
