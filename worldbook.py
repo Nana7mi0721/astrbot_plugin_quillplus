@@ -94,8 +94,10 @@ class WorldbookManager:
                     logger.warning("[WorldbookManager] Skipping %s: invalid name %r", f, name)
                     continue
                 self.worldbooks[name] = wb
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("[WorldbookManager] 读取失败 %s: %s", f, exc)
             except Exception as exc:
-                logger.warning("[WorldbookManager] Failed to load %s: %s", f, exc)
+                logger.error("[WorldbookManager] 加载 %s 时发生未知错误: %s", f, exc, exc_info=True)
 
     def reload_all(self):
         """重新从磁盘加载全部世界书。供 /wb reload 使用。"""
@@ -142,9 +144,11 @@ class WorldbookManager:
                     with self._lock:
                         self.worldbooks[name] = wb
                     return True
-            except Exception as exc:
+            except (OSError, json.JSONDecodeError) as exc:
                 # S3-4: 裸 except pass 会吞掉 JSON 损坏/IO 错误，改为日志便于排查
                 logger.warning("[WorldbookManager] reload 读取失败 %s: %s", f, exc)
+            except Exception as exc:
+                logger.error("[WorldbookManager] reload 加载 %s 时发生未知错误: %s", f, exc, exc_info=True)
         return False
 
     # ── active / matching entries ────────────────────────────────────────
@@ -430,8 +434,11 @@ class WorldbookManager:
             with self._lock:
                 self.worldbooks[worldbook_name] = wb
             return True
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("[WorldbookManager] Import 失败: %s", exc)
+            return False
         except Exception as exc:
-            logger.warning("[WorldbookManager] Import failed: %s", exc)
+            logger.error("[WorldbookManager] Import 时发生未知错误: %s", exc, exc_info=True)
             return False
 
 

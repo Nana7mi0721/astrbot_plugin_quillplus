@@ -18,7 +18,7 @@ import tempfile
 import time
 from collections import defaultdict
 from io import BytesIO
-from typing import Optional
+from typing import Any, Optional
 
 try:
     from astrbot.api import logger
@@ -114,6 +114,17 @@ class QuillPersonaManager:
 
     def _persona_path(self, persona_id: str) -> str:
         return os.path.join(self.data_dir, f"{self._sanitize_id(persona_id)}.json")
+
+    @staticmethod
+    def _normalize_mode(value: Any) -> str:
+        """将三态模式值归一化为 auto/custom/disabled，非法值fallback为 disabled。"""
+        if value in ("auto", "custom", "disabled"):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("auto", "custom", "disabled"):
+                return lowered
+        return "disabled"
 
     @staticmethod
     def _sync_read_file(path: str) -> Optional[dict]:
@@ -234,11 +245,11 @@ class QuillPersonaManager:
                     "first_message": (data.get("core_prompts", {}).get("first_message") or "").strip(),
                 },
                 "quill_extensions": {
-                    "wb_mode": data.get("quill_extensions", {}).get("wb_mode", "disabled"),
+                    "wb_mode": self._normalize_mode(data.get("quill_extensions", {}).get("wb_mode", "disabled")),
                     "bound_worldbooks": data.get("quill_extensions", {}).get("bound_worldbooks", []),
-                    "rag_mode": data.get("quill_extensions", {}).get("rag_mode", "disabled"),
+                    "rag_mode": self._normalize_mode(data.get("quill_extensions", {}).get("rag_mode", "disabled")),
                     "bound_rag_docs": data.get("quill_extensions", {}).get("bound_rag_docs", []),
-                    "wr_mode": data.get("quill_extensions", {}).get("wr_mode", "disabled"),
+                    "wr_mode": self._normalize_mode(data.get("quill_extensions", {}).get("wr_mode", "disabled")),
                     "bound_writing_resource": data.get("quill_extensions", {}).get("bound_writing_resource", []),
                 },
             }
@@ -282,7 +293,13 @@ class QuillPersonaManager:
                 qe = existing.setdefault("quill_extensions", {})
                 for field in ("wb_mode", "rag_mode", "wr_mode"):
                     if field in data["quill_extensions"]:
-                        qe[field] = data["quill_extensions"][field]
+                        value = self._normalize_mode(data["quill_extensions"][field])
+                        if value != data["quill_extensions"][field]:
+                            logger.warning(
+                                f"[QuillPersona] 非法 {field}={data['quill_extensions'][field]!r}，"
+                                f"已归一化为 disabled"
+                            )
+                        qe[field] = value
                 for field in ("bound_worldbooks", "bound_rag_docs", "bound_writing_resource"):
                     if field in data["quill_extensions"]:
                         qe[field] = data["quill_extensions"][field] or []

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
@@ -36,12 +37,16 @@ class UserState:
 
 
 class StateManager:
+    # 自动落盘连续失败阈值，超过后停止重试以避免无效循环
+    _MAX_FLUSH_FAILS = 3
+
     def __init__(self, data_dir: str = "data", max_users: int = 10000):
         self._states: dict[str, UserState] = {}
         self._lock = asyncio.Lock()
         self._dirty = False
         self._max_users = max_users
         self._autoflush_task: asyncio.Task | None = None
+        self._flush_fail_count = 0
         self.state_file = os.path.join(data_dir, "quill_state.json")
         os.makedirs(data_dir, exist_ok=True)
         self._load_from_disk()
@@ -100,12 +105,22 @@ class StateManager:
         )
 
     def _atomic_write(self, text: str) -> None:
-        tmp = self.state_file + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self.state_file)
+        # 使用 mkstemp 生成唯一临时文件名，避免固定 .tmp 后缀在极端并发/异常退出时的冲突
+        dir_name = os.path.dirname(self.state_file) or "."
+        fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.state_file)
+        except Exception:
+            # 任何异常都尝试清理临时文件，避免残留
+            try:
+                os.remove(tmp)
+            except FileNotFoundError:
+                pass
+            raise
 
     async def get_state(self, user_id: str) -> UserState:
         async with self._lock:
@@ -151,9 +166,25 @@ class StateManager:
                 # S1-2 修复：内层捕获写盘异常，恢复 dirty 供下轮重试，避免循环死亡
                 try:
                     await asyncio.to_thread(self._atomic_write, snapshot)
+                    # 成功后重置失败计数
+                    if self._flush_fail_count:
+                        self._flush_fail_count = 0
                     logger.debug("[Quill State] 自动落盘")
                 except Exception as e:
-                    logger.error(f"[Quill State] 自动落盘失败，将在下个周期重试: {e}")
+                    self._flush_fail_count += 1
+                    if self._flush_fail_count >= self._MAX_FLUSH_FAILS:
+                        logger.error(
+                            f"[Quill State] 自动落盘连续失败 {self._flush_fail_count} 次，"
+                            f"停止后台重试以避免无效循环: {e}"
+                        )
+                        # 恢复脏标记，后续显式 persist 调用仍可尝试
+                        async with self._lock:
+                            self._dirty = True
+                        break
+                    logger.error(
+                        f"[Quill State] 自动落盘失败 ({self._flush_fail_count}/"
+                        f"{self._MAX_FLUSH_FAILS})，将在下个周期重试: {e}"
+                    )
                     async with self._lock:
                         self._dirty = True  # 恢复脏标记以便重试
         except asyncio.CancelledError:

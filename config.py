@@ -85,7 +85,7 @@ class QuillConfig:
 
         # ── status_bar ──
         sb = _get_nested(self._raw, "status_bar", {}) or {}
-        self.status_bar_enabled: bool = bool(sb.get("enabled", True))
+        self.status_bar_enabled: bool = bool(sb.get("enabled", False))
         self.status_bar_format: str = str(sb.get("format_template", "**状态栏**\n```\n{content}\n```"))
         # 解析剧情走向选项
         plot_raw = sb.get("plot_paths", "") or ""

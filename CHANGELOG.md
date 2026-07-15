@@ -1,5 +1,42 @@
 # Changelog
 
+## v5.0.5 — 前端 MD3 重构 + 命名统一 + 代码审查修复
+
+本版本完成前端面板 Material Design 3 重构、写作素材库命名统一（kb→wr）、以及 10 项代码审查修复。无破坏性变更。
+
+**前端 MD3 重构：**
+- 前端面板 `pages/panel/index.html` 按 Google Material Design 3 标准全面重构
+- 采用 MD3 配色体系、圆角卡片、涟漪按钮、状态层交互等视觉规范
+- 响应式布局适配移动端，网格/列表视图切换
+- 表单控件统一为 MD3 Filled/Outlined 风格
+
+**命名统一（kb → wr）：**
+- 写作素材库类名 `KnowledgeBaseManager` → `WritingResourceManager`（`kb.py`）
+- API 路由 `/kb/*` → `/wr/*`（10 条路由，`web_routes.py` + `_route_core.py`）
+- 配置节名 `knowledge_base` → `writing_resource`（`_conf_schema.json` + `config.py`）
+- SQL 表名 `knowledge_base` → `writing_resource`（含 FTS 虚拟表与触发器）
+- DB 文件名自动迁移：`quill_kb.db` → `quill_wr.db`（`main.py` 启动时 `os.rename`）
+- 前端 DOM id/函数名/变量名 `kb*` → `wr*`（`index.html`）
+- 角色卡扩展字段 `bound_knowledge_base` → `bound_writing_resource`
+- 删除所有 kb→wr 向后兼容回退代码（无外部用户，无需兼容）
+- 修复表名迁移遗漏：新增 `_migrate_legacy_tables` 自动迁移旧 SQLite 表名
+
+**10 项代码审查修复：**
+- P1: `vector_store.py` `add()` 增加 embedding 维度校验，不匹配时抛 `ValueError`
+- P2: `state.py` autoflush 增加连续失败上限（3 次），超过后停止后台重试
+- P2: `main.py` Prompt 装配失败日志脱敏，只记录 `persona_id` 和字段长度
+- P3: `main.py` `req.contexts` 增加 `isinstance(list)` 防御性类型守卫
+- P3: `vector_store.py` `delete_by_source` 改为先删 FAISS 再删 SQLite，避免幽灵向量
+- P3: `state.py` `_atomic_write` 改用 `tempfile.mkstemp` 生成安全临时文件名
+- P3: 清理 `_commit_msg.txt`，`.gitignore` 新增 `.opencode/`、`.trae/`、`_commit_msg.txt`
+- P4: `kb.py` `match_count` 更新统一为 `_increment_match_counts` 批量方法
+- P4: `kb.py`/`worldbook.py` 异常类型细化（`sqlite3.Error`、`OSError`、`json.JSONDecodeError`）
+- P4: `persona_manager.py` 三态 mode 增加白名单校验（`_normalize_mode`），非法值归一化为 `disabled`
+
+**文档更新：**
+- 新增 `Introduction.md`：全插件工作流程与配置项说明（6 章节架构文档）
+- `README.md` 更新：写作素材库英文名、架构说明、版本号、MD3 重构说明
+
 ## v5.0.4 — 核心记忆锚定 + 模型路由 + 多项 Bug 修复
 
 本版本新增两项核心功能（P0 级升级）并修复多个影响体验的 Bug，无破坏性变更。
