@@ -168,7 +168,7 @@ def strip_markdown(text: str) -> str:
     "astrbot_plugin_quillplus",
     "Nana7mi0721 & Gemini & GLM & DeepSeek",
     "羽笔 v5.0 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 增强插件",
-    "5.0.4",
+    "5.0.5",
     "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(Star):
@@ -1120,6 +1120,9 @@ class QuillPlugin(Star):
                 target_id,
                 await self.state_manager.get_persona_id(target_id)
             )
+            # 防御性类型守卫：AstrBot 框架契约保证 contexts 为 list，但防止异常值导致崩溃
+            if not isinstance(req.contexts, list):
+                req.contexts = []
             contexts_is_fresh = not req.contexts or len(req.contexts) <= 1
             if contexts_is_fresh \
                     and getattr(self.config, 'rag_enable_chat_logging', True) \
@@ -1127,7 +1130,7 @@ class QuillPlugin(Star):
                 recent_logs = await asyncio.to_thread(
                     self.rag_retriever.memory_store.get_recent_chat_logs, mem_session_id, limit=8
                 )
-                if recent_logs and isinstance(req.contexts, list):
+                if recent_logs:
                     req.contexts = recent_logs + req.contexts
                     logger.info(f"[Quill Context] 恢复 {len(recent_logs)} 条上下文（Session: {mem_session_id}）")
 
@@ -1275,7 +1278,22 @@ class QuillPlugin(Star):
                 f"prompt_len={len(req.system_prompt)} | emergency={emergency}"
             )
         except Exception as e:
-            logger.error(f"[Quill] 致命错误，Prompt 装配失败，降级放行: {e}", exc_info=True)
+            # 记录脱敏摘要，避免泄露 user_input、context_text 等敏感字段
+            def _sanitize_extra(info: dict) -> dict:
+                return {
+                    "persona_id": info.get("persona_id"),
+                    "user_id_len": len(str(info.get("user_id", ""))),
+                    "user_input_len": len(str(info.get("user_input", ""))),
+                    "context_text_len": len(str(info.get("context_text", ""))),
+                    "skip_constants": info.get("skip_constants"),
+                    "emergency": emergency,
+                }
+
+            logger.error(
+                f"[Quill] 致命错误，Prompt 装配失败，降级放行: {e} | "
+                f"extra_summary={_sanitize_extra(extra_info)}",
+                exc_info=True,
+            )
 
     @filter.on_llm_response(priority=10)
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):

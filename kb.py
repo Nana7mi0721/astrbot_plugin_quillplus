@@ -12,6 +12,7 @@ Identical table schema — compatible with existing .db files.
 import os
 import re as _re
 import json
+import sqlite3
 from typing import List, Dict, Optional, Any
 
 import aiosqlite
@@ -97,7 +98,7 @@ class WritingResourceManager:
                     tokenize='trigram'
                 )
             """)
-        except Exception as exc:
+        except sqlite3.Error as exc:
             logger.warning("[WR] trigram 分词器不可用，回退默认分词器: %s", exc)
             await c.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS writing_resource_fts USING fts5(
@@ -303,7 +304,8 @@ class WritingResourceManager:
             if field in result and result[field]:
                 try:
                     result[field] = json.loads(result[field])
-                except Exception:
+                except (json.JSONDecodeError, TypeError):
+                    logger.debug("[WR] 字段 %s JSON 解码失败，使用空列表", field)
                     result[field] = []
             elif field in result:
                 result[field] = []
@@ -358,8 +360,11 @@ class WritingResourceManager:
             return True
         except aiosqlite.IntegrityError:
             return False
+        except sqlite3.Error as e:
+            logger.error(f"[WR] add_entry 数据库错误: {e}")
+            return False
         except Exception as e:
-            logger.warning(f"[WR] add_entry failed: {e}")
+            logger.error(f"[WR] add_entry 失败: {e}", exc_info=True)
             return False
 
     async def get_entry(self, entry_id: str) -> Optional[Dict]:
@@ -394,8 +399,14 @@ class WritingResourceManager:
             )
             await self.conn.commit()
             return cursor.rowcount > 0
+        except sqlite3.IntegrityError as e:
+            logger.warning(f"[WR] update_entry 唯一性冲突: {e}")
+            return False
+        except sqlite3.Error as e:
+            logger.error(f"[WR] update_entry 数据库错误: {e}")
+            return False
         except Exception as e:
-            logger.warning(f"[WR] update_entry failed: {e}")
+            logger.error(f"[WR] update_entry 失败: {e}", exc_info=True)
             return False
 
     async def delete_entry(self, entry_id: str) -> bool:
@@ -405,8 +416,11 @@ class WritingResourceManager:
             )
             await self.conn.commit()
             return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error(f"[WR] delete_entry 数据库错误: {e}")
+            return False
         except Exception as e:
-            logger.warning(f"[WR] delete_entry failed: {e}")
+            logger.error(f"[WR] delete_entry 失败: {e}", exc_info=True)
             return False
 
     async def enable_entry(self, entry_id: str, enabled: bool = True) -> bool:
@@ -420,8 +434,11 @@ class WritingResourceManager:
             )
             await self.conn.commit()
             return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error(f"[WR] set_constant 数据库错误: {e}")
+            return False
         except Exception as e:
-            logger.warning(f"[WR] set_constant failed: {e}")
+            logger.error(f"[WR] set_constant 失败: {e}", exc_info=True)
             return False
     # ------------------------------------------------------------------
 
@@ -510,7 +527,7 @@ class WritingResourceManager:
             try:
                 parsed = json.loads(val)
                 return parsed if isinstance(parsed, list) else [parsed]
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 return val.split(",") if val else []
         return [val] if val else []
 
@@ -602,7 +619,7 @@ class WritingResourceManager:
                 entry["match_score"] = entry.get("fts_rank", 0)
                 result.append(entry)
             return result
-        except Exception as e:
+        except (sqlite3.Error, ValueError) as e:
             logger.info(f"[WR] FTS5 match failed, falling back to keyword scan: {e}")
             return await self.keyword_match(user_input, category)
 
@@ -665,11 +682,10 @@ class WritingResourceManager:
                 if len(matched_entries) >= top_k:
                     result = matched_entries[:top_k]
                     if result and log_match:
-                        for e in result:
-                            await self._increment_match_count(e["id"])
+                        await self._increment_match_counts([e["id"] for e in result])
                         await self._log_match(user_input, [e["entry_id"] for e in result], len(result))
                     return result
-        except Exception as e:
+        except (sqlite3.Error, ValueError) as e:
             logger.info(f"[WR] FTS5 match in match() failed, using full scan: {e}")
             pass
 
@@ -697,18 +713,9 @@ class WritingResourceManager:
         matched_entries = self._dedup_by_category(matched_entries)
         result = matched_entries[:top_k]
 
-        if result:
-            if log_match:
-                try:
-                    for e in result:
-                        await self.conn.execute(
-                            "UPDATE writing_resource SET match_count = match_count + 1 WHERE id = ?",
-                            (e["id"],),
-                        )
-                    await self.conn.commit()
-                except Exception as e:
-                    logger.warning(f"[WR] match_count increment failed: {e}")
-                await self._log_match(user_input, [e["entry_id"] for e in result], len(result))
+        if result and log_match:
+            await self._increment_match_counts([e["id"] for e in result])
+            await self._log_match(user_input, [e["entry_id"] for e in result], len(result))
 
         return result
 
@@ -729,12 +736,21 @@ class WritingResourceManager:
     # Private helpers
     # ------------------------------------------------------------------
 
-    async def _increment_match_count(self, row_id: int):
-        await self.conn.execute(
-            "UPDATE writing_resource SET match_count = match_count + 1 WHERE id = ?",
-            (row_id,),
-        )
-        await self.conn.commit()
+    async def _increment_match_counts(self, row_ids: list[int]):
+        """批量递增多条记录的 match_count，统一 FTS 与全表扫描路径的更新逻辑。"""
+        if not row_ids:
+            return
+        try:
+            placeholders = ",".join("?" for _ in row_ids)
+            await self.conn.execute(
+                f"UPDATE writing_resource SET match_count = match_count + 1 WHERE id IN ({placeholders})",
+                row_ids,
+            )
+            await self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"[WR] match_count 批量递增数据库错误: {e}")
+        except Exception as e:
+            logger.error(f"[WR] match_count 批量递增失败: {e}", exc_info=True)
 
     async def _log_match(self, user_input: str, matched_ids: List[str], match_count: int):
         await self.conn.execute(
@@ -755,8 +771,8 @@ class WritingResourceManager:
             if log.get("matched_entries"):
                 try:
                     log["matched_entries"] = json.loads(log["matched_entries"])
-                except Exception:
-                    pass
+                except (json.JSONDecodeError, TypeError):
+                    logger.debug("[WR] match_logs.matched_entries JSON 解码失败")
             result.append(log)
         return result
 

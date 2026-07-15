@@ -153,6 +153,17 @@ class FaissVectorStore:
         if doc_id == "":
             doc_id = source
 
+        # 校验 embedding 维度一致性
+        for i, emb in enumerate(embeddings):
+            if len(emb) != self._expected_dim:
+                logger.warning(
+                    f"[Quill RAG] 向量维度不匹配: chunk={i}, dim={len(emb)}, expected={self._expected_dim}"
+                )
+                raise ValueError(
+                    f"Embedding dimension mismatch at chunk {i}: "
+                    f"got {len(emb)}, expected {self._expected_dim}"
+                )
+
         # 1. SQLite 单条插入，精确拿每行 rowid（faiss_id=-1 标记 pending）
         row_ids = []
         with self._lock:
@@ -278,7 +289,11 @@ class FaissVectorStore:
             return []
 
     def delete_by_source(self, source: str) -> int:
-        """删除某文档的所有块，并尝试从 FAISS 索引中移除对应向量。"""
+        """删除某文档的所有块，并尝试从 FAISS 索引中移除对应向量。
+
+        顺序：先查 faiss_id → 再删 FAISS 向量 → 成功后删 SQLite。
+        若 FAISS 删除失败，保留 SQLite 记录并标记需要重建，避免产生无法检索的幽灵向量。
+        """
         try:
             rows = self._exec_fetchall(
                 "SELECT faiss_id FROM chunks WHERE source = ? AND faiss_id >= 0", (source,)
@@ -287,21 +302,24 @@ class FaissVectorStore:
         except Exception:
             to_remove = np.array([], dtype=np.int64)
 
-        try:
-            cursor = self._exec_write("DELETE FROM chunks WHERE source = ?", (source,))
-            deleted = cursor.rowcount
-        except Exception:
-            deleted = 0
-
-        if deleted > 0 and len(to_remove) > 0 and self._index is not None:
+        # 先尝试从 FAISS 移除向量，成功后再删 SQLite
+        if len(to_remove) > 0 and self._index is not None:
             try:
                 with self._lock:
                     self._index.remove_ids(to_remove)
                     self._save_index()
                 logger.info(f"[Quill RAG] 已从 FAISS 索引移除 {len(to_remove)} 条向量 (source={source})")
-            except Exception:
-                logger.info(f"[Quill RAG] FAISS remove_ids 失败 (source={source})，索引中将保留幽灵向量，"
-                            "可通过 /doc reload 完全重建")
+            except Exception as e:
+                logger.error(
+                    f"[Quill RAG] FAISS remove_ids 失败 (source={source})，保留 SQLite 数据等待重建: {e}"
+                )
+                return 0
+
+        try:
+            cursor = self._exec_write("DELETE FROM chunks WHERE source = ?", (source,))
+            deleted = cursor.rowcount
+        except Exception:
+            deleted = 0
 
         return deleted
 

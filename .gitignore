@@ -21,6 +21,8 @@ env/
 *.swp
 *.swo
 *~
+.opencode/
+.trae/
 
 # ── 操作系统 ──
 .DS_Store
@@ -46,6 +48,7 @@ data/
 *.bak
 *.log
 logs/
+_commit_msg.txt
 
 # ── 排除 __pycache__ 下的 .pyc（双重保险） ──
 *.pyc
