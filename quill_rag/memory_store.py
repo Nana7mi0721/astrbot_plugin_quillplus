@@ -9,6 +9,8 @@ import asyncio
 import aiosqlite
 
 import numpy as np
+from collections import OrderedDict
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,8 @@ class MemoryStore:
         self.db_path = db_path
         self._conn = None
         self._lock = asyncio.Lock()
+        self._cache = OrderedDict()
+        self._MAX_CACHE = 50
 
     # F4 修复：SQLite 共享连接（check_same_thread=False）必须由调用方串行化。
     # 以下三个辅助方法统一在 self._lock 保护下执行 execute+commit/fetch。
@@ -80,7 +84,35 @@ class MemoryStore:
             """)
             await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_session ON chat_logs(session_id)")
             await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_ts ON chat_logs(timestamp)")
+            
+            await self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(summary, content, tokenize='unicode61');")
+            # Create triggers to sync FTS
+            await self._conn.execute('''
+            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+              INSERT INTO memories_fts(rowid, summary, content) VALUES (new.id, new.summary, new.chat_summary);
+            END;
+            ''')
+            await self._conn.execute('''
+            CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+              INSERT INTO memories_fts(memories_fts, rowid, summary, content) VALUES('delete', old.id, old.summary, old.chat_summary);
+            END;
+            ''')
+            await self._conn.execute('''
+            CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+              INSERT INTO memories_fts(memories_fts, rowid, summary, content) VALUES('delete', old.id, old.summary, old.chat_summary);
+              INSERT INTO memories_fts(rowid, summary, content) VALUES (new.id, new.summary, new.chat_summary);
+            END;
+            ''')
             await self._conn.commit()
+
+            # Backfill FTS5
+            try:
+                rows = await self._exec_fetchall("SELECT COUNT(*) FROM memories_fts")
+                if rows and rows[0][0] == 0:
+                    await self._conn.execute("INSERT INTO memories_fts(rowid, summary, content) SELECT id, summary, chat_summary FROM memories")
+                    await self._conn.commit()
+            except Exception:
+                pass
 
             # Schema 热迁移：新增记忆质量管理字段（兼容老数据库）
             for stmt in (
@@ -97,6 +129,22 @@ class MemoryStore:
                     if "duplicate column" not in str(e).lower():
                         raise
             await self._conn.commit()
+
+    
+    async def _invalidate_cache(self, session_id: str):
+        if session_id in self._cache:
+            del self._cache[session_id]
+
+    async def update_core_memory(self, session_id: str, new_traits: str, crucial_facts: str):
+        await self._invalidate_cache(session_id)
+        # Check if core memory exists
+        rows = await self._exec_fetchall("SELECT id, summary FROM memories WHERE session_id = ? AND is_core = 1", (session_id,))
+        core_content = json.dumps({"traits": new_traits, "facts": crucial_facts}, ensure_ascii=False)
+        if rows:
+            await self._exec_write("UPDATE memories SET summary = ?, timestamp = CURRENT_TIMESTAMP WHERE id = ?", (core_content, rows[0][0]))
+        else:
+            await self._exec_write("INSERT INTO memories (session_id, summary, vector, dim, is_core) VALUES (?, ?, ?, ?, ?)", (session_id, core_content, b'', 0, 1))
+
 
     async def close(self):
         """关闭数据库连接（插件卸载时调用）。"""
@@ -133,105 +181,143 @@ class MemoryStore:
                 "VALUES (?, ?, ?, ?, ?)",
                 (session_id, summary, chat_summary, blob, dim)
             )
+            await self._invalidate_cache(session_id)
         except Exception as e:
             logger.warning(f"[Quill Memory] 添加记忆失败: {e}")
 
-    async def search(self, session_id: str, query_vector: list[float], top_k: int = 3) -> list[dict]:
-        """按 session_id 隔离检索，NumPy 余弦相似度排序，含时间衰减。"""
+
+    async def _get_cached_vectors(self, session_id: str):
+        if session_id in self._cache:
+            self._cache.move_to_end(session_id)
+            return self._cache[session_id]
+        
+        # Load all active memories for session
+        rows = await self._exec_fetchall(
+            '''SELECT id, summary, chat_summary, vector, dim, timestamp,
+                      strength, useful_count, useful_score, is_active,
+                      (julianday('now') - julianday(timestamp)) AS age_days, is_core
+               FROM memories
+               WHERE session_id = ?
+                 AND (is_core = 1 OR is_active = 1 OR (julianday('now') - julianday(timestamp)) < 30)
+               ORDER BY timestamp DESC LIMIT 1000''',
+            (session_id,)
+        )
+        if not rows:
+            return None, None
+            
+        vectors = []
+        valid_rows = []
+        import numpy as np
+        for row in rows:
+            try:
+                vec = self._decode_vector(row[3], row[4])
+                vectors.append(vec)
+                valid_rows.append(row)
+            except Exception:
+                pass
+                
+        if not vectors:
+            return None, None
+            
+        matrix = np.stack(vectors)
+        self._cache[session_id] = (valid_rows, matrix)
+        if len(self._cache) > getattr(self, '_MAX_CACHE', 50):
+            self._cache.popitem(last=False)
+            
+        return valid_rows, matrix
+
+    async def search(self, session_id: str, query_vector: list[float], top_k: int = 3, query_text: str = "") -> list[dict]:
         if not session_id or not query_vector:
             return []
-
-        try:
-            rows = await self._exec_fetchall(
-                """SELECT id, summary, chat_summary, vector, dim, timestamp,
-                          strength, useful_count, useful_score, is_active,
-                          (julianday('now') - julianday(timestamp)) AS age_days, is_core
-                   FROM memories
-                   WHERE session_id = ?
-                     AND (is_core = 1 OR is_active = 1
-                          OR (julianday('now') - julianday(timestamp)) < 30)
-                   ORDER BY timestamp DESC LIMIT 500""",
-                (session_id,)
-            )
-        except Exception as e:
-            logger.warning(f"[Quill Memory] 检索失败: {e}")
-            return []
-
+            
+        # 1. FTS5 BM25 search
+        fts_scores = {}
+        if query_text:
+            try:
+                # Basic tokenization for FTS
+                safe_query = query_text.replace('"', '').replace("'", "")
+                fts_rows = await self._exec_fetchall(
+                    "SELECT rowid, bm25(memories_fts) FROM memories_fts WHERE memories_fts MATCH ? LIMIT 50",
+                    (safe_query,)
+                )
+                for row in fts_rows:
+                    fts_scores[row[0]] = -row[1] # BM25 returns negative scores in SQLite
+            except Exception:
+                pass
+                
+        # 2. Vector Search (cached)
+        import numpy as np
+        rows, matrix = await self._get_cached_vectors(session_id)
         if not rows:
             return []
-
-        try:
-            query = np.array(query_vector, dtype=np.float32)
-            vectors = []
-            valid_rows = []
-            for row in rows:
-                try:
-                    vec = self._decode_vector(row[3], row[4])
-                    if len(vec) == len(query):
-                        vectors.append(vec)
-                        valid_rows.append(row)
-                except Exception:
-                    continue
-
-            if not vectors:
-                return []
-
-            matrix = np.stack(vectors)
-            eps = np.finfo(np.float32).eps
-            query_norm_val = np.linalg.norm(query)
-            if query_norm_val < eps:
-                return []
-            query_norm = query / query_norm_val
-            matrix_norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-            valid_mask = (matrix_norms.ravel() >= eps)
-            if not np.any(valid_mask):
-                return []
-            matrix_normalized = matrix[valid_mask] / matrix_norms[valid_mask]
-            similarities = matrix_normalized @ query_norm
-
-            if not np.all(np.isfinite(similarities)):
-                logger.warning("[Quill Memory] Similarities contain NaN/Inf")
-                return []
-
-            # 时间衰减：is_active=1 的记忆不衰减，被动记忆按 age_days 衰减
-            # S2-9 修复：similarities/final_scores 的索引空间是 valid_mask=True 的子集，
-            # 不能用 valid_rows 的索引去索引 final_scores。
-            # 用 valid_indices 一次性映射，final_scores 与 corresponding_rows 对齐。
-            valid_indices = np.where(valid_mask)[0]  # valid_rows 中有效向量的索引
-            similarities_list = similarities.tolist()
-            final_scores = []
-            corresponding_rows = []  # 与 final_scores 对齐的 valid_rows 子集
-            for sub_idx, sim in enumerate(similarities_list):
-                row_idx = int(valid_indices[sub_idx])
-                row = valid_rows[row_idx]
-                is_active = row[9]
-                age_days = float(row[10])
-                if is_active:
-                    final_scores.append(float(sim))
-                else:
-                    decay_factor = 1.0 / (1.0 + 0.05 * max(0, age_days))
-                    final_scores.append(float(sim) * decay_factor)
-                corresponding_rows.append(row)
-
-            final_scores_arr = np.array(final_scores)
-            top_local = np.argsort(final_scores_arr)[::-1][:top_k]
-            results = []
-            for local_idx in top_local:
-                row = corresponding_rows[local_idx]
+            
+        query = np.array(query_vector, dtype=np.float32)
+        eps = np.finfo(np.float32).eps
+        query_norm_val = np.linalg.norm(query)
+        if query_norm_val < eps:
+            return []
+        query_norm = query / query_norm_val
+        
+        matrix_norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        valid_mask = (matrix_norms.ravel() >= eps)
+        if not np.any(valid_mask):
+            return []
+            
+        matrix_normalized = matrix[valid_mask] / matrix_norms[valid_mask]
+        similarities = matrix_normalized @ query_norm
+        
+        results = []
+        idx = 0
+        for i, is_valid in enumerate(valid_mask):
+            if is_valid:
+                row = rows[i]
+                sim = float(similarities[idx])
+                idx += 1
+                
+                # Ebbinghaus decay: decay = exp(-lambda * days)
+                age_days = float(row[10] or 0.0)
+                decay = np.exp(-0.02 * age_days)
+                
+                # Frequency score
+                useful_count = row[7]
+                freq_boost = min(1.0, useful_count * 0.1)
+                
+                final_vec_score = sim * decay + freq_boost * 0.2
+                
+                row_id = row[0]
                 results.append({
-                    "id": row[0],
+                    "id": row_id,
                     "summary": row[1],
                     "chat_summary": row[2],
                     "timestamp": row[5],
                     "strength": row[6],
-                    "useful_count": row[7],
-                    "useful_score": float(row[8]),
-                    "score": float(final_scores_arr[local_idx]),
+                    "useful_count": useful_count,
+                    "age_days": age_days,
+                    "is_core": row[11],
+                    "vec_score": final_vec_score,
+                    "fts_score": fts_scores.get(row_id, 0.0)
                 })
-            return results
-        except Exception as e:
-            logger.warning(f"[Quill Memory] 相似度计算失败: {e}")
+                
+        if not results:
             return []
+            
+        # RRF (Reciprocal Rank Fusion)
+        results.sort(key=lambda x: x["vec_score"], reverse=True)
+        for rank, r in enumerate(results):
+            r["vec_rank"] = rank + 1
+            
+        results.sort(key=lambda x: x["fts_score"], reverse=True)
+        for rank, r in enumerate(results):
+            r["fts_rank"] = rank + 1 if r["fts_score"] > 0 else 1000
+            
+        k = 60
+        for r in results:
+            r["rrf_score"] = (1.0 / (k + r["vec_rank"])) + (1.0 / (k + r["fts_rank"]) if r["fts_rank"] < 1000 else 0)
+            
+        # Ignore core memories in top-k since they are injected automatically
+        non_core = [r for r in results if not r["is_core"]]
+        non_core.sort(key=lambda x: x["rrf_score"], reverse=True)
+        return non_core[:top_k]
 
     async def mark_memories_used(self, memory_ids: list[int], score_add: float = 1.5):
         """更新被召回记忆的有用性统计。"""
@@ -480,6 +566,12 @@ class MemoryStore:
             return 0
 
     async def delete_memory(self, memory_id: int) -> bool:
+        try:
+            rows = await self._exec_fetchall("SELECT session_id FROM memories WHERE id = ?", (memory_id,))
+            if rows:
+                await self._invalidate_cache(rows[0][0])
+        except Exception:
+            pass
         """删除单条记忆。"""
         try:
             cursor = await self._exec_write("DELETE FROM memories WHERE id = ?", (memory_id,))

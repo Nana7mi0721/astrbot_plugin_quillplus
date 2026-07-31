@@ -261,6 +261,67 @@ class QuillPlugin(Star):
     # Lifecycle
     # ================================================================
 
+
+    async def _reflection_loop(self):
+        """Phase 4: 全自动自迭代反思守护进程 (Idle Detection)"""
+        import asyncio
+        import time
+        from astrbot.api.all import logger
+        
+        # 初始延迟，避免启动时抢占资源
+        await asyncio.sleep(60)
+        
+        while True:
+            try:
+                # 每隔 1 小时检查一次
+                await asyncio.sleep(3600)
+                if not getattr(self.config, 'rag_enable_chat_logging', True):
+                    continue
+                if not self.rag_retriever or not self.rag_retriever.memory_store:
+                    continue
+                    
+                # 寻找空闲的 Session (超过1小时没说话，且有大量日志)
+                # 由于这是后台任务，我们可以直接查询 SQLite
+                store = self.rag_retriever.memory_store
+                rows = await store._exec_fetchall("SELECT session_id, MAX(timestamp), COUNT(*) FROM chat_logs GROUP BY session_id")
+                
+                now = time.time()
+                for row in rows:
+                    session_id, last_ts_str, count = row[0], row[1], row[2]
+                    # 粗略判断：如果日志条数 > 30 条，进行反思
+                    if count > 30:
+                        logger.info(f"[Quill Reflection] 开始对 {session_id} 进行闲时反思归纳...")
+                        logs = await store.get_recent_chat_logs(session_id, limit=200)
+                        combined = []
+                        for log in logs:
+                            role = "User" if log.get("role") == "user" else "AI"
+                            combined.append(f"{role}: {log.get('content', '')}")
+                        combined_text = "\n".join(combined)
+                        
+                        reflection = await self.rag_retriever.summarizer.reflect_on_logs(combined_text)
+                        if reflection:
+                            traits = reflection.get("new_core_traits", "")
+                            facts = reflection.get("crucial_facts", "")
+                            trivials = reflection.get("trivial_summaries", [])
+                            
+                            # 更新长期核心记忆
+                            await store.update_core_memory(session_id, traits, facts)
+                            
+                            # 将闲聊加入普通记忆并生成向量
+                            for t in trivials:
+                                await self.rag_retriever.store_memory_direct(session_id, t)
+                                
+                            # 删除已经反思过的日志，释放空间 (保留最新的 2 条防止断档)
+                            await store._exec_write("DELETE FROM chat_logs WHERE session_id = ? AND id NOT IN (SELECT id FROM chat_logs WHERE session_id = ? ORDER BY id DESC LIMIT 2)", (session_id, session_id))
+                            logger.info(f"[Quill Reflection] 成功完成 {session_id} 的记忆反思提纯与清理。")
+                            
+                            # 控制速率，防止 API 频率过高
+                            await asyncio.sleep(10)
+                            
+            except Exception as e:
+                logger.warning(f"[Quill Reflection] 守护进程异常: {e}")
+
+
     async def initialize(self) -> None:
         """异步初始化：WR 载入、Web 路由注册、RAG 索引构建、过期日志清理。
 
