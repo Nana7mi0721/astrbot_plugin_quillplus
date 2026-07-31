@@ -978,7 +978,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         # ── 无内容 → 增量总结本地 chat_logs ──
         try:
             last_learned_id = await plugin.state_manager.get_last_learned_id(target_id)
-            new_logs = plugin.rag_memory_store.get_chat_logs_after(session_id, last_learned_id, limit=50)
+            new_logs = await plugin.rag_memory_store.get_chat_logs_after(session_id, last_learned_id, limit=50)
             if not new_logs:
                 event.set_result(MessageEventResult().message(
                     "⚠️ 没有新的对话记录可供总结。\n"
