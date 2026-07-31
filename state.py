@@ -209,7 +209,8 @@ class StateManager:
     def _mark_dirty(self) -> None:
         self._dirty = True
 
-    # ── Public state API ───────────────────────────────────────────
+    # ── Public state API ───────────────────────────────────────────
+
 
     async def mark_refusal(self, user_id: str) -> None:
         async with self._lock:
@@ -217,7 +218,8 @@ class StateManager:
                 self._states[user_id] = UserState(user_id=user_id)
             st = self._states[user_id]
             st.refusal_detected = True
-            st.last_refusal_time = datetime.now(timezone.utc).isoformat()
+            st.last_refusal_time = datetime.now(timezone.utc).isoformat()
+
         await self._persist()
 
     async def clear_refusal(self, user_id: str) -> None:
@@ -351,7 +353,8 @@ class StateManager:
             st = self._states.get(user_id)
             if st is None:
                 st = UserState(user_id=user_id)
-                self._states[user_id] = st
+                self._states[user_id] = st
+
             st.persona_id = persona_id
             st.first_message_injected = False  # 切换角色时重置注入标记
         await self._persist()
@@ -368,7 +371,8 @@ class StateManager:
             st = self._states.get(user_id)
             if st is None:
                 st = UserState(user_id=user_id)
-                self._states[user_id] = st
+                self._states[user_id] = st
+
             st.first_message_injected = True
         await self._persist()
 

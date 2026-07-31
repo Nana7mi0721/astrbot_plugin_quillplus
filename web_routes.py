@@ -515,7 +515,7 @@ class QuillRoutes:
             if not vector:
                 return error_response("embedding 向量化失败", status_code=500)
             # 将 NumPy 全表扫描 + 矩阵计算放入线程池，防止阻塞事件循环
-            results = await asyncio.to_thread(memory_store.search_all, vector, top_k=top_k)
+            results = await memory_store.search_all(vector, top_k=top_k)
             return json_response({"results": results, "query": query})
         except Exception as e:
             return error_response(f"检索失败: {e}", status_code=500)
@@ -574,7 +574,7 @@ class QuillRoutes:
         is_core = bool(data.get("is_core", False))
         if not memory_id:
             return error_response("缺少 memory_id", status_code=400)
-        ok = await asyncio.to_thread(memory_store.set_core, int(memory_id), is_core)
+        ok = await memory_store.set_core(int(memory_id), is_core)
         if not ok:
             return error_response("记忆不存在或更新失败", status_code=404)
         return json_response({
@@ -833,7 +833,7 @@ class QuillRoutes:
     async def wb_reload(self):
         """重新从磁盘加载所有世界书后返回列表（供面板刷新按钮用）。"""
         try:
-            await asyncio.to_thread(self.wb_manager.reload_all)
+            await self.wb_manager.reload_all()
         except Exception:
             logger.warning("[Quill] 世界书重载失败，返回当前缓存列表", exc_info=True)
         return json_response(await handle_wb_list(self.wb_manager))
@@ -1235,7 +1235,7 @@ class QuillRoutes:
                             continue
                         zf.write(fpath, arcname)
                         zip_count += 1
-        await asyncio.to_thread(_build_zip)
+        await _build_zip()
         buf.seek(0)
         logger.info(f"[Quill] 全量备份导出: {zip_count} 个文件")
         import datetime as _dt

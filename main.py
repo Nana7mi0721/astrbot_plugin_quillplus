@@ -168,7 +168,7 @@ def strip_markdown(text: str) -> str:
     "astrbot_plugin_quillplus",
     "Nana7mi0721 & Gemini & GLM & DeepSeek",
     "羽笔 v5.0 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 增强插件",
-    "5.0.5",
+    "5.0.6",
     "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(Star):
@@ -329,15 +329,13 @@ class QuillPlugin(Star):
         # 启动时清理过期对话日志
         if self.rag_retriever and self.rag_retriever.memory_store:
             retention_days = getattr(self.config, 'rag_chat_log_retention_days', 30)
-            cleaned = await asyncio.to_thread(
-                self.rag_retriever.memory_store.cleanup_chat_logs, retention_days
-            )
+            cleaned = await self.rag_retriever.memory_store.cleanup_chat_logs(retention_days)
             if cleaned:
                 logger.info(f"[Quill ChatLog] 清理了 {cleaned} 条过期日志（保留 {retention_days} 天）")
 
         # 启动时修剪过期低价值记忆
         if self.rag_retriever and self.rag_retriever.memory_store:
-            pruned = await asyncio.to_thread(self.rag_retriever.memory_store.prune_memories)
+            pruned = await self.rag_retriever.memory_store.prune_memories()
             if pruned:
                 logger.info(f"[Quill Memory] 启动修剪: 清理了 {pruned} 条低价值记忆")
 
@@ -372,6 +370,7 @@ class QuillPlugin(Star):
             self.rag_vector_store = FaissVectorStore(
                 rag_db, rag_idx, embedding_provider=self.rag_embedding
             )
+            await self.rag_vector_store.initialize()
 
             # Reranker
             self.rag_reranker = QuillReranker(
@@ -383,6 +382,7 @@ class QuillPlugin(Star):
             # 动态记忆存储（SQLite BLOB）
             mem_db = os.path.join(self.plugin_dir, "knowledge", "quill_memory.db")
             self.rag_memory_store = MemoryStore(mem_db)
+            await self.rag_memory_store.initialize()
 
             # LLM 摘要器
             self.rag_summarizer = QuillSummarizer(
@@ -1222,7 +1222,7 @@ class QuillPlugin(Star):
             # 触发日志注入（show_trigger_log 开启时）
             if (self.config.worldbook_show_log and self.wb_manager
                     and hasattr(self.wb_manager, 'get_trigger_log')):
-                trigger_log = await asyncio.to_thread(self.wb_manager.get_trigger_log)
+                trigger_log = await self.wb_manager.get_trigger_log()
                 if trigger_log:
                     log_lines = ["[触发日志]"]
                     for t in trigger_log[:10]:

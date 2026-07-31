@@ -363,12 +363,12 @@ async def handle_info(wr_manager, wb_manager, persona_count=0,
     trigger_log = []
     if wb_manager:
         try:
-            available_wb = await asyncio.to_thread(wb_manager.get_available_worldbooks)
+            available_wb = await wb_manager.get_available_worldbooks()
         except Exception:
             logger.debug("[Quill] 获取可用世界书列表失败", exc_info=True)
         if show_trigger_log and hasattr(wb_manager, 'get_trigger_log'):
             try:
-                trigger_log = await asyncio.to_thread(wb_manager.get_trigger_log)
+                trigger_log = await wb_manager.get_trigger_log()
             except Exception:
                 logger.debug("[Quill] 获取触发日志失败", exc_info=True)
     # P1-4: 健康度数据
@@ -412,7 +412,7 @@ async def handle_rag_upload(vector_store, embedding_provider, upload_file, sourc
             return err("向量化失败")
 
         # 存储（同步 FAISS + SQLite 操作放入线程池，避免阻塞事件循环）
-        await asyncio.to_thread(vector_store.add, chunks, embeddings, source_name)
+        await vector_store.add(chunks, embeddings, source_name)
         return ok({
             "source": source_name,
             "chunk_count": len(chunks),
@@ -425,7 +425,7 @@ async def handle_rag_upload(vector_store, embedding_provider, upload_file, sourc
 async def handle_rag_documents(vector_store):
     """列出已上传文档。"""
     try:
-        docs = await asyncio.to_thread(vector_store.list_documents)
+        docs = await vector_store.list_documents()
         return ok({"documents": docs})
     except Exception as e:
         return err(f"查询失败: {e}")
@@ -434,7 +434,7 @@ async def handle_rag_documents(vector_store):
 async def handle_rag_delete(vector_store, source):
     """删除文档。"""
     try:
-        deleted = await asyncio.to_thread(vector_store.delete_by_source, source)
+        deleted = await vector_store.delete_by_source(source)
         return ok({"deleted": deleted, "source": source})
     except Exception as e:
         return err(f"删除失败: {e}")
@@ -474,10 +474,10 @@ async def handle_memory_list(memory_store, session_id=None):
     """
     try:
         if session_id:
-            memories = await asyncio.to_thread(memory_store.list_memories, session_id)
+            memories = await memory_store.list_memories(session_id)
             return ok({"session_id": session_id, "memories": memories})
         # 无 session_id：返回全部记忆（倒序），供记忆浏览表格用
-        memories = await asyncio.to_thread(memory_store.list_all_memories, 200)
+        memories = await memory_store.list_all_memories(200)
         return ok({"memories": memories, "sessions": []})
     except Exception as e:
         return err(f"查询失败: {e}")
@@ -487,10 +487,10 @@ async def handle_memory_delete(memory_store, memory_id=None, session_id=None):
     """删除记忆。"""
     try:
         if memory_id:
-            ok_del = await asyncio.to_thread(memory_store.delete_memory, memory_id)
+            ok_del = await memory_store.delete_memory(memory_id)
             return ok({"deleted": ok_del, "memory_id": memory_id}) if ok_del else err("记忆不存在")
         if session_id:
-            deleted = await asyncio.to_thread(memory_store.delete_session_memories, session_id)
+            deleted = await memory_store.delete_session_memories(session_id)
             return ok({"deleted": deleted, "session_id": session_id})
         return err("需要 memory_id 或 session_id")
     except Exception as e:
@@ -506,8 +506,8 @@ async def handle_memory_list_all(memory_store, limit=200, page=1, per_page=50):
     try:
         per_page = min(per_page, 200)
         offset = (page - 1) * per_page
-        total = await asyncio.to_thread(memory_store.count_all_memories)
-        memories = await asyncio.to_thread(memory_store.list_all_memories, per_page, offset)
+        total = await memory_store.count_all_memories()
+        memories = await memory_store.list_all_memories(per_page, offset)
         total_pages = max(1, (total + per_page - 1) // per_page)
         return ok({"memories": memories, "total": total, "page": page, "per_page": per_page, "total_pages": total_pages})
     except Exception as e:
@@ -517,7 +517,7 @@ async def handle_memory_list_all(memory_store, limit=200, page=1, per_page=50):
 async def handle_memory_stats(memory_store):
     """B4 修复：返回记忆存储统计（总数 / 活跃会话 / 今日新增），供总览页使用。"""
     try:
-        stats = await asyncio.to_thread(memory_store.get_stats)
+        stats = await memory_store.get_stats()
         return ok(stats)
     except Exception as e:
         return err(f"统计失败: {e}")
@@ -528,7 +528,7 @@ async def handle_memory_get(memory_store, memory_id=None):
     if not memory_id:
         return err("需要 memory_id")
     try:
-        mem = await asyncio.to_thread(memory_store.get_memory_by_id, memory_id)
+        mem = await memory_store.get_memory_by_id(memory_id)
         if mem is None:
             return err("记忆不存在")
         return ok(mem)
@@ -570,7 +570,7 @@ async def handle_provider_list(context):
 async def handle_memory_export(memory_store):
     """导出全部记忆为 JSON 字符串。"""
     try:
-        memories = await asyncio.to_thread(memory_store.list_all_memories, 10000)
+        memories = await memory_store.list_all_memories(10000)
         return ok({"memories": memories, "total": len(memories)})
     except Exception as e:
         return err(f"导出失败: {e}")
@@ -579,7 +579,7 @@ async def handle_memory_export(memory_store):
 async def handle_memory_prune(memory_store):
     """一键清理低价值/过期记忆。"""
     try:
-        deleted = await asyncio.to_thread(memory_store.prune_memories)
+        deleted = await memory_store.prune_memories()
         return ok({"deleted": deleted, "message": f"已清理 {deleted} 条低价值记忆"})
     except Exception as e:
         return err(f"修剪失败: {e}")
@@ -590,7 +590,7 @@ async def handle_chat_log_list(memory_store, session_id=None, limit=200):
     if not session_id:
         return err("需要 session_id")
     try:
-        logs = await asyncio.to_thread(memory_store.list_chat_logs, session_id, limit)
+        logs = await memory_store.list_chat_logs(session_id, limit)
         return ok({"session_id": session_id, "logs": logs, "total": len(logs)})
     except Exception as e:
         return err(f"查询失败: {e}")
@@ -601,7 +601,7 @@ async def handle_chat_log_export(memory_store, session_id=None, format="markdown
     if not session_id:
         return err("需要 session_id")
     try:
-        text = await asyncio.to_thread(memory_store.export_chat_logs, session_id, format)
+        text = await memory_store.export_chat_logs(session_id, format)
         return ok({"session_id": session_id, "format": format, "content": text})
     except Exception as e:
         return err(f"导出失败: {e}")
