@@ -58,8 +58,8 @@ class QuillRetriever:
             dense_top_k = int(rag_config.get('rag', {}).get('dense_top_k', self.top_k))
 
             # 传递 allowed_sources 给 vector_store 过滤
-            raw_results = await asyncio.to_thread(
-                self.vector_store.search, query_emb[0], dense_top_k * 3, allowed_sources
+            raw_results = await self.vector_store.search(
+                query_emb[0], top_k=dense_top_k * 3, allowed_sources=allowed_sources
             )
 
             if not raw_results:
@@ -95,7 +95,7 @@ class QuillRetriever:
         if not self.memory_store or not session_id:
             return []
         try:
-            return await asyncio.to_thread(self.memory_store.get_core_memories, session_id)
+            return await self.memory_store.get_core_memories(session_id)
         except Exception as e:
             logger.warning(f"[Quill Memory] 核心记忆获取失败: {e}")
             return []
@@ -128,8 +128,8 @@ class QuillRetriever:
 
             vector = await self.embedding.embed([summary])
             if vector:
-                await asyncio.to_thread(
-                    self.memory_store.add, session_id, summary, vector[0], content[:100]
+                await self.memory_store.add(
+                    session_id, summary, vector[0], chat_summary=content[:100]
                 )
                 logger.info(f"[Quill Memory] 直接记忆存储: session={session_id} summary={summary[:30]}...")
         except Exception as e:
@@ -186,8 +186,8 @@ class QuillRetriever:
         # 5. 防重复：检查是否已有语义高度重叠的记忆
         if self.memory_store:
             try:
-                existing = await asyncio.to_thread(
-                    self.memory_store.search, session_id, vector[0], top_k=3
+                existing = await self.memory_store.search(
+                    session_id, vector[0], top_k=3
                 )
                 for mem in existing:
                     if mem.get("score", 0) > 0.92:
@@ -196,8 +196,8 @@ class QuillRetriever:
             except Exception:
                 logger.debug("[Quill Memory] 重复记忆检查失败，继续存储", exc_info=True)
 
-        await asyncio.to_thread(
-            self.memory_store.add, session_id, summary, vector[0],
+        await self.memory_store.add(
+            session_id, summary, vector[0],
             chat_summary=combined[:100]
         )
         logger.info(f"[Quill Memory] 上下文自动总结: session={session_id} turns={turn_count} summary={summary[:30]}...")

@@ -697,7 +697,7 @@ async def quill_status(plugin, event: AstrMessageEvent):
     # 动态记忆
     if plugin.rag_memory_store:
         try:
-            mem_stats = await asyncio.to_thread(plugin.rag_memory_store.get_stats)
+            mem_stats = await plugin.rag_memory_store.get_stats()
             total_mem = mem_stats.get("total_memories", 0)
             total_sessions = mem_stats.get("total_sessions", 0)
             lines.append(f"  动态记忆: {total_mem} 条 ({total_sessions} 个会话)")
@@ -709,7 +709,7 @@ async def quill_status(plugin, event: AstrMessageEvent):
     # Doc RAG
     if plugin.rag_vector_store:
         try:
-            vs_stats = await asyncio.to_thread(plugin.rag_vector_store.get_stats)
+            vs_stats = await plugin.rag_vector_store.get_stats()
             doc_count = vs_stats.get("total_docs", 0)
             lines.append(f"  Doc RAG: {doc_count} 条向量")
         except Exception:
@@ -866,7 +866,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
     session_id = f"{target_id}::{persona_id}" if persona_id else target_id
 
     if not arg1:
-        stats = await asyncio.to_thread(plugin.rag_memory_store.get_stats)
+        stats = await plugin.rag_memory_store.get_stats()
         lines = [
             f"[记忆统计]",
             f"  总记忆数: {stats.get('total_memories', 0)}",
@@ -889,7 +889,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         page_size = 5
         offset = (page - 1) * page_size
         try:
-            all_memories = await asyncio.to_thread(plugin.rag_memory_store.list_memories, session_id, offset + page_size)
+            all_memories = await plugin.rag_memory_store.list_memories(session_id, offset + page_size)
         except Exception:
             all_memories = []
 
@@ -923,10 +923,10 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             return
         idx = int(idx_str)
         try:
-            all_memories = await asyncio.to_thread(plugin.rag_memory_store.list_memories, session_id, max(idx, 50))
+            all_memories = await plugin.rag_memory_store.list_memories(session_id, max(idx, 50))
             if 0 < idx <= len(all_memories):
                 memory_id = all_memories[idx - 1].get("id")
-                if memory_id and await asyncio.to_thread(plugin.rag_memory_store.delete_memory, memory_id):
+                if memory_id and await plugin.rag_memory_store.delete_memory(memory_id):
                     event.set_result(MessageEventResult().message(f"已删除记忆 #{idx}"))
                 else:
                     event.set_result(MessageEventResult().message(f"删除失败"))
@@ -941,8 +941,8 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
             return
         try:
-            deleted = await asyncio.to_thread(plugin.rag_memory_store.delete_session_memories, session_id)
-            chat_deleted = await asyncio.to_thread(plugin.rag_memory_store.delete_session_chat_logs, session_id)
+            deleted = await plugin.rag_memory_store.delete_session_memories(session_id)
+            chat_deleted = await plugin.rag_memory_store.delete_session_chat_logs(session_id)
             await plugin.state_manager.reset_unsummarized_turns(target_id)
             await plugin.state_manager.update_last_learned_id(target_id, 0)
             msg = f"已清空当前会话 {deleted} 条记忆"
@@ -1111,7 +1111,7 @@ async def doc_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
 
 async def _doc_list(plugin, event: AstrMessageEvent):
     try:
-        docs = await asyncio.to_thread(plugin.rag_vector_store.list_documents)
+        docs = await plugin.rag_vector_store.list_documents()
         if not docs:
             event.set_result(MessageEventResult().message("没有已加载的外部文档。"))
             return
@@ -1175,7 +1175,7 @@ async def _doc_bind(plugin, event: AstrMessageEvent, arg: str):
         return
 
     idx = int(arg) - 1
-    docs = await asyncio.to_thread(plugin.rag_vector_store.list_documents)
+    docs = await plugin.rag_vector_store.list_documents()
     if idx < 0 or idx >= len(docs):
         event.set_result(MessageEventResult().message(f"文档序号不存在: {arg}"))
         return
@@ -1236,7 +1236,7 @@ async def _doc_unbind(plugin, event: AstrMessageEvent, arg: str):
         return
 
     idx = int(arg) - 1
-    docs = await asyncio.to_thread(plugin.rag_vector_store.list_documents)
+    docs = await plugin.rag_vector_store.list_documents()
     if idx < 0 or idx >= len(docs):
         event.set_result(MessageEventResult().message(f"文档序号不存在: {arg}"))
         return
@@ -1352,12 +1352,8 @@ async def quill_reset(plugin, event: AstrMessageEvent):
             # 批量清理：删除 target_id 下所有 session 的记忆和日志
             # （含 target_id 本身和 target_id::* 所有 persona），
             # 防止切换角色卡后 Context Restoration 垫入旧上下文
-            mem_deleted = await asyncio.to_thread(
-                plugin.rag_retriever.memory_store.delete_all_session_memories, target_id
-            )
-            log_deleted = await asyncio.to_thread(
-                plugin.rag_retriever.memory_store.delete_all_session_chat_logs, target_id
-            )
+            mem_deleted = await plugin.rag_retriever.memory_store.delete_all_session_memories(target_id)
+            log_deleted = await plugin.rag_retriever.memory_store.delete_all_session_chat_logs(target_id)
         except Exception as e:
             logger.warning(f"[Quill] /quill reset 清理记忆失败: {e}")
 
