@@ -186,8 +186,8 @@ class QuillRetriever:
                     session_id, vector[0], top_k=3
                 )
                 for mem in existing:
-                    if mem.get("score", 0) > 0.92:
-                        logger.info(f"[Quill Memory] 跳过重复记忆: session={session_id} similarity={mem['score']:.2f}")
+                    if mem.get("vec_score", 0) > 0.92:
+                        logger.info(f"[Quill Memory] 跳过重复记忆: session={session_id} similarity={mem.get('vec_score', 0):.2f}")
                         return summary  # 已存在高度相似记忆，跳过存储
             except Exception:
                 logger.debug("[Quill Memory] 重复记忆检查失败，继续存储", exc_info=True)

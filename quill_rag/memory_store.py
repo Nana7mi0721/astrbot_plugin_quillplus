@@ -94,12 +94,12 @@ class MemoryStore:
             ''')
             await self._conn.execute('''
             CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-              INSERT INTO memories_fts(memories_fts, rowid, summary, content) VALUES('delete', old.id, old.summary, old.chat_summary);
+              DELETE FROM memories_fts WHERE rowid = old.id;
             END;
             ''')
             await self._conn.execute('''
             CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-              INSERT INTO memories_fts(memories_fts, rowid, summary, content) VALUES('delete', old.id, old.summary, old.chat_summary);
+              DELETE FROM memories_fts WHERE rowid = old.id;
               INSERT INTO memories_fts(rowid, summary, content) VALUES (new.id, new.summary, new.chat_summary);
             END;
             ''')
@@ -195,7 +195,7 @@ class MemoryStore:
         rows = await self._exec_fetchall(
             '''SELECT id, summary, chat_summary, vector, dim, timestamp,
                       strength, useful_count, useful_score, is_active,
-                      (julianday('now') - julianday(timestamp)) AS age_days, is_core
+                      is_core
                FROM memories
                WHERE session_id = ?
                  AND (is_core = 1 OR is_active = 1 OR (julianday('now') - julianday(timestamp)) < 30)
@@ -275,7 +275,12 @@ class MemoryStore:
                 idx += 1
                 
                 # Ebbinghaus decay: decay = exp(-lambda * days)
-                age_days = float(row[10] or 0.0)
+                import datetime
+                try:
+                    ts = datetime.datetime.strptime(row[5], "%Y-%m-%d %H:%M:%S")
+                    age_days = (datetime.datetime.utcnow() - ts).total_seconds() / 86400.0
+                except:
+                    age_days = 0.0
                 decay = np.exp(-0.02 * age_days)
                 
                 # Frequency score
@@ -293,7 +298,7 @@ class MemoryStore:
                     "strength": row[6],
                     "useful_count": useful_count,
                     "age_days": age_days,
-                    "is_core": row[11],
+                    "is_core": row[10],
                     "vec_score": final_vec_score,
                     "fts_score": fts_scores.get(row_id, 0.0)
                 })
@@ -325,6 +330,10 @@ class MemoryStore:
             return
         try:
             placeholders = ",".join("?" for _ in memory_ids)
+            # Find sessions to invalidate cache
+            rows = await self._exec_fetchall(f"SELECT DISTINCT session_id FROM memories WHERE id IN ({placeholders})", tuple(memory_ids))
+            for r in rows:
+                await self._invalidate_cache(r[0])
             await self._exec_write(
                 f"""UPDATE memories
                     SET useful_count = useful_count + 1,
@@ -566,13 +575,14 @@ class MemoryStore:
             return 0
 
     async def delete_memory(self, memory_id: int) -> bool:
+        """删除单条记忆。"""
         try:
             rows = await self._exec_fetchall("SELECT session_id FROM memories WHERE id = ?", (memory_id,))
             if rows:
                 await self._invalidate_cache(rows[0][0])
         except Exception:
             pass
-        """删除单条记忆。"""
+        
         try:
             cursor = await self._exec_write("DELETE FROM memories WHERE id = ?", (memory_id,))
             return cursor.rowcount > 0

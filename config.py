@@ -57,6 +57,7 @@ class QuillConfig:
         self.rag_top_k: int = _safe_int(rag.get("top_k", 3), 3)
         self.rag_dense_top_k: int = _safe_int(rag.get("dense_top_k", 5), 5)
         self.rag_enable_memory: bool = bool(rag.get("enable_memory", False))
+        self.rag_enable_autonomous_reflection: bool = bool(rag.get("enable_autonomous_reflection", True))
         self.rag_enable_chat_logging: bool = bool(rag.get("enable_chat_logging", True))
         self.rag_chat_log_retention_days: int = _safe_int(rag.get("chat_log_retention_days", 30), 30)
 

@@ -275,7 +275,7 @@ class QuillPlugin(Star):
             try:
                 # 每隔 1 小时检查一次
                 await asyncio.sleep(3600)
-                if not getattr(self.config, 'rag_enable_chat_logging', True):
+                if not getattr(self.config, 'rag_enable_chat_logging', True) or not getattr(self.config, 'rag_enable_autonomous_reflection', True):
                     continue
                 if not self.rag_retriever or not self.rag_retriever.memory_store:
                     continue
@@ -1503,12 +1503,13 @@ class QuillPlugin(Star):
 
                         # 顺带跑一次记忆修剪（分档遗忘）— 保留 to_thread 包装，prune_memories 是同步方法
                         if self.rag_retriever.memory_store:
-                            self._spawn(asyncio.to_thread(self.rag_retriever.memory_store.prune_memories))
+                            self._spawn(self.rag_retriever.memory_store.prune_memories())
                             # 同步清理过期对话日志（无人值守，避免长期运行服务器日志膨胀）
-                            self._spawn(asyncio.to_thread(
-                                self.rag_retriever.memory_store.cleanup_chat_logs,
-                                getattr(self.config, 'rag_chat_log_retention_days', 30)
-                            ))
+                            self._spawn(
+                                self.rag_retriever.memory_store.cleanup_chat_logs(
+                                    getattr(self.config, 'rag_chat_log_retention_days', 30)
+                                )
+                            )
                     else:
                         logger.debug(f"[Quill Memory] 记忆收集进度: {unsummarized}/4 轮")
                 except Exception as e:
