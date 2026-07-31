@@ -79,12 +79,10 @@ class QuillRetriever:
             query_emb = await self.embedding.embed([query])
             if not query_emb:
                 return []
-            results = await asyncio.to_thread(
-                self.memory_store.search, session_id, query_emb[0], self.top_k
-            )
+            results = await self.memory_store.search(session_id, query_emb[0], self.top_k)
             if results:
                 mem_ids = [r["id"] for r in results]
-                self._spawn(asyncio.to_thread(self.memory_store.mark_memories_used, mem_ids, 1.5))
+                self._spawn(self.memory_store.mark_memories_used(mem_ids, 1.5))
             return results
         except Exception as e:
             logger.warning(f"[Quill Memory] 记忆检索失败: {e}")
@@ -107,9 +105,7 @@ class QuillRetriever:
         if not getattr(self.config, 'rag_enable_chat_logging', True):
             return
         try:
-            await asyncio.to_thread(
-                self.memory_store.log_message, session_id, role, content
-            )
+            await self.memory_store.log_message(session_id, role, content)
         except Exception as e:
             logger.warning(f"[Quill ChatLog] 对话记录失败: {e}")
 
