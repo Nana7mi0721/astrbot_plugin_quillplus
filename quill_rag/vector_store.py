@@ -81,7 +81,8 @@ class FaissVectorStore:
     async def close(self):
         """关闭数据库连接（插件卸载时调用）。"""
         try:
-            self._conn.close()
+            if getattr(self, '_conn', None):
+                await self._conn.close()
         except Exception as e:
             logger.debug("[Quill RAG] vector_store close 失败: %s", e)
 
