@@ -87,3 +87,36 @@ class QuillSummarizer:
         except Exception as e:
             logger.warning(f"[Quill Memory] 多轮摘要生成失败: {e}")
         return ""
+
+
+    async def reflect_on_logs(self, combined_text: str) -> dict:
+        if not self.provider_id or not self.context:
+            return {}
+            
+        try:
+            provider = self.context.get_provider_by_id(self.provider_id)
+            if not provider:
+                return {}
+                
+            prompt = f"以下是该用户最近的详细对话日志：\n\n{combined_text}\n\n请你作为心理侧写师和记忆整理大师，输出JSON格式进行高维度归纳。必须包含三个字段：\n1. new_core_traits: 字符串，总结角色的心理变化、态度转变、确立的新关系等高维度设定。\n2. crucial_facts: 字符串，总结不可逆的重大客观事件或设定的核心信息。\n3. trivial_summaries: 字符串列表，将日常的琐碎闲聊精简为几条独立的简短陈述句。"
+            system_prompt = "你是一个专门负责信息提纯与归纳的AI。严格返回合法的JSON对象，包含 'new_core_traits', 'crucial_facts', 'trivial_summaries' (数组) 字段。"
+            
+            response = await provider.text_chat(
+                prompt=prompt,
+                system_prompt=system_prompt,
+            )
+            if response:
+                completion = getattr(response, "completion_text", None) or getattr(response, "text", "")
+                if completion:
+                    import json
+                    # Try to extract JSON from completion
+                    import re
+                    match = re.search(r'\{.*\}', completion, re.DOTALL)
+                    if match:
+                        return json.loads(match.group(0))
+                    else:
+                        return json.loads(completion)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"[Quill Memory] 反思生成失败: {e}")
+        return {}

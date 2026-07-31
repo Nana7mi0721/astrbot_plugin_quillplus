@@ -1,8 +1,14 @@
 # Changelog
 
-## v5.0.6 — 数据库并发架构升级与 RAG 性能优化
+## v5.0.6 — 数据库并发架构升级与全自动自迭代记忆 (Phase 4)
 
-本版本完成数据库与并发架构升级，以及 RAG 性能优化，大幅度提升了系统的并发承载能力和稳定性。
+本版本完成了底层的并发数据库重构，并正式引入“全自动自迭代记忆 (Autonomous Memory Management)”，同时对搜索模块引入混合检索与 LRU 缓存。
+
+**核心功能升级 (Phase 4)：**
+- 引入**闲时检测 (Idle Detection) 与 反思守护进程 (Reflection Loop)**：在系统空闲时自动分析处理过去未被提纯的记忆，总结“new_core_traits”、“crucial_facts”和“trivial_summaries”。
+- **长期核心记忆更新**：每次反思均可迭代角色的深层设定和不可逆客观事件。
+- **混合检索 (Hybrid Search)**：结合 FTS5 (BM25) 与 Vector 检索，使用 Reciprocal Rank Fusion (RRF) 技术结合频次与时间衰减 (Ebbinghaus) 过滤记忆。
+- **LRU Session Cache**：构建基于 `OrderedDict` 的 LRU 会话向量缓存，加速同 Session 多次检索，减少磁盘与序列化开销。
 
 **数据库与并发架构升级：**
 - 动态对话记忆库 (`MemoryStore`) 与 文档切片元数据 (`FaissVectorStore`) 全面升级采用 `aiosqlite` 异步驱动。
