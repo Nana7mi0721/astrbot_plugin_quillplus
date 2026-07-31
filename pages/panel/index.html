@@ -2750,6 +2750,10 @@ textarea:focus-visible,
           <label class="toggle"><input type="checkbox" id="c-rag-memory"><span class="toggle-slider"></span></label>
           <div><span class="fw-500">启用动态记忆</span><span class="inline-hint">后台自动提取历史并跨会话保留。</span></div>
         </div>
+        <div class="form-check" style="margin-top:10px;">
+          <label class="toggle"><input type="checkbox" id="c-rag-autonomous-reflection"><span class="toggle-slider"></span></label>
+          <div><span class="fw-500">启用全自动闲时反思</span><span class="inline-hint">开启后，系统在闲置时自动抽取并提纯过去累积的对话记录。</span></div>
+        </div>
         <div class="form-row" style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border-light)">
           <div class="form-check" style="flex:1">
             <label class="toggle"><input type="checkbox" id="c-rag-log"><span class="toggle-slider"></span></label>
@@ -4955,6 +4959,7 @@ function _applySettings(p, cfg) {
   qs('#c-rag-overlap').value = safeGet('rag', 'chunk_overlap', 50);
   qs('#c-rag-topk').value = safeGet('rag', 'top_k', 3);
   qs('#c-rag-memory').checked = safeGet('rag', 'enable_memory', false);
+  qs('#c-rag-autonomous-reflection').checked = safeGet('rag', 'enable_autonomous_reflection', true);
 
   // 世界书
   qs('#c-wb-enabled').checked = safeGet('worldbook', 'enabled', true);
@@ -5082,6 +5087,7 @@ async function saveAllChanges() {
       add('rag', 'chunk_overlap', parseInt(qs('#c-rag-overlap').value) || 50);
       add('rag', 'top_k', parseInt(qs('#c-rag-topk').value) || 3);
       add('rag', 'enable_memory', qs('#c-rag-memory').checked);
+      add('rag', 'enable_autonomous_reflection', qs('#c-rag-autonomous-reflection').checked);
 
       add('worldbook', 'enabled', qs('#c-wb-enabled').checked);
       add('worldbook', 'max_token_limit', parseInt(qs('#c-wb-token').value) || 4000);
