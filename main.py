@@ -435,9 +435,9 @@ class QuillPlugin(Star):
             except Exception as e:
                 logger.warning(f"[Quill] 写作素材库关闭失败: {e}")
         if self.rag_retriever and self.rag_retriever.memory_store:
-            self.rag_retriever.memory_store.close()
+            await self.rag_retriever.memory_store.close()
         if self.rag_retriever and self.rag_retriever.vector_store:
-            self.rag_retriever.vector_store.close()
+            await self.rag_retriever.vector_store.close()
         logger.info("[Quill] 插件已停用")
 
     def _spawn(self, coro):
