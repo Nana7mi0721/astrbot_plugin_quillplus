@@ -1127,9 +1127,7 @@ class QuillPlugin(Star):
             if contexts_is_fresh \
                     and getattr(self.config, 'rag_enable_chat_logging', True) \
                     and self.rag_retriever and self.rag_retriever.memory_store:
-                recent_logs = await asyncio.to_thread(
-                    self.rag_retriever.memory_store.get_recent_chat_logs, mem_session_id, limit=8
-                )
+                recent_logs = await self.rag_retriever.memory_store.get_recent_chat_logs(mem_session_id, limit=8)
                 if recent_logs:
                     req.contexts = recent_logs + req.contexts
                     logger.info(f"[Quill Context] 恢复 {len(recent_logs)} 条上下文（Session: {mem_session_id}）")
@@ -1429,9 +1427,7 @@ class QuillPlugin(Star):
 
                     if unsummarized >= self.REFLECTION_TURN_THRESHOLD:
                         await self.state_manager.reset_unsummarized_turns(target_id)
-                        recent_logs = await asyncio.to_thread(
-                            self.rag_retriever.memory_store.get_recent_chat_logs, mem_session_id, limit=self.RECENT_LOG_LIMIT
-                        )
+                        recent_logs = await self.rag_retriever.memory_store.get_recent_chat_logs(mem_session_id, limit=self.RECENT_LOG_LIMIT)
 
                         if len(recent_logs) >= self.MIN_LOGS_FOR_SUMMARY:
                             # S1-1 修复：改用 _spawn 保留 task 引用，防止 GC 中断
