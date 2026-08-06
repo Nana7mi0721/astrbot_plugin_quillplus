@@ -403,6 +403,12 @@ class QuillPlugin(Star):
         # 启动 state 自动落盘（分级落盘：关键字段即时，高频字段 5s 批量刷洗）
         self.state_manager.start_autoflush()
 
+        # P2-1 修复：启动闲时反思守护进程（此前 _reflection_loop 为死代码，从未被调用）
+        if getattr(self.config, 'rag_enable_autonomous_reflection', True) \
+                and self.rag_retriever and self.rag_retriever.memory_store:
+            self._spawn(self._reflection_loop())
+            logger.info("[Quill Reflection] 闲时反思守护进程已启动")
+
         logger.info(
             f"[Quill] 插件初始化完成 | 激活词: {self.activation_detector.get_word_count()} 个"
         )
@@ -664,7 +670,6 @@ class QuillPlugin(Star):
             block_content = m.group(1).strip()
             updates = self._parse_status_block(block_content)
             if updates:
-                await self._persist_status_vars(updates, target_id)
                 handled = True
                 new_text = text  # code block 格式保留原样
                 logger.info("[Quill] 状态栏已处理 (code block)")
@@ -674,7 +679,6 @@ class QuillPlugin(Star):
             love_updates, love_formatted, raw_line = self._format_love_data(text)
             if love_updates:
                 updates = love_updates
-                await self._persist_status_vars(updates, target_id)
                 new_text = text.replace(raw_line, love_formatted)
                 handled = True
                 logger.info("[Quill] 状态栏已处理 (LOVE_DATA inline)")
@@ -685,7 +689,6 @@ class QuillPlugin(Star):
             if m:
                 status_content = m.group(1).strip()
                 updates = self._parse_legacy_status(status_content)
-                await self._persist_status_vars(updates, target_id)
                 formatted = self.status_bar_format_template.replace("{content}", status_content)
                 new_text = _STATUS_RE.sub(formatted, text)
                 handled = True
@@ -722,7 +725,6 @@ class QuillPlugin(Star):
                     plot_content = pm.group(1).strip()
                     new_text = new_text.replace(pm.group(0), "").strip()
                     plot_str = f"\n\n>>> 剧情走向 <<<\n{plot_content}\n<<< 请选择 >>>"
-                await self._persist_status_vars(updates, target_id)
                 block_content = "\n".join(parsed_lines) + plot_str
                 beautiful_bar = self.status_bar_format_template.replace("{content}", block_content)
                 new_text = new_text.strip() + "\n\n" + beautiful_bar
@@ -742,7 +744,6 @@ class QuillPlugin(Star):
                         merged[f] = new_val
                     else:
                         merged[f] = current_vars.get(f, "") or "未设置"
-                await self._persist_status_vars(merged, target_id)
                 lines = [f"{f}：{merged[f]}" for f in self.love_fields]
                 bar = self.status_bar_format_template.replace("{content}", "\n".join(lines))
                 new_text = text + "\n\n" + bar
@@ -758,7 +759,6 @@ class QuillPlugin(Star):
                 merged = {}
                 for f in self.love_fields:
                     merged[f] = llm_extracted.get(f) or current_vars.get(f, "") or "未设置"
-                await self._persist_status_vars(merged, target_id)
                 lines = [f"{f}：{merged[f]}" for f in self.love_fields]
                 bar = self.status_bar_format_template.replace("{content}", "\n".join(lines))
                 new_text = text + "\n\n" + bar
@@ -774,6 +774,10 @@ class QuillPlugin(Star):
         # P1-4: 记录状态栏解析成功率（仅在 status_bar_enabled 时计入）
         if self.status_bar_enabled:
             self.health_tracker.record_status(handled)
+
+        # P2-4 修复：所有分支统一在此提交一次状态字段，消除多次独立 await 的竞态
+        if updates and handled:
+            await self._persist_status_vars(updates, target_id)
 
         return new_text, updates, handled
 
@@ -984,8 +988,8 @@ class QuillPlugin(Star):
             else:
                 messages = messages_raw
 
-            # 仅对特定平台执行 Markdown 清理
-            needs_strip = platform in ("", "telegram", "tg")
+            # 仅对特定平台执行 Markdown 清理（未知平台不剥离，避免破坏原生 Markdown 渲染）
+            needs_strip = platform in ("telegram", "tg")
             if needs_strip:
                 logger.info(f"[Quill] >>> send_message_to_user 调用 (platform={platform or '?'}), 清理 Markdown...")
                 modified = 0
@@ -1002,16 +1006,21 @@ class QuillPlugin(Star):
             # 状态栏处理（全平台执行）
             if isinstance(messages, list):
                 target_id = self._get_target_id(event)
-                for msg in messages:
+                for idx, msg in enumerate(messages):
                     if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
-                        if self.status_bar_enabled:
-                            new_text, _, handled = await self._handle_status_bar(msg["text"], target_id)
-                            msg["text"] = new_text
-                            if handled:
-                                event.set_extra("_quill_status_handled", True)
+                        # 首条 plain 消息：执行状态栏提取；后续消息：仅清理残留状态栏标记
+                        if idx == 0 or not event.get_extra("_quill_status_handled"):
+                            if self.status_bar_enabled:
+                                new_text, _, handled = await self._handle_status_bar(msg["text"], target_id)
+                                msg["text"] = new_text
+                                if handled:
+                                    event.set_extra("_quill_status_handled", True)
+                            else:
+                                msg["text"] = self._strip_status_artifacts(msg["text"])
                         else:
+                            # P2-3 修复：首条之后的 plain 消息也清理残留的状态栏标记，
+                            # 避免 LLM 多段输出时后续段落的 [LOVE_DATA]/状态栏代码块被原样发给用户
                             msg["text"] = self._strip_status_artifacts(msg["text"])
-                        break
 
             # JSON 回写：如果原始类型是字符串，序列化回去
             if was_string:
@@ -1171,6 +1180,8 @@ class QuillPlugin(Star):
         - 状态栏降级解析：5 级兜底（STATUS 块→LOVE_DATA→legacy→RAW→lenient）
         """
         try:
+            # P1-3 修复：提前初始化，避免 except 块引用未定义变量掩盖原始异常
+            emergency = False
             self._restore_smt_tool(req)
 
             user_input = req.prompt or ""
@@ -1205,7 +1216,8 @@ class QuillPlugin(Star):
 
             # 存储最近 6 轮对话，供 /memory learn 自动总结
             if hasattr(req, 'contexts') and isinstance(req.contexts, list):
-                recent_msgs = [c for c in req.contexts[-12:] if c.get("role") in ("user", "assistant")]
+                # P3-5 修复：深拷贝切片，避免后续 req.contexts 被修改（如上下文恢复）后引用失效
+                recent_msgs = [dict(c) for c in req.contexts[-12:] if c.get("role") in ("user", "assistant")]
                 event.set_extra("_quill_recent_msgs", recent_msgs)
 
             # Build multi-turn context for WR matching

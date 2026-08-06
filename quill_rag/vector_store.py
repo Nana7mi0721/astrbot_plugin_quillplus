@@ -162,13 +162,13 @@ class FaissVectorStore:
 
         # 校验 embedding 维度一致性
         for i, emb in enumerate(embeddings):
-            if len(emb) != self._expected_dim:
+            if len(emb) != self.expected_dim:
                 logger.warning(
-                    f"[Quill RAG] 向量维度不匹配: chunk={i}, dim={len(emb)}, expected={self._expected_dim}"
+                    f"[Quill RAG] 向量维度不匹配: chunk={i}, dim={len(emb)}, expected={self.expected_dim}"
                 )
                 raise ValueError(
                     f"Embedding dimension mismatch at chunk {i}: "
-                    f"got {len(emb)}, expected {self._expected_dim}"
+                    f"got {len(emb)}, expected {self.expected_dim}"
                 )
 
         # 1. SQLite 单条插入，精确拿每行 rowid（faiss_id=-1 标记 pending）
@@ -194,8 +194,11 @@ class FaissVectorStore:
                 norms[norms == 0] = 1.0  # 防止除零
                 emb_array = emb_array / norms
                 async with self._lock:
-                    self._index.add_with_ids(emb_array, ids)
-                    self._save_index()
+                    # P2-2 修复：FAISS 同步 CPU 密集操作放入线程池，避免阻塞事件循环
+                    def _faiss_add():
+                        self._index.add_with_ids(emb_array, ids)
+                        self._save_index()
+                    await asyncio.to_thread(_faiss_add)
             except Exception as e:
                 # 3. FAISS 失败：回滚 SQLite（用精确 row_ids 删除 pending 行）
                 if not row_ids:
@@ -242,7 +245,10 @@ class FaissVectorStore:
                 recall_k = min(max(top_k * 10, 100), self._index.ntotal)
 
             async with self._lock:
-                scores, ids = self._index.search(query, recall_k)
+                # P2-2 修复：FAISS search 为同步 CPU 密集操作，放入线程池
+                def _faiss_search():
+                    return self._index.search(query, recall_k)
+                scores, ids = await asyncio.to_thread(_faiss_search)
 
             results = []
             try:
@@ -313,8 +319,11 @@ class FaissVectorStore:
         if len(to_remove) > 0 and self._index is not None:
             try:
                 async with self._lock:
-                    self._index.remove_ids(to_remove)
-                    self._save_index()
+                    # P2-2 修复：FAISS remove_ids + 索引落盘放入线程池
+                    def _faiss_remove():
+                        self._index.remove_ids(to_remove)
+                        self._save_index()
+                    await asyncio.to_thread(_faiss_remove)
                 logger.info(f"[Quill RAG] 已从 FAISS 索引移除 {len(to_remove)} 条向量 (source={source})")
             except Exception as e:
                 logger.error(

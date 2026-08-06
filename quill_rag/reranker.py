@@ -88,9 +88,13 @@ class QuillReranker:
                     scored[idx] = score
 
             # 按重排分数排序，取 top_k
+            # P3-1 修复：浅拷贝候选字典，避免多次 rerank 时累积污染原数据
+            scored_candidates = []
             for idx, cand in enumerate(candidates):
-                cand['rerank_score'] = scored.get(idx, 0.0)
-            return sorted(candidates, key=lambda x: x.get('rerank_score', 0), reverse=True)[:top_k]
+                c = dict(cand)
+                c['rerank_score'] = scored.get(idx, 0.0)
+                scored_candidates.append(c)
+            return sorted(scored_candidates, key=lambda x: x.get('rerank_score', 0), reverse=True)[:top_k]
         except Exception as e:
             logger.warning(f"[Quill RAG] Rerank 调用失败: {e}")
         return candidates[:top_k]
@@ -134,9 +138,13 @@ class QuillReranker:
                     scores[idx] = score
 
             if scores:
+                # P3-1 修复：浅拷贝候选字典，避免副作用污染原数据
+                scored_candidates = []
                 for idx, cand in enumerate(candidates):
-                    cand['llm_score'] = scores.get(idx, 0.0)
-                return sorted(candidates, key=lambda x: x.get('llm_score', 0), reverse=True)[:top_k]
+                    c = dict(cand)
+                    c['llm_score'] = scores.get(idx, 0.0)
+                    scored_candidates.append(c)
+                return sorted(scored_candidates, key=lambda x: x.get('llm_score', 0), reverse=True)[:top_k]
         except Exception as e:
             logger.warning(f"[Quill RAG] LLM 降级重排失败: {e}")
         return sorted(candidates, key=lambda x: x.get('score', 0), reverse=True)[:top_k]
