@@ -349,12 +349,19 @@ class MemoryStore:
     async def prune_memories(self) -> int:
         """分档遗忘清理任务（无情斩杀低价值记忆）。核心记忆(is_core=1)永不清理。"""
         try:
+            # P3-2 修复：除原有 is_active=0 清理外，对 is_active=1 但超过 60 天
+            # 未更新的低价值记忆也执行降级清理，避免记忆表无限膨胀。
             cursor = await self._exec_write("""
                 DELETE FROM memories
-                WHERE is_active = 0 AND is_core = 0 AND (
-                    (useful_score < 3 AND julianday('now') - julianday(timestamp) > 3)
+                WHERE is_core = 0 AND (
+                    (is_active = 0 AND (
+                        (useful_score < 3 AND julianday('now') - julianday(timestamp) > 3)
+                        OR
+                        (useful_score >= 3 AND useful_score < 10 AND julianday('now') - julianday(timestamp) > 9)
+                    ))
                     OR
-                    (useful_score >= 3 AND useful_score < 10 AND julianday('now') - julianday(timestamp) > 9)
+                    (is_active = 1 AND useful_score < 10
+                     AND julianday('now') - julianday(timestamp) > 60)
                 )
             """)
             deleted = cursor.rowcount
@@ -654,15 +661,28 @@ class MemoryStore:
             logger.warning("[Quill Memory] get_memory_by_id 失败: %s", e)
             return None
 
-    async def search_all(self, query_vector: list[float], top_k: int = 5) -> list[dict]:
-        """跨 session 向量检索（全局搜索，不限制 session_id）。"""
+    async def search_all(self, query_vector: list[float], top_k: int = 5, session_ids: list[str] | None = None) -> list[dict]:
+        """跨 session 向量检索（全局搜索，不限制 session_id）。
+
+        P2-7 修复：新增可选 session_ids 白名单参数。传入时仅检索指定会话的记忆，
+        None 表示全量（保持向后兼容，仅限管理面板等受信任调用方使用）。
+        """
         if not query_vector:
             return []
         try:
-            rows = await self._exec_fetchall(
-                "SELECT id, session_id, summary, chat_summary, vector, dim, timestamp FROM memories "
-                "ORDER BY timestamp DESC LIMIT 2000"
-            )
+            if session_ids:
+                placeholders = ",".join("?" for _ in session_ids)
+                rows = await self._exec_fetchall(
+                    f"SELECT id, session_id, summary, chat_summary, vector, dim, timestamp FROM memories "
+                    f"WHERE session_id IN ({placeholders}) "
+                    f"ORDER BY timestamp DESC LIMIT 2000",
+                    list(session_ids)
+                )
+            else:
+                rows = await self._exec_fetchall(
+                    "SELECT id, session_id, summary, chat_summary, vector, dim, timestamp FROM memories "
+                    "ORDER BY timestamp DESC LIMIT 2000"
+                )
         except Exception as e:
             logger.warning(f"[Quill Memory] 向量检索查询失败: {e}")
             return []

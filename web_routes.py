@@ -47,6 +47,7 @@ import os
 import tempfile
 from functools import wraps
 from pathlib import Path
+from urllib.parse import quote as _urlquote
 
 from astrbot.api.web import (
     PluginUploadFile,
@@ -56,6 +57,9 @@ from astrbot.api.web import (
     request,
 )
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+
+# 头像静态服务使用字节流响应（file_response 仅支持文件路径，不适用内存字节）
+from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +114,9 @@ def _api_handler(handler):
         try:
             return await handler(*args, **kwargs)
         except Exception as e:
-            return error_response(str(e), status_code=500)
+            # P1-1 修复：记录完整异常日志，前端仅返回通用错误，避免泄漏内部信息
+            logger.exception("[Quill Web] handler 异常 (%s): %s", getattr(handler, "__name__", "?"), e)
+            return error_response("服务器内部错误，请查看服务端日志", status_code=500)
     return wrapper
 
 
@@ -156,7 +162,8 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/wb/get",          self.wb_get,         ["POST"],   "获取世界书详情")
         _r(f"/{PLUGIN_NAME}/wb/create",       self.wb_create,      ["POST"],   "创建世界书")
         _r(f"/{PLUGIN_NAME}/wb/delete",       self.wb_delete,      ["POST"],   "删除世界书")
-        _r(f"/{PLUGIN_NAME}/wb/delete_book",  self.wb_delete_book, ["POST"],   "删除整本世界书")
+        # P3-3 修复：delete_book 与 delete 为同一逻辑（历史兼容端点），复用同一 handler
+        _r(f"/{PLUGIN_NAME}/wb/delete_book",  self.wb_delete,      ["POST"],   "删除整本世界书")
         _r(f"/{PLUGIN_NAME}/wb/reload",       self.wb_reload,      ["POST"],   "重新加载世界书")
         _r(f"/{PLUGIN_NAME}/wb/entry/create", self.wb_entry_create,["POST"],   "创建世界书条目")
         _r(f"/{PLUGIN_NAME}/wb/entry/update", self.wb_entry_update,["POST"],   "更新世界书条目")
@@ -472,8 +479,8 @@ class QuillRoutes:
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
             return error_response("记忆未初始化", status_code=500)
-        page = request.query.get("page", 1, type=int)
-        per_page = min(request.query.get("per_page", 50, type=int), 200)
+        page = max(1, request.query.get("page", 1, type=int) or 1)
+        per_page = min(max(1, request.query.get("per_page", 50, type=int) or 50), 200)
         return json_response(await handle_memory_list_all(memory_store, page=page, per_page=per_page))
 
     @_api_handler
@@ -591,7 +598,7 @@ class QuillRoutes:
         if memory_store is None:
             return error_response("记忆系统未加载", status_code=500)
         session_id = request.query.get("session_id")
-        limit = min(int(request.query.get("limit", 200)), 1000)
+        limit = min(max(1, int(request.query.get("limit", 200))), 1000)
         return json_response(await handle_chat_log_list(memory_store, session_id, limit))
 
     @_api_handler
@@ -620,8 +627,8 @@ class QuillRoutes:
     async def wr_list(self):
         category = request.query.get("category")
         search = request.query.get("search")
-        page = request.query.get("page", 1, type=int)
-        per_page = min(request.query.get("per_page", 20, type=int), 100)
+        page = max(1, request.query.get("page", 1, type=int) or 1)
+        per_page = min(max(1, request.query.get("per_page", 20, type=int) or 20), 100)
         is_constant_str = request.query.get("is_constant")
         is_constant = (is_constant_str.lower() == 'true') if is_constant_str else None
         return json_response(
@@ -713,13 +720,6 @@ class QuillRoutes:
 
     @_api_handler
     async def wb_delete(self):
-        data = await request.json(default={})
-        return json_response(
-            await handle_wb_delete(self.wb_manager, data.get("name"))
-        )
-
-    @_api_handler
-    async def wb_delete_book(self):
         data = await request.json(default={})
         return json_response(
             await handle_wb_delete(self.wb_manager, data.get("name"))
@@ -1097,18 +1097,18 @@ class QuillRoutes:
             # 导出为 V2
             export_data = self.persona_manager.export_v2_card(persona, avatar_data)
 
-            # 返回文件下载
+            # 返回文件下载（P3-5 修复：file_response 仅支持路径，bytes 需用 Response + 下载头）
             if avatar_data:
-                return file_response(
+                return Response(
                     export_data,
-                    filename=f"{persona['name']}_v2.png",
-                    content_type="image/png"
+                    media_type="image/png",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{_urlquote(persona['name'])}_v2.png"}
                 )
             else:
-                return file_response(
+                return Response(
                     export_data,
-                    filename=f"{persona['name']}_v2.json",
-                    content_type="application/json"
+                    media_type="application/json",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{_urlquote(persona['name'])}_v2.json"}
                 )
 
         except ImportError as e:
@@ -1116,6 +1116,7 @@ class QuillRoutes:
         except Exception as e:
             return error_response(f"导出失败: {e}", status_code=500)
 
+    @_api_handler
     async def serve_avatar(self, filename: str):
         """提供头像文件静态服务。"""
         if not self.persona_manager:
@@ -1137,7 +1138,6 @@ class QuillRoutes:
         }
         mime = mime_map.get(ext, 'application/octet-stream')
 
-        from starlette.responses import Response
         return Response(
             data,
             media_type=mime,
@@ -1235,12 +1235,15 @@ class QuillRoutes:
                             continue
                         zf.write(fpath, arcname)
                         zip_count += 1
-        await _build_zip()
+        # P3-4 修复：打包为同步 IO 密集操作，放入线程池避免阻塞事件循环
+        await asyncio.to_thread(_build_zip)
         buf.seek(0)
         logger.info(f"[Quill] 全量备份导出: {zip_count} 个文件")
         import datetime as _dt
-        return file_response(
+        # P3-5 修复：file_response 仅支持路径，bytes 用 Response + 下载头
+        fname = f"quill_backup_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        return Response(
             buf.getvalue(),
-            filename=f"quill_backup_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-            content_type="application/zip"
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={fname}"}
         )

@@ -7,7 +7,18 @@ import re
 
 
 # 句子结束符：中文句号、问号、感叹号、英文句号、问号、感叹号
-_SENTENCE_END_RE = re.compile(r'[。！？.!?]\s*')
+# P2-8 修复：用 lookbehind 保留句末标点（原 split 会丢弃分隔符）
+_SENTENCE_END_RE = re.compile(r'(?<=[。！？.!?])\s*')
+
+
+def _is_cjk(ch: str) -> bool:
+    """P2-8: 判断字符是否为 CJK（中日韩统一表意文字），用于决定是否插入空格。"""
+    cp = ord(ch)
+    return (
+        0x4E00 <= cp <= 0x9FFF   # CJK 统一表意文字
+        or 0x3400 <= cp <= 0x4DBF  # CJK 扩展 A
+        or 0x3040 <= cp <= 0x30FF  # 日文假名
+    )
 
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
@@ -61,7 +72,12 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
                     if not sent:
                         continue
                     if len(current) + len(sent) + 1 <= chunk_size:
-                        current = (current + " " + sent) if current else sent
+                        # P2-8 修复：中文/日文之间不加空格，避免干扰 embedding 分词；
+                        # 非 CJK 邻接才用空格分隔
+                        if current and _is_cjk(current[-1]) and _is_cjk(sent[0]):
+                            current = current + sent
+                        else:
+                            current = (current + " " + sent) if current else sent
                     else:
                         if current:
                             chunks.append(current)

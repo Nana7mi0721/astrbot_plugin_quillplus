@@ -40,6 +40,28 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _safe_bool(value, default: bool = False) -> bool:
+    """P2-6: 安全 bool 转换。
+
+    配置面板可能传字符串（如 "false"/"0"/"off"），直接 bool("false") 会得 True。
+    这里统一识别常见假值字符串，其余按真值处理。
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("", "0", "false", "no", "off", "none", "null"):
+            return False
+        if v in ("1", "true", "yes", "on"):
+            return True
+        return bool(value)
+    return bool(value)
+
+
 class QuillConfig:
     """Quill 插件配置解析层。"""
 
@@ -51,29 +73,29 @@ class QuillConfig:
         self.rag_llm_provider_id: str = str(rag.get("llm_provider_id", "") or "").strip()
         self.rag_embedding_provider_id: str = str(rag.get("embedding_provider_id", "") or "").strip()
         self.rag_rerank_provider_id: str = str(rag.get("rerank_provider_id", "") or "").strip()
-        self.rag_enable_local_embedding: bool = bool(rag.get("enable_local_embedding", True))
+        self.rag_enable_local_embedding: bool = _safe_bool(rag.get("enable_local_embedding"), True)
         self.rag_chunk_size: int = _safe_int(rag.get("chunk_size", 500), 500)
         self.rag_chunk_overlap: int = _safe_int(rag.get("chunk_overlap", 50), 50)
         self.rag_top_k: int = _safe_int(rag.get("top_k", 3), 3)
         self.rag_dense_top_k: int = _safe_int(rag.get("dense_top_k", 5), 5)
-        self.rag_enable_memory: bool = bool(rag.get("enable_memory", False))
-        self.rag_enable_autonomous_reflection: bool = bool(rag.get("enable_autonomous_reflection", True))
-        self.rag_enable_chat_logging: bool = bool(rag.get("enable_chat_logging", True))
+        self.rag_enable_memory: bool = _safe_bool(rag.get("enable_memory"))
+        self.rag_enable_autonomous_reflection: bool = _safe_bool(rag.get("enable_autonomous_reflection"), True)
+        self.rag_enable_chat_logging: bool = _safe_bool(rag.get("enable_chat_logging"), True)
         self.rag_chat_log_retention_days: int = _safe_int(rag.get("chat_log_retention_days", 30), 30)
 
         # ── worldbook ──
         wb = _get_nested(self._raw, "worldbook", {}) or {}
-        self.worldbook_enabled: bool = bool(wb.get("enabled", True))
+        self.worldbook_enabled: bool = _safe_bool(wb.get("enabled"), True)
         self.worldbook_max_dynamic: int = _safe_int(wb.get("max_dynamic_entries", 4), 4)
         self.worldbook_max_token: int = _safe_int(wb.get("max_token_limit", 4000), 4000)
         self.worldbook_sensitivity: float = _safe_float(wb.get("match_sensitivity", 0.7), 0.7)
         self.worldbook_injection_pos: str = str(wb.get("injection_position", "user_prefix"))
-        self.worldbook_show_log: bool = bool(wb.get("show_trigger_log", False))
-        self.worldbook_always_activate: bool = bool(wb.get("always_activate", False))
+        self.worldbook_show_log: bool = _safe_bool(wb.get("show_trigger_log"))
+        self.worldbook_always_activate: bool = _safe_bool(wb.get("always_activate"))
 
         # ── writing_resource ──
         wr = _get_nested(self._raw, "writing_resource", {}) or {}
-        self.wr_enabled: bool = bool(wr.get("enabled", True))
+        self.wr_enabled: bool = _safe_bool(wr.get("enabled"), True)
         self.wr_max_entries: int = _safe_int(wr.get("max_entries", 4), 4)
         self.wr_fallback_top: int = _safe_int(wr.get("fallback_top_count", 2), 2)
         self.wr_dedup_limit: int = _safe_int(wr.get("category_dedup_limit", 3), 3)
@@ -86,7 +108,7 @@ class QuillConfig:
 
         # ── status_bar ──
         sb = _get_nested(self._raw, "status_bar", {}) or {}
-        self.status_bar_enabled: bool = bool(sb.get("enabled", False))
+        self.status_bar_enabled: bool = _safe_bool(sb.get("enabled"))
         self.status_bar_format: str = str(sb.get("format_template", "**状态栏**\n```\n{content}\n```"))
         # 解析剧情走向选项
         plot_raw = sb.get("plot_paths", "") or ""
@@ -104,13 +126,13 @@ class QuillConfig:
         while len(self.status_bar_fields) < 6:
             self.status_bar_fields.append("")
         # 方案C: LLM 智能提取开关（默认关闭，高成本兜底）
-        self.status_bar_llm_extract: bool = bool(sb.get("llm_extract", False))
+        self.status_bar_llm_extract: bool = _safe_bool(sb.get("llm_extract"))
         # P0-2: 状态栏 LLM 提取独立 provider（留空回退到 RAG 摘要 LLM）
         self.status_bar_llm_provider_id: str = str(sb.get("llm_provider_id", "") or "").strip()
 
         # ── refusal ──
         ref = _get_nested(self._raw, "refusal", {}) or {}
-        self.refusal_enabled: bool = bool(ref.get("enabled", True))
+        self.refusal_enabled: bool = _safe_bool(ref.get("enabled"), True)
         patterns_raw = ref.get("patterns", "") or ""
         if isinstance(patterns_raw, str) and patterns_raw.strip():
             self.refusal_patterns: list[str] = [p.strip() for p in patterns_raw.splitlines() if p.strip()]
@@ -119,7 +141,7 @@ class QuillConfig:
 
         # ── debug ──
         dbg = _get_nested(self._raw, "debug", {}) or {}
-        self.debug_enabled: bool = bool(dbg.get("enabled", False))
+        self.debug_enabled: bool = _safe_bool(dbg.get("enabled"))
         self.panel_theme: str = str(dbg.get("panel_theme", "light"))
 
         # ── permissions ──
