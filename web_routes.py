@@ -47,18 +47,22 @@ import os
 import tempfile
 from functools import wraps
 from pathlib import Path
-from urllib.parse import quote as _urlquote
+from urllib.parse import quote
+
+
+# 文件名 URL 编码（safe='' 确保 / 等字符也被编码，避免注入下载头）
+def _urlquote(name: str) -> str:
+    return quote(str(name), safe='')
 
 from astrbot.api.web import (
     PluginUploadFile,
     error_response,
-    file_response,
     json_response,
     request,
 )
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-# 头像静态服务使用字节流响应（file_response 仅支持文件路径，不适用内存字节）
+# 字节流响应（file_response 仅支持文件路径，不适用内存字节）
 from starlette.responses import Response
 
 logger = logging.getLogger(__name__)

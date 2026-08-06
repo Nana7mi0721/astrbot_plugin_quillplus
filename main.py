@@ -1182,6 +1182,7 @@ class QuillPlugin(Star):
         try:
             # P1-3 修复：提前初始化，避免 except 块引用未定义变量掩盖原始异常
             emergency = False
+            extra_info = {}
             self._restore_smt_tool(req)
 
             user_input = req.prompt or ""
