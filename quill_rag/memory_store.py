@@ -106,13 +106,16 @@ class MemoryStore:
             await self._conn.commit()
 
             # Backfill FTS5
+            # 注意：此处已在 self._lock 内，不能再调用 _exec_* 辅助方法（内部会重复获取锁导致死锁），
+            # 必须直接使用 self._conn。
             try:
-                rows = await self._exec_fetchall("SELECT COUNT(*) FROM memories_fts")
-                if rows and rows[0][0] == 0:
+                cur = await self._conn.execute("SELECT COUNT(*) FROM memories_fts")
+                row = await cur.fetchone()
+                if row and row[0] == 0:
                     await self._conn.execute("INSERT INTO memories_fts(rowid, summary, content) SELECT id, summary, chat_summary FROM memories")
                     await self._conn.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[Quill Memory] FTS5 回填失败: %s", e)
 
             # Schema 热迁移：新增记忆质量管理字段（兼容老数据库）
             for stmt in (
@@ -602,12 +605,12 @@ class MemoryStore:
         """返回存储统计。"""
         try:
             total = (await self._exec_fetchone("SELECT COUNT(*) FROM memories"))[0]
-            sessions = await self._exec_fetchone(
+            sessions = (await self._exec_fetchone(
                 "SELECT COUNT(DISTINCT session_id) FROM memories"
-            )[0]
-            today = await self._exec_fetchone(
+            ))[0]
+            today = (await self._exec_fetchone(
                 "SELECT COUNT(*) FROM memories WHERE date(timestamp) = date('now')"
-            )[0]
+            ))[0]
         except Exception as e:
             logger.warning("[Quill Memory] get_stats 失败: %s", e)
             return {"total_memories": 0, "total_sessions": 0, "today_count": 0}

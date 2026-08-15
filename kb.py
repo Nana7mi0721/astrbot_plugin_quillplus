@@ -695,7 +695,9 @@ class WritingResourceManager:
         if category:
             sql += " AND wr.category = ?"
             params.append(category)
-        sql += " LIMIT 500"
+        # 回退路径仅在 FTS5 不可用时触发；上限从 500 放宽到 2000，
+        # 避免较大素材库中位于后面的条目永远无法被匹配到。
+        sql += " LIMIT 2000"
 
         async with self.conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()

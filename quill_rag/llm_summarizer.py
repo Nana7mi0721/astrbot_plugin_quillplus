@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -108,15 +109,32 @@ class QuillSummarizer:
             if response:
                 completion = getattr(response, "completion_text", None) or getattr(response, "text", "")
                 if completion:
-                    import json
-                    # Try to extract JSON from completion
-                    import re
-                    match = re.search(r'\{.*\}', completion, re.DOTALL)
-                    if match:
-                        return json.loads(match.group(0))
-                    else:
-                        return json.loads(completion)
+                    data = self._extract_json(completion)
+                    if isinstance(data, dict):
+                        return data
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"[Quill Memory] 反思生成失败: {e}")
+            logger.warning(f"[Quill Memory] 反思生成失败: {e}")
         return {}
+
+    @staticmethod
+    def _extract_json(text: str):
+        """从 LLM 输出中提取首个完整 JSON 对象。
+
+        用 raw_decode 从每个 '{' 开始尝试：贪婪正则在输出包含多个 JSON 块
+        （思考过程 + 正式输出）或被 Markdown 代码块包裹时会解析失败。
+        """
+        decoder = json.JSONDecoder()
+        for i, ch in enumerate(text):
+            if ch != "{":
+                continue
+            try:
+                obj, _ = decoder.raw_decode(text[i:])
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                continue
+        # 兜底：整体解析（保持原行为）
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return None

@@ -90,11 +90,13 @@ class FaissVectorStore:
         """加载 FAISS 索引（如存在）。
 
         S2-10 修复：若已有索引 dim 与 expected_dim 不一致，重建索引并清空孤儿 FAISS ID。
+        注意：内部经 _exec_write 获取 self._lock（asyncio.Lock 不可重入），调用方不得已持有该锁。
         """
         try:
             import faiss
             if os.path.exists(self.index_path):
-                self._index = faiss.read_index(self.index_path)
+                # read_index 为同步 IO 操作，索引大时阻塞事件循环，放入线程池
+                self._index = await asyncio.to_thread(faiss.read_index, self.index_path)
                 loaded_dim = self._index.d
                 if loaded_dim != self.expected_dim:
                     # 切换了 embedding provider，维度不匹配，重建索引
@@ -104,7 +106,7 @@ class FaissVectorStore:
                     )
                     self._index = None
                     try:
-                        os.remove(self.index_path)
+                        await asyncio.to_thread(os.remove, self.index_path)
                     except OSError as e:
                         logger.debug("[Quill RAG] 删除旧索引文件失败（可忽略）: %s", e)
                     # 清空 SQLite 中的孤儿 faiss_id（指向已失效的索引）
@@ -369,6 +371,10 @@ class FaissVectorStore:
         }
 
     async def load_index(self):
-        """重新加载 FAISS 索引（供 /doc reload 调用）。"""
-        async with self._lock:
-            self._load_index()
+        """重新加载 FAISS 索引（供 /doc reload 调用）。
+
+        此前漏了 await（协程从未执行，reload 实际无效）。同时不能在此持有
+        self._lock：_load_index 内部会经 _exec_write 获取同一把锁，
+        asyncio.Lock 不可重入，持锁调用会死锁。
+        """
+        await self._load_index()

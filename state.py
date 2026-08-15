@@ -37,8 +37,9 @@ class UserState:
 
 
 class StateManager:
-    # 自动落盘连续失败阈值，超过后停止重试以避免无效循环
-    _MAX_FLUSH_FAILS = 3
+    # 自动落盘失败后指数退避的上限（秒）。Windows 下 os.replace 可能因文件被
+    # 杀毒/索引服务等短暂占用而失败（WinError 32），退避重试而非永久停摆。
+    _FLUSH_BACKOFF_MAX = 60.0
 
     def __init__(self, data_dir: str = "data", max_users: int = 10000):
         self._states: dict[str, UserState] = {}
@@ -156,7 +157,11 @@ class StateManager:
     async def _autoflush_loop(self, interval: float) -> None:
         try:
             while True:
-                await asyncio.sleep(interval)
+                delay = interval
+                if self._flush_fail_count:
+                    # 指数退避：interval * 2^n，封顶 _FLUSH_BACKOFF_MAX，成功后归零
+                    delay = min(interval * (2 ** self._flush_fail_count), self._FLUSH_BACKOFF_MAX)
+                await asyncio.sleep(delay)
                 # F6 修复：锁内只做序列化+清脏，锁外写盘，避免阻塞其他状态读写
                 async with self._lock:
                     if not self._dirty:
@@ -168,22 +173,19 @@ class StateManager:
                     await asyncio.to_thread(self._atomic_write, snapshot)
                     # 成功后重置失败计数
                     if self._flush_fail_count:
+                        logger.info(
+                            "[Quill State] 自动落盘在失败 %d 次后恢复", self._flush_fail_count
+                        )
                         self._flush_fail_count = 0
                     logger.debug("[Quill State] 自动落盘")
                 except Exception as e:
                     self._flush_fail_count += 1
-                    if self._flush_fail_count >= self._MAX_FLUSH_FAILS:
-                        logger.error(
-                            f"[Quill State] 自动落盘连续失败 {self._flush_fail_count} 次，"
-                            f"停止后台重试以避免无效循环: {e}"
-                        )
-                        # 恢复脏标记，后续显式 persist 调用仍可尝试
-                        async with self._lock:
-                            self._dirty = True
-                        break
+                    next_delay = min(
+                        interval * (2 ** self._flush_fail_count), self._FLUSH_BACKOFF_MAX
+                    )
                     logger.error(
-                        f"[Quill State] 自动落盘失败 ({self._flush_fail_count}/"
-                        f"{self._MAX_FLUSH_FAILS})，将在下个周期重试: {e}"
+                        f"[Quill State] 自动落盘失败 (连续 {self._flush_fail_count} 次)，"
+                        f"{next_delay:.0f}s 后重试: {e}"
                     )
                     async with self._lock:
                         self._dirty = True  # 恢复脏标记以便重试

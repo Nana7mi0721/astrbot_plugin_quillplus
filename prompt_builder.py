@@ -222,6 +222,8 @@ class PromptBuilder:
         stable_prompt = "\n\n".join(s.content for s in stable_sections if s.content)
 
         # Truncate only dynamic sections
+        # 注意：max_prompt_length 的配置语义是"字符"（见 _conf_schema.json performance 组），
+        # 与 _smart_truncate 内部的 len() 度量一致，勿误改为 token 估算造成单位错配。
         remaining_budget = self.max_prompt_length - len(stable_prompt)
         if remaining_budget < 1000:
             remaining_budget = 1000

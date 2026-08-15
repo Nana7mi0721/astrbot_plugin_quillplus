@@ -265,7 +265,7 @@ class QuillPlugin(Star):
     async def _reflection_loop(self):
         """Phase 4: 全自动自迭代反思守护进程 (Idle Detection)"""
         import asyncio
-        import time
+        from datetime import datetime, timezone
         from astrbot.api.all import logger
         
         # 初始延迟，避免启动时抢占资源
@@ -285,9 +285,20 @@ class QuillPlugin(Star):
                 store = self.rag_retriever.memory_store
                 rows = await store._exec_fetchall("SELECT session_id, MAX(timestamp), COUNT(*) FROM chat_logs GROUP BY session_id")
                 
-                now = time.time()
+                now_utc = datetime.now(timezone.utc)
                 for row in rows:
                     session_id, last_ts_str, count = row[0], row[1], row[2]
+                    # 空闲判定：最后一条日志距今超过 1 小时才反思，避免删除活跃会话的日志打断对话。
+                    # SQLite CURRENT_TIMESTAMP 为 naive UTC 字符串（"YYYY-MM-DD HH:MM:SS"）。
+                    try:
+                        last_active = datetime.fromisoformat(str(last_ts_str))
+                    except (TypeError, ValueError):
+                        logger.debug(f"[Quill Reflection] 会话 {session_id} 时间戳无法解析: {last_ts_str!r}，跳过")
+                        continue
+                    if last_active.tzinfo is None:
+                        last_active = last_active.replace(tzinfo=timezone.utc)
+                    if (now_utc - last_active).total_seconds() < 3600:
+                        continue
                     # 粗略判断：如果日志条数 > 30 条，进行反思
                     if count > 30:
                         logger.info(f"[Quill Reflection] 开始对 {session_id} 进行闲时反思归纳...")
@@ -511,7 +522,13 @@ class QuillPlugin(Star):
         """F5 修复：启动后台任务并保留引用，防止被 GC 中断。完成后自动从集合移除。"""
         t = asyncio.create_task(coro)
         self._bg_tasks.add(t)
-        t.add_done_callback(self._bg_tasks.discard)
+
+        def _on_done(task: asyncio.Task):
+            self._bg_tasks.discard(task)
+            if not task.cancelled() and task.exception() is not None:
+                logger.warning(f"[Quill] 后台任务 {task.get_coro()} 异常退出: {task.exception()}")
+
+        t.add_done_callback(_on_done)
         return t
 
     # ================================================================
