@@ -17,6 +17,7 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("rag", "chunk_size"), ("rag", "chunk_overlap"),
     ("rag", "top_k"), ("rag", "dense_top_k"),
     ("rag", "enable_memory"), ("rag", "enable_chat_logging"),
+    ("rag", "enable_autonomous_reflection"),
     ("rag", "chat_log_retention_days"),
     # worldbook
     ("worldbook", "enabled"), ("worldbook", "max_dynamic_entries"),
@@ -285,11 +286,22 @@ class QuillRoutes:
 
     @_api_handler
     async def config_all(self):
-        """获取底层全量 config 字典供前端渲染。"""
+        """获取全量 config 供前端渲染（经 _ALLOWED_CONFIG_KEYS 白名单过滤，不下发未授权字段）。"""
         if not self.config:
             return json_response({})
         raw = self.config.get_raw()
-        safe = dict(raw) if isinstance(raw, dict) else raw
+        if not isinstance(raw, dict):
+            return json_response({})
+        safe = {}
+        for group, group_dict in raw.items():
+            if not isinstance(group_dict, dict):
+                continue
+            allowed = {
+                key: value for key, value in group_dict.items()
+                if (group, key) in _ALLOWED_CONFIG_KEYS
+            }
+            if allowed:
+                safe[group] = allowed
         return json_response(safe)
 
     @_api_handler
@@ -1098,8 +1110,10 @@ class QuillRoutes:
                 avatar_filename = os.path.basename(avatar_path)
                 avatar_data = await self.persona_manager.read_avatar(avatar_filename)
 
-            # 导出为 V2
-            export_data = self.persona_manager.export_v2_card(persona, avatar_data)
+            # 导出为 V2（PIL 图片编码为同步 CPU 操作，放线程池避免阻塞事件循环）
+            export_data = await asyncio.to_thread(
+                self.persona_manager.export_v2_card, persona, avatar_data
+            )
 
             # 返回文件下载（P3-5 修复：file_response 仅支持路径，bytes 需用 Response + 下载头）
             if avatar_data:
@@ -1209,7 +1223,9 @@ class QuillRoutes:
             if avatar_path and avatar_path.startswith("quill_avatars/"):
                 avatar_filename = os.path.basename(avatar_path)
                 avatar_data = await self.persona_manager.read_avatar(avatar_filename)
-            export_data = self.persona_manager.export_v2_card(persona, avatar_data)
+            export_data = await asyncio.to_thread(
+                self.persona_manager.export_v2_card, persona, avatar_data
+            )
             filename = f"{persona['name']}_v2.png" if avatar_data else f"{persona['name']}_v2.json"
             b64_str = base64.b64encode(export_data).decode('ascii')
             return json_response({"filename": filename, "b64_data": b64_str})

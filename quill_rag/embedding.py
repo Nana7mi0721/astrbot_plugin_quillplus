@@ -55,7 +55,8 @@ class QuillEmbeddingProvider:
         try:
             if self._local_model is None:
                 logger.info("[Quill RAG] 加载本地 embedding 模型 BAAI/bge-small-zh-v1.5...")
-                self._local_model = self._load_local_model()
+                # 模型下载/加载为同步重 IO 操作，放入线程池避免阻塞事件循环
+                self._local_model = await asyncio.to_thread(self._load_local_model)
             loop = asyncio.get_running_loop()
             embeddings = await loop.run_in_executor(
                 None,

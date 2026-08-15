@@ -1,5 +1,27 @@
 # Changelog
 
+## v5.1.1 (unreleased) — 代码审查修复
+
+**P0 崩溃修复：**
+- `memory_store.py`：修复 `_init_db()` 中 `_exec_fetchall` 重入 `asyncio.Lock` 导致的自死锁——现在 FTS5 回填直接使用 `self._conn.execute` 而非锁辅助方法（`#110`）
+- `memory_store.py:605-610`：修复 `get_stats()` 中 `await coro(...)[0]` 语法错误（`'coroutine' object is not subscriptable`），统计不再恒为 0
+
+**P1 功能错误修复：**
+- `main.py:286-292`：反思守护进程补上空闲过滤——按 `last_active` 解析时间戳，仅对空闲超过 1 小时的会话执行反思与日志清理，不再误删活跃会话日志
+- `vector_store.py:89-125`：`_load_index()` 中 `faiss.read_index` 等同步操作移入 `asyncio.to_thread` 避免阻塞事件循环；`load_index()` 修复漏 `await`（协程从未执行，/doc reload 实际无效）且不再持锁（避免与非重入锁死锁）
+- `embedding.py:58`：本地模型首次加载 `_load_local_model()` 移入 `asyncio.to_thread`
+- `main.py:521-526`：`_spawn` 后台任务 done 回调增加异常检查，异常不再静默吞没
+
+**P2 健壮性与安全修复：**
+- `web_routes.py`：`config_all` 经 `_ALLOWED_CONFIG_KEYS` 白名单过滤（不复下发敏感字段）；补齐 `enable_autonomous_reflection` 白名单键（此前面板无法保存该开关）
+- `state.py`：autoflush 连续失败改为指数退避（上限 60s）而非 3 次后永久停止；Windows 下 `os.replace` 因文件占用短暂失败时能自动恢复
+- `memory_store.py:114`：`except: pass` 改为 `logger.warning`，FTS5 回填失败可见
+- `kb.py:698`：回退全表扫描上限从 500 放宽到 2000
+- `llm_summarizer.py:114`：JSON 提取改用 `json.JSONDecoder.raw_decode` 逐层解析，消除贪婪正则在多 JSON 块输出时的解析失败
+- `worldbook.py:180`：`get_active_worldbooks()` 返回深拷贝（`get_worldbook` 已修，此处漏修）
+- `web_routes.py:1114,1224`：`export_v2_card` 中 PIL 图片操作移入 `asyncio.to_thread`
+- `prompt_builder.py:225`：加注释说明 `max_prompt_length` 语义为字符（与 `_smart_truncate` 的 `len()` 度量一致），防止未来误改
+
 ## v5.1.0 — 全自动自迭代记忆 (Phase 4) 与检索架构演进
 
 本版本正式引入了“全自动自迭代记忆 (Autonomous Memory Management)”，同时对搜索模块引入混合检索与 LRU 缓存，是记忆架构的重大演进。
