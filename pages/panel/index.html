@@ -2568,7 +2568,12 @@ textarea:focus-visible,
           <h3 class="margin-0">记忆浏览</h3>
           <button class="btn btn-outline btn-sm" onclick="pruneMemories()">修剪低分记忆</button>
         </div>
-        <div class="form-group"><input type="text" id="mem-search" placeholder="搜索 session_id 或关键词..." oninput="handleMemorySearch()"></div>
+        <div class="form-group" style="display:flex;gap:8px;align-items:center">
+          <select id="mem-session-select" onchange="handleMemorySessionChange()" style="flex:1;max-width:300px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--on-surface)">
+            <option value="">全部会话</option>
+          </select>
+          <input type="text" id="mem-search" placeholder="搜索关键词..." oninput="handleMemorySearch()" style="flex:1">
+        </div>
         <div class="table-wrap"><table class="data-table" id="mem-table"><thead><tr><th>Session ID</th><th>摘要</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="mem-table-body"></tbody></table></div>
         <div id="mem-pagination" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:13px;color:var(--text-muted);">
           <span id="mem-page-info"></span>
@@ -4793,7 +4798,7 @@ function switchMemorySub(sub) {
   qsa('.memory-subnav-item').forEach(b => b.classList.toggle('active', b.dataset.memSub === sub));
   qsa('.mem-sub-pane').forEach(p => p.classList.toggle('active', p.id === 'mem-sub-' + sub));
   if (sub === 'overview') loadMemoryOverview();
-  if (sub === 'browser') { _memPage = 1; loadMemoryBrowser(); }
+  if (sub === 'browser') { _memPage = 1; loadMemorySessions(); loadMemoryBrowser(); }
 }
 
 async function loadMemoryOverview() {
@@ -4824,13 +4829,17 @@ async function loadMemoryOverview() {
 }
 
 async function loadMemoryBrowser() {
+  const sessionSelect = qs('#mem-session-select');
+  const sessionId = sessionSelect ? sessionSelect.value : '';
   const search = qs('#mem-search')?.value?.trim() || '';
   const tbody = qs('#mem-table-body');
   tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>';
   try {
-    const url = search
-      ? '/memory/list?session_id=' + encodeURIComponent(search)
-      : '/memory/list_all?page=' + _memPage + '&per_page=' + _memPerPage;
+    const url = sessionId
+      ? '/memory/list?session_id=' + encodeURIComponent(sessionId)
+      : search
+        ? '/memory/list?session_id=' + encodeURIComponent(search)
+        : '/memory/list_all?page=' + _memPage + '&per_page=' + _memPerPage;
     const resp = await api(url);
     const data = resp.data || resp;
     const memories = data.memories || [];
@@ -4882,6 +4891,29 @@ function changeMemoryPage(delta) {
   _memPage += delta;
   if (_memPage < 1) _memPage = 1;
   if (_memPage > _memTotalPages) _memPage = _memTotalPages;
+  loadMemoryBrowser();
+}
+
+// P2-1/2: 加载会话列表到下拉框
+async function loadMemorySessions() {
+  const select = qs('#mem-session-select');
+  if (!select) return;
+  try {
+    const resp = await api('/memory/sessions');
+    const data = resp.data || resp;
+    const sessions = data.sessions || [];
+    select.innerHTML = '<option value="">全部会话</option>';
+    sessions.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.session_id;
+      opt.textContent = s.session_id + ' (' + s.mem_count + '条)';
+      select.appendChild(opt);
+    });
+  } catch (_) { /* 静默失败，下拉框保留"全部会话"选项 */ }
+}
+
+function handleMemorySessionChange() {
+  _memPage = 1;
   loadMemoryBrowser();
 }
 

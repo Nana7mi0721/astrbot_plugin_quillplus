@@ -1638,13 +1638,16 @@ class QuillPlugin(Star):
         self, event: AstrMessageEvent,
         arg1: str = "", rest: GreedyStr = ""
     ):
-        """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill test <wr|wb|mem> <文字>"""
+        """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill debug | /quill test <wr|wb|mem> <文字>"""
         arg1_lower = (arg1 or "").strip().lower()
         if arg1_lower == "help":
             await _cmds.quill_help(event)
             return
         if arg1_lower == "reset":
             await _cmds.quill_reset(self, event)
+            return
+        if arg1_lower == "debug":
+            await _cmds.quill_debug(self, event)
             return
         if arg1_lower == "test":
             text = (rest or "").strip()

@@ -680,6 +680,21 @@ class MemoryStore:
             logger.warning("[Quill Memory] list_all_memories 失败: %s", e)
             return []
 
+    async def list_sessions(self) -> list[dict]:
+        """P2-1: 列出所有有记忆的会话，按最近更新时间倒序。"""
+        try:
+            rows = await self._exec_fetchall(
+                "SELECT session_id, COUNT(*) as mem_count, MAX(timestamp) as last_active "
+                "FROM memories GROUP BY session_id ORDER BY last_active DESC"
+            )
+            return [
+                {"session_id": r[0], "mem_count": r[1], "last_active": r[2]}
+                for r in rows
+            ]
+        except Exception as e:
+            logger.warning("[Quill Memory] list_sessions 失败: %s", e)
+            return []
+
     async def count_all_memories(self) -> int:
         """返回全部记忆总数（用于分页统计）。"""
         try:

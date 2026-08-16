@@ -212,6 +212,7 @@ class QuillRoutes:
         # ── 动态记忆 (5 个) ──
         _r(f"/{PLUGIN_NAME}/memory/list",      self.memory_list,    ["GET"],    "列出记忆")
         _r(f"/{PLUGIN_NAME}/memory/list_all",  self.memory_list_all,["GET"],    "列出全部记忆(倒序)")
+        _r(f"/{PLUGIN_NAME}/memory/sessions",  self.memory_sessions,["GET"],    "列出所有会话")
         _r(f"/{PLUGIN_NAME}/memory/stats",     self.memory_stats,   ["GET"],    "记忆存储统计")
         _r(f"/{PLUGIN_NAME}/memory/get",       self.memory_get,     ["GET"],    "获取单条记忆详情")
         _r(f"/{PLUGIN_NAME}/memory/delete",    self.memory_delete,  ["POST"],   "删除记忆")
@@ -499,6 +500,15 @@ class QuillRoutes:
         page = max(1, request.query.get("page", 1, type=int) or 1)
         per_page = min(max(1, request.query.get("per_page", 50, type=int) or 50), 200)
         return json_response(await handle_memory_list_all(memory_store, page=page, per_page=per_page))
+
+    @_api_handler
+    async def memory_sessions(self):
+        """P2-1: 列出所有有记忆的会话。"""
+        memory_store = self.rag.get('memory_store')
+        if memory_store is None:
+            return error_response("记忆未初始化", status_code=500)
+        sessions = await memory_store.list_sessions()
+        return json_response({"status": "ok", "data": {"sessions": sessions}})
 
     @_api_handler
     async def memory_stats(self):
