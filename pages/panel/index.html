@@ -2426,6 +2426,7 @@ textarea:focus-visible,
         <span class="toggle-label-text">仅常驻</span>
       </label>
       <button class="btn btn-primary" onclick="openWRModal(null)">+ 新建条目</button>
+      <button class="btn btn-outline" onclick="openWRTestModal()">匹配测试</button>
       <button class="btn btn-outline" onclick="exportWR()">导出</button>
       <label class="btn btn-outline cursor-ptr">导入<input type="file" accept=".json" hidden onchange="importWR(this)"></label>
     </div>
@@ -2447,6 +2448,7 @@ textarea:focus-visible,
         <span class="toggle-label-text">仅常驻</span>
       </label>
       <label class="btn btn-outline cursor-ptr">导入 (原生/ST)<input type="file" accept=".json" hidden onchange="importWBSt(this)"></label>
+      <button class="btn btn-outline" onclick="exportWBSt()">导出 ST</button>
       <button class="btn btn-outline" onclick="refreshWB()" id="btn-refresh-wb">⟳ 刷新</button>
     </div>
     <div id="wb-list"><div class="skeleton-list"><div class="skeleton-item"></div><div class="skeleton-item"></div><div class="skeleton-item"></div></div></div>
@@ -3825,7 +3827,59 @@ function importWBSt(input) {
       showToast('导入成功', 'success'); await loadWB(name);
     } catch(e) { showToast('导入失败: ' + e.message); }
     finally { btn.style.pointerEvents = ''; btn.innerHTML = origHTML; input.value = ''; }
+});
+	}
+
+// P1-2: 导出 ST 格式世界书
+async function exportWBSt() {
+  sandboxPrompt("请输入世界书名称", "", async (name) => {
+    if (!name) return;
+    try {
+      const data = await api('/wb/export_st?name=' + encodeURIComponent(name));
+      downloadJSON(data, name + '_st.json');
+      showToast('ST 导出成功', 'success');
+    } catch (e) { showToast('导出失败: ' + e.message); }
   });
+}
+
+// P1-1: WR 匹配测试弹窗
+function openWRTestModal() {
+  qs('#dialogTitle').textContent = '写作素材库匹配测试';
+  qs('#dialogBody').innerHTML = `
+    <div style="text-align:left;margin-bottom:8px;">输入文本测试素材库关键词命中：</div>
+    <textarea id="wr-test-input" class="md3-field" style="width:100%;min-height:80px;resize:vertical;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--on-surface);font-family:inherit" placeholder="输入测试文本..."></textarea>
+    <div id="wr-test-results" style="margin-top:12px;max-height:300px;overflow-y:auto;"></div>
+  `;
+  const btn = qs('#dialogConfirmBtn');
+  btn.className = 'btn btn-primary';
+  btn.textContent = '测试匹配';
+  btn.onclick = async () => {
+    const text = qs('#wr-test-input').value.trim();
+    if (!text) { showToast('请输入测试文本'); return; }
+    const resultsDiv = qs('#wr-test-results');
+    resultsDiv.innerHTML = '<div style="text-align:center;padding:16px;color:var(--on-surface-variant)">匹配中...</div>';
+    btn.disabled = true;
+    try {
+      const res = await apiPost('/wr/test', { text });
+      const items = res && res.results ? res.results : [];
+      if (!items.length) {
+        resultsDiv.innerHTML = '<div style="text-align:center;padding:16px;color:var(--on-surface-variant)">未匹配到任何条目</div>';
+        return;
+      }
+      resultsDiv.innerHTML = items.map((r, i) => {
+        const score = (r.match_score || 0).toFixed(2);
+        return '<div style="padding:8px;margin-bottom:4px;border-radius:8px;background:var(--surface-container);border:1px solid var(--outline-variant)">' +
+          '<div style="font-weight:500;font-size:14px;color:var(--primary)">#' + (i+1) + ' ' + esc(r.name || '?') + '</div>' +
+          '<div style="font-size:12px;color:var(--on-surface-variant);margin-top:2px">匹配度: ' + score + ' | 关键词: ' + esc(r.keywords || '—') + '</div></div>';
+      }).join('');
+    } catch (e) {
+      resultsDiv.innerHTML = '<div style="text-align:center;padding:16px;color:var(--error)">匹配失败: ' + esc(e.message) + '</div>';
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  qs('#dialogOverlay').classList.add('open');
+  setTimeout(() => qs('#wr-test-input').focus(), 50);
 }
 
 function deleteWBEntry(wbName, entryId, btn) {

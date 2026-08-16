@@ -229,6 +229,12 @@
         "_special": "select_provider",
         "default": "",
         "hint": "状态栏智能提取所使用的 LLM。留空则回退到 RAG 摘要 LLM。建议配置轻量/便宜的模型以降低成本。"
+      },
+      "default_placeholder": {
+        "type": "string",
+        "description": "缺省占位符文本",
+        "default": "未设置",
+        "hint": "当状态栏字段未匹配到值时显示的占位符。可自定义，如「未知」「—」等。"
       }
     }
   },
