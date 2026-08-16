@@ -889,8 +889,11 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         page_size = 5
         offset = (page - 1) * page_size
         try:
+            # total 用真实 COUNT，all_memories 只取当前页所需行数
+            total = await plugin.rag_memory_store.count_session_memories(session_id)
             all_memories = await plugin.rag_memory_store.list_memories(session_id, offset + page_size)
         except Exception:
+            total = 0
             all_memories = []
 
         if not all_memories:
@@ -898,7 +901,6 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             return
 
         page_items = all_memories[offset:offset + page_size]
-        total = len(all_memories)
         total_pages = max(1, (total + page_size - 1) // page_size)
 
         lines = [f"[记忆列表] 第 {page}/{total_pages} 页 (共 {total} 条)"]
@@ -1018,7 +1020,8 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
                 lines = [f"[记忆搜索] \"{query}\" → {len(results)} 条:"]
                 for r in results:
                     summary = r.get("summary", "?")[:60]
-                    score = r.get("score", 0)
+                    # 混合检索返回 rrf_score/vec_score，无 "score" 键
+                    score = r.get("rrf_score") or r.get("vec_score", 0)
                     lines.append(f"  [{score:.2f}] {summary}")
                 event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
             else:

@@ -12,6 +12,7 @@ Identical table schema — compatible with existing .db files.
 import os
 import re as _re
 import json
+import asyncio
 import sqlite3
 from typing import List, Dict, Optional, Any
 
@@ -41,6 +42,9 @@ class WritingResourceManager:
         self.db_path = db_path
         self._conn: Optional[aiosqlite.Connection] = None
         self.category_dedup_limit = category_dedup_limit
+        # F4 对齐：与 memory/vector store 一致，串行化 execute+commit 写序列，
+        # 防止并发协程（聊天匹配 × Web 面板编辑）交错提交半途事务
+        self._lock = asyncio.Lock()
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -336,27 +340,28 @@ class WritingResourceManager:
         is_constant: bool = False,
     ) -> bool:
         try:
-            await self.conn.execute(
-                """
-                INSERT INTO writing_resource
-                (category, entry_id, name, description, keywords,
-                 secondary_keywords, aliases, content, priority, is_constant)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    category,
-                    entry_id,
-                    name,
-                    description,
-                    json.dumps(keywords, ensure_ascii=False),
-                    json.dumps(secondary_keywords, ensure_ascii=False) if secondary_keywords else None,
-                    json.dumps(aliases, ensure_ascii=False) if aliases else None,
-                    content,
-                    priority,
-                    1 if is_constant else 0,
-                ),
-            )
-            await self.conn.commit()
+            async with self._lock:
+                await self.conn.execute(
+                    """
+                    INSERT INTO writing_resource
+                    (category, entry_id, name, description, keywords,
+                     secondary_keywords, aliases, content, priority, is_constant)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        category,
+                        entry_id,
+                        name,
+                        description,
+                        json.dumps(keywords, ensure_ascii=False),
+                        json.dumps(secondary_keywords, ensure_ascii=False) if secondary_keywords else None,
+                        json.dumps(aliases, ensure_ascii=False) if aliases else None,
+                        content,
+                        priority,
+                        1 if is_constant else 0,
+                    ),
+                )
+                await self.conn.commit()
             return True
         except aiosqlite.IntegrityError:
             return False
@@ -393,11 +398,12 @@ class WritingResourceManager:
             return False
         values.append(entry_id)
         try:
-            cursor = await self.conn.execute(
-                f"UPDATE writing_resource SET {', '.join(updates)} WHERE entry_id = ?",
-                values,
-            )
-            await self.conn.commit()
+            async with self._lock:
+                cursor = await self.conn.execute(
+                    f"UPDATE writing_resource SET {', '.join(updates)} WHERE entry_id = ?",
+                    values,
+                )
+                await self.conn.commit()
             return cursor.rowcount > 0
         except sqlite3.IntegrityError as e:
             logger.warning(f"[WR] update_entry 唯一性冲突: {e}")
@@ -411,10 +417,11 @@ class WritingResourceManager:
 
     async def delete_entry(self, entry_id: str) -> bool:
         try:
-            cursor = await self.conn.execute(
-                "DELETE FROM writing_resource WHERE entry_id = ?", (entry_id,)
-            )
-            await self.conn.commit()
+            async with self._lock:
+                cursor = await self.conn.execute(
+                    "DELETE FROM writing_resource WHERE entry_id = ?", (entry_id,)
+                )
+                await self.conn.commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
             logger.error(f"[WR] delete_entry 数据库错误: {e}")
@@ -428,11 +435,12 @@ class WritingResourceManager:
 
     async def set_constant(self, entry_id: str, is_constant: bool) -> bool:
         try:
-            cursor = await self.conn.execute(
-                "UPDATE writing_resource SET is_constant = ? WHERE entry_id = ?",
-                (1 if is_constant else 0, entry_id),
-            )
-            await self.conn.commit()
+            async with self._lock:
+                cursor = await self.conn.execute(
+                    "UPDATE writing_resource SET is_constant = ? WHERE entry_id = ?",
+                    (1 if is_constant else 0, entry_id),
+                )
+                await self.conn.commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
             logger.error(f"[WR] set_constant 数据库错误: {e}")
@@ -583,11 +591,16 @@ class WritingResourceManager:
 
     @staticmethod
     def _escape_fts5(text: str) -> str:
-        cleaned = _re.sub(r'[\"\'()*^~{}]', ' ', text)
-        tokens = [t.strip() for t in cleaned.split() if t.strip()]
+        # 中文标点也作为分隔符切开，得到较短的语义块；
+        # trigram 分词器下 <3 字符的 token 无法命中，直接过滤
+        cleaned = _re.sub(r'[\"\'()*^~{}，。！？；：、—…·\s]+', ' ', text)
+        tokens = [t for t in cleaned.split() if len(t) >= 3]
         if not tokens:
             return ""
-        return " ".join(f'"{t}"' for t in tokens)
+        # OR 连接：任一语义块命中即召回（靠 bm25 rank 排序）。
+        # 此前用 AND 连接整句短语，中文长句几乎必然 miss，
+        # FTS 快速路径形同虚设、每次都回退全表扫描。
+        return " OR ".join(f'"{t}"' for t in tokens)
 
     async def fts_match(
         self, user_input: str, top_k: int = 5, category: Optional[str] = None
@@ -744,22 +757,24 @@ class WritingResourceManager:
             return
         try:
             placeholders = ",".join("?" for _ in row_ids)
-            await self.conn.execute(
-                f"UPDATE writing_resource SET match_count = match_count + 1 WHERE id IN ({placeholders})",
-                row_ids,
-            )
-            await self.conn.commit()
+            async with self._lock:
+                await self.conn.execute(
+                    f"UPDATE writing_resource SET match_count = match_count + 1 WHERE id IN ({placeholders})",
+                    row_ids,
+                )
+                await self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"[WR] match_count 批量递增数据库错误: {e}")
         except Exception as e:
             logger.error(f"[WR] match_count 批量递增失败: {e}", exc_info=True)
 
     async def _log_match(self, user_input: str, matched_ids: List[str], match_count: int):
-        await self.conn.execute(
-            "INSERT INTO match_logs (user_input, matched_entries, match_count) VALUES (?, ?, ?)",
-            (user_input[:500], json.dumps(matched_ids, ensure_ascii=False), match_count),
-        )
-        await self.conn.commit()
+        async with self._lock:
+            await self.conn.execute(
+                "INSERT INTO match_logs (user_input, matched_entries, match_count) VALUES (?, ?, ?)",
+                (user_input[:500], json.dumps(matched_ids, ensure_ascii=False), match_count),
+            )
+            await self.conn.commit()
 
     async def get_match_logs(self, limit: int = 50, offset: int = 0) -> List[Dict]:
         async with self.conn.execute(

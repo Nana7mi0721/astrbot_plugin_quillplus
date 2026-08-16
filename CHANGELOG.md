@@ -2,17 +2,42 @@
 
 ## v5.1.1 (unreleased) — 代码审查修复
 
-**P0 崩溃修复：**
+**第三轮复审新增修复：**
+
+*状态栏 L4 正则重写（叙事保护）：*
+- `main.py`：L4 raw 状态栏解析的检测与删除改为**共用同一正则**——此前删除侧单独构造无锚定模式（`{字段名}[：:=→].*`），会从叙事句中间的同名字段删到行尾（如"想读懂她的心情：那份悸动"被拦腰截断）；现整行对称移除（含列表/Markdown 符号前缀，不留空行残留）
+- 值加 `{1,30}` 上限：行首"字段：长句"更可能是叙事，宁可漏检交给 L5 宽松解析，不误删正文
+- 顺带支持 `**心情**：羞涩` Markdown 粗体字段名；删除死代码 `_RAW_STATUS_RE`（已被动态版取代）
+
+*功能缺陷（P0/P1）：*
+- `_route_core.py`：修复记忆导入用 `asyncio.to_thread` 包装 **async 函数**导致协程从未执行——Web 面板导入显示成功但一条都没写库，改为直接 `await`
+- `memory_store.py`：修复 `update_core_memory` 写入的空向量核心记忆行（`vector=b'', dim=0`）与正常维度向量 `np.stack` 形状不兼容——闲时反思一旦建立核心记忆，该会话的记忆检索永久失效；现跳过空向量行
+- `memory_store.py`：补齐 LRU 缓存失效——`/memory clear`、`/quill reset`、`set_core`、`prune_memories` 此前不失效缓存，已删记忆仍会被召回
+- `commands.py`：`/memory search` 分数字段修正（读取 `rrf_score`/`vec_score`，此前恒显示 0.00）；`/memory list` 改用真实 COUNT 总数（此前"共 N 条"随页码增长）
+- `memory_store.py`：新增 `count_session_memories`
+
+*健壮性（P2）：*
+- `memory_store.py`：`mark_memories_used` 置 `is_active=1`——被召回的记忆进入活跃态，匹配缓存查询与 prune 分支语义（此前 `is_active` 从未被置位，60 天清理分支是死代码）
+- `kb.py`：FTS5 查询改 OR 连接 + 过滤 <3 字符 token（trigram 下限），中文长句不再必然 miss 全表扫描；补 `asyncio.Lock` 串行化写路径（与 memory/vector store 的 F4 修复对齐）
+- `retrieval.py`：`_spawn` 镜像 main.py 的异常日志修复
+
+*P3：*
+- `memory_store.py`：`utcnow()` 弃用替换（保持 naive UTC 比较语义）、裸 `except:` 收敛；`get_recent_chat_logs` 改 `ORDER BY id`（同秒消息顺序稳定）
+- `main.py`：清理过时的"prune_memories 是同步方法"注释
+
+**第一/二轮修复：**
+
+*P0 崩溃修复：*
 - `memory_store.py`：修复 `_init_db()` 中 `_exec_fetchall` 重入 `asyncio.Lock` 导致的自死锁——现在 FTS5 回填直接使用 `self._conn.execute` 而非锁辅助方法（`#110`）
 - `memory_store.py:605-610`：修复 `get_stats()` 中 `await coro(...)[0]` 语法错误（`'coroutine' object is not subscriptable`），统计不再恒为 0
 
-**P1 功能错误修复：**
+*P1 功能错误修复：*
 - `main.py:286-292`：反思守护进程补上空闲过滤——按 `last_active` 解析时间戳，仅对空闲超过 1 小时的会话执行反思与日志清理，不再误删活跃会话日志
 - `vector_store.py:89-125`：`_load_index()` 中 `faiss.read_index` 等同步操作移入 `asyncio.to_thread` 避免阻塞事件循环；`load_index()` 修复漏 `await`（协程从未执行，/doc reload 实际无效）且不再持锁（避免与非重入锁死锁）
 - `embedding.py:58`：本地模型首次加载 `_load_local_model()` 移入 `asyncio.to_thread`
 - `main.py:521-526`：`_spawn` 后台任务 done 回调增加异常检查，异常不再静默吞没
 
-**P2 健壮性与安全修复：**
+*P2 健壮性与安全修复：*
 - `web_routes.py`：`config_all` 经 `_ALLOWED_CONFIG_KEYS` 白名单过滤（不复下发敏感字段）；补齐 `enable_autonomous_reflection` 白名单键（此前面板无法保存该开关）
 - `state.py`：autoflush 连续失败改为指数退避（上限 60s）而非 3 次后永久停止；Windows 下 `os.replace` 因文件占用短暂失败时能自动恢复
 - `memory_store.py:114`：`except: pass` 改为 `logger.warning`，FTS5 回填失败可见

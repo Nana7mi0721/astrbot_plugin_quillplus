@@ -42,7 +42,13 @@ class QuillRetriever:
         """启动后台任务并保留引用，防止被 GC 中断"""
         t = asyncio.create_task(coro)
         self._bg_tasks.add(t)
-        t.add_done_callback(self._bg_tasks.discard)
+
+        def _on_done(task: asyncio.Task):
+            self._bg_tasks.discard(task)
+            if not task.cancelled() and task.exception() is not None:
+                logger.warning(f"[Quill] 后台任务 {task.get_coro()} 异常退出: {task.exception()}")
+
+        t.add_done_callback(_on_done)
         return t
 
     async def search_documents(self, query: str, allowed_sources: list[str] = None) -> list[dict]:
