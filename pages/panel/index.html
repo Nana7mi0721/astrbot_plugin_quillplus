@@ -2334,7 +2334,7 @@ textarea:focus-visible,
 <body>
 
 <header>
-  <h1>Quill <span style="font-size:12px;font-weight:normal;color:var(--text-muted);">v5.0.4</span></h1>
+  <h1>Quill <span id="panel-version" style="font-size:12px;font-weight:normal;color:var(--text-muted);">…</span></h1>
   <span class="sub">羽笔管理面板</span>
   <span class="spacer"></span>
   <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="切换深色模式">
@@ -2531,6 +2531,7 @@ textarea:focus-visible,
     <div class="memory-subnav">
       <button class="memory-subnav-item active" data-mem-sub="overview">系统总览</button>
       <button class="memory-subnav-item" data-mem-sub="browser">记忆浏览</button>
+      <button class="memory-subnav-item" data-mem-sub="logs">对话日志</button>
       <button class="memory-subnav-item" data-mem-sub="vector">向量检索</button>
       <button class="memory-subnav-item" data-mem-sub="io">导入导出</button>
     </div>
@@ -2591,6 +2592,24 @@ textarea:focus-visible,
             <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">从 JSON 文件导入记忆，会合并到现有记忆库。</p>
             <label class="btn btn-outline cursor-ptr">选择 JSON 文件<input type="file" accept=".json" hidden onchange="importMemories(this)"></label>
           </div>
+        </div>
+      </div>
+    </div>
+    <div class="mem-sub-pane" id="mem-sub-logs">
+      <div class="card">
+        <h3>对话日志</h3>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="text" id="chatlog-session" placeholder="Session ID（target 或 target::persona）..." style="flex:1;min-width:260px" onkeydown="if(event.key==='Enter')loadChatLogs()">
+          <button class="btn btn-primary" onclick="loadChatLogs(this)">加载</button>
+          <button class="btn btn-outline" onclick="exportChatLogs('markdown', this)">导出 Markdown</button>
+          <button class="btn btn-outline" onclick="exportChatLogs('txt', this)">导出 TXT</button>
+        </div>
+        <span class="hint-block">开启「RAG 与记忆 → 保存原始对话日志」后，激活的 RP 对话按会话记录于此（同记忆库的 session 隔离），供断点续传与回看。</span>
+        <div class="table-wrap" style="margin-top:12px">
+          <table class="data-table" id="chatlog-table">
+            <thead><tr><th style="width:64px">角色</th><th>内容</th><th style="width:150px">时间</th></tr></thead>
+            <tbody id="chatlog-tbody"><tr><td colspan="3" style="text-align:center;color:var(--text-muted)">输入 Session ID 后加载（最近 200 条）</td></tr></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -2811,6 +2830,11 @@ textarea:focus-visible,
               </select>
               <span class="hint-block">切换后需刷新页面生效。</span>
             </div>
+            <div class="form-group" style="margin-top:16px">
+              <label>全量备份</label>
+              <button class="btn btn-primary" onclick="backupExport(this)">一键备份下载 (zip)</button>
+              <span class="hint-block">打包素材库、世界书、角色卡、记忆与文档索引等全部插件数据。</span>
+            </div>
           </div>
         </div>
       </div>
@@ -2927,8 +2951,13 @@ textarea:focus-visible,
 <script>
 const PLUGIN_NAME = "astrbot_plugin_quillplus";
 
-function getBridge() { return window.AstrBotPluginPage || null; }
-async function waitForBridge(timeoutMs = 5000) { const s = Date.now(); while (Date.now() - s < timeoutMs) { if (window.AstrBotPluginPage) return window.AstrBotPluginPage; await new Promise(r => setTimeout(r, 16)); } return null; }
+function getBridge() {
+  // bridge 依赖父窗口（dashboard）postMessage 应答；独立打开（非 iframe）时
+  // SDK 仍会注入但无人应答，会导致所有 API 调用永久挂起——此时跳过 bridge 走原生 fetch
+  if (window.parent === window) return null;
+  return window.AstrBotPluginPage || null;
+}
+async function waitForBridge(timeoutMs = 5000) { const s = Date.now(); while (Date.now() - s < timeoutMs) { const b = getBridge(); if (b) return b; await new Promise(r => setTimeout(r, 16)); } return null; }
 
 let wrState = { entries: [], total: 0, page: 1, perPage: 9 };
 let wbCache = {};
@@ -3004,7 +3033,7 @@ function renderWBEntryCard(wbName, e) {
   return `<div class="wb-entry-card">
           <div class="wb-entry-header">
             <div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
-            <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${jsName}','${jsEid}')">✎</button><button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWBEntry('${jsName}','${jsEid}')">×</button></div>
+            <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${jsName}','${jsEid}')">✎</button><button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWBEntry('${jsName}','${jsEid}', this)">×</button></div>
           </div>
           ${(e.keys||[]).length ? `<div class="wb-entry-keys">${e.keys.map(k => `<span class="tag">${esc(k)}</span>`).join('')}</div>` : ''}
           ${e.content ? `<div class="wb-entry-content">${esc(e.content.substring(0,200))}${e.content.length>200?'…':''}</div>` : ''}
@@ -3020,6 +3049,24 @@ function downloadJSON(data, filename) {
   const a = document.createElement('a');
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
+}
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function withBusy(el, busyText, fn) {
+  // 统一的按钮忙碌态：禁用防重复点击，可选替换为 spinner 文案，结束后恢复
+  if (!el) return fn();
+  const orig = el.innerHTML;
+  el.disabled = true;
+  el.style.pointerEvents = 'none';
+  if (busyText) {
+    el.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px;margin-right:4px"></span>${busyText}`;
+  }
+  try { return await fn(); }
+  finally { el.disabled = false; el.style.pointerEvents = ''; el.innerHTML = orig; }
 }
 
 function showErrorDetail(title, msg) {
@@ -3121,7 +3168,7 @@ async function api(path, opts = {}) {
         return json.data !== undefined ? json.data : json;
       }
       return json;
-    } catch (e) {
+      } catch (e) {
       errors.push(e.message);
     }
   }
@@ -3431,11 +3478,11 @@ function renderWRGrid() {
       </div>
       ${isOpen ? renderWRExpanded(e) : (kw || more) ? `<div class="wr-card-tags">${kw}${more}</div>` : ''}
       <div class="wr-card-footer">
-        <label class="toggle"><input type="checkbox" ${e.enabled !== false ? 'checked' : ''} onchange="toggleWREntry('${jsId}', this.checked)"><span class="toggle-slider"></span></label>
+        <label class="toggle"><input type="checkbox" ${e.enabled !== false ? 'checked' : ''} onchange="toggleWREntry('${jsId}', this.checked, this)"><span class="toggle-slider"></span></label>
         <div class="wr-card-actions">
           ${isOpen ? `<button class="btn btn-sm btn-outline btn-icon" onclick="saveWRInline('${jsId}')">✓</button>` : ''}
           <button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWRModal('${jsId}')" title="编辑">✎</button>
-          <button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWREntry('${jsId}')" title="删除">×</button>
+          <button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWREntry('${jsId}', this)" title="删除">×</button>
         </div>
       </div>
     </div>`;
@@ -3592,12 +3639,18 @@ async function saveModal() {
   } catch (e) { showToast(e.message); }
 }
 
-function deleteWREntry(entryId) {
+function deleteWREntry(entryId, btn) {
   sandboxConfirm(`确定删除 "${entryId}" 吗？`, async () => {
-    try { await apiPost('/wr/delete', { entry_id: entryId }); showToast('已删除', 'success'); loadWR(); } catch (e) { showToast(e.message); }
+    await withBusy(btn, '删除中', async () => {
+      try { await apiPost('/wr/delete', { entry_id: entryId }); showToast('已删除', 'success'); loadWR(); } catch (e) { showToast(e.message); }
+    });
   }, true);
 }
-async function toggleWREntry(entryId, enabled) { try { await apiPost('/wr/toggle', { entry_id: entryId, enabled }); loadWR(); } catch (e) { showToast(e.message); } }
+async function toggleWREntry(entryId, enabled, el) {
+  if (el) el.disabled = true;
+  try { await apiPost('/wr/toggle', { entry_id: entryId, enabled }); loadWR(); } catch (e) { showToast(e.message); if (el) el.checked = !enabled; }
+  finally { if (el) el.disabled = false; }
+}
 async function exportWR() {
   try {
     const data = await api('/wr/export');
@@ -3775,13 +3828,15 @@ function importWBSt(input) {
   });
 }
 
-function deleteWBEntry(wbName, entryId) {
+function deleteWBEntry(wbName, entryId, btn) {
   sandboxConfirm('确定删除此条目？', async () => {
-    try {
-      await apiPost('/wb/entry/delete', { name: wbName, entry_id: entryId });
-      showToast('已删除', 'success');
-      await reloadSingleWB(wbName);
-    } catch (e) { showToast(e.message); }
+    await withBusy(btn, '删除中', async () => {
+      try {
+        await apiPost('/wb/entry/delete', { name: wbName, entry_id: entryId });
+        showToast('已删除', 'success');
+        await reloadSingleWB(wbName);
+      } catch (e) { showToast(e.message); }
+    });
   }, true);
 }
 
@@ -3914,7 +3969,7 @@ function renderPersonaPage() {
         <div class="persona-card-actions">
           <button class="btn btn-sm btn-outline" onclick="openPersonaModal(window.__quillPids[${index}])">编辑</button>
           <button class="btn btn-sm btn-outline" onclick="exportPersona(window.__quillPids[${index}])">导出</button>
-          <button class="btn btn-sm btn-danger" onclick="deletePersona(window.__quillPids[${index}])">删除</button>
+          <button class="btn btn-sm btn-danger" onclick="deletePersona(window.__quillPids[${index}], this)">删除</button>
         </div>
       </div>`;
     }).join('') + '</div>';
@@ -4157,9 +4212,11 @@ async function savePersona() {
   } catch (e) { showToast(e.message); }
 }
 
-function deletePersona(personaId) {
+function deletePersona(personaId, btn) {
   sandboxConfirm(`确定删除角色卡 "${personaId}"？此操作不可逆！\n相关头像与世界书绑定将一并清除。`, async () => {
-    try { await apiPost('/persona/delete', { id: personaId }); showToast('已删除', 'success'); loadPersonas(); } catch (e) { showToast(e.message); }
+    await withBusy(btn, '删除中', async () => {
+      try { await apiPost('/persona/delete', { id: personaId }); showToast('已删除', 'success'); loadPersonas(); } catch (e) { showToast(e.message); }
+    });
   }, true, personaId);
 }
 
@@ -4874,6 +4931,57 @@ async function importMemories(input) {
   }
 }
 
+// ── 对话日志查看器（P0-2）──
+async function loadChatLogs(btn) {
+  const sid = qs('#chatlog-session')?.value?.trim() || '';
+  const tbody = qs('#chatlog-tbody');
+  if (!sid) { showToast('请输入 Session ID', 'warning'); return; }
+  tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">加载中...</td></tr>';
+  const run = async () => {
+    const data = await api(`/chatlog/list?session_id=${encodeURIComponent(sid)}&limit=200`);
+    const logs = (data && (data.logs || data.data?.logs)) || [];
+    if (!logs.length) {
+      tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">该会话暂无日志（需开启「保存原始对话日志」并触发 RP 对话）</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = logs.map(l => `
+      <tr>
+        <td>${l.role === 'user' ? '<span class="badge">用户</span>' : '<span class="badge badge-constant">AI</span>'}</td>
+        <td style="white-space:pre-wrap;word-break:break-word;max-width:520px">${esc((l.content || '').substring(0, 500))}${(l.content || '').length > 500 ? '…' : ''}</td>
+        <td style="color:var(--text-muted);font-size:12px">${esc(l.timestamp || '')}</td>
+      </tr>`).join('');
+    showToast(`已加载 ${logs.length} 条日志`, 'success');
+  };
+  if (btn) await withBusy(btn, '加载中', run); else await run();
+}
+
+async function exportChatLogs(fmt, btn) {
+  const sid = qs('#chatlog-session')?.value?.trim() || '';
+  if (!sid) { showToast('请输入 Session ID', 'warning'); return; }
+  await withBusy(btn, '导出中', async () => {
+    try {
+      const data = await api(`/chatlog/export?session_id=${encodeURIComponent(sid)}&format=${fmt}`);
+      const content = (data && (data.content || data.data?.content)) || '';
+      if (!content) { showToast('该会话暂无可导出的日志', 'warning'); return; }
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      downloadBlob(blob, `quill_chatlog_${sid.replace(/[^a-zA-Z0-9_:.-]/g, '_')}.${fmt === 'txt' ? 'txt' : 'md'}`);
+      showToast('导出成功', 'success');
+    } catch (e) { showToast('导出失败: ' + e.message); }
+  });
+}
+
+// ── 全量备份（P0-3）──
+async function backupExport(btn) {
+  await withBusy(btn, '打包中...', async () => {
+    try {
+      const blob = await api('/backup/export', { isBlob: true });
+      const ts = new Date().toISOString().replace(/[:T]/g, '-').substring(0, 16);
+      downloadBlob(blob, `quill_backup_${ts}.zip`);
+      showToast('备份已下载', 'success');
+    } catch (e) { showToast('备份失败: ' + e.message); }
+  });
+}
+
 async function testMemoryVectorSearch() {
   const q = qs('#mem-vector-input').value.trim();
   const rawPre = qs('#mem-vector-raw');
@@ -4886,6 +4994,9 @@ async function testMemoryVectorSearch() {
 async function loadHealth() {
   try {
     const info = await api('/info');
+    // 动态版本徽章（替代硬编码，随 metadata.yaml 自动更新）
+    const verBadge = qs('#panel-version');
+    if (verBadge && info?.version) verBadge.textContent = String(info.version).replace(/^Quill\s*v?/i, 'v');
     const h = info?.health;
     if (!h) {
       qs('#health-rag-rate').textContent = 'N/A';
@@ -5154,6 +5265,21 @@ async function saveAllChanges() {
 
 async function quillInit() {
   await waitForBridge(1500);
+  // 首屏刷新版本徽章（不必等用户打开配置页）
+  api('/info').then(info => {
+    const el = qs('#panel-version');
+    if (el && info?.version) el.textContent = String(info.version).replace(/^Quill\s*v?/i, 'v');
+  }).catch(() => {});
+  // 深链接：#tab=memory&sub=logs 直达指定页（含子页），便于收藏与跳转
+  try {
+    const hm = (location.hash || '').match(/tab=([a-z]+)/i);
+    if (hm) {
+      const navBtn = document.querySelector(`.nav-item[data-tab="${hm[1]}"]`);
+      if (navBtn) navBtn.click();
+      const sm = (location.hash || '').match(/sub=([a-z]+)/i);
+      if (sm && hm[1] === 'memory') switchMemorySub(sm[1]);
+    }
+  } catch (_) {}
   loadWRCategories();
   loadWR();
   loadGlobalSettings();

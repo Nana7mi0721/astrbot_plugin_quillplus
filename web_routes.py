@@ -1234,11 +1234,18 @@ class QuillRoutes:
 
     @_api_handler
     async def backup_export(self):
-        """全量备份导出：打包所有插件数据为 zip 下载。"""
+        """全量备份导出：打包所有插件数据为 zip 下载。
+
+        修复：此前对 __file__ 做了两次 dirname（指到 plugins/ 目录），data 目录
+        永远 404；且只打包 data/，遗漏 knowledge/（三库 DB）与 worldbooks/。
+        现以插件根目录为基准，打包三个数据目录。
+        """
         import io
         import zipfile
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-        if not os.path.isdir(data_dir):
+        plugin_root = os.path.dirname(os.path.abspath(__file__))
+        sub_dirs = ["data", "knowledge", "worldbooks"]
+        existing = [d for d in (os.path.join(plugin_root, s) for s in sub_dirs) if os.path.isdir(d)]
+        if not existing:
             return error_response("数据目录不存在", status_code=404)
 
         buf = io.BytesIO()
@@ -1246,15 +1253,18 @@ class QuillRoutes:
         def _build_zip():
             nonlocal zip_count
             with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for root, dirs, files in os.walk(data_dir):
-                    for fname in files:
-                        fpath = os.path.join(root, fname)
-                        arcname = os.path.relpath(fpath, data_dir)
-                        # 跳过临时文件
-                        if fname.endswith('.tmp') or fname.endswith('.tmp.bak'):
-                            continue
-                        zf.write(fpath, arcname)
-                        zip_count += 1
+                for base in existing:
+                    for root, dirs, files in os.walk(base):
+                        for fname in files:
+                            fpath = os.path.join(root, fname)
+                            arcname = os.path.join(
+                                os.path.basename(base), os.path.relpath(fpath, base)
+                            )
+                            # 跳过临时文件与索引缓存
+                            if fname.endswith('.tmp') or fname.endswith('.tmp.bak') or fname.endswith('-wal') or fname.endswith('-shm'):
+                                continue
+                            zf.write(fpath, arcname)
+                            zip_count += 1
         # P3-4 修复：打包为同步 IO 密集操作，放入线程池避免阻塞事件循环
         await asyncio.to_thread(_build_zip)
         buf.seek(0)
