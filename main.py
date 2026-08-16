@@ -1448,6 +1448,22 @@ class QuillPlugin(Star):
             if not event.get_extra("_quill_activated"):
                 return
 
+            # ── 助手回复落日志（直接文本流路径）──
+            # on_llm_tool_respond 仅覆盖 send_message_to_user 工具调用路径；
+            # 模型直接输出文本时 completion_text 在此落日志，否则 chat_logs
+            # 只有用户侧，断点续传与反思调度都缺半边对话。
+            # _quill_assistant_logged 标记防止两条路径双写。
+            if (not event.get_extra("_quill_assistant_logged")
+                    and (resp.completion_text or "").strip()
+                    and getattr(self.config, 'rag_enable_chat_logging', True)
+                    and self.rag_retriever and self.rag_retriever.memory_store):
+                resp_pid = await self.state_manager.get_persona_id(target_id)
+                self._spawn(self.rag_retriever.log_chat_message(
+                    self._get_memory_session_id(target_id, resp_pid),
+                    "assistant", (resp.completion_text or "").strip()
+                ))
+                event.set_extra("_quill_assistant_logged", True)
+
             if not self.refusal_enabled:
                 return
 
@@ -1512,8 +1528,11 @@ class QuillPlugin(Star):
                 persona_id = await self.state_manager.get_persona_id(target_id)
                 mem_session_id = self._get_memory_session_id(target_id, persona_id)
 
-                # 记录 AI 回复到对话日志（始终保留，供断点续传使用）
-                if ai_response.strip() and getattr(self.config, 'rag_enable_chat_logging', True):
+                # 记录 AI 回复到对话日志（始终保留，供断点续传使用；
+                # 直接文本流已在 on_llm_response 落库时跳过，防双写）
+                if ai_response.strip() and not event.get_extra("_quill_assistant_logged") \
+                        and getattr(self.config, 'rag_enable_chat_logging', True):
+                    event.set_extra("_quill_assistant_logged", True)
                     self._spawn(self.rag_retriever.log_chat_message(
                         mem_session_id, "assistant", ai_response.strip()
                     ))

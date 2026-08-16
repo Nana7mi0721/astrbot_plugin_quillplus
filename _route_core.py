@@ -20,16 +20,21 @@ logger = logging.getLogger(__name__)
 
 
 def _get_plugin_version() -> str:
-    """从 metadata.yaml 读取插件版本号。"""
+    """从插件根目录的 metadata.yaml 读取版本号。
+
+    修复：此前对 __file__ 做了两次 dirname（跳到 plugins/ 目录），永远找不到
+    metadata.yaml，面板标题恒显示硬编码回退值。__file__ 在插件根目录下，
+    只需上跳一级。
+    """
     try:
         import yaml
         import os
-        _meta_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "metadata.yaml")
+        _meta_path = os.path.join(os.path.dirname(__file__), "metadata.yaml")
         with open(_meta_path, "r", encoding="utf-8") as f:
             meta = yaml.safe_load(f)
-        return str(meta.get("version", "5.0.4"))
+        return str(meta.get("version", "unknown"))
     except Exception:
-        return "5.0.4"
+        return "unknown"
 
 
 # ── Response helpers ─────────────────────────────────────────────

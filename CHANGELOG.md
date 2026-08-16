@@ -1,8 +1,14 @@
 # Changelog
 
-## v5.1.1 (unreleased) — 代码审查修复
+## v5.2.0 — 面板功能补全 + 三轮代码审查修复
 
-**第三轮复审新增修复：**
+**新功能（面板）：**
+- 对话日志查看器：动态记忆页新增「对话日志」子页，按会话浏览/导出 RP 对话记录（Markdown/TXT），后端 API 早已就绪，本次补上前端入口
+- 全量备份：配置页新增一键备份下载（zip 打包素材库/世界书/角色卡/记忆/文档索引）
+- 删除/启停操作统一忙碌态：按钮禁用 + spinner，防止误以为无响应而重复点击
+- 面板版本徽章改为动态读取 metadata.yaml（同时修复 `_get_plugin_version` 路径多跳一级导致永远显示 v5.0.4 的 bug）
+
+**代码审查修复（v5.1.0 → 本版本累计三轮）：**
 
 *状态栏 L4 正则重写（叙事保护）：*
 - `main.py`：L4 raw 状态栏解析的检测与删除改为**共用同一正则**——此前删除侧单独构造无锚定模式（`{字段名}[：:=→].*`），会从叙事句中间的同名字段删到行尾（如"想读懂她的心情：那份悸动"被拦腰截断）；现整行对称移除（含列表/Markdown 符号前缀，不留空行残留）
@@ -10,6 +16,7 @@
 - 顺带支持 `**心情**：羞涩` Markdown 粗体字段名；删除死代码 `_RAW_STATUS_RE`（已被动态版取代）
 
 *功能缺陷（P0/P1）：*
+- `web_routes.py`：修复备份导出 `backup_export` 双 `dirname` 路径错误（dir 指到 `plugins/` 目录，永远 404）；同时补全 `knowledge/` 和 `worldbooks/` 两个数据目录（此前只打包 `data/`）并跳过 `-wal`/`-shm` 临时文件
 - `_route_core.py`：修复记忆导入用 `asyncio.to_thread` 包装 **async 函数**导致协程从未执行——Web 面板导入显示成功但一条都没写库，改为直接 `await`
 - `memory_store.py`：修复 `update_core_memory` 写入的空向量核心记忆行（`vector=b'', dim=0`）与正常维度向量 `np.stack` 形状不兼容——闲时反思一旦建立核心记忆，该会话的记忆检索永久失效；现跳过空向量行
 - `memory_store.py`：补齐 LRU 缓存失效——`/memory clear`、`/quill reset`、`set_core`、`prune_memories` 此前不失效缓存，已删记忆仍会被召回
@@ -24,6 +31,7 @@
 *P3：*
 - `memory_store.py`：`utcnow()` 弃用替换（保持 naive UTC 比较语义）、裸 `except:` 收敛；`get_recent_chat_logs` 改 `ORDER BY id`（同秒消息顺序稳定）
 - `main.py`：清理过时的"prune_memories 是同步方法"注释
+- `pages/panel/index.html`：移除独立页调试用的 QDBG 标题栏污染（`document.title`），该行完成定位使命后已被清理
 
 **第一/二轮修复：**
 

@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.1.0-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.2.0-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -65,7 +65,11 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 - 调用 LLM 将对话精炼为短文本并生成向量
 - SQLite BLOB 存储向量 + NumPy 余弦相似度检索
 - **核心记忆锚定**：可将关键记忆钉住（`is_core=1`），不参与 Top-K 竞争，无条件注入 `<core_memory>` XML 标签，类似人设基石
-- 聊天指令管理：`/memory list/del/clear/learn/search`
+- **核心记忆自然语言注入**：在对话中通过 `@记住：...` 指令直接写入核心记忆，无需进入面板操作
+- **全自动闲时反思**：系统空闲时自动分析未提纯的记忆，总结核心特质与关键事实，迭代角色深层设定
+- **混合检索**：FTS5 (BM25) + Vector 混合检索，RRF 融合 + Ebbinghaus 时间衰减过滤
+- **LRU 会话缓存**：加速同会话反复检索，减少磁盘与序列化开销
+- 聊天指令管理：`/memory list/del/clear/learn/search/pin`
 
 ### 状态栏系统 (Status Bar)
 
@@ -118,6 +122,8 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 |------|------|
 | `/quill` | 查看五大系统状态总览 |
 | `/quill help` | 折叠式指令速查（按五大系统分组，聊天窗口内可读） |
+| `/quill reset` | 重置当前会话全部记忆与对话日志 |
+| `/quill status` | 查看插件健康度（RAG 检索成功率、状态栏解析成功率等） |
 | `/quill test kb <文字>` | 测试写作素材库匹配 |
 | `/quill test wb <文字>` | 测试世界书命中 |
 | `/quill test mem <文字>` | 测试记忆检索 |
@@ -132,6 +138,7 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 | `/memory clear` | 清空当前会话所有记忆及对话日志 |
 | `/memory learn [内容]` | 手动添加新记忆 |
 | `/memory search <关键词>` | 关键词搜索记忆 |
+| `/memory pin <序号>` | 钉住/取消钉住指定记忆为核心记忆（永不遗忘） |
 
 ### 文档知识库 (`/doc`)
 
@@ -154,13 +161,39 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 
 ## 管理面板
 
-进入 AstrBot WebUI → 插件 → Pages / 插件配置：
+进入 AstrBot WebUI → 插件 → Pages / 插件配置。**前端面板已按 Google Material Design 3 标准全面重构**，视觉效果与交互体验全面升级。
 
-- **角色卡管理**：网格化卡片展示，新建/编辑/删除，V2 卡片导入，纯文本解析，头像上传
-- **写作素材库**：全文搜索，分类筛选，条目编辑，匹配测试。**前端面板已按 Google Material Design 3 标准重构**，视觉效果与交互体验全面升级
-- **世界书**：多选配置，条目管理，ST 格式导入/导出
+- **角色卡管理**：网格化卡片展示，新建/编辑/删除，V2 卡片导入，纯文本解析，头像上传与自定义裁剪
+- **写作素材库**：全文搜索，分类筛选，条目编辑，匹配测试台
+- **世界书**：多选配置，条目管理，ST 格式导入/导出，匹配测试
 - **文档知识库**：拖拽上传，已上传文档管理，语义检索测试
-- **动态记忆**：系统总览，搜索过滤，数据表格，JSON 备份与恢复
+- **动态记忆**：系统总览，搜索过滤，数据表格，JSON 备份与恢复，**对话日志查看器**（按会话浏览/导出 RP 对话记录）
+- **配置页面**：一键备份下载（zip 打包素材库/世界书/角色卡/记忆/文档索引），系统健康度卡片，流式模式批量控制
+
+---
+
+## 快速开始
+
+### 1. 安装依赖
+
+```bash
+pip install Pillow>=10.0.0
+pip install faiss-cpu>=1.8.0 numpy>=1.24.0 aiosqlite>=0.19.0
+```
+
+### 2. 安装插件
+
+将插件目录放入 AstrBot 的 `data/plugins/`，启动 AstrBot 后进入 WebUI → 插件管理 → 找到"羽笔"→ 点击"重载"启用。
+
+### 3. 基础配置
+
+1. 进入 WebUI → 插件配置 → 配置 LLM Provider（RAG 摘要 LLM 建议使用轻量模型）
+2. 在"权限"分组中配置 `admin_users`（群聊写指令需要，留空时群聊写指令被拦截）
+3. （可选）上传角色卡、世界书、写作素材，开始 RP 对话
+
+### 4. 验证
+
+发送 `/quill` 查看五大系统状态，或发送 `/char` 列出角色卡。所有功能均可在聊天窗口内通过指令操作，无需打开 Web 面板。
 
 ---
 
@@ -250,9 +283,25 @@ on_llm_tool_respond (priority=10)  →  停止 agent loop + 记忆存储
 
 ---
 
-## FAQ
+## Roadmap
 
-**Q: 为什么不直接用市场上的世界书插件？**
+QuillPlus 遵循持续迭代的开发路线，当前（v5.2）已完成以下里程碑：
+
+- ✅ **v5.0** — 重构首发版：平行宇宙双轴隔离、JSON 原子化状态机、全链路异步化、Character Card V2 全量支持
+- ✅ **v5.1** — 全自动自迭代记忆：闲时反思守护进程、核心记忆更新、混合检索 (FTS5+Vector+RRF)、LRU 会话缓存
+- ✅ **v5.2** — 面板功能补全：对话日志查看器、全量备份导出、操作忙碌态、MD3 全面重构、三轮代码审查修复
+
+**下阶段规划：**
+
+- 🔜 **世界书匹配测试台** — 可视化测试关键词命中与注入结果
+- 🔜 **备份恢复** — 上传 zip 恢复到任意历史时间点
+- 🔜 **WR 批量操作** — 多选删除/移动/分类
+- 🔜 **移动端底部导航** — 触屏友好导航栏
+- 🔜 **i18n** — 国际化支持（待社区需求驱动）
+
+---
+
+## FAQ
 A: 大多数世界书插件仅提供关键词注入。QuillPlus 在此基础上补充了角色卡管理、写作素材库、文档 RAG 和动态记忆四个附加模块，构成完整的 RP 工作流。
 
 **Q: 可以在手机端使用吗？**
