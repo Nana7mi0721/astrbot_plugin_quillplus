@@ -138,6 +138,10 @@ class MemoryStore:
         if session_id in self._cache:
             del self._cache[session_id]
 
+    async def clear_cache(self):
+        """P2-6: 清空所有 LRU 缓存。在配置变更或手动清理时调用。"""
+        self._cache.clear()
+
     async def update_core_memory(self, session_id: str, new_traits: str, crucial_facts: str):
         await self._invalidate_cache(session_id)
         # Check if core memory exists
