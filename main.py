@@ -87,25 +87,30 @@ _PLOT_PATH_RE = re.compile(
     r'[>|]{2,}\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*[|<]{2,}\s*(.+?)\s*[|<]{2,}\s*(?:Select|请选择|选择)\s*[>|]{2,}',
     re.DOTALL | re.IGNORECASE
 )
-_RAW_STATUS_RE = re.compile(
-    r'(?:^|\n)\s*(?:[-\*\•]*\s*)?(好感度|关系阶段|心情|位置|穿着|当前想法|服从度|发情度)\s*[：:]\s*(.+?)(?=\n|$)',
-    re.MULTILINE
-)
-
 def _build_raw_status_re(fields: list) -> re.Pattern:
     """方案A: 动态构建 L4 正则 — 用配置字段名替代硬编码白名单，扩展分隔符。
 
     分隔符扩展: [：:=→] 覆盖 '好感度→85' 等非标准格式。
-    字段名动态: 支持用户自定义字段（如 饥饿度| thirst）。
+    字段名动态: 支持用户自定义字段（如 饥饿度|thirst）。
+
+    设计约束（检测与删除共用本正则，见 _handle_status_bar 分支 4）：
+    - 行首锚定 (?:^|\\n) 且消费前导换行符，使 re.sub 能整行干净移除（含列表符号前缀）；
+    - 值上限 {1,30}：状态值是短文本；行首的 "字段：长句" 更可能是叙事而非状态栏，
+      宁可漏检交给 L5 宽松解析兜底，也不误删正文；
+    - [^\\S\\n] 作空白类：覆盖全角空格等 Unicode 空白，但不跨行。
     """
     # 转义字段名并过滤空值
     valid_fields = [re.escape(f) for f in fields if f and f.strip()]
     if not valid_fields:
         valid_fields = [re.escape(f) for f in _DEFAULT_LOVE_FIELDS_RAW]
     pattern = (
-        r'(?:^|\n)\s*(?:[-\*\•]*\s*)?'
+        r'(?:^|\n)'
+        r'[^\S\n]*'
+        r'(?:[-\*\•]*[^\S\n]*)?'
         r'(' + '|'.join(valid_fields) + r')'
-        r'\s*[：:=→]\s*(.+?)(?=\n|$)'
+        r'[^\S\n]*\**[^\S\n]*[：:=→][^\S\n]*'
+        r'([^\n]{1,30}?)'
+        r'[^\S\n]*(?=\n|$)'
     )
     return re.compile(pattern, re.MULTILINE)
 
@@ -732,9 +737,10 @@ class QuillPlugin(Star):
                         val = current_vars.get(f_name, "") or "未设置"
                         updates[f_name] = val
                         parsed_lines.append(f"{f_name}：{val}")
-                # 从文本中移除已被解析的 raw 行
-                for fn in matched_fields:
-                    new_text = re.sub(rf'{re.escape(fn)}\s*[：:=→].*', '', new_text)
+                # 用与检测完全相同的正则做对称删除——整行移除（含列表符号前缀，
+                # 前导换行一并消费，不留空行）。此前按字段名单独构造无锚定模式
+                # (rf'{fn}\s*[：:=→].*')，会误删叙事句中间的同名字段到行尾。
+                new_text = raw_re.sub('', new_text)
                 # 剧情走向
                 plot_str = ""
                 pm = _PLOT_PATH_RE.search(new_text)
@@ -1531,10 +1537,10 @@ class QuillPlugin(Star):
                                     logger.warning(f"[Quill Memory] 多轮总结异常: {exp}")
                             sum_task.add_done_callback(_log_summary_result)
 
-                        # 顺带跑一次记忆修剪（分档遗忘）— 保留 to_thread 包装，prune_memories 是同步方法
+                        # 顺带跑一次记忆修剪（分档遗忘）
                         if self.rag_retriever.memory_store:
                             self._spawn(self.rag_retriever.memory_store.prune_memories())
-                            # 同步清理过期对话日志（无人值守，避免长期运行服务器日志膨胀）
+                            # 清理过期对话日志（无人值守，避免长期运行服务器日志膨胀）
                             self._spawn(
                                 self.rag_retriever.memory_store.cleanup_chat_logs(
                                     getattr(self.config, 'rag_chat_log_retention_days', 30)

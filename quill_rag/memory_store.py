@@ -213,6 +213,11 @@ class MemoryStore:
         valid_rows = []
         import numpy as np
         for row in rows:
+            # 核心记忆行（update_core_memory 写入 vector=b''、dim=0）不携带向量，
+            # 跳过之：核心记忆经 get_core_memories 独立注入；且空向量与正常维度
+            # 向量 np.stack 会因形状不一致抛 ValueError，导致该会话检索整体失效。
+            if not row[3] or not row[4]:
+                continue
             try:
                 vec = self._decode_vector(row[3], row[4])
                 vectors.append(vec)
@@ -282,8 +287,10 @@ class MemoryStore:
                 import datetime
                 try:
                     ts = datetime.datetime.strptime(row[5], "%Y-%m-%d %H:%M:%S")
-                    age_days = (datetime.datetime.utcnow() - ts).total_seconds() / 86400.0
-                except:
+                    # SQLite CURRENT_TIMESTAMP 为 naive UTC，统一按 naive UTC 比较
+                    now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                    age_days = (now_utc - ts).total_seconds() / 86400.0
+                except Exception:
                     age_days = 0.0
                 decay = np.exp(-0.02 * age_days)
                 
@@ -342,7 +349,8 @@ class MemoryStore:
                 f"""UPDATE memories
                     SET useful_count = useful_count + 1,
                         useful_score = useful_score + ?,
-                        strength = MIN(100, strength + 1)
+                        strength = MIN(100, strength + 1),
+                        is_active = 1
                     WHERE id IN ({placeholders})""",
                 [score_add] + memory_ids
             )
@@ -369,6 +377,8 @@ class MemoryStore:
             """)
             deleted = cursor.rowcount
             if deleted > 0:
+                # 被删除的记忆可能仍在会话向量缓存中（幽灵召回），直接清空
+                self._cache.clear()
                 logger.info(f"[Quill Memory] 记忆修剪: 清理了 {deleted} 条过期低价值记忆")
             return deleted
         except Exception as e:
@@ -418,6 +428,10 @@ class MemoryStore:
     async def set_core(self, memory_id: int, is_core: bool) -> bool:
         """设置/取消记忆的核心锚定状态。核心记忆不参与 Top-K 竞争，直接注入 prompt。"""
         try:
+            # 缓存中的 is_core 标记需要同步失效，否则置锚后的记忆仍参与 Top-K 竞争
+            rows = await self._exec_fetchall("SELECT session_id FROM memories WHERE id = ?", (memory_id,))
+            if rows:
+                await self._invalidate_cache(rows[0][0])
             cursor = await self._exec_write(
                 "UPDATE memories SET is_core = ? WHERE id = ?",
                 (1 if is_core else 0, memory_id)
@@ -447,6 +461,8 @@ class MemoryStore:
             return 0
         try:
             cursor = await self._exec_write("DELETE FROM memories WHERE session_id = ?", (session_id,))
+            # 失效向量缓存，否则已删记忆仍会从缓存被召回
+            await self._invalidate_cache(session_id)
             return cursor.rowcount
         except Exception as e:
             logger.warning("[Quill Memory] delete_session_memories 失败: %s", e)
@@ -465,9 +481,26 @@ class MemoryStore:
                 "DELETE FROM memories WHERE session_id = ? OR session_id LIKE ?",
                 (target_id, target_id + "::%"),
             )
+            # 按 target_id 前缀失效所有 persona 维度的会话缓存
+            prefix = target_id + "::"
+            for key in [k for k in self._cache if k == target_id or k.startswith(prefix)]:
+                await self._invalidate_cache(key)
             return cursor.rowcount
         except Exception as e:
             logger.warning("[Quill Memory] delete_all_session_memories 失败: %s", e)
+            return 0
+
+    async def count_session_memories(self, session_id: str) -> int:
+        """统计某 session 的记忆总数（供分页显示真实 total）。"""
+        if not session_id:
+            return 0
+        try:
+            row = await self._exec_fetchone(
+                "SELECT COUNT(*) FROM memories WHERE session_id = ?", (session_id,)
+            )
+            return row[0] if row else 0
+        except Exception as e:
+            logger.warning("[Quill Memory] count_session_memories 失败: %s", e)
             return 0
 
     async def get_recent_chat_logs(self, session_id: str, limit: int = 8) -> list[dict]:
@@ -477,7 +510,7 @@ class MemoryStore:
         try:
             rows = await self._exec_fetchall(
                 "SELECT role, content FROM chat_logs "
-                "WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?",
+                "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
                 (session_id, limit)
             )
             result = [{"role": r[0], "content": r[1]} for r in rows]

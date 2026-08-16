@@ -660,13 +660,14 @@ async def handle_memory_import(memory_store, embedding_provider, data):
             return ok({"imported": 0, "failed": len(valid_entries) + failed,
                         "message": "向量化数量不匹配"})
 
-        # 3. 批量写 DB（每条独立 to_thread，避免一条失败影响全部）
+        # 3. 批量写 DB（memory_store.add 是 async，直接 await；
+        # 此前误用 asyncio.to_thread 包装 async 函数——线程内只会创建协程对象
+        # 从不执行，导致导入显示成功但一条都没写库）
         imported = 0
         for entry, vector in zip(valid_entries, all_vectors):
             try:
                 if vector:
-                    await asyncio.to_thread(
-                        memory_store.add,
+                    await memory_store.add(
                         entry["session_id"], entry["summary"], vector, entry["chat_summary"]
                     )
                     imported += 1
