@@ -62,3 +62,8 @@ htmlcov/
 # ── 确保示例文件永远被追踪（不允许被上方规则误排除）──
 !worldbooks/
 !knowledge/
+.test_jwt.txt
+.reasonix/
+.zcode/
+knowledge/*.db
+knowledge/*.index
