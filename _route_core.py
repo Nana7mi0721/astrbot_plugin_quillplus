@@ -155,6 +155,44 @@ async def handle_wr_toggle(wr_manager, entry_id=None, enabled=True):
     return ok({"entry_id": entry_id, "enabled": enabled}, message="Entry toggled")
 
 
+async def handle_wr_batch_delete(wr_manager, entry_ids: list = None):
+    """P2-4: 批量删除写作素材库条目。"""
+    if not wr_manager:
+        return err("写作素材库未加载")
+    if not entry_ids or not isinstance(entry_ids, list):
+        return err("缺少 entry_ids 参数")
+    deleted = 0
+    failed = 0
+    for eid in entry_ids:
+        try:
+            if await wr_manager.delete_entry(eid):
+                deleted += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+    return ok({"deleted": deleted, "failed": failed}, message=f"批量删除完成: {deleted} 成功, {failed} 失败")
+
+
+async def handle_wr_batch_toggle(wr_manager, entry_ids: list = None, enabled: bool = True):
+    """P2-4: 批量启用/禁用写作素材库条目。"""
+    if not wr_manager:
+        return err("写作素材库未加载")
+    if not entry_ids or not isinstance(entry_ids, list):
+        return err("缺少 entry_ids 参数")
+    toggled = 0
+    failed = 0
+    for eid in entry_ids:
+        try:
+            if await wr_manager.enable_entry(eid, enabled):
+                toggled += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+    return ok({"toggled": toggled, "failed": failed}, message=f"批量操作完成: {toggled} 成功, {failed} 失败")
+
+
 async def handle_wr_export(wr_manager):
     if not wr_manager:
         return err("写作素材库未加载")
