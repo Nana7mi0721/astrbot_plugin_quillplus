@@ -659,6 +659,7 @@ async def quill_help(event: AstrMessageEvent):
         "  /quill help        本帮助",
         "  /quill reset       清空记忆+日志+注入状态(配合/reset)",
         "  /quill test <wr|wb|mem> <文字>  系统测试",
+        "  /quill debug        调试：注入组成、匹配详情、会话状态",
         "  /stream on|off|auto  流式模式开关",
         "  /reinject          重置注入状态",
         "",
@@ -869,6 +870,74 @@ async def _test_mem(plugin, event: AstrMessageEvent, text: str):
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
     except Exception as e:
         event.set_result(MessageEventResult().message(f"记忆检索失败: {e}"))
+
+
+async def quill_debug(plugin, event: AstrMessageEvent):
+    """P2-7: /quill debug — 注入组成查看。显示当前会话的注入详情、匹配状态、配置。"""
+    target_id = _get_target_id(event)
+    lines = ["[Quill Debug Info]"]
+
+    # 会话信息
+    persona_id = ""
+    if hasattr(plugin.state_manager, "get_persona_id"):
+        persona_id = await plugin.state_manager.get_persona_id(target_id)
+    session_id = f"{target_id}::{persona_id}" if persona_id else target_id
+    lines.append(f"  Target: {target_id}")
+    lines.append(f"  Session: {session_id}")
+    lines.append(f"  Persona: {persona_id or '默认'}")
+
+    # 状态栏配置
+    lines.append(f"  状态栏: {'启用' if plugin.status_bar_enabled else '关闭'}")
+    lines.append(f"  字段: {', '.join(plugin.love_fields)}")
+
+    # 写作素材库
+    if plugin.wr_manager:
+        try:
+            stats = await plugin.wr_manager.get_stats()
+            lines.append(f"  WR 条目: {stats.get('total_entries', 0)} 条")
+        except Exception:
+            lines.append("  WR: 查询失败")
+
+    # 世界书
+    if plugin.wb_manager:
+        try:
+            wb_list = plugin.wb_manager.list_worldbooks()
+            active = sum(1 for wb in wb_list if wb.get("active", False))
+            lines.append(f"  世界书: {len(wb_list)} 个 ({active} 活跃)")
+        except Exception:
+            lines.append("  世界书: 查询失败")
+
+    # 动态记忆
+    if plugin.rag_memory_store:
+        try:
+            mem_stats = await plugin.rag_memory_store.get_stats()
+            lines.append(f"  动态记忆: {mem_stats.get('total_memories', 0)} 条")
+        except Exception:
+            lines.append("  动态记忆: 查询失败")
+
+    # 健康度
+    if hasattr(plugin, "health_tracker") and plugin.health_tracker:
+        try:
+            h = plugin.health_tracker.stats()
+            rag_rate = h.get("rag", {}).get("rate")
+            sb_rate = h.get("status_bar", {}).get("rate")
+            if rag_rate is not None:
+                lines.append(f"  RAG 成功率: {rag_rate}%")
+            if sb_rate is not None:
+                lines.append(f"  状态栏成功率: {sb_rate}%")
+        except Exception:
+            pass
+
+    # Session vars
+    try:
+        vars = await plugin.state_manager.get_session_vars(target_id)
+        if vars:
+            vars_str = ", ".join(f"{k}={v}" for k, v in list(vars.items())[:8])
+            lines.append(f"  Session Vars: {vars_str}")
+    except Exception:
+        pass
+
+    event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
 
 
 # ================================================================
