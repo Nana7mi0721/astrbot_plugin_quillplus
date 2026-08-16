@@ -80,6 +80,8 @@ from ._route_core import (
     handle_wr_import,
     handle_wr_test,
     handle_wr_categories,
+    handle_wr_batch_delete,
+    handle_wr_batch_toggle,
     handle_wb_list,
     handle_wb_get,
     handle_wb_create,
@@ -162,6 +164,8 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/wr/import",       self.wr_import,      ["POST"],   "导入写作素材库")
         _r(f"/{PLUGIN_NAME}/wr/test",         self.wr_test,        ["POST"],   "测试写作素材库匹配")
         _r(f"/{PLUGIN_NAME}/wr/categories",   self.wr_categories,  ["GET"],    "列出写作素材库分类")
+        _r(f"/{PLUGIN_NAME}/wr/batch_delete", self.wr_batch_delete,["POST"],   "批量删除写作素材库条目")
+        _r(f"/{PLUGIN_NAME}/wr/batch_toggle", self.wr_batch_toggle,["POST"],   "批量启用/禁用写作素材库条目")
 
         # ── WB 世界书 (13 个：含 reload) ──
         _r(f"/{PLUGIN_NAME}/wb/list",         self.wb_list,        ["GET"],    "列出世界书")
@@ -239,8 +243,9 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/stream/stats",     self.stream_stats,     ["GET"],   "流式模式统计")
         _r(f"/{PLUGIN_NAME}/stream/all",       self.stream_set_all,   ["POST"],  "批量设置流式模式")
 
-        # ── 全量备份导出 ──
+        # ── 全量备份导出/恢复 ──
         _r(f"/{PLUGIN_NAME}/backup/export",   self.backup_export,  ["GET"],    "全量备份导出")
+        _r(f"/{PLUGIN_NAME}/backup/restore",  self.backup_restore, ["POST"],   "从备份 zip 恢复")
 
     # ── Info ──────────────────────────────────────────────────
 
@@ -720,6 +725,19 @@ class QuillRoutes:
     @_api_handler
     async def wr_categories(self):
         return json_response(await handle_wr_categories(self.wr_manager))
+
+    @_api_handler
+    async def wr_batch_delete(self):
+        data = await request.json(default={})
+        entry_ids = data.get("entry_ids", [])
+        return json_response(await handle_wr_batch_delete(self.wr_manager, entry_ids))
+
+    @_api_handler
+    async def wr_batch_toggle(self):
+        data = await request.json(default={})
+        entry_ids = data.get("entry_ids", [])
+        enabled = bool(data.get("enabled", True))
+        return json_response(await handle_wr_batch_toggle(self.wr_manager, entry_ids, enabled))
 
     # ── WB ────────────────────────────────────────────────────
 
@@ -1288,3 +1306,63 @@ class QuillRoutes:
             media_type="application/zip",
             headers={"Content-Disposition": f"attachment; filename={fname}"}
         )
+
+    @_api_handler
+    async def backup_restore(self):
+        """P2-3: 从备份 zip 恢复数据。上传 zip → 解压到插件目录 → 重新初始化。"""
+        import io
+        import zipfile
+        import tempfile
+        plugin_root = os.path.dirname(os.path.abspath(__file__))
+
+        # 读取上传的 zip 二进制
+        raw = await request.body()
+        if not raw:
+            return error_response("请上传备份文件", status_code=400)
+
+        buf = io.BytesIO(raw)
+        extracted_count = 0
+        skipped_count = 0
+
+        def _extract():
+            nonlocal extracted_count, skipped_count
+            with zipfile.ZipFile(buf, 'r') as zf:
+                for info in zf.infolist():
+                    # 安全校验：防止 zip slip 路径遍历攻击
+                    name = info.filename
+                    if name.startswith('/') or '..' in name:
+                        skipped_count += 1
+                        continue
+                    # 跳过临时文件
+                    if name.endswith('.tmp') or name.endswith('.tmp.bak') or name.endswith('-wal') or name.endswith('-shm'):
+                        skipped_count += 1
+                        continue
+                    dest = os.path.normpath(os.path.join(plugin_root, name))
+                    # 确保目标在插件目录内
+                    if not dest.startswith(os.path.normpath(plugin_root)):
+                        skipped_count += 1
+                        continue
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    zf.extract(info, plugin_root)
+                    extracted_count += 1
+
+        await asyncio.to_thread(_extract)
+        logger.info(f"[Quill] 备份恢复: 解压 {extracted_count} 个文件, 跳过 {skipped_count} 个")
+
+        # 重新初始化 RAG 组件（记忆/向量库等）
+        plugin = self.plugin
+        if plugin is not None:
+            try:
+                await plugin._init_rag()
+                logger.info("[Quill] 备份恢复后 RAG 组件已重初始化")
+            except Exception as e:
+                logger.warning("[Quill] 备份恢复后 RAG 重初始化失败: %s", e)
+
+        return json_response({
+            "status": "ok",
+            "data": {
+                "extracted": extracted_count,
+                "skipped": skipped_count,
+                "message": f"已恢复 {extracted_count} 个文件（跳过 {skipped_count} 个临时文件）"
+            }
+        })

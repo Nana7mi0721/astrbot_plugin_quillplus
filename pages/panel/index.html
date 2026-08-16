@@ -1501,6 +1501,7 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
   cursor: pointer;
 }
 .wr-card.expanded { border-color: var(--primary); }
+.wr-card--selected { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-light); }
 .wr-card-title {
   font-size: 16px;
   font-weight: 600;
@@ -2430,6 +2431,13 @@ textarea:focus-visible,
       <button class="btn btn-outline" onclick="exportWR()">导出</button>
       <label class="btn btn-outline cursor-ptr">导入<input type="file" accept=".json" hidden onchange="importWR(this)"></label>
     </div>
+    <div id="wr-batch-bar" class="batch-toolbar" style="display:none;padding:8px 12px;background:var(--surface-container);border-radius:8px;margin-bottom:8px;align-items:center;gap:8px;flex-wrap:wrap">
+      <span id="wr-batch-count" style="font-size:14px;font-weight:500;color:var(--primary)"></span>
+      <button class="btn btn-sm btn-primary" onclick="wrBatchToggle(true)">批量启用</button>
+      <button class="btn btn-sm btn-outline" onclick="wrBatchToggle(false)">批量禁用</button>
+      <button class="btn btn-sm btn-danger-outline" onclick="wrBatchDelete()">批量删除</button>
+      <button class="btn btn-sm btn-outline" onclick="wrBatchClear()">取消选择</button>
+    </div>
     <div class="wr-grid" id="wr-grid">
       <div class="skeleton-grid" style="grid-column:1/-1"><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div></div>
     </div>
@@ -2839,8 +2847,11 @@ textarea:focus-visible,
             </div>
             <div class="form-group" style="margin-top:16px">
               <label>全量备份</label>
-              <button class="btn btn-primary" onclick="backupExport(this)">一键备份下载 (zip)</button>
-              <span class="hint-block">打包素材库、世界书、角色卡、记忆与文档索引等全部插件数据。</span>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <button class="btn btn-primary" onclick="backupExport(this)">一键备份下载 (zip)</button>
+                <label class="btn btn-outline cursor-ptr">恢复备份 (zip)<input type="file" accept=".zip" hidden onchange="backupRestore(this)"></label>
+              </div>
+              <span class="hint-block">打包/恢复素材库、世界书、角色卡、记忆与文档索引等全部插件数据。恢复后自动重载 RAG 组件。</span>
             </div>
           </div>
         </div>
@@ -2967,6 +2978,7 @@ function getBridge() {
 async function waitForBridge(timeoutMs = 5000) { const s = Date.now(); while (Date.now() - s < timeoutMs) { const b = getBridge(); if (b) return b; await new Promise(r => setTimeout(r, 16)); } return null; }
 
 let wrState = { entries: [], total: 0, page: 1, perPage: 9 };
+let _wrSelectedIds = new Set();
 let wbCache = {};
 let modalState = null;
 let modalMode = null;
@@ -3470,14 +3482,18 @@ function renderWRGrid() {
   if (!wrState.entries.length) { grid.innerHTML = renderEmptyState('book', '还没有素材条目', '点击上方"新建条目"按钮开始创建'); return; }
   grid.innerHTML = wrState.entries.map((e) => {
     const escId = esc(e.entry_id);
-    const jsId = jsAttr(e.entry_id);  // B3: onclick 上下文用双重转义
+    const jsId = jsAttr(e.entry_id);
     const kw = (e.keywords || []).slice(0, 6).map(k => `<span class="tag">${esc(k)}</span>`).join('');
     const more = (e.keywords || []).length > 6 ? ` <span style="color:var(--text-muted);font-size:11px">+${(e.keywords || []).length - 6}</span>` : '';
     const isOpen = _wrExpandedId === e.entry_id;
-    return `<div class="wr-card${isOpen ? ' expanded' : ''}" data-eid="${escId}">
+    const isSelected = _wrSelectedIds.has(e.entry_id);
+    return `<div class="wr-card${isOpen ? ' expanded' : ''}${isSelected ? ' wr-card--selected' : ''}" data-eid="${escId}">
       <div class="wr-cat-bar" style="background:${catColor(e.category)}"></div>
       <div class="wr-card-header" onclick="${isOpen ? '' : "toggleWRExpand('" + jsId + "')"}">
-        <div><div class="wr-card-title">${esc(e.name || e.entry_id)}</div><div class="wr-card-id">${escId}</div></div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" class="wr-select-cb" data-eid="${escId}" ${isSelected ? 'checked' : ''} onchange="toggleWRSelect('${jsId}', this.checked)" onclick="event.stopPropagation()" style="width:18px;height:18px;accent-color:var(--primary)">
+          <div><div class="wr-card-title">${esc(e.name || e.entry_id)}</div><div class="wr-card-id">${escId}</div></div>
+        </div>
         <div class="wr-card-meta">
           <span class="cat-chip" style="background:${catColor(e.category)}">${esc(e.category)}</span>
           <span class="text-muted-13">P${e.priority != null ? e.priority : '-'}</span>
@@ -3657,6 +3673,54 @@ async function toggleWREntry(entryId, enabled, el) {
   if (el) el.disabled = true;
   try { await apiPost('/wr/toggle', { entry_id: entryId, enabled }); loadWR(); } catch (e) { showToast(e.message); if (el) el.checked = !enabled; }
   finally { if (el) el.disabled = false; }
+}
+
+// P2-4: WR 批量选择与操作
+function toggleWRSelect(entryId, selected) {
+  if (selected) _wrSelectedIds.add(entryId);
+  else _wrSelectedIds.delete(entryId);
+  updateWRBatchBar();
+}
+
+function updateWRBatchBar() {
+  const bar = qs('#wr-batch-bar');
+  const count = _wrSelectedIds.size;
+  if (!bar) return;
+  if (count === 0) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  qs('#wr-batch-count').textContent = '已选择 ' + count + ' 项';
+}
+
+function wrBatchClear() {
+  _wrSelectedIds.clear();
+  updateWRBatchBar();
+  renderWRGrid();
+}
+
+async function wrBatchToggle(enabled) {
+  const ids = Array.from(_wrSelectedIds);
+  if (!ids.length) return;
+  try {
+    await apiPost('/wr/batch_toggle', { entry_ids: ids, enabled });
+    showToast('批量操作成功', 'success');
+    _wrSelectedIds.clear();
+    updateWRBatchBar();
+    loadWR();
+  } catch (e) { showToast('批量操作失败: ' + e.message); }
+}
+
+async function wrBatchDelete() {
+  const ids = Array.from(_wrSelectedIds);
+  if (!ids.length) return;
+  sandboxConfirm('确定批量删除 ' + ids.length + ' 个条目？', async () => {
+    try {
+      await apiPost('/wr/batch_delete', { entry_ids: ids });
+      showToast('批量删除成功', 'success');
+      _wrSelectedIds.clear();
+      updateWRBatchBar();
+      loadWR();
+    } catch (e) { showToast('批量删除失败: ' + e.message); }
+  }, true);
 }
 async function exportWR() {
   try {
@@ -5066,6 +5130,31 @@ async function backupExport(btn) {
       showToast('备份已下载', 'success');
     } catch (e) { showToast('备份失败: ' + e.message); }
   });
+}
+
+// ── 备份恢复（P2-3）──
+async function backupRestore(input) {
+  const file = input.files[0]; if (!file) return;
+  const btn = input.parentElement;
+  const origHTML = btn.innerHTML;
+  btn.style.pointerEvents = 'none';
+  btn.innerHTML = '<span>恢复中...</span>';
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const blob = new Blob([arrayBuffer], { type: 'application/zip' });
+    // 使用 fetch 直接发送二进制（api() 用 JSON，不适合上传 zip）
+    const res = await fetch('/api/v1/plugins/extensions/astrbot_plugin_quillplus/backup/restore', {
+      method: 'POST',
+      body: blob,
+      credentials: 'include'
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    const data = json.data || json;
+    const msg = data.message || '恢复完成';
+    showToast(msg, 'success');
+  } catch (e) { showToast('恢复失败: ' + e.message); }
+  finally { btn.style.pointerEvents = ''; btn.innerHTML = origHTML; input.value = ''; }
 }
 
 async function testMemoryVectorSearch() {
