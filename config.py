@@ -129,6 +129,8 @@ class QuillConfig:
         self.status_bar_llm_extract: bool = _safe_bool(sb.get("llm_extract"))
         # P0-2: 状态栏 LLM 提取独立 provider（留空回退到 RAG 摘要 LLM）
         self.status_bar_llm_provider_id: str = str(sb.get("llm_provider_id", "") or "").strip()
+        # P1-7: 状态栏字段未匹配时的占位符文本（可配置，默认"未设置"）
+        self.status_bar_default_placeholder: str = str(sb.get("default_placeholder", "未设置"))
 
         # ── refusal ──
         ref = _get_nested(self._raw, "refusal", {}) or {}

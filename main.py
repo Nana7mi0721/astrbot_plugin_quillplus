@@ -87,6 +87,13 @@ _PLOT_PATH_RE = re.compile(
     r'[>|]{2,}\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*[|<]{2,}\s*(.+?)\s*[|<]{2,}\s*(?:Select|请选择|选择)\s*[>|]{2,}',
     re.DOTALL | re.IGNORECASE
 )
+
+# P1-8: 核心记忆自然语言注入前缀匹配
+# 支持: @记住：内容 | 记住：内容 | 核心记忆：内容 | @remember: content
+_CORE_MEMORY_NL_RE = re.compile(
+    r'(?:@记住\s*[：:]|记住\s*[：:]|核心记忆\s*[：:]|@remember\s*[:：])\s*(.+)',
+    re.IGNORECASE
+)
 def _build_raw_status_re(fields: list) -> re.Pattern:
     """方案A: 动态构建 L4 正则 — 用配置字段名替代硬编码白名单，扩展分隔符。
 
@@ -248,6 +255,7 @@ class QuillPlugin(Star):
         self.status_bar_format_template = self.config.status_bar_format
         self.love_fields: List[str] = self.config.status_bar_fields
         self.status_bar_plot_paths: list[str] = getattr(self.config, "status_bar_plot_paths", ["继续当前话题", "转换场景", "结束互动"])
+        self.status_bar_default_placeholder: str = getattr(self.config, "status_bar_default_placeholder", "未设置")
 
         # --- Debug ---
         self.debug = self.config.debug_enabled
@@ -569,6 +577,18 @@ class QuillPlugin(Star):
             self.worldbook_always_activate = self.config.worldbook_always_activate
             self.panel_theme = self.config.panel_theme
             self.status_bar_plot_paths = self.config.status_bar_plot_paths
+            self.status_bar_default_placeholder = getattr(self.config, "status_bar_default_placeholder", "未设置")
+
+            # P1-4: Embedding 切换自动重嵌入 — 检测嵌入提供者变更，触发 RAG 重初始化
+            if group == "rag" and key == "embedding_provider_id":
+                try:
+                    # 将在后台重建 FAISS 索引（维度不匹配时自动重建）
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(self._init_rag())
+                        logger.info("[Quill] Embedding 提供商已变更，触发 RAG 重初始化")
+                except Exception as e:
+                    logger.warning("[Quill] Embedding 切换触发重初始化失败: %s", e)
 
             # 持久化到磁盘
             if hasattr(self._raw_config, 'save_config') and callable(self._raw_config.save_config):
@@ -734,7 +754,7 @@ class QuillPlugin(Star):
                         matched_fields.add(fn)
                 for f_name in self.love_fields:
                     if f_name not in matched_fields:
-                        val = current_vars.get(f_name, "") or "未设置"
+                        val = current_vars.get(f_name, "") or self.status_bar_default_placeholder
                         updates[f_name] = val
                         parsed_lines.append(f"{f_name}：{val}")
                 # 用与检测完全相同的正则做对称删除——整行移除（含列表符号前缀，
@@ -766,7 +786,7 @@ class QuillPlugin(Star):
                     if new_val:
                         merged[f] = new_val
                     else:
-                        merged[f] = current_vars.get(f, "") or "未设置"
+                        merged[f] = current_vars.get(f, "") or self.status_bar_default_placeholder
                 lines = [f"{f}：{merged[f]}" for f in self.love_fields]
                 bar = self.status_bar_format_template.replace("{content}", "\n".join(lines))
                 new_text = text + "\n\n" + bar
@@ -781,7 +801,7 @@ class QuillPlugin(Star):
                 current_vars = await self.state_manager.get_session_vars(target_id)
                 merged = {}
                 for f in self.love_fields:
-                    merged[f] = llm_extracted.get(f) or current_vars.get(f, "") or "未设置"
+                    merged[f] = llm_extracted.get(f) or current_vars.get(f, "") or self.status_bar_default_placeholder
                 lines = [f"{f}：{merged[f]}" for f in self.love_fields]
                 bar = self.status_bar_format_template.replace("{content}", "\n".join(lines))
                 new_text = text + "\n\n" + bar
@@ -797,6 +817,17 @@ class QuillPlugin(Star):
         # P1-4: 记录状态栏解析成功率（仅在 status_bar_enabled 时计入）
         if self.status_bar_enabled:
             self.health_tracker.record_status(handled)
+
+        # P1-5: 状态栏变化高亮 — 对比旧值，将 changed 标记注入 updates
+        if updates and handled:
+            _prev_vars = await self.state_manager.get_session_vars(target_id)
+            _changed = {}
+            for k, v in updates.items():
+                _old = _prev_vars.get(k, "")
+                if _old and _old != v and v != self.status_bar_default_placeholder:
+                    _changed[k] = _old
+            if _changed:
+                updates["_changed"] = _changed
 
         # P2-4 修复：所有分支统一在此提交一次状态字段，消除多次独立 await 的竞态
         if updates and handled:
@@ -844,7 +875,7 @@ class QuillPlugin(Star):
         parts = []
         for field_name in self.love_fields:
             val = vars.get(field_name, "")
-            parts.append(val if val else "未设置")
+            parts.append(val if val else self.status_bar_default_placeholder)
         love_section = "\n".join(f"{f}：{v}" for f, v in zip(self.love_fields, parts))
         plot_section = "\n\n>>> 剧情走向 <<<\n" + "\n".join(
             f"{i+1}. {p}" for i, p in enumerate(self.status_bar_plot_paths)
@@ -1236,6 +1267,21 @@ class QuillPlugin(Star):
                     and self.rag_retriever:
                 self._spawn(self.rag_retriever.log_chat_message(
                     mem_session_id, "user", user_input
+                ))
+
+            # P1-8: 自然语言核心记忆注入 — 检测 @记住 / 核心记忆 / @remember 前缀
+            _core_nl = None
+            if persona_id and user_input and self.rag_retriever and self.rag_retriever.memory_store:
+                _core_match = _CORE_MEMORY_NL_RE.match(user_input.strip())
+                if _core_match:
+                    _core_nl = _core_match.group(1).strip()
+                    # 从 prompt 中剥离注入指令，不让 LLM 看到
+                    req.prompt = user_input[_core_match.end():].strip()
+                    logger.info(f"[Quill] 检测到核心记忆自然语言注入: {_core_nl[:80]}...")
+            # 异步写入核心记忆（不阻塞请求流程）
+            if _core_nl:
+                self._spawn(self.rag_memory_store.update_core_memory(
+                    mem_session_id, _core_nl, _core_nl
                 ))
 
             # 存储最近 6 轮对话，供 /memory learn 自动总结

@@ -34,6 +34,7 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("status_bar", "enabled"), ("status_bar", "fields"),
     ("status_bar", "format_template"), ("status_bar", "plot_paths"),
     ("status_bar", "llm_extract"), ("status_bar", "llm_provider_id"),
+    ("status_bar", "default_placeholder"),
     # refusal
     ("refusal", "enabled"), ("refusal", "patterns"),
     # debug

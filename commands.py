@@ -28,26 +28,37 @@ def _get_target_id(event: AstrMessageEvent) -> str:
     return str(event.get_sender_id())
 
 
-def _check_group_permission(plugin, event: AstrMessageEvent) -> bool:
-    """群聊写权限校验。私聊始终返回 True。
+def _check_group_permission(plugin, event: AstrMessageEvent):
+    """群聊写权限校验。私聊始终返回 None（放行）。
 
     F2 修复：原实现用 `sender_id in target_id` 子串匹配，群号含于用户 ID 时越权。
     现改为：私聊场景直接放行；群聊仅 admin 放行。
     S2-5 修复：admin_users 未配置时群聊默认拒绝（fail-close），避免公网裸奔。
     Bug 修复：AstrBot 所有适配器统一使用 MessageType.FRIEND_MESSAGE 表示私聊，
     原代码误用字符串 "PrivateMessage" 判断导致私聊永不进入私聊分支。
+
+    P1-9 修复：返回错误消息而非 bool，区分"未配置"与"不在白名单"两种场景，
+    引导用户正确配置。
     """
     admin_users = getattr(plugin.config, "admin_users", []) or []
     sender_id = str(event.get_sender_id())
     # 私聊：直接放行（与 AstrBot 内置 /reset 策略对齐：私聊默认 member）
     if event.get_message_type() == MessageType.FRIEND_MESSAGE:
-        return True
+        return None
     # 群聊：仅 admin 放行；admin 未配置时 fail-close
     if not admin_users:
         logger.warning("[Quill] admin_users 未配置，群聊写操作已拒绝。请在配置面板设置 admin_users（留空时群聊写功能锁定）。")
-        return False
+        return (
+            "⛔ 群聊中只有管理员可以执行此操作。\n"
+            f"当前 admin_users 未配置，请在插件配置面板 → 权限 → admin_users 中填写你的用户 ID ({sender_id})。"
+        )
     admin_set = set(str(u) for u in admin_users)
-    return sender_id in admin_set
+    if sender_id not in admin_set:
+        return (
+            "⛔ 群聊中只有管理员可以执行此操作。\n"
+            f"你的用户 ID ({sender_id}) 不在 admin_users 白名单中，请联系群主添加。"
+        )
+    return None
 
 
 # ================================================================
@@ -136,8 +147,9 @@ def _resolve_wb_name(plugin, arg: str) -> str | None:
 
 async def _wb_bind(plugin, event: AstrMessageEvent, arg: str):
     """绑定世界书到当前激活的角色卡"""
-    if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+    msg = _check_group_permission(plugin, event)
+    if msg:
+        event.set_result(MessageEventResult().message(msg))
         return
     target_id = _get_target_id(event)
 
@@ -197,8 +209,9 @@ async def _wb_bind(plugin, event: AstrMessageEvent, arg: str):
 
 async def _wb_unbind(plugin, event: AstrMessageEvent, arg: str):
     """解绑世界书从当前激活的角色卡"""
-    if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+    msg = _check_group_permission(plugin, event)
+    if msg:
+        event.set_result(MessageEventResult().message(msg))
         return
     target_id = _get_target_id(event)
 
@@ -329,8 +342,9 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
         return
 
     if sub == "unset":
-        if not _check_group_permission(plugin, event):
-            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+        msg = _check_group_permission(plugin, event)
+        if msg:
+            event.set_result(MessageEventResult().message(msg))
             return
         target_id = _get_target_id(event)
         await plugin.state_manager.set_persona_id(target_id, "")
@@ -377,8 +391,9 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
         return
 
     # /char <序号|名字> → 切换（需要权限）
-    if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+    msg = _check_group_permission(plugin, event)
+    if msg:
+        event.set_result(MessageEventResult().message(msg))
         return
 
     resolved = await _resolve_persona_id(plugin, sub_args, event)
@@ -629,6 +644,7 @@ async def quill_help(event: AstrMessageEvent):
         "  /memory clear      清空当前会话记忆",
         "  /memory learn [内容] 手动添加/增量总结",
         "  /memory search <词>  搜索记忆",
+        "  /memory pin <序号> [on|off]  钉住/取消核心记忆",
         "",
         "【📄 文档RAG /doc】",
         "  /doc list          文档列表",
@@ -639,6 +655,7 @@ async def quill_help(event: AstrMessageEvent):
         "",
         "【⚙️ 系统 /quill】",
         "  /quill             系统总览",
+        "  /quill status      健康度详情（RAG/状态栏成功率）",
         "  /quill help        本帮助",
         "  /quill reset       清空记忆+日志+注入状态(配合/reset)",
         "  /quill test <wr|wb|mem> <文字>  系统测试",
@@ -706,7 +723,7 @@ async def quill_status(plugin, event: AstrMessageEvent):
     else:
         lines.append("  动态记忆: 未加载")
 
-    # Doc RAG
+# Doc RAG
     if plugin.rag_vector_store:
         try:
             vs_stats = await plugin.rag_vector_store.get_stats()
@@ -716,6 +733,19 @@ async def quill_status(plugin, event: AstrMessageEvent):
             lines.append("  Doc RAG: 查询失败")
     else:
         lines.append("  Doc RAG: 未加载")
+
+    # 健康度（P1-6）
+    if hasattr(plugin, "health_tracker") and plugin.health_tracker:
+        try:
+            h = plugin.health_tracker.stats()
+            rag_rate = h.get("rag", {}).get("rate")
+            sb_rate = h.get("status_bar", {}).get("rate")
+            if rag_rate is not None:
+                lines.append(f"  RAG检索成功率: {rag_rate}% ({h['rag']['success']}/{h['rag']['total']})")
+            if sb_rate is not None:
+                lines.append(f"  状态栏解析成功率: {sb_rate}% ({h['status_bar']['success']}/{h['status_bar']['total']})")
+        except Exception:
+            lines.append("  健康度: 查询失败")
 
     event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
 
@@ -853,6 +883,9 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
     /memory clear              清空当前会话所有记忆
     /memory learn <内容>       手动添加一条记忆
     /memory search <关键词>    关键词搜索记忆
+    /memory pin <序号> [on|off]  钉住/取消核心记忆
+    /memory core <内容>       直接写入核心记忆（不参与遗忘）
+    @记住：<内容>             对话中自然语言写入核心记忆
     """
     if not plugin.rag_memory_store:
         event.set_result(MessageEventResult().message("动态记忆系统未加载"))
@@ -876,6 +909,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             f"     /memory clear 清空当前会话",
             f"     /memory learn <内容> 添加记忆",
             f"     /memory search <词> 搜索记忆",
+            f"     /memory pin <序号> [on|off] 钉住/取消核心记忆",
         ]
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
         return
@@ -916,8 +950,9 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         return
 
     if sub == "del":
-        if not _check_group_permission(plugin, event):
-            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+        msg = _check_group_permission(plugin, event)
+        if msg:
+            event.set_result(MessageEventResult().message(msg))
             return
         idx_str = (arg2 or "").strip()
         if not idx_str or not idx_str.isdigit():
@@ -939,8 +974,9 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         return
 
     if sub == "clear":
-        if not _check_group_permission(plugin, event):
-            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+        msg = _check_group_permission(plugin, event)
+        if msg:
+            event.set_result(MessageEventResult().message(msg))
             return
         try:
             deleted = await plugin.rag_memory_store.delete_session_memories(session_id)
@@ -956,8 +992,9 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         return
 
     if sub == "learn":
-        if not _check_group_permission(plugin, event):
-            event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+        msg = _check_group_permission(plugin, event)
+        if msg:
+            event.set_result(MessageEventResult().message(msg))
             return
         if not plugin.rag_retriever or not plugin.rag_retriever.enable_memory:
             event.set_result(MessageEventResult().message(
@@ -1030,9 +1067,64 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             event.set_result(MessageEventResult().message(f"搜索失败: {e}"))
         return
 
-    event.set_result(MessageEventResult().message(
-        "未知子命令。\n用法: /memory [list|del|clear|learn|search]"
-    ))
+        if sub == "pin":
+            msg = _check_group_permission(plugin, event)
+            if msg:
+                event.set_result(MessageEventResult().message(msg))
+                return
+            parts = (arg2 or "").strip().split(None, 1)
+            if not parts or not parts[0].isdigit():
+                event.set_result(MessageEventResult().message("用法: /memory pin <序号> [on|off]（使用 /memory list 查看序号）"))
+                return
+            idx = int(parts[0])
+            want_core = True  # 默认钉住
+            if len(parts) > 1:
+                flag = parts[1].strip().lower()
+                if flag == "off":
+                    want_core = False
+                elif flag == "on":
+                    want_core = True
+                else:
+                    event.set_result(MessageEventResult().message("用法: /memory pin <序号> [on|off]"))
+                    return
+            try:
+                all_memories = await plugin.rag_memory_store.list_memories(session_id, max(idx, 50))
+                if 0 < idx <= len(all_memories):
+                    memory_id = all_memories[idx - 1].get("id")
+                    if memory_id:
+                        ok = await plugin.rag_memory_store.set_core(memory_id, want_core)
+                        if ok:
+                            label = "已钉住为核心记忆" if want_core else "已取消核心记忆"
+                            event.set_result(MessageEventResult().message(f"记忆 #{idx} {label}"))
+                        else:
+                            event.set_result(MessageEventResult().message(f"操作失败"))
+                    else:
+                        event.set_result(MessageEventResult().message(f"记忆 #{idx} 不存在"))
+                else:
+                    event.set_result(MessageEventResult().message(f"序号超出范围: {idx}"))
+            except Exception as e:
+                event.set_result(MessageEventResult().message(f"钉住失败: {e}"))
+            return
+
+        if sub == "core":
+            msg = _check_group_permission(plugin, event)
+            if msg:
+                event.set_result(MessageEventResult().message(msg))
+                return
+            content = (arg2 or "").strip()
+            if not content:
+                event.set_result(MessageEventResult().message("用法: /memory core <内容> — 直接写入核心记忆（不参与遗忘）"))
+                return
+            try:
+                await plugin.rag_memory_store.update_core_memory(session_id, content, content)
+                event.set_result(MessageEventResult().message(f"✅ 核心记忆已更新:\n{content[:200]}"))
+            except Exception as e:
+                event.set_result(MessageEventResult().message(f"写入核心记忆失败: {e}"))
+            return
+
+        event.set_result(MessageEventResult().message(
+            "未知子命令。\n用法: /memory [list|del|clear|learn|search|pin|core]"
+        ))
 
 
 # ================================================================
@@ -1158,8 +1250,9 @@ async def _doc_list(plugin, event: AstrMessageEvent):
 
 async def _doc_bind(plugin, event: AstrMessageEvent, arg: str):
     """绑定文档到当前激活的角色卡"""
-    if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+    msg = _check_group_permission(plugin, event)
+    if msg:
+        event.set_result(MessageEventResult().message(msg))
         return
     target_id = _get_target_id(event)
 
@@ -1219,8 +1312,9 @@ async def _doc_bind(plugin, event: AstrMessageEvent, arg: str):
 
 async def _doc_unbind(plugin, event: AstrMessageEvent, arg: str):
     """解绑文档从当前激活的角色卡"""
-    if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+    msg = _check_group_permission(plugin, event)
+    if msg:
+        event.set_result(MessageEventResult().message(msg))
         return
     target_id = _get_target_id(event)
 
@@ -1299,8 +1393,9 @@ async def stream_dispatch(plugin, event: AstrMessageEvent, arg: str):
         ))
         return
 
-    if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+    msg = _check_group_permission(plugin, event)
+    if msg:
+        event.set_result(MessageEventResult().message(msg))
         return
 
     new_mode = _MODE_MAP[arg]
@@ -1340,8 +1435,9 @@ async def quill_reset(plugin, event: AstrMessageEvent):
     注意：本命令不清理 AstrBot 核心的对话历史（contexts），
     如需完整重置请额外执行 /reset。
     """
-    if not _check_group_permission(plugin, event):
-        event.set_result(MessageEventResult().message("⛔ 群聊中只有管理员可以执行此操作。若您是群主，请在插件配置面板设置 admin_users。"))
+    msg = _check_group_permission(plugin, event)
+    if msg:
+        event.set_result(MessageEventResult().message(msg))
         return
 
     target_id = _get_target_id(event)

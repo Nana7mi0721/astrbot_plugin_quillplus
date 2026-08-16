@@ -227,8 +227,13 @@ class MemoryStore:
                 
         if not vectors:
             return None, None
-            
-        matrix = np.stack(vectors)
+
+        try:
+            matrix = np.stack(vectors)
+        except ValueError as e:
+            # P1-4: 维度不匹配时（如 Embedding 提供商切换后旧向量残留），跳过该会话
+            logger.warning("[Quill Memory] 向量维度不匹配，跳过会话 %s: %s", session_id, e)
+            return None, None
         self._cache[session_id] = (valid_rows, matrix)
         if len(self._cache) > getattr(self, '_MAX_CACHE', 50):
             self._cache.popitem(last=False)
@@ -258,6 +263,12 @@ class MemoryStore:
         import numpy as np
         rows, matrix = await self._get_cached_vectors(session_id)
         if not rows:
+            return []
+
+        query = np.array(query_vector, dtype=np.float32)
+        # P1-4: 维度校验 — 查询向量维度与存储向量不匹配时跳过（Embedding 切换后）
+        if query.shape[0] != matrix.shape[1]:
+            logger.warning("[Quill Memory] 查询向量维度 %d 与存储向量 %d 不匹配，跳过搜索", query.shape[0], matrix.shape[1])
             return []
             
         query = np.array(query_vector, dtype=np.float32)
