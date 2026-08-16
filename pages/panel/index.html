@@ -3049,6 +3049,10 @@ textarea:focus-visible,
 <script>
 const PLUGIN_NAME = "astrbot_plugin_quillplus";
 
+// ============================================================
+// 工具函数：Bridge、DOM 查询、格式化、安全转义
+// ============================================================
+
 function getBridge() {
   // bridge 依赖父窗口（dashboard）postMessage 应答；独立打开（非 iframe）时
   // SDK 仍会注入但无人应答，会导致所有 API 调用永久挂起——此时跳过 bridge 走原生 fetch
@@ -3074,6 +3078,10 @@ function jsesc(s) { return s == null ? '' : String(s).replace(/\\/g,'\\\\').repl
 // 先 jsesc 保护 JS 字符串（' → \'），再 esc 保护 HTML 属性（" → &quot;），双重安全。
 function jsAttr(s) { return esc(jsesc(s)); }
 function catColor(name) { if (!name) return '#4285f4'; let h = 0; for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h); return `hsl(${(h % 360 + 360) % 360}, 55%, 50%)`; }
+
+// ============================================================
+// UI 交互：主题切换、弹窗、Toast、提示框
+// ============================================================
 
 function updateRangeBubble(input) {
   const bubble = input.parentElement.querySelector('.range-bubble');
@@ -3185,6 +3193,10 @@ function showErrorDetail(title, msg) {
   btn.onclick = closeDialog;
   qs('#dialogOverlay').classList.add('open');
 }
+
+// ============================================================
+// API 通信层：fetch 封装、认证、文件下载
+// ============================================================
 
 async function api(path, opts = {}) {
   const np = path.replace(/^\/+/, '');
@@ -3517,6 +3529,10 @@ function onWRSearchInput() {
   handleWRSearch();
 }
 
+// ============================================================
+// WR（写作素材库）：加载、渲染、搜索、CRUD
+// ============================================================
+
 async function loadWR() {
   const search = qs('#wr-filter-input')?.value || '';
   const category = qs('#wr-cat-filter').value;
@@ -3831,6 +3847,10 @@ async function importWR(input) {
 }
 
 let wbAllCache = []; // 全量缓存用于搜索过滤
+// ============================================================
+// WB（世界书）：加载、渲染、搜索、CRUD、ST 导入导出
+// ============================================================
+
 async function loadWB(forceOpenName = null) {
   const el = qs('#wb-list');
   let currentOpenName = forceOpenName;
@@ -4082,6 +4102,10 @@ let _personaSearchQuery = '';
 
 let _personaShowCount = 20;  // C1: 客户端分页，初始显示 20 张
 let _personaRenderToken = 0;  // 渲染令牌：每次 renderPersonaPage 递增，用于丢弃过期的懒加载回调
+
+// ============================================================
+// 角色卡：加载、渲染、CRUD、V2 导入导出、头像裁剪
+// ============================================================
 
 async function loadPersonas() {
   const container = qs('#persona-list');
@@ -4816,6 +4840,10 @@ async function importFromText() {
   }
 }
 
+// ============================================================
+// RAG（文档知识库）：加载、上传、检索、模型信息
+// ============================================================
+
 async function loadRAG() {
   try {
     const data = await api('/rag/documents');
@@ -4945,6 +4973,10 @@ function switchMemorySub(sub) {
   if (sub === 'overview') loadMemoryOverview();
   if (sub === 'browser') { _memPage = 1; loadMemorySessions(); loadMemoryBrowser(); }
 }
+
+// ============================================================
+// 动态记忆：总览、浏览、会话选择、搜索、导入导出
+// ============================================================
 
 async function loadMemoryOverview() {
   try {
@@ -5518,6 +5550,10 @@ async function saveAllChanges() {
     }
   }
 }
+
+// ============================================================
+// 初始化与生命周期：Bridge 连接、深链接、版本徽章
+// ============================================================
 
 async function quillInit() {
   await waitForBridge(1500);
