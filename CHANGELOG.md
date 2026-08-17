@@ -4,13 +4,24 @@
 
 **新功能（面板）：**
 - 对话日志查看器：动态记忆页新增「对话日志」子页，按会话浏览/导出 RP 对话记录（Markdown/TXT），后端 API 早已就绪，本次补上前端入口
-- 全量备份：配置页新增一键备份下载（zip 打包素材库/世界书/角色卡/记忆/文档索引）
+- 全量备份/恢复：配置页新增一键备份下载（zip 打包素材库/世界书/角色卡/记忆/文档索引）与恢复上传（自动解压到插件目录，防 zip slip 攻击）
 - 删除/启停操作统一忙碌态：按钮禁用 + spinner，防止误以为无响应而重复点击
 - 面板版本徽章改为动态读取 metadata.yaml（同时修复 `_get_plugin_version` 路径多跳一级导致永远显示 v5.0.4 的 bug）
 - WR 匹配测试台：写作素材库标签页新增「匹配测试」按钮，弹窗输入文本即可测试关键词命中与匹配度
 - ST 世界书导出：世界书标签页新增「导出 ST」按钮，支持导出为 SillyTavern 兼容格式
+- WR 批量操作：卡片新增多选复选框 + 批量操作工具栏，支持批量启用/禁用/删除
+- 记忆会话选择器：记忆浏览子页新增会话下拉框，替代纯文本搜索，按会话快速筛选
+- 移动端底部导航栏：<768px 隐藏侧边栏，显示固定底部导航栏，符合 MD3 Bottom Navigation 规范
+- 无障碍改进：ARIA 标签/角色/tablist 键盘导航支持，装饰性 SVG 添加 aria-hidden
 
-**P1 功能增强（聊天指令/后端/配置）：**
+**P2/P3 功能增强（后端/前端/无障碍）：**
+- 备份恢复 REST API：新增 `POST /backup/restore` 端点，接受 zip 上传并解压，自动重初始化 RAG 组件
+- WR 批量操作：新增 `POST /wr/batch_delete` 和 `POST /wr/batch_toggle` 后端端点，前端卡片多选 + 批量工具栏
+- 记忆会话列表 API：新增 `MemoryStore.list_sessions()` 方法 + `GET /memory/sessions` 路由，返回按活跃时间倒序的会话列表
+- `/quill debug` 注入组成查看：显示当前会话的 Target/Session/Persona/状态栏/WR/WB/记忆/健康度/Session Vars 等调试信息
+- 配置缓存失效策略：`MemoryStore` 新增 `clear_cache()` 公共方法，允许手动清空 LRU 缓存
+- 前端结构拆分：按功能域添加 7 个模块级注释分隔线（工具函数/UI交互/API通信/WR/WB/角色卡/RAG/记忆/初始化）
+- 阅读障碍改进：`index.html` 添加 ARIA role/label/tablist 属性，装饰性 SVG 添加 `aria-hidden`，标签切换时同步 `aria-selected`
 - `/memory pin <序号> [on|off]`：聊天指令钉住/取消核心记忆，对应面板已有功能
 - `/memory core <内容>`：直接写入核心记忆（不参与遗忘），绕过 LLM 反思流程
 - `@记住：` / `核心记忆：` 自然语言前缀：在对话中直接写入核心记忆，自动剥离注入指令
