@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.2.1-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.2.2-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -292,14 +292,23 @@ QuillPlus 遵循持续迭代的开发路线，当前（v5.2）已完成以下里
 
 - ✅ **v5.0** — 重构首发版：平行宇宙双轴隔离、JSON 原子化状态机、全链路异步化、Character Card V2 全量支持
 - ✅ **v5.1** — 全自动自迭代记忆：闲时反思守护进程、核心记忆更新、混合检索 (FTS5+Vector+RRF)、LRU 会话缓存
-- ✅ **v5.2** — 面板功能补全：对话日志查看器、全量备份导出、操作忙碌态、MD3 全面重构、三轮代码审查修复
+- ✅ **v5.2/v5.2.1** — 面板功能补全：对话日志查看器、全量备份导出/恢复、WR 批量操作、移动端底部导航、MD3 全面重构、四轮代码审查修复
 
 **下阶段规划：**
 
-- 🔜 **世界书匹配测试台** — 可视化测试关键词命中与注入结果
-- 🔜 **i18n** — 国际化支持（待社区需求驱动）
+- 🔜 **v5.3 近期**
+  - 状态栏变化高亮（前端）— 后端字段变更追踪已就绪，面板消费后即可高亮数值变化
+  - 世界书匹配测试台 — 可视化测试关键词命中与注入结果，与 WR 测试台对齐
+  - WR 批量移动/分类 — 复用已就绪的多选与批量 API 框架
+- 🔜 **v5.4 中期**
+  - 配置预设方案 — 导出/导入当前配置为 JSON，便于社区分享开箱即用方案
+  - 记忆时间线视图 — 按会话可视化记忆的生成/召回/遗忘脉络
+  - 性能面板 — 注入 token 构成实时统计（/quill debug 的面板化）
+- 🔮 **远期**
+  - i18n — 国际化支持（待社区需求驱动）
+  - 前端工程化 — 单文件拆分 + 轻量构建（见下方约束）
 
-> 备份恢复、WR 批量操作、移动端底部导航已在 v5.2 实现（见上）。
+> **关于前端拆分的约束**：插件 Pages 走 AstrBot 的 `asset_token` 单文件服务，多文件引用需逐个鉴权，引入构建链会显著增加部署复杂度。当前以「注释分区 + 命名空间模块化」维护单文件，待 AstrBot 支持静态资源目录后再评估构建方案。
 
 ---
 

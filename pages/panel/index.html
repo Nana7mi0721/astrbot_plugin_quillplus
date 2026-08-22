@@ -1689,6 +1689,34 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
 .config-nav a.active { background: var(--primary); color: var(--on-primary); }
 
 .config-section { margin-bottom: 28px; scroll-margin-top: 16px; }
+
+/* ── 配置页设置行组件（MD3 设置项模式：标题/说明在左，控件在右）── */
+.setting-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+.setting-item:last-child { border-bottom: none; }
+.setting-item .setting-text { flex: 1; min-width: 0; }
+.setting-item .setting-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.4;
+}
+.setting-item .setting-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+.setting-item .setting-control { flex-shrink: 0; }
+.setting-item--start { align-items: flex-start; }
+.setting-item--start .toggle { margin-top: 4px; }
+/* 带内嵌子表单的设置行（如 LLM 智能提取） */
+.setting-item .setting-sub { margin-top: 10px; }
 .config-section-title {
   font-size: 16px;
   font-weight: 500;
@@ -1737,6 +1765,15 @@ textarea#c-sb-tpl, textarea#c-ref-pat, textarea#pf-first, textarea#pf-examples {
   font-size: 12px;
   color: var(--text-muted);
   flex-shrink: 0;
+}
+.config-sticky-footer .cfg-bar-status--dirty,
+.config-sticky-footer .cfg-bar-actions { display: none; }
+.config-sticky-footer.unsaved-hint .cfg-bar-status--clean { display: none; }
+.config-sticky-footer.unsaved-hint .cfg-bar-status--dirty { display: inline; color: var(--error, #d32f2f); font-weight: 500; }
+.config-sticky-footer.unsaved-hint .cfg-bar-actions { display: inline-flex; gap: 8px; }
+.config-sticky-footer.unsaved-hint {
+  background: var(--surface-container, var(--surface));
+  box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
 }
 .config-sticky-footer code {
   background: var(--muted);
@@ -2725,94 +2762,90 @@ textarea:focus-visible,
   <div class="tab-content" id="tab-config">
     <!-- 锚点导航 -->
     <nav class="config-nav" id="config-nav">
-      <a data-target="sec-basic" class="active">基础配置</a>
+      <a data-target="sec-inject" class="active">注入引擎</a>
       <a data-target="sec-statusbar">状态栏</a>
       <a data-target="sec-rag">RAG 与记忆</a>
+      <a data-target="sec-session">会话与输出</a>
       <a data-target="sec-system">系统与安全</a>
+      <div class="config-search-box config-search-box--inline">
+        <input type="text" id="configSearchInput" placeholder="搜索配置项...">
+      </div>
     </nav>
 
-    <div class="config-search-box">
-        <input type="text" id="configSearchInput" placeholder="搜索配置项...">
-    </div>
-
     <!-- ════ 1. 基础配置 ════ -->
-    <section class="config-section" id="sec-basic">
-      <h2 class="config-section-title"><span class="num">1</span>基础配置 <span class="hint">世界书 · 素材库 · 输出控制</span></h2>
+    <section class="config-section" id="sec-inject">
+      <h2 class="config-section-title"><span class="num">1</span>注入引擎 <span class="hint">世界书 · 素材库 · 输出控制 · 反拒绝</span></h2>
 
       <div class="form-row">
         <div class="form-group">
-          <div class="card h-100">
-            <h3>世界书注入策略</h3>
-            <div class="form-check" style="margin-bottom:16px;">
-              <label class="toggle"><input type="checkbox" id="c-wb-enabled"><span class="toggle-slider"></span></label>
-              <span class="fw-500">启用世界书匹配</span>
+          <div data-collapse-key="wb" class="card collapsible">
+            <h3>世界书注入策略 <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
+            <div class="card-body">
+            <div class="setting-item">
+            <div class="setting-text"><div class="setting-title">启用世界书匹配</div>
             </div>
-            <div class="form-group"><label>注入 Token 估算上限</label><input type="number" id="c-wb-token" value="4000"><span class="hint-block">建议 3000-4000。太高会导致忘掉状态栏。</span></div>
-            <div class="form-group"><label>单次触发条目上限</label><input type="number" id="c-wb-max" value="4"></div>
+            <label class="toggle"><input type="checkbox" id="c-wb-enabled"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="form-group"><label>注入 Token 估算上限（token）</label><input type="number" id="c-wb-token" value="4000"><span class="hint-block">建议 3000-4000。太高会导致忘掉状态栏。</span></div>
+            <div class="form-group"><label>单次触发条目上限（条）</label><input type="number" id="c-wb-max" value="4"></div>
             <div class="form-group"><label>提示词注入位置</label><select id="c-wb-pos"><option value="user_prefix">贴脸输出 (user_prefix) - 推荐</option><option value="system_end">系统末尾 (system_end)</option></select></div>
             <div class="form-group"><label>匹配灵敏度</label><div class="range-wrap"><input type="range" id="c-wb-sens" min="0" max="1" step="0.1" value="0.7" oninput="this.nextElementSibling.textContent=this.value;updateRangeBubble(this)"><span class="range-value">0.7</span><span class="range-bubble" style="left:70%">0.7</span></div></div>
-            <div class="form-check" style="margin-top:16px;">
-              <label class="toggle"><input type="checkbox" id="c-wb-always"><span class="toggle-slider"></span></label>
-              <span class="fw-500">全局常驻激活</span>
+            <div class="setting-item">
+            <div class="setting-text"><div class="setting-title">全局常驻激活</div>
+            <div class="setting-desc">每次对话强制注入系统提示词和状态栏，无需触发激活词。适合纯 RP 场景。</div>
             </div>
-            <span class="hint-block">开启后，每次对话都强制注入系统提示词和状态栏，无需触发激活词。适合纯RP场景。</span>
-            <div class="form-check" style="margin-top:16px;">
-              <label class="toggle"><input type="checkbox" id="c-wb-show-log"><span class="toggle-slider"></span></label>
-              <div><span class="fw-500">显示触发日志</span><span class="inline-hint">在 /info 指令中显示最新命中的词条（调试用）。</span></div>
+            <label class="toggle"><input type="checkbox" id="c-wb-always"><span class="toggle-slider"></span></label>
             </div>
+          </div>
+            <div class="setting-item">
+            <div class="setting-text"><div class="setting-title">显示触发日志</div>
+            <div class="setting-desc">在 /info 指令中显示最新命中的词条（调试用）。</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="c-wb-show-log"><span class="toggle-slider"></span></label>
+          </div>
           </div>
         </div>
 
         <div class="form-group">
-          <div class="card h-100">
-            <h3>写作素材库控制</h3>
-            <div class="form-check" style="margin-bottom:16px;">
-              <label class="toggle"><input type="checkbox" id="c-wr-enabled"><span class="toggle-slider"></span></label>
-              <span class="fw-500">启用素材库指引</span>
+          <div data-collapse-key="wr" class="card collapsible">
+            <h3>写作素材库控制 <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
+            <div class="card-body">
+            <div class="setting-item">
+            <div class="setting-text"><div class="setting-title">启用素材库指引</div>
             </div>
-            <div class="form-group"><label>最大注入条数</label><input type="number" id="c-wr-max" value="4"></div>
-            <div class="form-group"><label>无匹配时保底回退条数</label><input type="number" id="c-wr-fallback" value="2"></div>
-            <div class="form-group"><label>同分类去重上限</label><input type="number" id="c-wr-dedup" value="3"></div>
+            <label class="toggle"><input type="checkbox" id="c-wr-enabled"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="form-group"><label>最大注入条数（条）</label><input type="number" id="c-wr-max" value="4"></div>
+            <div class="form-group"><label>无匹配时保底回退条数（条）</label><input type="number" id="c-wr-fallback" value="2"></div>
+            <div class="form-group"><label>同分类去重上限（条）</label><input type="number" id="c-wr-dedup" value="3"></div>
+            </div>
           </div>
         </div>
 
-        <div class="form-group">
-          <div class="card h-100">
-            <h3>流式输出控制</h3>
-            <div class="form-check" style="margin-bottom:12px;">
-              <span class="fw-500">当前会话分布</span>
-              <span class="hint-block" id="stream-stats-hint">加载中...</span>
-            </div>
-            <div class="form-group">
-              <label>批量设置所有会话</label>
-              <div style="display:flex;gap:8px;">
-                <button type="button" class="btn btn-sm btn-outline" id="stream-btn-auto" onclick="setStreamModeAll('auto')">自动</button>
-                <button type="button" class="btn btn-sm btn-outline" id="stream-btn-on" onclick="setStreamModeAll('on')">强制流式</button>
-                <button type="button" class="btn btn-sm btn-outline" id="stream-btn-off" onclick="setStreamModeAll('off')">强制关闭</button>
-              </div>
-              <span class="hint-block">auto=激活时关闭(默认)；on=始终流式；off=始终非流式。仅影响已有会话，新会话默认 auto。单聊可用 /stream 指令覆盖。</span>
-            </div>
-          </div>
-        </div>
       </div>
 
       <div class="form-row">
         <div class="form-group">
-          <div class="card h-100">
-            <h3>表现控制</h3>
-            <div class="form-group"><label>强制回复最低字数</label><input type="number" id="c-perf-min" value="400"><span class="hint-block">建议400-800，防大模型变短聊。</span></div>
-            <div class="form-group"><label>要求回复最高字数</label><input type="number" id="c-perf-max" value="0"><span class="hint-block">填 0 表示不限制。防止大模型无限发散啰嗦。</span></div>
+          <div data-collapse-key="perf" class="card collapsible">
+            <h3>表现控制 <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
+            <div class="card-body">
+            <div class="form-group"><label>强制回复最低字数（字）</label><input type="number" id="c-perf-min" value="400"><span class="hint-block">建议400-800，防大模型变短聊。</span></div>
+            <div class="form-group"><label>要求回复最高字数（字，0 不限）</label><input type="number" id="c-perf-max" value="0"><span class="hint-block">填 0 表示不限制。防止大模型无限发散啰嗦。</span></div>
+            </div>
           </div>
         </div>
 
         <div class="form-group">
-          <div class="card h-100">
-            <h3>应急反拒绝协议</h3>
-            <div class="form-check" style="margin-bottom:16px;">
-              <label class="toggle"><input type="checkbox" id="c-ref-enabled"><span class="toggle-slider"></span></label>
-              <span class="fw-500">启用拒绝阻断检测</span>
+          <div data-collapse-key="refusal" class="card collapsible">
+            <h3>应急反拒绝协议 <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
+            <div class="card-body">
+            <div class="setting-item">
+            <div class="setting-text"><div class="setting-title">启用拒绝阻断检测</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="c-ref-enabled"><span class="toggle-slider"></span></label>
             </div>
             <div class="form-group"><label>触发拦截词 (每行一个)</label><textarea id="c-ref-pat" rows="6"></textarea></div>
+            </div>
           </div>
         </div>
       </div>
@@ -2821,28 +2854,29 @@ textarea:focus-visible,
     <!-- ════ 2. 状态栏 ════ -->
     <section class="config-section" id="sec-statusbar">
       <h2 class="config-section-title"><span class="num">2</span>状态栏 <span class="hint">沉浸式属性追踪</span></h2>
-      <div class="card collapsible">
+      <div data-collapse-key="statusbar" class="card collapsible">
         <h3>状态栏配置 <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
         <div class="card-body">
-        <div class="form-check" style="margin-bottom:16px;align-items:flex-start;">
-          <label class="toggle" style="margin-top:4px;"><input type="checkbox" id="c-sb-enabled"><span class="toggle-slider"></span></label>
-          <div style="flex:1">
-            <span class="fw-500">启用状态栏（实验性）</span>
-            <div style="font-size:12px;color:var(--warning);margin-top:4px;line-height:1.5">此功能因为LLM的稀疏注意力机制较不稳定，切换开关后不保证生效</div>
-          </div>
+        <div class="setting-item setting-item--start">
+          <div class="setting-text">
+            <div class="setting-title">启用状态栏（实验性）</div>
+            <div class="setting-desc" style="color:var(--warning)">此功能因为 LLM 的稀疏注意力机制较不稳定，切换开关后不保证生效</div>
+          <label class="toggle"><input type="checkbox" id="c-sb-enabled"><span class="toggle-slider"></span></label>
         </div>
         <div class="form-row">
           <div class="form-group"><label>状态栏字段 (6个, 用|隔开)</label><input type="text" id="c-sb-fields" value="好感度|关系阶段|心情|位置|穿着|当前想法"></div>
           <div class="form-group"><label>剧情走向选项 (用|隔开)</label><input type="text" id="c-sb-plots" value="继续当前话题|转换场景|结束互动"><span class="hint-block">空字符串则不显示。</span></div>
+          <div class="form-group"><label>缺省占位符</label><input type="text" id="c-sb-placeholder" value="未设置" maxlength="12"><span class="hint-block">字段未匹配到值时显示的占位文本，如「未知」「—」。</span></div>
         </div>
         <div class="form-group"><label>渲染 Markdown 模板</label><textarea id="c-sb-tpl" rows="3"></textarea></div>
-        <div class="form-check" style="margin:16px 0 0;padding:12px;background:var(--surface);border-radius:var(--radius-sm);border:1px solid var(--border-light);">
-          <label class="toggle"><input type="checkbox" id="c-sb-llm-extract"><span class="toggle-slider"></span></label>
-          <div style="flex:1">
-            <div class="fw-500">LLM 智能提取（实验性）</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.5">当大模型输出的状态栏格式完全不符合规范、5 级解析全部失败时，再调用一次轻量 LLM 从文本中智能识别并提取状态字段。有 3 秒超时保护，失败自动放弃，不影响正常对话。<b style="color:var(--warning)">注意：开启后每次失败都会额外消耗一次 LLM 调用。</b></div>
-            <div class="form-group" style="margin-top:10px;margin-bottom:0"><label>状态栏提取 LLM 模型</label><select id="c-sb-llm"></select><span class="hint-block">状态栏智能提取专用 LLM。留空则回退到 RAG 摘要 LLM。建议配置轻量/便宜的模型。</span></div>
+        <div class="setting-item setting-item--start">
+          <div class="setting-text">
+            <div class="setting-title">LLM 智能提取（实验性）</div>
+            <div class="setting-desc">当大模型输出的状态栏格式完全不符合规范、5 级解析全部失败时，再调用一次轻量 LLM 从文本中智能识别并提取状态字段。有 3 秒超时保护，失败自动放弃，不影响正常对话。<b style="color:var(--warning)">注意：开启后每次失败都会额外消耗一次 LLM 调用。</b></div>
+            <div class="setting-sub form-group" style="margin-bottom:0"><label>状态栏提取 LLM 模型</label><select id="c-sb-llm"></select><span class="hint-block">状态栏智能提取专用 LLM。留空则回退到 RAG 摘要 LLM。建议配置轻量/便宜的模型。</span></div>
+            </div>
           </div>
+          <label class="toggle"><input type="checkbox" id="c-sb-llm-extract"><span class="toggle-slider"></span></label>
         </div>
         </div>
       </div>
@@ -2851,7 +2885,7 @@ textarea:focus-visible,
     <!-- ════ 3. RAG 与动态记忆 ════ -->
     <section class="config-section" id="sec-rag">
       <h2 class="config-section-title"><span class="num">3</span>RAG 与动态记忆 <span class="hint">文档知识库与长期记忆</span></h2>
-      <div class="card collapsible">
+      <div data-collapse-key="rag" class="card collapsible">
         <h3>RAG 与动态记忆 <span style="font-weight:normal;font-size:13px;color:var(--text-muted);margin-left:8px">(依赖底层向量库引擎)</span> <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
         <div class="card-body">
         <div class="form-row">
@@ -2860,22 +2894,26 @@ textarea:focus-visible,
           <div class="form-group"><label>摘要 LLM 模型</label><select id="c-rag-llm"></select><span class="hint-block">用于后台将长对话压缩为记忆摘要。留空则用简单文本截断。</span></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>文档分块大小</label><input type="number" id="c-rag-chunk" value="500"></div>
-          <div class="form-group"><label>分块重叠字数</label><input type="number" id="c-rag-overlap" value="50"></div>
-          <div class="form-group"><label>最终注入条数 (Top K)</label><input type="number" id="c-rag-topk" value="3"></div>
+          <div class="form-group"><label>文档分块大小（字符）</label><input type="number" id="c-rag-chunk" value="500"></div>
+          <div class="form-group"><label>分块重叠字数（字符）</label><input type="number" id="c-rag-overlap" value="50"></div>
+          <div class="form-group"><label>最终注入条数（条）</label><input type="number" id="c-rag-topk" value="3"></div>
         </div>
-        <div class="form-check" style="margin-top:10px;">
-          <label class="toggle"><input type="checkbox" id="c-rag-memory"><span class="toggle-slider"></span></label>
-          <div><span class="fw-500">启用动态记忆</span><span class="inline-hint">后台自动提取历史并跨会话保留。</span></div>
-        </div>
-        <div class="form-check" style="margin-top:10px;">
-          <label class="toggle"><input type="checkbox" id="c-rag-autonomous-reflection"><span class="toggle-slider"></span></label>
-          <div><span class="fw-500">启用全自动闲时反思</span><span class="inline-hint">开启后，系统在闲置时自动抽取并提纯过去累积的对话记录。</span></div>
-        </div>
+        <div class="setting-item">
+            <div class="setting-text"><div class="setting-title">启用动态记忆</div>
+            <div class="setting-desc">后台自动提取历史并跨会话保留。</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="c-rag-memory"><span class="toggle-slider"></span></label>
+          </div>
+        <div class="setting-item">
+            <div class="setting-text"><div class="setting-title">启用全自动闲时反思</div>
+            <div class="setting-desc">系统在闲置时自动抽取并提纯过去累积的对话记录。</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="c-rag-autonomous-reflection"><span class="toggle-slider"></span></label>
+          </div>
         <div class="form-row" style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border-light)">
-          <div class="form-check" style="flex:1">
+          <div class="setting-item" style="border-bottom:none;flex:1">
+            <div class="setting-text"><div class="setting-title">保存原始对话日志</div><div class="setting-desc">用于导出剧本和增量学习</div></div>
             <label class="toggle"><input type="checkbox" id="c-rag-log"><span class="toggle-slider"></span></label>
-            <div><span class="fw-500">保存原始对话日志</span><span class="inline-hint">用于导出剧本和增量学习</span></div>
           </div>
           <div class="form-group" style="flex:1; margin-bottom:0">
             <label style="display:inline-block; margin-right:8px; font-size:14px; font-weight:500;">日志保留天数</label>
@@ -2886,14 +2924,41 @@ textarea:focus-visible,
       </div>
     </section>
 
-    <!-- ════ 4. 系统与安全 ════ -->
+    <!-- ════ 4. 会话与输出 ════ -->
+    <section class="config-section" id="sec-session">
+      <h2 class="config-section-title"><span class="num">4</span>会话与输出 <span class="hint">流式模式批量控制（会话级操作，即时生效）</span></h2>
+      <div class="form-row">
+        <div class="form-group">
+          <div data-collapse-key="stream" class="card collapsible">
+            <h3>流式输出控制 <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
+            <div class="card-body">
+            <div class="setting-item" style="border-bottom:none">
+              <div class="setting-text"><div class="setting-title">当前会话分布</div><div class="setting-desc" id="stream-stats-hint">加载中...</div></div>
+            </div>
+            <div class="form-group">
+              <label>批量设置所有会话</label>
+              <div style="display:flex;gap:8px;">
+                <button type="button" class="btn btn-sm btn-outline" id="stream-btn-auto" onclick="setStreamModeAll('auto')">自动</button>
+                <button type="button" class="btn btn-sm btn-outline" id="stream-btn-on" onclick="setStreamModeAll('on')">强制流式</button>
+                <button type="button" class="btn btn-sm btn-outline" id="stream-btn-off" onclick="setStreamModeAll('off')">强制关闭</button>
+              </div>
+              <span class="hint-block">auto=激活时关闭(默认)；on=始终流式；off=始终非流式。仅影响已有会话，新会话默认 auto。单聊可用 /stream 指令覆盖。</span>
+            </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════ 5. 系统与安全 ════ -->
     <section class="config-section" id="sec-system">
-      <h2 class="config-section-title"><span class="num">4</span>系统与安全 <span class="hint">健康度 · 权限 · 调试</span></h2>
+      <h2 class="config-section-title"><span class="num">5</span>系统与安全 <span class="hint">健康度 · 权限 · 调试 · 备份</span></h2>
 
       <div class="form-row">
         <div class="form-group">
-          <div class="card" class="h-100" id="health-card">
-            <h3>系统健康度</h3>
+          <div data-collapse-key="health" class="card collapsible" id="health-card">
+            <h3>系统健康度 <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
+            <div class="card-body">
             <div class="health-compact" id="health-dashboard">
               <div class="health-item">
                 <span class="health-label">RAG 检索成功率</span>
@@ -2908,18 +2973,19 @@ textarea:focus-visible,
               </div>
             </div>
             <span style="font-size:11px;color:var(--text-muted);margin-top:10px;display:block">滑动窗口最近 20 次，重启后清零</span>
+            </div>
           </div>
         </div>
 
         <div class="form-group">
-          <div class="card h-100">
-            <h3>调试与维护</h3>
-            <div class="form-check" style="margin-bottom:16px;">
-              <label class="toggle"><input type="checkbox" id="c-debug-enabled"><span class="toggle-slider"></span></label>
-              <div>
-                <span class="fw-500">启用调试日志</span>
-                <span class="inline-hint">开启后在控制台打印详细的匹配详情与注入流程。非排错时建议关闭，日志量较大。</span>
-              </div>
+          <div data-collapse-key="debug" class="card collapsible">
+            <h3>调试与维护 <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
+            <div class="card-body">
+            <div class="setting-item">
+            <div class="setting-text"><div class="setting-title">启用调试日志</div>
+            <div class="setting-desc">在控制台打印详细的匹配详情与注入流程。非排错时建议关闭，日志量较大。</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="c-debug-enabled"><span class="toggle-slider"></span></label>
             </div>
             <div class="form-group">
               <label>面板主题</label>
@@ -2929,7 +2995,7 @@ textarea:focus-visible,
               </select>
               <span class="hint-block">切换后需刷新页面生效。</span>
             </div>
-            <div class="form-group" style="margin-top:16px">
+            <div class="form-group" style="margin-top:16px;padding:12px;border:1px solid var(--border-light);border-radius:var(--radius-sm)">
               <label>全量备份</label>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                 <button class="btn btn-primary" onclick="backupExport(this)">一键备份下载 (zip)</button>
@@ -2937,12 +3003,14 @@ textarea:focus-visible,
               </div>
               <span class="hint-block">打包/恢复素材库、世界书、角色卡、记忆与文档索引等全部插件数据。恢复后自动重载 RAG 组件。</span>
             </div>
+            </div>
           </div>
         </div>
       </div>
 
-      <div class="card">
-        <h3>安全与权限控制</h3>
+      <div data-collapse-key="permission" class="card collapsible" style="border-color:var(--warning, #f9a825)">
+        <h3>安全与权限控制 <button class="card-collapse-toggle" title="折叠/展开" aria-label="折叠卡片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg></button></h3>
+            <div class="card-body">
         <div class="warning-box">
           ⚠️ <b>建议配置</b>：留空时群聊写指令（切卡/清记忆/改流式等）将被拦截。私聊与 Web 面板编辑不受限制。
         </div>
@@ -2954,8 +3022,13 @@ textarea:focus-visible,
       </div>
     </section>
 
-    <div class="config-sticky-footer">
-      <span>提示：部分设置修改后需向机器人发送 <code>/reset</code> 重置对话生效</span>
+    <div class="config-sticky-footer" id="config-action-bar">
+      <span class="cfg-bar-status cfg-bar-status--clean">提示：部分设置修改后需向机器人发送 <code>/reset</code> 重置对话生效</span>
+      <span class="cfg-bar-status cfg-bar-status--dirty">● 未保存更改</span>
+      <span class="cfg-bar-actions">
+        <button type="button" class="btn btn-sm btn-outline" onclick="discardChanges()">放弃</button>
+        <button type="button" class="btn btn-sm btn-primary" onclick="saveAllChanges()">保存</button>
+      </span>
     </div>
   </div>
 
@@ -3121,6 +3194,14 @@ function clearUnsaved() {
   if (footer) footer.classList.remove('unsaved-hint');
   if (fab) fab.classList.remove('unsaved');
 }
+// B4: 放弃未保存的配置修改 — 重新拉取服务端配置覆盖本地编辑
+async function discardChanges() {
+  _cacheDel('config_all');
+  await loadGlobalSettings();
+  clearUnsaved();
+  showToast('已放弃未保存的修改', 'info');
+}
+
 function showToast(msg, type = 'error') {
   const container = qs('#toast-container');
   const icons = { success: '✓', error: '✕', info: 'ℹ', warning: '⚠' };
@@ -3136,6 +3217,20 @@ function showToast(msg, type = 'error') {
   const durations = { success: 2000, info: 3000, warning: 4000, error: 0 };
   const dur = durations[type] || 3500;
   if (dur > 0) setTimeout(() => el.remove(), dur);
+  return el;
+}
+
+// 第三批: 带撤销动作的 toast（删除类操作 5s 反悔窗口）
+function showToastWithAction(msg, type, actionLabel, actionFn, ms = 5000) {
+  const el = showToast(msg, type);
+  if (!el) return;
+  // 改为手动关闭 + 定时自动消失
+  el.innerHTML = `<span class="toast-icon">${type === 'success' ? '✓' : '✕'}</span><span>${esc(msg)}</span>` +
+    `<button class="toast-close toast-action" style="color:var(--primary);font-weight:500">${esc(actionLabel)}</button>` +
+    `<button class="toast-close" onclick="this.parentElement.remove()">×</button>`;
+  const btn = el.querySelector('.toast-action');
+  btn.onclick = () => { try { actionFn(); } finally { el.remove(); } };
+  setTimeout(() => el.remove(), ms);
 }
 
 function renderWBEntryCard(wbName, e) {
@@ -3145,6 +3240,7 @@ function renderWBEntryCard(wbName, e) {
           <div class="wb-entry-header">
             <div><div class="wb-entry-title">${esc(e.title || e.id || '(无标题)')}</div><div class="wb-entry-id">${esc(e.id||'')}</div></div>
             <div class="wb-entry-meta">${e.is_constant ? '<span class="badge badge-constant">常驻</span>' : ''}${e.enabled === false ? '<span class="badge badge-disabled">禁用</span>' : ''}<button class="btn btn-sm btn-outline btn-icon" onclick="event.stopPropagation();openWBEntryModal('${jsName}','${jsEid}')">✎</button><button class="btn btn-sm btn-danger-outline btn-icon" onclick="event.stopPropagation();deleteWBEntry('${jsName}','${jsEid}', this)">×</button></div>
+            </div>
           </div>
           ${(e.keys||[]).length ? `<div class="wb-entry-keys">${e.keys.map(k => `<span class="tag">${esc(k)}</span>`).join('')}</div>` : ''}
           ${e.content ? `<div class="wb-entry-content">${esc(e.content.substring(0,200))}${e.content.length>200?'…':''}</div>` : ''}
@@ -3781,7 +3877,18 @@ async function saveModal() {
 function deleteWREntry(entryId, btn) {
   sandboxConfirm(`确定删除 "${entryId}" 吗？`, async () => {
     await withBusy(btn, '删除中', async () => {
-      try { await apiPost('/wr/delete', { entry_id: entryId }); showToast('已删除', 'success'); loadWR(); } catch (e) { showToast(e.message); }
+      try {
+        const entry = wrState.entries.find(e => e.entry_id === entryId);
+        await apiPost('/wr/delete', { entry_id: entryId });
+        showToastWithAction(`已删除 ${entryId}`, 'success', '撤销', async () => {
+          if (!entry) { showToast('原条目数据已不可用，无法撤销'); return; }
+          try {
+            await apiPost('/wr/create', entry);
+            showToast('已撤销删除', 'success'); loadWR();
+          } catch (e) { showToast('撤销失败: ' + e.message); }
+        });
+        loadWR();
+      } catch (e) { showToast(e.message); }
     });
   }, true);
 }
@@ -3834,9 +3941,19 @@ async function wrBatchDelete() {
   sandboxConfirm('确定批量删除 ' + ids.length + ' 个条目？', async () => {
     await withBusy(qs('#wr-batch-bar'), '删除中...', async () => {
       try {
+        const snapshot = wrState.entries.filter(e => _wrSelectedIds.has(e.entry_id));
         const res = await apiPost('/wr/batch_delete', { entry_ids: ids });
         const failed = (res && res.failed) || 0;
-        showToast(failed ? `批量删除: ${res.deleted} 成功, ${failed} 失败` : '批量删除成功', failed ? '' : 'success');
+        showToastWithAction(
+          failed ? `批量删除: ${res.deleted} 成功, ${failed} 失败` : `已删除 ${ids.length} 个条目`,
+          failed ? 'warning' : 'success', '撤销',
+          async () => {
+            let ok = 0, bad = 0;
+            for (const e of snapshot) { try { await apiPost('/wr/create', e); ok++; } catch (_) { bad++; } }
+            showToast(`撤销完成: 恢复 ${ok} 条${bad ? `, ${bad} 条失败` : ''}`, bad ? 'warning' : 'success');
+            loadWR();
+          }
+        );
         _wrSelectedIds.clear();
         updateWRBatchBar();
         loadWR();
@@ -5432,6 +5549,7 @@ function _applySettings(p, cfg) {
   qs('#c-sb-plots').value = safeGet('status_bar', 'plot_paths', '继续当前话题|转换场景|结束互动');
   qs('#c-sb-llm-extract').checked = safeGet('status_bar', 'llm_extract', false);
   qs('#c-sb-llm').value = safeGet('status_bar', 'llm_provider_id', '');
+  qs('#c-sb-placeholder').value = safeGet('status_bar', 'default_placeholder', '未设置');
   qs('#c-perf-max').value = safeGet('performance', 'max_output_length', 0);
   qs('#c-rag-log').checked = safeGet('rag', 'enable_chat_logging', true);
   qs('#c-rag-log-days').value = safeGet('rag', 'chat_log_retention_days', 30);
@@ -5547,6 +5665,7 @@ async function saveAllChanges() {
 
       add('performance', 'min_output_length', parseInt(qs('#c-perf-min').value) || 400);
       add('status_bar', 'enabled', qs('#c-sb-enabled').checked);
+      add('status_bar', 'default_placeholder', qs('#c-sb-placeholder').value.trim() || '未设置');
       add('status_bar', 'fields', qs('#c-sb-fields').value);
       add('status_bar', 'format_template', qs('#c-sb-tpl').value);
       add('status_bar', 'plot_paths', qs('#c-sb-plots').value);
@@ -5851,13 +5970,60 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
     });
   })();
 
+  // ── 第三批: 全局键盘增强 ──
+  // Esc：关闭最上层弹窗（dialog → modal 顺序）
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    const dlg = qs('#dialogOverlay');
+    const mdl = qs('#modalOverlay');
+    if (dlg && dlg.classList.contains('open')) { closeDialog(); return; }
+    if (mdl && mdl.classList.contains('open')) { closeModal(); return; }
+  });
+  // "/"：聚焦当前激活页的第一个搜索框（未处于输入态时）
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== '/' ) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    const active = qs('.tab-content.active');
+    if (!active) return;
+    const box = active.querySelector('input[type="text"][id*="filter"], input[type="text"][id*="search"], input[type="text"][id*="Search"]');
+    if (box) { e.preventDefault(); box.focus(); box.select && box.select(); }
+  });
+
+  // B3: 配置页卡片折叠 — localStorage 持久化；无记录时每节首卡展开、其余折叠
+  const CFG_COLLAPSE_KEY = 'quill-config-collapse';
   document.addEventListener('click', function(e) {
     const toggle = e.target.closest('.card-collapse-toggle');
     if (toggle) {
       const card = toggle.closest('.card.collapsible');
-      if (card) card.classList.toggle('collapsed');
+      if (!card) return;
+      card.classList.toggle('collapsed');
+      const key = card.dataset.collapseKey;
+      if (key) {
+        try {
+          const state = JSON.parse(localStorage.getItem(CFG_COLLAPSE_KEY) || '{}');
+          state[key] = card.classList.contains('collapsed');
+          localStorage.setItem(CFG_COLLAPSE_KEY, JSON.stringify(state));
+        } catch (_) {}
+      }
     }
   });
+  (function restoreConfigCollapse() {
+    const cards = document.querySelectorAll('#tab-config .card.collapsible[data-collapse-key]');
+    if (!cards.length) return;
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(CFG_COLLAPSE_KEY) || 'null'); } catch (_) {}
+    const seenSection = new Set();
+    cards.forEach(card => {
+      const sec = card.closest('.config-section');
+      const secId = sec ? sec.id : '';
+      const isFirst = sec && !seenSection.has(secId);
+      if (secId) seenSection.add(secId);
+      const key = card.dataset.collapseKey;
+      const collapsed = saved ? !!saved[key] : !isFirst;
+      card.classList.toggle('collapsed', collapsed);
+    });
+  })();
 
 </script>
 </body>
