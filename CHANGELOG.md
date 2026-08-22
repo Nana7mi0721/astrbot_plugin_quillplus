@@ -1,5 +1,51 @@
 # Changelog
 
+## v5.2.1 — 独立代码审查修复（P0×2 / P1×6 / P2×8 / P3 若干）
+
+对 v5.2.0 执行计划书全部变更（13 文件 +1046 行）进行两路独立子代理审查并逐项复核后，
+修复全部确认属实的问题：
+
+**P0（崩溃/数据损坏）：**
+- `memory_store.py`：修复 `search()` 中维度校验行的缩进错误（SyntaxError）——该错误使
+  `import MemoryStore` 失败且被 `_init_rag` 吞掉，动态记忆/Doc RAG/反思**全部静默瘫痪**
+- `web_routes.py` + `main.py`：备份恢复全面安全化——恢复前先停 autoflush（不 flush，
+  防旧内存态反向覆盖恢复的 quill_state.json）+ 关闭旧 aiosqlite/FAISS/WR 句柄（防
+  Windows 覆盖运行中 DB 读到错乱页）；解压改"目录白名单（data/knowledge/worldbooks）
+  + normpath 边界校验 + 以校验后 dest 手写落盘"三位一体（防 zip slip 与覆盖插件源码），
+  逐文件容错；恢复后全量重建 State/WR/Persona/WB/RAG 并**同步刷新 Web 路由持有的组件
+  引用**（此前 QuillRoutes.rag 是一次性快照，面板 API 会一直操作旧连接）
+- `commands.py`：修复 `/memory pin` 与 `/memory core` 是不可达死代码的问题——两分支
+  误嵌在 `search` 块无条件 return 之后，从未生效
+
+**P1（功能错误）：**
+- `main.py`：`_changed` 状态栏变更标记不再写入 session_vars——此前会持久化进
+  quill_state.json 并被 prompt_builder 无白名单遍历注入 system prompt（dict repr
+  污染模型输入且残留累积），现仅记 debug 日志
+- `main.py`：`@记住：` 自然语言注入三重修复——切片统一以 stripped 文本为基准（此前
+  前导空白时 prompt 残留尾部字符）；剥离后为空则保留原文（防空 prompt 发给 LLM）；
+  群聊写入增加 admin 权限校验（与 `/memory core` 对齐，防任意群成员写核心记忆）
+- `memory_store.py`：`update_core_memory` 只更新系统核心行（`length(vector)=0`），
+  不再静默覆盖用户通过 `/memory pin` 钉住的记忆
+- `pages/panel/index.html`：备份恢复改走 Base64 + `apiPost`（bridge 兼容）——面板
+  iframe 是无 allow-same-origin 的受限沙箱，直连 fetch 无法携带 Dashboard 认证
+- `pages/panel/index.html`：独立面板模式 bridge 负缓存——此前 `getBridge()` 恒 null
+  但每次 API 调用仍空转 5s 才降级 fetch
+- `pages/panel/index.html`：匹配测试弹窗重置确认按钮 disabled 残留
+
+**P2（健壮性）：**
+- 前端：WR 多选集合在重新拉取列表（翻页/过滤/增删）时失效，批量操作不再命中不可见
+  条目；批量结果透出失败计数；恢复成功后刷新全部模块数据；移动端 toast/FAB 抬升
+  避让底部导航遮挡；记忆搜索框改为准确的"按 Session ID 筛选"语义并与会话选择互斥
+- 后端：对话日志查询改 `ORDER BY id DESC LIMIT + reverse`（"最近 200 条"此前实际取
+  最早 200 条）；备份 zip 条目名统一 `/` 分隔符（跨平台恢复兼容）；Embedding 切换
+  重初始化改用 `_spawn`（持任务引用防 GC，弃用 `get_event_loop`）并刷新路由引用；
+  `/quill debug` 世界书统计修复（`list_worldbooks()` 返回 `List[str]`，此前按 dict
+  取值必然报"查询失败"）
+- 文档：README pip 依赖加引号（`>` 曾被 shell 当重定向）、Roadmap 移除已实现项、
+  补回 FAQ 误删的问题行、命令表补 `/memory core`/`@记住：`/`/quill debug`；修正
+  CHANGELOG 夸大措辞（"自动重嵌入"实为触发组件重初始化，旧文档向量仍需重新上传；
+  "键盘导航"实为 ARIA 角色标注）
+
 ## v5.2.0 — 面板功能补全 + 三轮代码审查修复
 
 **新功能（面板）：**
@@ -12,7 +58,7 @@
 - WR 批量操作：卡片新增多选复选框 + 批量操作工具栏，支持批量启用/禁用/删除
 - 记忆会话选择器：记忆浏览子页新增会话下拉框，替代纯文本搜索，按会话快速筛选
 - 移动端底部导航栏：<768px 隐藏侧边栏，显示固定底部导航栏，符合 MD3 Bottom Navigation 规范
-- 无障碍改进：ARIA 标签/角色/tablist 键盘导航支持，装饰性 SVG 添加 aria-hidden
+- 无障碍改进：ARIA 标签/角色/tablist 标注，装饰性 SVG 添加 aria-hidden
 
 **P2/P3 功能增强（后端/前端/无障碍）：**
 - 备份恢复 REST API：新增 `POST /backup/restore` 端点，接受 zip 上传并解压，自动重初始化 RAG 组件
@@ -28,7 +74,7 @@
 - `/quill status` 健康度：指令输出新增 RAG 检索成功率与状态栏解析成功率（来自 HealthTracker）
 - `admin_users` 报错区分：未配置时提示"请填写你的用户 ID"；不在白名单时提示"请联系群主添加"
 - 状态栏占位符可配置：新增 `default_placeholder` 配置项，默认"未设置"，可自定义占位文本
-- Embedding 切换自动重嵌入：配置面板保存嵌入提供商后自动触发 RAG 重初始化；MemoryStore 增加维度不匹配保护
+- Embedding 切换联动：配置面板保存嵌入提供商后自动触发 RAG 组件重初始化（旧文档向量仍需重新上传）；MemoryStore 增加维度不匹配保护
 - 状态栏变化高亮：后端记录字段变更历史（`_changed` 标记），为后续前端高亮提供数据基础
 
 **代码审查修复（v5.1.0 → 本版本累计三轮）：**

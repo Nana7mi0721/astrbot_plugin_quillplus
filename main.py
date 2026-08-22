@@ -394,9 +394,12 @@ class QuillPlugin(Star):
             'summarizer': self.rag_summarizer,
         }
         try:
-            QuillRoutes(self.wr_manager, self.wb_manager, self.context, self.config,
+            # 审查修复：保存 routes 实例引用——_init_rag/备份恢复重建组件后，
+            # 需要把最新组件同步进已注册的路由对象（否则面板 API 一直操作旧连接）
+            self._quill_routes = QuillRoutes(self.wr_manager, self.wb_manager, self.context, self.config,
                         rag_components=rag_components, plugin=self,
-                        persona_manager=self.persona_manager).register_all()
+                        persona_manager=self.persona_manager)
+            self._quill_routes.register_all()
             logger.info("[Quill] 已注册全部 Web API 路由 (register_web_api)")
         except Exception as e:
             logger.warning(f"[Quill] Web 路由注册失败: {e}")
@@ -499,6 +502,112 @@ class QuillPlugin(Star):
         except Exception as e:
             logger.warning(f"[Quill RAG] 初始化失败（RAG 功能不可用）: {e}")
 
+    # ================================================================
+    # 审查修复：组件生命周期管理（重初始化 / 备份恢复共用）
+    # ================================================================
+
+    async def _close_rag_components(self):
+        """安全关闭当前 RAG 组件连接。重初始化前必须调用，否则旧 aiosqlite/FAISS
+        句柄泄漏，且（Windows 下）恢复解压覆盖运行中的 DB 文件会读到错乱页。"""
+        if self.rag_retriever:
+            for comp, name in (
+                (getattr(self.rag_retriever, "memory_store", None), "memory_store"),
+                (getattr(self.rag_retriever, "vector_store", None), "vector_store"),
+            ):
+                if comp:
+                    try:
+                        await comp.close()
+                    except Exception as e:
+                        logger.debug(f"[Quill] 关闭旧 {name} 失败（忽略）: {e}")
+        self.rag_retriever = None
+        self.rag_memory_store = None
+        self.rag_vector_store = None
+        self.rag_embedding = None
+        self.rag_reranker = None
+        self.rag_summarizer = None
+
+    def _refresh_routes_refs(self):
+        """把最新的管理器/RAG 组件引用同步到已注册的 QuillRoutes 实例。"""
+        routes = getattr(self, "_quill_routes", None)
+        if routes is None:
+            return
+        routes.wr_manager = self.wr_manager
+        routes.wb_manager = self.wb_manager
+        routes.persona_manager = self.persona_manager
+        routes.config = self.config
+        routes.plugin = self
+        routes.rag = {
+            'embedding': self.rag_embedding,
+            'vector_store': self.rag_vector_store,
+            'reranker': self.rag_reranker,
+            'memory_store': self.rag_memory_store,
+            'summarizer': self.rag_summarizer,
+        }
+
+    async def _reinit_rag_and_refresh_routes(self):
+        """关闭旧 RAG 组件 → 重建 → 刷新 Web 路由引用（Embedding 切换等场景）。"""
+        await self._close_rag_components()
+        await self._init_rag()
+        self._refresh_routes_refs()
+
+    async def _prepare_for_restore(self):
+        """备份恢复前的准备：停 autoflush（不 flush）+ 关闭持有 DB 句柄的组件。
+
+        必须在解压覆盖文件**之前**调用——否则 Windows 下覆盖运行中的 SQLite
+        会让旧连接读到错乱页，且旧内存脏状态会被 autoflush 反向写回、
+        覆盖刚恢复的 quill_state.json。
+        """
+        try:
+            await self.state_manager.stop_autoflush()
+        except Exception as e:
+            logger.debug(f"[Quill] 恢复前停止 autoflush 失败（忽略）: {e}")
+        await self._close_rag_components()
+        if self.wr_manager:
+            try:
+                await self.wr_manager.close()
+            except Exception as e:
+                logger.debug(f"[Quill] 恢复前关闭写作素材库失败（忽略）: {e}")
+
+    async def _reload_after_restore(self):
+        """备份解压完成后的全量重建：丢弃旧内存态与缓存，从恢复的磁盘数据重新加载。
+
+        前置条件：已调用 _prepare_for_restore() 且数据文件已被覆盖到位。
+        """
+        # 1) 重建 StateManager（从恢复后的 quill_state.json 重新加载）
+        data_dir = os.path.join(self.plugin_dir, "data")
+        self.state_manager = StateManager(data_dir=data_dir)
+        # 2) 重建写作素材库连接
+        self.wr_manager = None
+        wr_path = os.path.join(self.plugin_dir, "knowledge", "quill_wr.db")
+        try:
+            from .kb import WritingResourceManager
+            self.wr_manager = WritingResourceManager(
+                wr_path, category_dedup_limit=self.config.wr_dedup_limit
+            )
+            await self.wr_manager.initialize()
+        except Exception as e:
+            self.wr_manager = None
+            logger.warning(f"[Quill] 恢复后写作素材库重建失败: {e}")
+        # 3) 世界书重载（无文件句柄，直接重读 JSON）
+        if self.wb_manager:
+            try:
+                self.wb_manager._load_all()
+            except Exception as e:
+                logger.warning(f"[Quill] 恢复后世界书重载失败: {e}")
+        # 4) 角色卡缓存失效（重建实例，重新扫描 data/quill_personas）
+        try:
+            from .persona_manager import QuillPersonaManager
+            self.persona_manager = QuillPersonaManager(
+                os.path.join(self.plugin_dir, "data", "quill_personas")
+            )
+        except Exception as e:
+            logger.warning(f"[Quill] 恢复后角色卡管理器重建失败: {e}")
+        # 5) RAG 组件重建 + 路由引用刷新 + autoflush 重启
+        await self._init_rag()
+        self._refresh_routes_refs()
+        self.state_manager.start_autoflush()
+        logger.info("[Quill] 备份恢复后的组件重建完成")
+
     async def terminate(self) -> None:
         """生命周期终止：取消所有后台任务并关闭数据库连接，防止资源泄漏。"""
         # S2-4 修复：先取消并等待所有后台任务，防止退出时悬挂/资源泄漏
@@ -580,15 +689,14 @@ class QuillPlugin(Star):
             self.status_bar_default_placeholder = getattr(self.config, "status_bar_default_placeholder", "未设置")
 
             # P1-4: Embedding 切换自动重嵌入 — 检测嵌入提供者变更，触发 RAG 重初始化
+            # 审查修复：改用 _spawn（create_task 持引用防 GC 中断，asyncio.get_event_loop
+            # 在 3.10+ 已弃用）；重初始化前会先关闭旧组件连接并刷新 Web 路由引用。
             if group == "rag" and key == "embedding_provider_id":
                 try:
-                    # 将在后台重建 FAISS 索引（维度不匹配时自动重建）
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        loop.create_task(self._init_rag())
-                        logger.info("[Quill] Embedding 提供商已变更，触发 RAG 重初始化")
-                except Exception as e:
-                    logger.warning("[Quill] Embedding 切换触发重初始化失败: %s", e)
+                    self._spawn(self._reinit_rag_and_refresh_routes())
+                    logger.info("[Quill] Embedding 提供商已变更，触发 RAG 重初始化")
+                except RuntimeError:
+                    logger.warning("[Quill] 无运行中的事件循环，Embedding 变更将在插件重载后生效")
 
             # 持久化到磁盘
             if hasattr(self._raw_config, 'save_config') and callable(self._raw_config.save_config):
@@ -819,19 +927,23 @@ class QuillPlugin(Star):
             self.health_tracker.record_status(handled)
 
         # P1-5: 状态栏变化高亮 — 对比旧值，将 changed 标记注入 updates
+        _changed = {}
         if updates and handled:
             _prev_vars = await self.state_manager.get_session_vars(target_id)
-            _changed = {}
             for k, v in updates.items():
                 _old = _prev_vars.get(k, "")
                 if _old and _old != v and v != self.status_bar_default_placeholder:
                     _changed[k] = _old
             if _changed:
-                updates["_changed"] = _changed
+                logger.debug(f"[Quill] 状态栏字段变化: {_changed}")
 
         # P2-4 修复：所有分支统一在此提交一次状态字段，消除多次独立 await 的竞态
+        # 审查修复：_changed 仅作为返回值携带（供前端/调试观察），绝不写入
+        # session_vars——此前会随 update_session_vars 持久化进 quill_state.json，
+        # 并被 prompt_builder 无白名单遍历注入 system prompt（dict repr 污染模型输入）。
         if updates and handled:
-            await self._persist_status_vars(updates, target_id)
+            persist_updates = {k: v for k, v in updates.items() if not k.startswith("_")}
+            await self._persist_status_vars(persist_updates, target_id)
 
         return new_text, updates, handled
 
@@ -1270,14 +1382,23 @@ class QuillPlugin(Star):
                 ))
 
             # P1-8: 自然语言核心记忆注入 — 检测 @记住 / 核心记忆 / @remember 前缀
+            # 审查修复：切片统一以 stripped 文本为基准（此前 strip 后匹配、原文切片，
+            # 带前导空白时 prompt 残留尾部字符）；剥离后为空则保留原文（避免空 prompt
+            # 仍发给 LLM）；群聊写入需通过 admin 权限校验（与 /memory core 对齐）。
             _core_nl = None
             if persona_id and user_input and self.rag_retriever and self.rag_retriever.memory_store:
-                _core_match = _CORE_MEMORY_NL_RE.match(user_input.strip())
+                _stripped = user_input.strip()
+                _core_match = _CORE_MEMORY_NL_RE.match(_stripped)
                 if _core_match:
-                    _core_nl = _core_match.group(1).strip()
-                    # 从 prompt 中剥离注入指令，不让 LLM 看到
-                    req.prompt = user_input[_core_match.end():].strip()
-                    logger.info(f"[Quill] 检测到核心记忆自然语言注入: {_core_nl[:80]}...")
+                    _perm_err = _cmds._check_group_permission(self, event)
+                    if _perm_err:
+                        logger.info("[Quill] 核心记忆自然语言注入被权限拦截（群聊非 admin）")
+                    else:
+                        _core_nl = _core_match.group(1).strip()
+                        _rest = _stripped[_core_match.end():].strip()
+                        if _rest:
+                            req.prompt = _rest
+                        logger.info(f"[Quill] 检测到核心记忆自然语言注入: {_core_nl[:80]}...")
             # 异步写入核心记忆（不阻塞请求流程）
             if _core_nl:
                 self._spawn(self.rag_memory_store.update_core_memory(

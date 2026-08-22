@@ -144,8 +144,14 @@ class MemoryStore:
 
     async def update_core_memory(self, session_id: str, new_traits: str, crucial_facts: str):
         await self._invalidate_cache(session_id)
-        # Check if core memory exists
-        rows = await self._exec_fetchall("SELECT id, summary FROM memories WHERE session_id = ? AND is_core = 1", (session_id,))
+        # 审查修复：只更新"系统核心行"（vector 为空、由本方法/反思循环写入），
+        # 不碰用户通过 /memory pin 或面板钉住的普通记忆行（那些行带向量）。
+        # 此前无过滤 + rows[0]（最小 rowid）会把用户已 pin 的记忆静默覆盖。
+        rows = await self._exec_fetchall(
+            "SELECT id FROM memories WHERE session_id = ? AND is_core = 1 AND length(vector) = 0 "
+            "ORDER BY id LIMIT 1",
+            (session_id,)
+        )
         core_content = json.dumps({"traits": new_traits, "facts": crucial_facts}, ensure_ascii=False)
         if rows:
             await self._exec_write("UPDATE memories SET summary = ?, timestamp = CURRENT_TIMESTAMP WHERE id = ?", (core_content, rows[0][0]))
@@ -269,7 +275,7 @@ class MemoryStore:
         if not rows:
             return []
 
-query = np.array(query_vector, dtype=np.float32)
+        query = np.array(query_vector, dtype=np.float32)
         # P1-4: 维度校验 — 查询向量维度与存储向量不匹配时跳过（Embedding 切换后）
         if query.shape[0] != matrix.shape[1]:
             logger.warning("[Quill Memory] 查询向量维度 %d 与存储向量 %d 不匹配，跳过搜索", query.shape[0], matrix.shape[1])
@@ -549,15 +555,18 @@ query = np.array(query_vector, dtype=np.float32)
             logger.warning(f"[Quill Memory] 聊天日志记录失败: {e}")
 
     async def list_chat_logs(self, session_id: str, limit: int = 200) -> list[dict]:
-        """按 session 查询原始对话日志"""
+        """按 session 查询原始对话日志（取最近 limit 条，按时间正序返回）"""
         if not session_id:
             return []
         try:
+            # 审查修复：ASC+LIMIT 取的是"最早 N 条"，与面板"最近 200 条"文案相反；
+            # 改为 DESC 取最近 N 条后 reverse 恢复时间正序展示。
             rows = await self._exec_fetchall(
                 "SELECT id, role, content, timestamp FROM chat_logs "
-                "WHERE session_id = ? ORDER BY timestamp ASC LIMIT ?",
+                "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
                 (session_id, limit)
             )
+            rows.reverse()
             return [
                 {"id": r[0], "role": r[1], "content": r[2], "timestamp": r[3]}
                 for r in rows

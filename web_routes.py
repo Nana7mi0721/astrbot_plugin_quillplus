@@ -245,7 +245,8 @@ class QuillRoutes:
 
         # ── 全量备份导出/恢复 ──
         _r(f"/{PLUGIN_NAME}/backup/export",   self.backup_export,  ["GET"],    "全量备份导出")
-        _r(f"/{PLUGIN_NAME}/backup/restore",  self.backup_restore, ["POST"],   "从备份 zip 恢复")
+        _r(f"/{PLUGIN_NAME}/backup/restore",  self.backup_restore, ["POST"],   "从备份 zip 恢复(二进制)")
+        _r(f"/{PLUGIN_NAME}/backup/restore_base64", self.backup_restore_base64, ["POST"], "从备份 zip 恢复(Base64)")
 
     # ── Info ──────────────────────────────────────────────────
 
@@ -1286,9 +1287,11 @@ class QuillRoutes:
                     for root, dirs, files in os.walk(base):
                         for fname in files:
                             fpath = os.path.join(root, fname)
+                            # 审查修复：zip 条目名必须用 "/" 分隔（Windows 的 os.sep
+                            # 会让跨平台恢复时生成文件名含 "\" 的单个文件）
                             arcname = os.path.join(
                                 os.path.basename(base), os.path.relpath(fpath, base)
-                            )
+                            ).replace(os.sep, "/")
                             # 跳过临时文件与索引缓存
                             if fname.endswith('.tmp') or fname.endswith('.tmp.bak') or fname.endswith('-wal') or fname.endswith('-shm'):
                                 continue
@@ -1309,60 +1312,118 @@ class QuillRoutes:
 
     @_api_handler
     async def backup_restore(self):
-        """P2-3: 从备份 zip 恢复数据。上传 zip → 解压到插件目录 → 重新初始化。"""
-        import io
-        import zipfile
-        import tempfile
-        plugin_root = os.path.dirname(os.path.abspath(__file__))
+        """P2-3: 从备份 zip 恢复数据（原始二进制上传）。
 
-        # 读取上传的 zip 二进制
+        审查修复版：
+        - zip slip 防护统一为"白名单前缀 + normpath 边界校验 + 以校验后的
+          dest 为落点手写文件"（此前校验 dest 却用 zf.extract 按原名解压，
+          两套路径逻辑不一致）；目录白名单限定 data/ knowledge/ worldbooks/，
+          防止覆盖插件源码。
+        - 恢复前先由 plugin._reload_after_restore 关闭旧 DB 句柄并停 autoflush
+          （否则 Windows 下覆盖运行中的 SQLite 会读到错乱页，且旧内存态会把
+          恢复的 quill_state.json 反向覆盖回去）。
+        - 逐文件容错：单个文件失败不中断整体恢复，失败数如实返回。
+        """
         raw = await request.body()
         if not raw:
             return error_response("请上传备份文件", status_code=400)
+        return await self._do_restore_bytes(raw)
 
-        buf = io.BytesIO(raw)
+    @_api_handler
+    async def backup_restore_base64(self):
+        """P2-3: 从备份 zip 恢复数据（Base64 JSON 模式）。
+
+        面板 iframe 是无 allow-same-origin 的受限沙箱，无法携带 Dashboard
+        认证直连 fetch——前端统一走 bridge（JSON）上传，此端点为此而设。
+        """
+        import base64
+        data = await request.json(default={})
+        b64 = (data.get("b64_data") or "").strip()
+        if not b64:
+            return error_response("缺少 b64_data 字段", status_code=400)
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            return error_response("Base64 解码失败", status_code=400)
+        return await self._do_restore_bytes(raw)
+
+    async def _do_restore_bytes(self, raw: bytes):
+        import io
+        import zipfile
+        plugin_root = os.path.dirname(os.path.abspath(__file__))
+        root_norm = os.path.normpath(plugin_root)
+        allowed_prefixes = ("data/", "knowledge/", "worldbooks/")
+
         extracted_count = 0
         skipped_count = 0
+        failed_files: list[str] = []
 
         def _extract():
             nonlocal extracted_count, skipped_count
-            with zipfile.ZipFile(buf, 'r') as zf:
+            with zipfile.ZipFile(io.BytesIO(raw), 'r') as zf:
                 for info in zf.infolist():
-                    # 安全校验：防止 zip slip 路径遍历攻击
-                    name = info.filename
-                    if name.startswith('/') or '..' in name:
+                    if info.is_dir():
+                        continue
+                    # 归一化分隔符（兼容旧版 Windows 备份中含 "\" 的条目名）
+                    name = info.filename.replace("\\", "/")
+                    # 白名单：仅允许三个数据目录，杜绝覆盖 .py / 面板 HTML 等
+                    if not any(name.startswith(p) for p in allowed_prefixes):
                         skipped_count += 1
                         continue
-                    # 跳过临时文件
-                    if name.endswith('.tmp') or name.endswith('.tmp.bak') or name.endswith('-wal') or name.endswith('-shm'):
+                    if name.startswith("/") or ".." in name.split("/"):
                         skipped_count += 1
                         continue
                     dest = os.path.normpath(os.path.join(plugin_root, name))
-                    # 确保目标在插件目录内
-                    if not dest.startswith(os.path.normpath(plugin_root)):
+                    # 边界校验：dest 必须严格位于插件根目录内（带分隔符边界）
+                    if not dest.startswith(root_norm + os.sep):
                         skipped_count += 1
                         continue
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    zf.extract(info, plugin_root)
-                    extracted_count += 1
+                    try:
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        # 以校验后的 dest 为落点手写（不使用 zf.extract 的自有路径逻辑）
+                        with open(dest, "wb") as f:
+                            f.write(zf.read(info))
+                        extracted_count += 1
+                    except OSError as e:
+                        failed_files.append(name)
+                        logger.warning("[Quill] 备份恢复: 写入 %s 失败: %s", name, e)
+
+        # 顺序关键：先停 autoflush + 关闭持有 DB 句柄的组件，再覆盖文件
+        plugin = self.plugin
+        if plugin is not None and hasattr(plugin, "_prepare_for_restore"):
+            try:
+                await plugin._prepare_for_restore()
+            except Exception as e:
+                logger.warning("[Quill] 备份恢复前组件关闭失败: %s", e, exc_info=True)
 
         await asyncio.to_thread(_extract)
-        logger.info(f"[Quill] 备份恢复: 解压 {extracted_count} 个文件, 跳过 {skipped_count} 个")
+        logger.info(
+            f"[Quill] 备份恢复: 解压 {extracted_count} 个文件, "
+            f"跳过 {skipped_count} 个, 失败 {len(failed_files)} 个"
+        )
 
-        # 重新初始化 RAG 组件（记忆/向量库等）
+        # 解压完成 → 全量重建数据组件 → 刷新 Web 路由引用
         plugin = self.plugin
-        if plugin is not None:
+        reload_ok = False
+        if plugin is not None and hasattr(plugin, "_reload_after_restore"):
             try:
-                await plugin._init_rag()
-                logger.info("[Quill] 备份恢复后 RAG 组件已重初始化")
+                await plugin._reload_after_restore()
+                reload_ok = True
             except Exception as e:
-                logger.warning("[Quill] 备份恢复后 RAG 重初始化失败: %s", e)
+                logger.warning("[Quill] 备份恢复后组件重建失败: %s", e, exc_info=True)
 
+        msg = f"已恢复 {extracted_count} 个文件（跳过 {skipped_count} 个）"
+        if failed_files:
+            msg += f"；{len(failed_files)} 个文件写入失败（详见服务端日志）"
+        if not reload_ok:
+            msg += "；组件热重载失败，建议重启 AstrBot 或重载插件"
         return json_response({
             "status": "ok",
             "data": {
                 "extracted": extracted_count,
                 "skipped": skipped_count,
-                "message": f"已恢复 {extracted_count} 个文件（跳过 {skipped_count} 个临时文件）"
+                "failed": len(failed_files),
+                "reload_ok": reload_ok,
+                "message": msg,
             }
         })

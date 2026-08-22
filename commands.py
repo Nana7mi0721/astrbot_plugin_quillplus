@@ -724,7 +724,7 @@ async def quill_status(plugin, event: AstrMessageEvent):
     else:
         lines.append("  动态记忆: 未加载")
 
-# Doc RAG
+    # Doc RAG
     if plugin.rag_vector_store:
         try:
             vs_stats = await plugin.rag_vector_store.get_stats()
@@ -901,9 +901,10 @@ async def quill_debug(plugin, event: AstrMessageEvent):
     # 世界书
     if plugin.wb_manager:
         try:
-            wb_list = plugin.wb_manager.list_worldbooks()
-            active = sum(1 for wb in wb_list if wb.get("active", False))
-            lines.append(f"  世界书: {len(wb_list)} 个 ({active} 活跃)")
+            # 审查修复：list_worldbooks() 返回 List[str]，此前按 dict 取 .get 必然抛
+            # AttributeError 被吞，导致本行永远显示"查询失败"
+            wb_names = plugin.wb_manager.list_worldbooks()
+            lines.append(f"  世界书: {len(wb_names)} 个已加载")
         except Exception:
             lines.append("  世界书: 查询失败")
 
@@ -930,9 +931,9 @@ async def quill_debug(plugin, event: AstrMessageEvent):
 
     # Session vars
     try:
-        vars = await plugin.state_manager.get_session_vars(target_id)
-        if vars:
-            vars_str = ", ".join(f"{k}={v}" for k, v in list(vars.items())[:8])
+        svars = await plugin.state_manager.get_session_vars(target_id)
+        if svars:
+            vars_str = ", ".join(f"{k}={v}" for k, v in list(svars.items())[:8])
             lines.append(f"  Session Vars: {vars_str}")
     except Exception:
         pass
@@ -1136,64 +1137,66 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             event.set_result(MessageEventResult().message(f"搜索失败: {e}"))
         return
 
-        if sub == "pin":
-            msg = _check_group_permission(plugin, event)
-            if msg:
-                event.set_result(MessageEventResult().message(msg))
+    # 审查修复：pin/core 分支此前误嵌在 search 块的无条件 return 之后（不可达死代码），
+    # 现提升到函数顶层，/memory pin 与 /memory core 才真正可用。
+    if sub == "pin":
+        msg = _check_group_permission(plugin, event)
+        if msg:
+            event.set_result(MessageEventResult().message(msg))
+            return
+        parts = (arg2 or "").strip().split(None, 1)
+        if not parts or not parts[0].isdigit():
+            event.set_result(MessageEventResult().message("用法: /memory pin <序号> [on|off]（使用 /memory list 查看序号）"))
+            return
+        idx = int(parts[0])
+        want_core = True  # 默认钉住
+        if len(parts) > 1:
+            flag = parts[1].strip().lower()
+            if flag == "off":
+                want_core = False
+            elif flag == "on":
+                want_core = True
+            else:
+                event.set_result(MessageEventResult().message("用法: /memory pin <序号> [on|off]"))
                 return
-            parts = (arg2 or "").strip().split(None, 1)
-            if not parts or not parts[0].isdigit():
-                event.set_result(MessageEventResult().message("用法: /memory pin <序号> [on|off]（使用 /memory list 查看序号）"))
-                return
-            idx = int(parts[0])
-            want_core = True  # 默认钉住
-            if len(parts) > 1:
-                flag = parts[1].strip().lower()
-                if flag == "off":
-                    want_core = False
-                elif flag == "on":
-                    want_core = True
-                else:
-                    event.set_result(MessageEventResult().message("用法: /memory pin <序号> [on|off]"))
-                    return
-            try:
-                all_memories = await plugin.rag_memory_store.list_memories(session_id, max(idx, 50))
-                if 0 < idx <= len(all_memories):
-                    memory_id = all_memories[idx - 1].get("id")
-                    if memory_id:
-                        ok = await plugin.rag_memory_store.set_core(memory_id, want_core)
-                        if ok:
-                            label = "已钉住为核心记忆" if want_core else "已取消核心记忆"
-                            event.set_result(MessageEventResult().message(f"记忆 #{idx} {label}"))
-                        else:
-                            event.set_result(MessageEventResult().message(f"操作失败"))
+        try:
+            all_memories = await plugin.rag_memory_store.list_memories(session_id, max(idx, 50))
+            if 0 < idx <= len(all_memories):
+                memory_id = all_memories[idx - 1].get("id")
+                if memory_id:
+                    ok = await plugin.rag_memory_store.set_core(memory_id, want_core)
+                    if ok:
+                        label = "已钉住为核心记忆" if want_core else "已取消核心记忆"
+                        event.set_result(MessageEventResult().message(f"记忆 #{idx} {label}"))
                     else:
-                        event.set_result(MessageEventResult().message(f"记忆 #{idx} 不存在"))
+                        event.set_result(MessageEventResult().message(f"操作失败"))
                 else:
-                    event.set_result(MessageEventResult().message(f"序号超出范围: {idx}"))
-            except Exception as e:
-                event.set_result(MessageEventResult().message(f"钉住失败: {e}"))
-            return
+                    event.set_result(MessageEventResult().message(f"记忆 #{idx} 不存在"))
+            else:
+                event.set_result(MessageEventResult().message(f"序号超出范围: {idx}"))
+        except Exception as e:
+            event.set_result(MessageEventResult().message(f"钉住失败: {e}"))
+        return
 
-        if sub == "core":
-            msg = _check_group_permission(plugin, event)
-            if msg:
-                event.set_result(MessageEventResult().message(msg))
-                return
-            content = (arg2 or "").strip()
-            if not content:
-                event.set_result(MessageEventResult().message("用法: /memory core <内容> — 直接写入核心记忆（不参与遗忘）"))
-                return
-            try:
-                await plugin.rag_memory_store.update_core_memory(session_id, content, content)
-                event.set_result(MessageEventResult().message(f"✅ 核心记忆已更新:\n{content[:200]}"))
-            except Exception as e:
-                event.set_result(MessageEventResult().message(f"写入核心记忆失败: {e}"))
+    if sub == "core":
+        msg = _check_group_permission(plugin, event)
+        if msg:
+            event.set_result(MessageEventResult().message(msg))
             return
+        content = (arg2 or "").strip()
+        if not content:
+            event.set_result(MessageEventResult().message("用法: /memory core <内容> — 直接写入核心记忆（不参与遗忘）"))
+            return
+        try:
+            await plugin.rag_memory_store.update_core_memory(session_id, content, content)
+            event.set_result(MessageEventResult().message(f"✅ 核心记忆已更新:\n{content[:200]}"))
+        except Exception as e:
+            event.set_result(MessageEventResult().message(f"写入核心记忆失败: {e}"))
+        return
 
-        event.set_result(MessageEventResult().message(
-            "未知子命令。\n用法: /memory [list|del|clear|learn|search|pin|core]"
-        ))
+    event.set_result(MessageEventResult().message(
+        "未知子命令。\n用法: /memory [list|del|clear|learn|search|pin|core]"
+    ))
 
 
 # ================================================================
@@ -1511,7 +1514,6 @@ async def quill_reset(plugin, event: AstrMessageEvent):
 
     target_id = _get_target_id(event)
     persona_id = await plugin.state_manager.get_persona_id(target_id)
-    mem_session_id = plugin._get_memory_session_id(target_id, persona_id)
 
     mem_deleted = 0
     log_deleted = 0
