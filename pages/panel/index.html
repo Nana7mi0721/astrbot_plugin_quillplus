@@ -2346,9 +2346,13 @@ textarea:focus-visible,
   /* 移动端隐藏侧边栏，显示底部导航 */
   .sidebar { display: none; }
   .layout { padding-bottom: 56px; }
+  /* 审查修复：toast 容器(z-index 999)与保存 FAB(z-index 50) 原本落在底部
+     导航(z-index 1000, 高 56px)区域内被遮挡——统一抬升避让 */
+  .toast-container { bottom: 68px !important; }
+  .fab-save { bottom: 72px !important; }
   /* 移动端配置页底边距适配底部导航 */
   .config-sticky-footer { margin-bottom: 0; }
-  body.config-active .back-to-top.visible { bottom: 72px; }
+  body.config-active .back-to-top.visible { bottom: 136px; }
 }
 
 /* ── Dark Mode Specific Tweaks ── */
@@ -2660,7 +2664,7 @@ textarea:focus-visible,
           <select id="mem-session-select" onchange="handleMemorySessionChange()" style="flex:1;max-width:300px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--on-surface)">
             <option value="">全部会话</option>
           </select>
-          <input type="text" id="mem-search" placeholder="搜索关键词..." oninput="handleMemorySearch()" style="flex:1">
+          <input type="text" id="mem-search" placeholder="按 Session ID 精确筛选（选定会话时禁用）..." oninput="handleMemorySearch()" style="flex:1">
         </div>
         <div class="table-wrap"><table class="data-table" id="mem-table"><thead><tr><th>Session ID</th><th>摘要</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="mem-table-body"></tbody></table></div>
         <div id="mem-pagination" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:13px;color:var(--text-muted);">
@@ -3198,11 +3202,20 @@ function showErrorDetail(title, msg) {
 // API 通信层：fetch 封装、认证、文件下载
 // ============================================================
 
+// 审查修复：独立面板模式（window.parent===window）下 getBridge() 恒为 null，
+// waitForBridge 会空转满超时——首次探测失败后置负缓存标志，后续调用直接走 fetch，
+// 消除每次 API 调用固定 +5s 延迟。
+let _bridgeAbsent = false;
+
 async function api(path, opts = {}) {
   const np = path.replace(/^\/+/, '');
   const hasQ = np.includes('?');
   const [bp, qs_str] = np.split('?');
-  const bridge = getBridge() || await waitForBridge(5000);
+  const bridge = _bridgeAbsent ? null : (getBridge() || await waitForBridge(5000));
+  if (!bridge && !_bridgeAbsent && window.parent === window) {
+    _bridgeAbsent = true;
+    console.info('[Quill] 独立面板模式：bridge 不可用，后续请求直连 fetch');
+  }
 
   // 1. 如果桥接器可用，且不是文件流或表单上传，优先走安全的桥接器
   if (bridge && !opts.isFormData && !opts.isBlob) {
@@ -3539,6 +3552,12 @@ async function loadWR() {
   const isConstant = qs('#wr-constant-filter')?.checked;
   wrState.perPage = calcDynamicPerPage();
   const page = wrState.page;
+  // 审查修复：重新拉取列表（翻页/过滤/增删后）时使多选集合失效——
+  // 此前选中项跨页残留，批量操作会命中不可见/已删除条目
+  if (typeof _wrSelectedIds !== 'undefined' && _wrSelectedIds.size) {
+    _wrSelectedIds.clear();
+    updateWRBatchBar();
+  }
   try {
     const params = new URLSearchParams({ page, per_page: wrState.perPage });
     if (search) params.set('search', search);
@@ -3797,26 +3816,32 @@ function wrBatchClear() {
 async function wrBatchToggle(enabled) {
   const ids = Array.from(_wrSelectedIds);
   if (!ids.length) return;
-  try {
-    await apiPost('/wr/batch_toggle', { entry_ids: ids, enabled });
-    showToast('批量操作成功', 'success');
-    _wrSelectedIds.clear();
-    updateWRBatchBar();
-    loadWR();
-  } catch (e) { showToast('批量操作失败: ' + e.message); }
+  await withBusy(qs('#wr-batch-bar'), '操作中...', async () => {
+    try {
+      const res = await apiPost('/wr/batch_toggle', { entry_ids: ids, enabled });
+      const failed = (res && res.failed) || 0;
+      showToast(failed ? `批量操作: ${res.toggled} 成功, ${failed} 失败` : '批量操作成功', failed ? '' : 'success');
+      _wrSelectedIds.clear();
+      updateWRBatchBar();
+      loadWR();
+    } catch (e) { showToast('批量操作失败: ' + e.message); }
+  });
 }
 
 async function wrBatchDelete() {
   const ids = Array.from(_wrSelectedIds);
   if (!ids.length) return;
   sandboxConfirm('确定批量删除 ' + ids.length + ' 个条目？', async () => {
-    try {
-      await apiPost('/wr/batch_delete', { entry_ids: ids });
-      showToast('批量删除成功', 'success');
-      _wrSelectedIds.clear();
-      updateWRBatchBar();
-      loadWR();
-    } catch (e) { showToast('批量删除失败: ' + e.message); }
+    await withBusy(qs('#wr-batch-bar'), '删除中...', async () => {
+      try {
+        const res = await apiPost('/wr/batch_delete', { entry_ids: ids });
+        const failed = (res && res.failed) || 0;
+        showToast(failed ? `批量删除: ${res.deleted} 成功, ${failed} 失败` : '批量删除成功', failed ? '' : 'success');
+        _wrSelectedIds.clear();
+        updateWRBatchBar();
+        loadWR();
+      } catch (e) { showToast('批量删除失败: ' + e.message); }
+    });
   }, true);
 }
 async function exportWR() {
@@ -4022,6 +4047,8 @@ function openWRTestModal() {
   `;
   const btn = qs('#dialogConfirmBtn');
   btn.className = 'btn btn-primary';
+  // 审查修复：重置禁用残留——危险确认框取消后 disabled 会遗留，导致本按钮灰死
+  btn.disabled = false;
   btn.textContent = '测试匹配';
   btn.onclick = async () => {
     const text = qs('#wr-test-input').value.trim();
@@ -5091,6 +5118,15 @@ async function loadMemorySessions() {
 
 function handleMemorySessionChange() {
   _memPage = 1;
+  // 审查修复：选定会话时禁用 ID 搜索框——后端按 session_id 精确匹配，
+  // 此前两条件并存时搜索词被静默忽略，用户却以为生效
+  const search = qs('#mem-search');
+  if (search) {
+    const locked = !!(qs('#mem-session-select')?.value);
+    search.disabled = locked;
+    search.style.opacity = locked ? '0.5' : '';
+    if (locked) search.value = '';
+  }
   loadMemoryBrowser();
 }
 
@@ -5253,19 +5289,28 @@ async function backupRestore(input) {
   btn.style.pointerEvents = 'none';
   btn.innerHTML = '<span>恢复中...</span>';
   try {
+    // 审查修复：改走 Base64 + apiPost（bridge 兼容）——面板 iframe 是无
+    // allow-same-origin 的受限沙箱，直连 fetch 无法携带 Dashboard 认证。
     const arrayBuffer = await file.arrayBuffer();
-    const blob = new Blob([arrayBuffer], { type: 'application/zip' });
-    // 使用 fetch 直接发送二进制（api() 用 JSON，不适合上传 zip）
-    const res = await fetch('/api/v1/plugins/extensions/astrbot_plugin_quillplus/backup/restore', {
-      method: 'POST',
-      body: blob,
-      credentials: 'include'
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const json = await res.json();
-    const data = json.data || json;
-    const msg = data.message || '恢复完成';
+    const bytes = new Uint8Array(arrayBuffer);
+    let bin = '';
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    const b64 = btoa(bin);
+    const data = await apiPost('/backup/restore_base64', { b64_data: b64 });
+    const msg = (data && (data.message || data.data && data.data.message)) || '恢复完成';
     showToast(msg, 'success');
+    // 审查修复：恢复成功后刷新各模块数据，避免面板展示恢复前的旧内存态
+    try {
+      if (typeof loadWR === 'function') loadWR();
+      if (typeof loadWB === 'function') loadWB();
+      if (typeof loadPersonas === 'function') loadPersonas();
+      if (typeof loadRAG === 'function') { loadRAG(); loadRAGModelInfo(); }
+      if (typeof switchMemorySub === 'function') switchMemorySub('overview');
+      if (typeof loadGlobalSettings === 'function') { loadGlobalSettings(); loadHealth(); }
+    } catch (_) {}
   } catch (e) { showToast('恢复失败: ' + e.message); }
   finally { btn.style.pointerEvents = ''; btn.innerHTML = origHTML; input.value = ''; }
 }
@@ -5569,12 +5614,14 @@ async function quillInit() {
   }).catch(() => {});
   // 深链接：#tab=memory&sub=logs 直达指定页（含子页），便于收藏与跳转
   try {
-    const hm = (location.hash || '').match(/tab=([a-z]+)/i);
+    const hm = (location.hash || '').match(/tab=([a-zA-Z]+)/);
     if (hm) {
-      const navBtn = document.querySelector(`.nav-item[data-tab="${hm[1]}"]`);
+      // 审查修复：大小写归一——#tab=MEMORY 此前匹配不到 data-tab="memory"
+      const tabName = hm[1].toLowerCase();
+      const navBtn = document.querySelector(`.nav-item[data-tab="${tabName}"]`);
       if (navBtn) navBtn.click();
-      const sm = (location.hash || '').match(/sub=([a-z]+)/i);
-      if (sm && hm[1] === 'memory') switchMemorySub(sm[1]);
+      const sm = (location.hash || '').match(/sub=([a-zA-Z]+)/);
+      if (sm && tabName === 'memory') switchMemorySub(sm[1].toLowerCase());
     }
   } catch (_) {}
   loadWRCategories();
@@ -5679,11 +5726,11 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
   }
 
   const _emptyIcons = {
-    book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
-    worldbook: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>',
-    persona: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
-    doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
-    search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+    book: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+    worldbook: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>',
+    persona: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    doc: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+    search: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
   };
   function renderEmptyState(iconType, title, description, extraHtml) {
     const icon = _emptyIcons[iconType] || _emptyIcons.book;

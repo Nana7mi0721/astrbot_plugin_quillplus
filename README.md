@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.2.0-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.2.1-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -124,6 +124,7 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 | `/quill help` | 折叠式指令速查（按五大系统分组，聊天窗口内可读） |
 | `/quill reset` | 重置当前会话全部记忆与对话日志 |
 | `/quill status` | 查看插件健康度（RAG 检索成功率、状态栏解析成功率等） |
+| `/quill debug` | 调试信息：会话/配置/健康度/Session Vars |
 | `/quill test kb <文字>` | 测试写作素材库匹配 |
 | `/quill test wb <文字>` | 测试世界书命中 |
 | `/quill test mem <文字>` | 测试记忆检索 |
@@ -139,6 +140,8 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 | `/memory learn [内容]` | 手动添加新记忆 |
 | `/memory search <关键词>` | 关键词搜索记忆 |
 | `/memory pin <序号>` | 钉住/取消钉住指定记忆为核心记忆（永不遗忘） |
+| `/memory core <内容>` | 直接写入系统核心记忆（不参与遗忘） |
+| `@记住：<内容>` | 对话中自然语言写入核心记忆（群聊需 admin） |
 
 ### 文档知识库 (`/doc`)
 
@@ -165,7 +168,7 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 
 - **角色卡管理**：网格化卡片展示，新建/编辑/删除，V2 卡片导入，纯文本解析，头像上传与自定义裁剪
 - **写作素材库**：全文搜索，分类筛选，条目编辑，匹配测试台
-- **世界书**：多选配置，条目管理，ST 格式导入/导出，匹配测试
+- **世界书**：多选配置，条目管理，ST 格式导入/导出
 - **文档知识库**：拖拽上传，已上传文档管理，语义检索测试
 - **动态记忆**：系统总览，搜索过滤，数据表格，JSON 备份与恢复，**对话日志查看器**（按会话浏览/导出 RP 对话记录）
 - **配置页面**：一键备份下载（zip 打包素材库/世界书/角色卡/记忆/文档索引），系统健康度卡片，流式模式批量控制
@@ -177,8 +180,8 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 ### 1. 安装依赖
 
 ```bash
-pip install Pillow>=10.0.0
-pip install faiss-cpu>=1.8.0 numpy>=1.24.0 aiosqlite>=0.19.0
+pip install "Pillow>=10.0.0"
+pip install "faiss-cpu>=1.8.0" "numpy>=1.24.0" "aiosqlite>=0.19.0"
 ```
 
 ### 2. 安装插件
@@ -202,8 +205,8 @@ pip install faiss-cpu>=1.8.0 numpy>=1.24.0 aiosqlite>=0.19.0
 ### 依赖
 
 ```bash
-pip install Pillow>=10.0.0
-pip install faiss-cpu>=1.8.0 numpy>=1.24.0 aiosqlite>=0.19.0
+pip install "Pillow>=10.0.0"
+pip install "faiss-cpu>=1.8.0" "numpy>=1.24.0" "aiosqlite>=0.19.0"
 ```
 
 Web 依赖（fastapi、quart）通常由 AstrBot 自带，缺失时手动安装。
@@ -294,14 +297,15 @@ QuillPlus 遵循持续迭代的开发路线，当前（v5.2）已完成以下里
 **下阶段规划：**
 
 - 🔜 **世界书匹配测试台** — 可视化测试关键词命中与注入结果
-- 🔜 **备份恢复** — 上传 zip 恢复到任意历史时间点
-- 🔜 **WR 批量操作** — 多选删除/移动/分类
-- 🔜 **移动端底部导航** — 触屏友好导航栏
 - 🔜 **i18n** — 国际化支持（待社区需求驱动）
+
+> 备份恢复、WR 批量操作、移动端底部导航已在 v5.2 实现（见上）。
 
 ---
 
 ## FAQ
+
+**Q: 为什么不直接使用市场上的世界书插件？**
 A: 大多数世界书插件仅提供关键词注入。QuillPlus 在此基础上补充了角色卡管理、写作素材库、文档 RAG 和动态记忆四个附加模块，构成完整的 RP 工作流。
 
 **Q: 可以在手机端使用吗？**
