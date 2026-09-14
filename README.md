@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.2.2-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.2.3-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -164,7 +164,10 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 
 ## 管理面板
 
-进入 AstrBot WebUI → 插件 → Pages / 插件配置。**前端面板已按 Google Material Design 3 标准全面重构**，视觉效果与交互体验全面升级。
+进入 AstrBot WebUI → 插件 → Pages / 插件配置。**前端面板已按 Apple Human Interface Guidelines 全面重写**——系统色、字阶、间距、圆角与动效数值均取自 HIG 现行发布值，并自动跟随 AstrBot 面板的浅色 / 深色主题。
+
+- **界面字体**：macOS 使用系统 SF Pro + 苹方（零下载）；Windows / Linux / Android 自动加载 HarmonyOS Sans（按 unicode-range 分块，仅下载实际用到的字块）
+- **响应式**：桌面为源列表侧栏，移动端（≤768px）切换为底部标签栏；已适配 `prefers-reduced-motion` / `-reduced-transparency` / `-contrast`
 
 - **角色卡管理**：网格化卡片展示，新建/编辑/删除，V2 卡片导入，纯文本解析，头像上传与自定义裁剪
 - **写作素材库**：全文搜索，分类筛选，条目编辑，匹配测试台
@@ -234,7 +237,7 @@ Web 依赖（fastapi、quart）通常由 AstrBot 自带，缺失时手动安装�
 | 性能 | Prompt 截断上限、最低回复字数 |
 | 状态栏 | 开关、字段定义、格式模板、剧情走向选项 |
 | 反拒绝 | 开关、匹配模式 |
-| 调试 | 调试日志开关、面板主题 |
+| 调试 | 调试日志开关、全量备份导出/恢复 |
 | 权限 | 管理员 ID 白名单（仅群聊写指令需要） |
 
 > **权限说明**：`admin_users` 仅作用于聊天平台的群聊写指令。配置后仅白名单用户可在群聊执行写操作，留空时群聊写指令被拦截。私聊与 Web 面板编辑不受此限制——Web 面板由 AstrBot 鉴权保护。
@@ -293,6 +296,7 @@ QuillPlus 遵循持续迭代的开发路线，当前（v5.2）已完成以下里
 - ✅ **v5.0** — 重构首发版：平行宇宙双轴隔离、JSON 原子化状态机、全链路异步化、Character Card V2 全量支持
 - ✅ **v5.1** — 全自动自迭代记忆：闲时反思守护进程、核心记忆更新、混合检索 (FTS5+Vector+RRF)、LRU 会话缓存
 - ✅ **v5.2/v5.2.1** — 面板功能补全：对话日志查看器、全量备份导出/恢复、WR 批量操作、移动端底部导航、MD3 全面重构、四轮代码审查修复
+- ✅ **v5.2.3** — 面板按 Apple HIG 全面重写：系统色/字阶/材质/弹簧动效、图标符号表、事件委托重构；接入 HarmonyOS Sans；修复 3 个沙箱 iframe 专属缺陷（配置页锁死、脚本中断、偏好不持久）
 
 **下阶段规划：**
 
@@ -342,13 +346,13 @@ A: 切换提供商会导致向量维度变化，插件会自动检测并重建 F
 
 ### 前端面板加载说明
 
-由于 AstrBot 框架的 Plugin Pages 静态文件服务默认设置 `Cache-Control: no-store`（强制禁用缓存），前端面板每次刷新都会全量重新加载（约 200KB）。如果加载较慢，可以通过以下方式优化：
+由于 AstrBot 框架的 Plugin Pages 静态文件服务默认设置 `Cache-Control: no-store`（强制禁用缓存），前端面板每次刷新都会全量重新加载（约 260KB 的单文件）。如果加载较慢，可以通过以下方式优化：
 
 1. **反向代理缓存**：在 AstrBot 前方部署 Nginx/Caddy，对 `/plugins/quillplus/` 路径添加缓存头
 2. **本地缓存**：浏览器开发者工具中禁用 "Disable cache" 选项（仅对非 DevTools 窗口生效）
 3. **减少角色卡数量**：角色卡管理页会内联所有头像数据，减少角色卡数量可加快加载
 
-> 该限制来自 AstrBot 框架层面，插件侧已通过内联 CSS/JS 和精简代码将请求数降至最低。
+> 该限制来自 AstrBot 框架层面，插件侧已通过内联 CSS/JS 将请求数降至最低（面板本身不依赖任何外部 CDN——界面字体异步加载，失败时自动回退系统字体）。
 
 ---
 
@@ -369,3 +373,5 @@ A: 切换提供商会导致向量维度变化，插件会自动检测并重建 F
 感谢原作者 Quill 提供的底层框架。本项目在其基础上进行了深度重构与增强。
 
 - [AstrBot](https://github.com/Soulter/AstrBot) — 提供可扩展的机器人插件框架
+- [HarmonyOS Sans](https://developer.huawei.com/consumer/cn/doc/design-guides/font-0000001828772001) — 管理面板界面字体（© 华为技术有限公司，依华为字体许可使用）。macOS 上使用系统 SF Pro / 苹方，不加载此字体
+- 面板设计参考 [Apple Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/)（配色、字阶、间距与动效数值均取自其现行发布值）

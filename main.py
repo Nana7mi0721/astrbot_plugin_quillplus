@@ -669,6 +669,9 @@ class QuillPlugin(Star):
 
             # 热重载：更新内存中所有配置派生属性
             self.config = QuillConfig(self._raw_config)
+            # 路由实例持有 config/管理器快照引用，重建后必须同步，
+            # 否则 Web 面板读到的是旧配置对象（写入成功却读不回来）
+            self._refresh_routes_refs()
             self.wr_max_entries = self.config.wr_max_entries
             self.wr_fallback_top_count = self.config.wr_fallback_top
             self.wb_max_entries = self.config.worldbook_max_dynamic

@@ -38,12 +38,13 @@ _ALLOWED_CONFIG_KEYS: set = {
     # refusal
     ("refusal", "enabled"), ("refusal", "patterns"),
     # debug
-    ("debug", "enabled"), ("debug", "panel_theme"),
+    ("debug", "enabled"), ("debug", "panel_theme"), ("debug", "panel_ui_state"),
     # permissions
     ("permissions", "admin_users"),
 }
 
 import asyncio
+import json
 import logging
 import os
 import tempfile
@@ -239,6 +240,10 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/panel/theme",      self.panel_theme_get,  ["GET"],   "获取面板主题")
         _r(f"/{PLUGIN_NAME}/panel/theme",      self.panel_theme_save, ["POST"],  "保存面板主题")
 
+        # ── Panel 界面状态（折叠等；沙箱 iframe 内无 localStorage，改由后端持久化）──
+        _r(f"/{PLUGIN_NAME}/panel/ui_state",   self.panel_ui_state_get,  ["GET"],  "获取面板界面状态")
+        _r(f"/{PLUGIN_NAME}/panel/ui_state",   self.panel_ui_state_save, ["POST"], "保存面板界面状态")
+
         # ── 流式模式批量控制 ──
         _r(f"/{PLUGIN_NAME}/stream/stats",     self.stream_stats,     ["GET"],   "流式模式统计")
         _r(f"/{PLUGIN_NAME}/stream/all",       self.stream_set_all,   ["POST"],  "批量设置流式模式")
@@ -331,6 +336,54 @@ class QuillRoutes:
         if hasattr(self, 'plugin') and self.plugin:
             self.plugin.save_plugin_config("debug", "panel_theme", theme)
         return json_response({"theme": theme, "message": "主题已保存"})
+
+    # ── Panel 界面状态 ────────────────────────────────────────
+    # 面板运行在无 allow-same-origin 的沙箱 iframe 中，localStorage 会抛
+    # SecurityError 且不跨刷新留存，因此界面偏好（卡片折叠等）存到插件配置。
+
+    @_api_handler
+    async def panel_ui_state_get(self):
+        """获取面板界面状态（折叠卡片等）。"""
+        raw = getattr(self.config, "panel_ui_state", "") if self.config else ""
+        state = {}
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    state = parsed
+            except (ValueError, TypeError):
+                logger.warning("[Quill] panel_ui_state 内容不是合法 JSON，已忽略并回退默认")
+        collapsed = state.get("collapsed")
+        return json_response({
+            "collapsed": collapsed if isinstance(collapsed, dict) else {},
+            "sidebar": bool(state.get("sidebar", False)),
+        })
+
+    @_api_handler
+    async def panel_ui_state_save(self):
+        """保存面板界面状态。仅接受白名单字段，且限制体积防止配置膨胀。"""
+        try:
+            data = await request.json(default={})
+        except Exception:
+            return error_response("无效请求", status_code=400)
+        if not isinstance(data, dict):
+            return error_response("无效请求", status_code=400)
+
+        collapsed_in = data.get("collapsed")
+        collapsed = {}
+        if isinstance(collapsed_in, dict):
+            # 键为卡片标识（短字符串），值为布尔；限制条目数与键长
+            for key, val in list(collapsed_in.items())[:64]:
+                k = str(key)[:64]
+                if k:
+                    collapsed[k] = bool(val)
+        state = {"collapsed": collapsed, "sidebar": bool(data.get("sidebar", False))}
+        payload = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        if len(payload) > 8192:
+            return error_response("界面状态过大", status_code=400)
+        if hasattr(self, 'plugin') and self.plugin:
+            self.plugin.save_plugin_config("debug", "panel_ui_state", payload)
+        return json_response(state)
 
     # ── 流式模式批量控制 ───────────────────────────────────────
 

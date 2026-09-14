@@ -145,6 +145,8 @@ class QuillConfig:
         dbg = _get_nested(self._raw, "debug", {}) or {}
         self.debug_enabled: bool = _safe_bool(dbg.get("enabled"))
         self.panel_theme: str = str(dbg.get("panel_theme", "light"))
+        # 面板界面状态（折叠等），JSON 字符串；沙箱 iframe 内无法用 localStorage
+        self.panel_ui_state: str = str(dbg.get("panel_ui_state", "") or "")
 
         # ── permissions ──
         perm = _get_nested(self._raw, "permissions", {}) or {}

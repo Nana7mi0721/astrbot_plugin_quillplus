@@ -269,9 +269,15 @@
       },
       "panel_theme": {
         "type": "string",
-        "description": "面板主题",
+        "description": "面板主题（已弃用）",
         "default": "light",
-        "hint": "插件管理面板的颜色主题。light=浅色，dark=深色。"
+        "hint": "已弃用：面板主题现由 AstrBot 面板本身控制，插件面板自动跟随。此项仅保留以兼容旧配置。"
+      },
+      "panel_ui_state": {
+        "type": "text",
+        "description": "面板界面状态（自动维护，勿手改）",
+        "default": "",
+        "hint": "记录配置页卡片折叠状态等界面偏好。插件面板运行在沙箱 iframe 中无法使用 localStorage，故由后端持久化。请勿手动编辑。"
       }
     }
   },

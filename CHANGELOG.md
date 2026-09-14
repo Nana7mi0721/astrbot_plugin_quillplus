@@ -1,6 +1,63 @@
 # Changelog
 
-## v5.2.2 (unreleased) — 配置页 MD3 重排版 + Roadmap 重写
+## v5.2.3 — 面板全面重写为 Apple 设计语言 + 字体方案调整
+
+管理面板（`pages/panel/index.html`）从 Material Design 3 整体重写为 Apple HIG 设计语言，
+含信息架构、组件体系、动效与字体方案；同时修复 3 个在真实沙箱 iframe 中才会暴露的既有缺陷。
+
+**设计系统（全部取自 Apple HIG 现行发布值）：**
+- 颜色：改用 Apple 系统色（accent `#0088FF`/`#0091FF`、success `#34C759`、danger `#FF383C`、
+  warning `#FF8D28`、系统灰 1–6），并建立 label 四级透明度层级与四级 systemFill。
+  文字级强调色另设 `--accent-text`（浅 `#0071E3`/深 `#0A84FF`）——`#0088FF` 作白底文字仅
+  3.52:1，低于 HIG 要求的 4.5:1，故文字场景改用加深变体
+- 字阶：macOS 基线（页面标题 26 / 组标题 22 / 卡片标题 17 / 正文 14 / 说明 13 / 辅助 12），
+  小于 13px 的档位为中文可读性抬升至 13 起，行高按 CJK 放宽；数字启用 `tabular-nums`
+- 圆角：按 HIG「同心圆角」规则（卡片 12 / 控件 6，子级 = 父级 − 内边距）
+- 分隔线：0.5px 发丝线（`transform: scaleY(.5)`）；分组列表用内缩分隔线，替代整宽边框
+- 材质：工具栏/底栏/弹层改用 `backdrop-filter` 毛玻璃 + 半透明底 + 顶部高光描边，
+  并配 `@supports not` 与 `prefers-reduced-transparency` 回退
+- 动效：入场 `cubic-bezier(.22,1,.36,1)` 260ms、出场加速曲线 180ms；按下即反馈（100ms）。
+  移动端弹层用自写 rAF 弹簧（临界阻尼），支持从当前屏幕值起步、速度接管、中途抓回反转
+- 无障碍：响应 `prefers-reduced-motion` / `-reduced-transparency` / `-contrast` 三条媒体查询；
+  `pointer: coarse` 下点击目标放大至 HIG 建议尺寸；状态用「颜色 + 形状」双编码
+
+**结构重写：**
+- 外壳改为「源列表侧栏（桌面）/ 底部标签栏（移动）」+ 半透明材质工具栏
+- FAB 与配置页粘性底栏合并为唯一悬浮操作条（仅在存在未保存更改时出现）
+- 内部用 `data-action` 事件委托替代 82 处内联 `onclick`（根除模板字符串转义隐患）
+- 33 处重复内联 SVG（同一箭头重复 10 次）收敛为 40 个 `<symbol>` 图标符号表
+- 配置页 5 个分区改用 HIG 内缩分组列表 + 分段式分区导航；173 处内联样式收敛为类
+
+**字体：**
+- 移除 Google Fonts（DM Sans / JetBrains Mono）外链；等宽改用系统 `ui-monospace` 栈
+- 新增 HarmonyOS Sans SC（华为鸿蒙字体）：macOS 走系统 SF Pro + 苹方（零下载），
+  其他平台异步加载鸿蒙字体（unicode-range 分块，仅下载实际用到的字块），
+  CDN 不可达时静默回退本地字体栈，不影响功能
+- 依华为字体许可要求，在面板页脚与 README 致谢区标注字体来源
+
+**修复（均在真实沙箱 iframe 中复现并验证）：**
+- **未保存配置会把用户锁死在配置页**：面板 iframe 为
+  `sandbox="allow-scripts allow-forms allow-downloads"`（无 `allow-same-origin`、无
+  `allow-modals`），原生 `confirm()` 恒返回 false，导致离开配置页的守卫永远拦截。改用自绘对话框
+- **顶层 localStorage 异常中断整段脚本**：沙箱内 `localStorage` 抛 `SecurityError`，
+  原实现有两处未捕获调用且其中一处位于顶层 IIFE，会连带废掉其后全部初始化
+  （键盘快捷键、脏数据守卫、折叠恢复）。改为 `store` 封装（try + 内存兜底）
+- **折叠状态等偏好跨刷新丢失**：沙箱不透明源下 localStorage 无法持久化，
+  改为新后端接口 `GET/POST /panel/ui_state` 存于插件配置（含字段白名单与体积上限）
+- `switchTab` 脏态守卫判断写反（进入配置页时提示、离开时反而不提示），已修正为
+  离开时提示，且确认后回滚表单值而非只清标记
+- `[hidden]` 被组件 `display` 声明覆盖，导致批量操作条未选中条目时也显示（补 `!important`）
+- 独立打开面板时首个请求固定延迟数秒（`getBridge()` 已判空后又走满 `waitForBridge` 超时）
+- 工具栏按钮组空间不足时被拆散、尾部按钮孤立换行（改为整组换行）
+- 后端 `save_plugin_config` 重建 `QuillConfig` 后未同步路由持有的引用，导致
+  Web 面板「写入成功但读不回来」（同时修复既有 `/panel/theme` 的同类问题）
+
+**后端：**
+- `web_routes.py`：新增 `/panel/ui_state` 读写路由（含键长/条目数/体积校验）
+- `config.py` + `_conf_schema.json`：新增 `debug.panel_ui_state`；
+  `debug.panel_theme` 标记为弃用（面板主题现由 AstrBot 面板控制，插件面板自动跟随）
+
+## v5.2.2 — 配置页 MD3 重排版 + Roadmap 重写
 
 **配置页重排版（MD3 设置页模式）：**
 - 信息架构重组：4 节 → 5 节（注入引擎 / 状态栏 / RAG 与记忆 / 会话与输出 / 系统与安全），
