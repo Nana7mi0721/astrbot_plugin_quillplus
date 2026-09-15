@@ -148,6 +148,7 @@
 
   /* 控件高度令牌 —— 所有并排控件必须引用同一档，避免基线错位 */
   --h-control: 32px;      /* btn / input.field / select.field / .search input / .segmented */
+  --wr-row-h: 132px;      /* 素材卡固定行高：头部 60 + 单行标签 22 + 页脚 50 */
   --h-control-sm: 26px;   /* .btn--sm */
   --h-icon-btn: 30px;     /* .icon-btn 标准 */
   --h-icon-btn-sm: 22px;  /* 密集卡片行内的图标按钮 */
@@ -685,7 +686,14 @@ select.field:focus-visible {
   box-shadow: var(--shadow-1);
   overflow: hidden;
 }
+/* 卡片竖排间距：只在「非 grid」的纵向堆叠里生效。
+   早期版本是无条件的 `.card + .card { margin-top }`，但配置页用 grid 排布
+   卡片，grid 的 gap 已经提供了行距，再叠一次 margin 会让**同一行的第二张卡
+   整体下移 16px**（实测第一行 166 vs 182），且行间距变成 32px。
+   用 :not([class*=grid]) 之类的选择器无法可靠表达，直接限定到 .cfg-cols
+   之外的相邻卡片，并让 grid 自己负责间距。 */
 .card + .card { margin-top: var(--sp-4); }
+.cfg-cols > .card + .card { margin-top: 0; }
 
 .card-head {
   display: flex;
@@ -699,28 +707,23 @@ select.field:focus-visible {
 .card-head .card-head-sub { font-size: 13px; font-weight: 400; color: var(--label-3); }
 .card-head .card-head-spacer { flex: 1; }
 
-/* 可折叠卡片头（整行可点，箭头旋转） */
-.card-head--button { cursor: pointer; -webkit-user-select: none; user-select: none; }
-.card-head--button:hover { background: var(--fill-quaternary); }
-.card-head--button .chev {
-  width: 16px; height: 16px;
-  color: var(--label-3);
-  transition: transform var(--dur-enter) var(--ease-enter);
-}
-.card.collapsed .card-head--button .chev { transform: rotate(-90deg); }
-
-/* 折叠动画：用 grid-template-rows 0fr→1fr 获得可动画的自动高度，
-   比 max-height 猜测值更准确，也不会在长内容上产生延迟。 */
-.card-body {
-  display: grid;
-  grid-template-rows: 1fr;
-  transition: grid-template-rows var(--dur-enter) var(--ease-enter),
-              opacity var(--dur-micro) var(--ease-standard);
-}
+/* 卡片正文：固定展示，不做折叠动画。
+   早期用 grid-template-rows 0fr→1fr 实现可折叠高度，配置页已不再折叠
+   （理由见 .card-body-inner 上方注释），这段动画随之移除。 */
 .card-body > .card-body-inner { overflow: hidden; }
+/* 卡片正文的子元素间距：默认 16px（独立区块之间）。
+   但配置行（cfg-row / cfg-field / health-row）是「连续分组列表」，
+   行间靠发丝分隔线表达，不再额外加 16px——否则变成
+   「列表行 + 16px 空洞 + 分隔线」的双重间距。 */
 .card-body-inner > *:not(:last-child) { margin-bottom: var(--sp-4); }
+.card-body-inner > .cfg-row:not(:last-child),
+.card-body-inner > .cfg-field:not(:last-child),
+.card-body-inner > .health-row:not(:last-child) { margin-bottom: 0; }
+/* 水平内边距**只由 .card-body-inner 提供**（16px 主网格线）。
+   配置行自身若再补一份 16px，正文就会比卡片标题多缩进 16px
+   （实测标题 281 / 正文 297）。行内边距归零后，标题、行文字、
+   分隔线三者共享同一条左基线。 */
 .card-body-inner { padding: 0 var(--sp-4) var(--sp-4); }
-.card.collapsed .card-body { grid-template-rows: 0fr; opacity: 0; }
 
 /* 列表行描述 */
 .row-desc { margin-top: 2px; font-size: 12px; line-height: 1.55; color: var(--label-2); }
@@ -786,9 +789,49 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .cell-pre { white-space: pre-wrap; word-break: break-word; max-width: 520px; }
 
 /* 分页条 */
-.pager { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); margin-top: var(--sp-3); }
-.pager-info { font-size: 13px; color: var(--label-3); }
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+/* 页面级分页栏（素材库）钉在内容区底部。
+   卡片数量随筛选变化，分页栏若留在自然流里，它的 y 坐标每一页都不同，
+   连续翻页就得反复找按钮。钉住后按钮位置恒定，鼠标停在原地即可连点。
+   限定为 .page--bar 的直接子级：记忆浏览的分页栏在卡片内部，
+   跟着卡片走才是对的，套上 sticky 反而会在滚动时脱离卡片浮起来。 */
+.page--bar > .pager {
+  position: sticky;
+  bottom: 0;
+  z-index: 15;
+  margin-top: auto;
+  min-height: 52px;
+  padding: var(--sp-2) 0;
+  /* 材质与 .toolbar 同源：内容从下方穿过时靠模糊过渡而非硬分割线 */
+  background: var(--material-bg);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+}
+/* 上缘渐隐：与 .toolbar::after 镜像，避免 52px 的底栏出现硬边 */
+.page--bar > .pager::before {
+  content: "";
+  position: absolute;
+  bottom: 100%; left: 0; right: 0;
+  height: 14px;
+  background: linear-gradient(transparent, var(--material-bg));
+  pointer-events: none;
+}
+.pager-info { font-size: 13px; color: var(--label-3); font-variant-numeric: tabular-nums; }
 .pager-nav { display: flex; gap: 6px; }
+/* 页面级分页栏的四个按钮定宽等高：文字「首页 / 上一页 / 下一页 / 末页」
+   宽度不同，不定宽的话「下一页」的 X 会随按钮内容漂移，连点会点偏。
+   限页面级：记忆浏览的分页栏在卡片内部，跟随 .btn--sm 的既有尺寸即可。 */
+.page--bar > .pager .pager-nav .btn {
+  min-width: 60px;
+  height: var(--h-control);
+  justify-content: center;
+}
 
 /* ── 9. 徽章 / 标签 / 状态点 ────────────────────────────────────────── */
 /* 颜色 + 形状双编码（HIG：不能只靠颜色传达信息） */
@@ -916,6 +959,12 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 }
 /* 标题带已自带顶部内边距，主体不再重复留白 */
 .page--bar { padding-top: var(--sp-4); }
+/* 纵向 flex：分页栏用 margin-top:auto 就能在内容不足一屏时被推到底，
+   与内容超出一屏时（自然位置本就在底部）得到同一个落点。
+   底部留白只对「以分页栏收尾」的页面归零——分页栏自身带内边距，
+   再叠 .page 的 80px 会让它离容器下沿还差一段，sticky 贴合位置跟着偏；
+   世界书 / 角色卡以卡片列表收尾，那份留白要保留。 */
+.page--bar:has(> .pager) { display: flex; flex-direction: column; padding-bottom: 0; }
 
 /* 通栏标题带：页头与工具栏合并为一条，横跨内容区宽度（不受 .page 的
    1180px 居中限制），滚动时整体粘住。
@@ -1169,9 +1218,24 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 }
 
 /* 内容滚动区 */
-.content { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; position: relative; }
+/* scrollbar-gutter 常驻：素材库翻页时每页卡片数不同（15 / 12），
+   滚动条会随内容长短出现或消失。默认布局下这会把内容宽度改掉约 15px，
+   分页按钮的 x 随之漂移（实测 1271 ↔ 1276），连续翻页时鼠标仍要点偏。
+   预留槽位后宽度恒定；顺带让切换标签页时正文列也不会左右跳动。 */
+.content { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; position: relative; scrollbar-gutter: stable; }
 .tab-pane { display: none; }
-.tab-pane.is-active { display: block; }
+/* 激活页至少占满内容区高度，并作为纵向 flex 容器：
+   素材库的底部分页栏要钉在容器下沿，而 sticky 只在「自然位置已经
+   越过阈值」时才生效——内容不足一屏时自然位置反而更低，分页栏会
+   浮到屏幕中间（实测翻到末页少几张卡时按钮上移 72px）。
+   让主体撑满剩余高度、分页栏 margin-top:auto 推到底，两种情况下
+   按钮坐标才一致。 */
+.tab-pane.is-active { display: flex; flex-direction: column; min-height: 100%; }
+/* width:100% 不可省：.page 自带 margin:0 auto，而交叉轴上的 auto 外边距会
+   让 flex 项按 fit-content 定宽、跳过 stretch——实测页面被压到 405px，
+   卡片网格从 3 列塌成 1 列。显式给出宽度后，max-width 与 auto 外边距
+   重新按预期工作：宽屏居中、窄屏铺满。 */
+.tab-pane.is-active > .page { flex: 1; width: 100%; }
 
 /* ── 13. 弹层 ───────────────────────────────────────────────────────── */
 /* 遮罩：HIG 用「调暗以示聚焦」表达模态 */
@@ -1379,18 +1443,27 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 /* ── 15. 写作素材库 ─────────────────────────────────────────────────── */
 .wr-grid {
   display: grid;
+  /* 列宽下限固定 330px：calcPerPage() 用同一个常量反推列数，
+     两边必须一致（改这里就要同步改 JS 里的 WR_MIN_CARD_W）。 */
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
-  /* 同行卡片拉齐高度：无标签卡片与多标签卡片同排时，此前底边参差
-     （实测同一行 110 / 158 / 132px）。.wr-card-foot 已是 margin-top:auto，
-     拉齐后开关自动落到统一基线，空洞感由底部对齐抵消。 */
-  align-items: stretch;
+  /* 行高定型：卡片高度曾随标签行数浮动（实测 110 / 132 / 158 三种），
+     同一屏里行与行不等高，网格看上去是「拼」的；分页按 110 估的行数
+     也装不下 158 的卡，实测多出 93px 滚动。固定行高后网格完全规整，
+     calcPerPage 的算式与实际布局一致。完整关键词在编辑模态里看。 */
+  grid-auto-rows: var(--wr-row-h);
   gap: var(--sp-4);
+  align-items: stretch;
+  /* 关闭滚动锚定：翻页会整体替换网格内容，浏览器会试图「保持原锚点不动」
+     而在用户没滚动的情况下写入一个 scrollTop（实测翻到第 2 页后残留
+     58.67px）。列表整段换掉的场景里这个补偿只会帮倒忙。 */
+  overflow-anchor: none;
 }
 .wr-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  min-height: 108px;    /* 与骨架屏 .skeleton-card 对齐，极简卡片不过矮 */
+  /* 高度由网格行高决定（--wr-row-h），min-height 只兜住骨架屏 */
+  min-height: var(--wr-row-h);
   background: var(--bg-primary);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-1);
@@ -1404,7 +1477,16 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .wr-card-name { font-size: 14.5px; font-weight: 600; word-break: break-word; }
 .wr-card-id { margin-top: 1px; font-size: 11.5px; color: var(--label-3); font-family: var(--font-mono); }
 .wr-card-meta { flex: none; display: flex; align-items: center; gap: 6px; }
-.wr-card-tags { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 var(--sp-4); }
+/* 单行裁切：标签区高度恒定，网格行高才定型。
+   完整关键词列表在编辑模态中查看（卡片只做浏览）。 */
+.wr-card-tags {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  padding: 0 var(--sp-4);
+  overflow: hidden;
+}
+.wr-card-tags > .tag { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .wr-card-foot {
   display: flex;
   align-items: center;
@@ -1412,6 +1494,24 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   margin-top: auto;
   padding: var(--sp-2) var(--sp-4) var(--sp-3);
 }
+/* 卡片标题：整块可点，单击直接进编辑模态。
+   用 <button> 而非 div[role=button]——原生按钮自带键盘激活（Enter/Space）
+   与焦点语义，不必手工补 keydown。UA 的 padding/border/background
+   在此全部清零，外观与原来的纯文本块一致。 */
+.wr-card-title {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--r-xs);
+}
+.wr-card-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* 行内操作：默认隐藏，悬停 / 键盘聚焦时显现（Finder 范式）。
    同行的 .switch 是状态而非操作，保持常显。 */
 .wr-card-foot .wr-actions {
@@ -1424,7 +1524,6 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 }
 .wr-card:hover .wr-actions,
 .wr-card:focus-within .wr-actions { opacity: 1; }
-.wr-expand { padding: 0 var(--sp-4) var(--sp-3); border-top: .5px solid var(--separator); margin-top: var(--sp-2); padding-top: var(--sp-3); }
 
 /* ── 16. 世界书 ─────────────────────────────────────────────────────── */
 .wb-item { background: var(--bg-primary); border-radius: var(--r-lg); box-shadow: var(--shadow-1); overflow: hidden; }
@@ -1712,30 +1811,79 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 /* ── 20. 配置页 ─────────────────────────────────────────────────────── */
 /* 分区导航：分段控件 + 尾部搜索，滚动时吸顶 */
 .cfg-nav { margin-bottom: var(--sp-4); }
+/* 分区导航是一条页内锚点导航，不是分段控件：
+   segmented 表达的是「切换同一区域的内容」，点它会把别的段的内容换掉；
+   而这里点击只是滚动到下方对应分区，五段内容始终同时存在（搜索也依赖
+   这个前提做联动隐藏）。所以外观上也不能再借用 segmented 的胶囊。
+   它是一个带吸顶的纯文字导航条，当前分区用文字色 + 下划线表示，
+   与 macOS 偏好设置左侧的分节跳转是同一类语义。 */
 .cfg-nav-inner {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   padding: var(--sp-2) 0 var(--sp-3);
+  /* 覆盖 .toolbar 的换行：导航条与搜索框必须始终同排，
+     否则搜索框掉到第二行会把吸顶高度改掉，滚动锚点跟着漂。 */
+  flex-wrap: nowrap;
 }
-.cfg-nav .segmented { flex: 1; min-width: 0; overflow-x: auto; }
+.cfg-nav-list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.cfg-nav-list::-webkit-scrollbar { display: none; }
+.cfg-nav-list > button {
+  flex: none;
+  padding: 0 var(--sp-3);
+  height: var(--h-control);
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--label-2);
+  border-radius: var(--r-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  position: relative;
+  transition: color var(--dur-micro) var(--ease-standard),
+              background var(--dur-micro) var(--ease-standard);
+}
+.cfg-nav-list > button:hover { color: var(--label); background: var(--fill-quaternary); }
+.cfg-nav-list > button.is-selected { color: var(--accent-text); font-weight: 600; }
+/* 当前分区下划线：贴在按钮下沿，不占额外布局高度 */
+.cfg-nav-list > button.is-selected::after {
+  content: "";
+  position: absolute;
+  left: var(--sp-3); right: var(--sp-3); bottom: 2px;
+  height: 2px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+}
+.cfg-nav .search { flex: none; }
 .cfg-section { margin-bottom: var(--sp-8); scroll-margin-top: 76px; }
 .cfg-section-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: var(--sp-3); flex-wrap: wrap; }
 .cfg-section-head h2 { font-size: 20px; font-weight: 700; letter-spacing: -.015em; }
 .cfg-section-head .cfg-section-sub { font-size: 12.5px; color: var(--label-3); }
 
-/* 配置行：标题/说明在左、控件在右（HIG 分组表单标准布局） */
+/* 配置行：标题/说明在左、控件在右（HIG 分组表单标准布局）。
+   水平内边距由 .card-body-inner 统一提供，行内只留垂直方向，
+   这样卡片标题与行文字共享同一条左基线（详见 .card-body-inner 注释）。 */
 .cfg-row {
   display: flex;
   align-items: center;
   gap: var(--sp-4);
   min-height: 44px;
-  padding: var(--sp-3) var(--sp-4);
+  padding: var(--sp-3) 0;
   position: relative;
 }
 .cfg-row + .cfg-row::before {
   content: "";
-  position: absolute; top: 0; right: 0; left: var(--sp-4);
+  position: absolute; top: 0; right: 0; left: 0;
   height: .5px; background: var(--separator); transform: scaleY(.5);
 }
 .cfg-row-text { flex: 1; min-width: 0; }
@@ -1748,11 +1896,11 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
    掉到左下角，同一张卡里出现两种控件位置）。 */
 .cfg-row--stack { align-items: center; }
 
-/* 配置页内的字段块（数字/文本/下拉，标签在上） */
-.cfg-field { padding: var(--sp-3) var(--sp-4); position: relative; }
+/* 配置页内的字段块（数字/文本/下拉，标签在上）。同理只留垂直内边距。 */
+.cfg-field { padding: var(--sp-3) 0; position: relative; }
 .cfg-field + .cfg-field::before {
   content: "";
-  position: absolute; top: 0; right: 0; left: var(--sp-4);
+  position: absolute; top: 0; right: 0; left: 0;
   height: .5px; background: var(--separator); transform: scaleY(.5);
 }
 .cfg-field-label { display: block; margin-bottom: 5px; font-size: 13px; font-weight: 500; }
@@ -1777,10 +1925,11 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .cfg-field .row-wrap { max-width: var(--w-wide); }
 
 /* 健康度指标 */
-.health-row { display: flex; align-items: center; gap: var(--sp-3); padding: 9px var(--sp-4); position: relative; }
+/* 健康度行：与 cfg-row 同样只留垂直内边距（水平由 .card-body-inner 提供） */
+.health-row { display: flex; align-items: center; gap: var(--sp-3); padding: 9px 0; position: relative; }
 .health-row + .health-row::before {
   content: "";
-  position: absolute; top: 0; left: var(--sp-4); right: var(--sp-4);
+  position: absolute; top: 0; left: 0; right: 0;
   height: .5px; background: var(--separator); transform: scaleY(.5);
 }
 .health-name { flex: 1; font-size: 13.5px; }
@@ -1796,8 +1945,17 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 /* 分区内的两列布局。
    下限用 min(100%, 460px) 而非固定 320px：320px 在常见宽度下会排成 3 列，
    而「注入引擎」有 4 张卡片、系统与安全有 2 张，3 列必然产生孤行卡片
-   （实测第 4 张单独落到下一行）。两列让卡片宽度更舒展，也消除了孤行。 */
-.cfg-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: var(--sp-4); align-items: start; }
+   （实测第 4 张单独落到下一行）。两列让卡片宽度更舒展，也消除了孤行。
+   align-items 用 start：卡片各按内容定高。曾用默认的 stretch 追求「底边
+   对齐」，但同行两张卡内容量差得远时（实测 373 vs 621px），拉伸会在短卡
+   内部留下 233px 空洞——那比底边参差更像缺陷。设置类页面按内容定高，
+   短卡后面直接接下一条，没有假空白。 */
+.cfg-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+  gap: var(--sp-4);
+  align-items: start;
+}
 
 /* 页脚署名（华为字体许可要求显著声明） */
 .page-foot {
@@ -1865,7 +2023,6 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .mem-sub.is-active { display: block; }
 
 /* 素材库展开区内的关键词行 */
-.wr-expand-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 
 /* 世界书标题行在窄屏下允许换行 */
 .wb-head { flex-wrap: wrap; }
@@ -1874,7 +2031,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 /* ── 23. 自绘下拉（listbox）与右键上下文菜单 ─────────────────────────
    原生 <select> 保留在 DOM 内作为「值存储 + 数据源」，只把外观与交互
    交给自绘 UI：.sel-wrap 承载触发器，浮层用 position: fixed，避免被
-   .wr-card / .table-wrap / .wr-expand 的 overflow 裁剪。               */
+   .wr-card / .table-wrap 的 overflow 裁剪。                            */
 
 /* 包装元素：宽度意图由 JS 从原生 select 复制（内联 width / 样式表 max-width） */
 .sel-wrap { position: relative; display: inline-flex; max-width: 100%; }
@@ -2103,17 +2260,17 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
         <button type="button" class="sidebar-label" data-collapse-group="内容" aria-expanded="true">
           <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>内容
         </button>
-        <button type="button" class="sl-item is-selected" data-tab="wr" role="tab" aria-selected="true">
+        <button type="button" class="sl-item is-selected" data-tab="wr" aria-current="page">
           <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
           <span class="sl-item-label">写作素材库</span>
           <span class="sl-badge" id="badge-wr" hidden>0</span>
         </button>
-        <button type="button" class="sl-item" data-tab="wb" role="tab" aria-selected="false">
+        <button type="button" class="sl-item" data-tab="wb">
           <svg class="icon" aria-hidden="true"><use href="#i-books"/></svg>
           <span class="sl-item-label">世界书</span>
           <span class="sl-badge" id="badge-wb" hidden>0</span>
         </button>
-        <button type="button" class="sl-item" data-tab="persona" role="tab" aria-selected="false">
+        <button type="button" class="sl-item" data-tab="persona">
           <svg class="icon" aria-hidden="true"><use href="#i-person"/></svg>
           <span class="sl-item-label">角色卡</span>
           <span class="sl-badge" id="badge-persona" hidden>0</span>
@@ -2123,12 +2280,12 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
         <button type="button" class="sidebar-label" data-collapse-group="知识系统" aria-expanded="true">
           <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>知识系统
         </button>
-        <button type="button" class="sl-item" data-tab="rag" role="tab" aria-selected="false">
+        <button type="button" class="sl-item" data-tab="rag">
           <svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>
           <span class="sl-item-label">文档知识库</span>
           <span class="sl-badge" id="badge-rag" hidden>0</span>
         </button>
-        <button type="button" class="sl-item" data-tab="memory" role="tab" aria-selected="false">
+        <button type="button" class="sl-item" data-tab="memory">
           <svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg>
           <span class="sl-item-label">动态记忆</span>
           <span class="sl-badge" id="badge-memory" hidden>0</span>
@@ -2138,7 +2295,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
         <button type="button" class="sidebar-label" data-collapse-group="系统" aria-expanded="true">
           <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>系统
         </button>
-        <button type="button" class="sl-item" data-tab="config" role="tab" aria-selected="false">
+        <button type="button" class="sl-item" data-tab="config">
           <svg class="icon" aria-hidden="true"><use href="#i-gear"/></svg>
           <span class="sl-item-label">配置</span>
         </button>
@@ -2153,7 +2310,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   <main class="content" id="content">
 
     <!-- ───── 写作素材库 ───── -->
-    <section class="tab-pane is-active" id="pane-wr" role="tabpanel" aria-label="写作素材库">
+    <section class="tab-pane is-active" id="pane-wr" role="region" aria-label="写作素材库">
       <div class="page-head-bar">
         <div class="page-head-bar-inner">
           <div class="page-head">
@@ -2223,7 +2380,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
     </section>
 
     <!-- ───── 世界书 ───── -->
-    <section class="tab-pane" id="pane-wb" role="tabpanel" aria-label="世界书">
+    <section class="tab-pane" id="pane-wb" role="region" aria-label="世界书">
       <div class="page-head-bar">
         <div class="page-head-bar-inner">
           <div class="page-head">
@@ -2282,7 +2439,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
     </section>
 
     <!-- ───── 角色卡 ───── -->
-    <section class="tab-pane" id="pane-persona" role="tabpanel" aria-label="角色卡">
+    <section class="tab-pane" id="pane-persona" role="region" aria-label="角色卡">
       <div class="page-head-bar">
         <div class="page-head-bar-inner">
           <div class="page-head">
@@ -2342,7 +2499,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
     </section>
 
     <!-- ───── 文档知识库 ───── -->
-    <section class="tab-pane" id="pane-rag" role="tabpanel" aria-label="文档知识库">
+    <section class="tab-pane" id="pane-rag" role="region" aria-label="文档知识库">
       <div class="page">
         <div class="page-head">
           <h2>文档知识库</h2>
@@ -2413,7 +2570,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
     </section>
 
     <!-- ───── 动态记忆 ───── -->
-    <section class="tab-pane" id="pane-memory" role="tabpanel" aria-label="动态记忆">
+    <section class="tab-pane" id="pane-memory" role="region" aria-label="动态记忆">
       <div class="page">
         <div class="page-head">
           <h2>动态记忆</h2>
@@ -2422,15 +2579,15 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 
         <div class="seg-nav">
           <div class="segmented" role="tablist" aria-label="记忆子页">
-            <button type="button" class="is-selected" data-memsub="overview" role="tab" aria-selected="true">系统总览</button>
-            <button type="button" data-memsub="browser" role="tab" aria-selected="false">记忆浏览</button>
-            <button type="button" data-memsub="logs" role="tab" aria-selected="false">对话日志</button>
-            <button type="button" data-memsub="vector" role="tab" aria-selected="false">向量检索</button>
-            <button type="button" data-memsub="io" role="tab" aria-selected="false">导入导出</button>
+            <button type="button" class="is-selected" data-memsub="overview" role="tab" aria-selected="true" aria-controls="mem-overview" id="memsub-overview">系统总览</button>
+            <button type="button" data-memsub="browser" role="tab" aria-selected="false" aria-controls="mem-browser" id="memsub-browser">记忆浏览</button>
+            <button type="button" data-memsub="logs" role="tab" aria-selected="false" aria-controls="mem-logs" id="memsub-logs">对话日志</button>
+            <button type="button" data-memsub="vector" role="tab" aria-selected="false" aria-controls="mem-vector" id="memsub-vector">向量检索</button>
+            <button type="button" data-memsub="io" role="tab" aria-selected="false" aria-controls="mem-io" id="memsub-io">导入导出</button>
           </div>
         </div>
 
-        <div class="mem-sub is-active" id="mem-overview">
+        <div class="mem-sub is-active" id="mem-overview" role="tabpanel" aria-labelledby="memsub-overview">
           <div class="dash-grid" style="margin-bottom:var(--sp-4)">
             <div class="dash-card" data-tone="blue">
               <div class="dash-value" id="dashTotal">—</div>
@@ -2461,7 +2618,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           </div>
         </div>
 
-        <div class="mem-sub" id="mem-browser">
+        <div class="mem-sub" id="mem-browser" role="tabpanel" aria-labelledby="memsub-browser">
           <div class="card">
             <div class="card-head">
               <h3>记忆浏览</h3>
@@ -2498,7 +2655,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           </div>
         </div>
 
-        <div class="mem-sub" id="mem-logs">
+        <div class="mem-sub" id="mem-logs" role="tabpanel" aria-labelledby="memsub-logs">
           <div class="card">
             <div class="card-head"><h3>对话日志</h3><span class="card-head-sub">最近 200 条</span></div>
             <div class="card-body"><div class="card-body-inner">
@@ -2521,7 +2678,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           </div>
         </div>
 
-        <div class="mem-sub" id="mem-vector">
+        <div class="mem-sub" id="mem-vector" role="tabpanel" aria-labelledby="memsub-vector">
           <div class="card">
             <div class="card-head"><h3>向量检索</h3><span class="card-head-sub">调试用</span></div>
             <div class="card-body"><div class="card-body-inner">
@@ -2535,7 +2692,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           </div>
         </div>
 
-        <div class="mem-sub" id="mem-io">
+        <div class="mem-sub" id="mem-io" role="tabpanel" aria-labelledby="memsub-io">
           <div class="cfg-cols">
             <div class="card">
               <div class="card-head"><h3>备份记忆库</h3></div>
@@ -2562,7 +2719,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
     </section>
 
     <!-- ───── 配置 ───── -->
-    <section class="tab-pane" id="pane-config" role="tabpanel" aria-label="配置">
+    <section class="tab-pane" id="pane-config" role="region" aria-label="配置">
       <div class="page">
         <div class="page-head">
           <h2>配置</h2>
@@ -2571,12 +2728,12 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 
         <nav class="cfg-nav" aria-label="配置分区">
           <div class="toolbar cfg-nav-inner">
-            <div class="segmented" id="cfgNav" role="tablist">
-              <button type="button" class="is-selected" data-target="sec-inject" role="tab" aria-selected="true">注入引擎</button>
-              <button type="button" data-target="sec-statusbar" role="tab" aria-selected="false">状态栏</button>
-              <button type="button" data-target="sec-rag" role="tab" aria-selected="false">RAG 与记忆</button>
-              <button type="button" data-target="sec-session" role="tab" aria-selected="false">会话与输出</button>
-              <button type="button" data-target="sec-system" role="tab" aria-selected="false">系统与安全</button>
+            <div class="cfg-nav-list" id="cfgNav">
+              <button type="button" class="is-selected" data-target="sec-inject" aria-current="true">注入引擎</button>
+              <button type="button" data-target="sec-statusbar">状态栏</button>
+              <button type="button" data-target="sec-rag">RAG 与记忆</button>
+              <button type="button" data-target="sec-session">会话与输出</button>
+              <button type="button" data-target="sec-system">系统与安全</button>
             </div>
             <label class="search" style="width:210px">
               <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
@@ -2596,11 +2753,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           </div>
 
           <div class="cfg-cols">
-            <div class="card collapsible" data-collapse-key="wb">
-              <div class="card-head card-head--button" data-collapse aria-expanded="true">
+            <div class="card">
+              <div class="card-head">
                 <h3>世界书注入策略</h3>
-                <span class="card-head-spacer"></span>
-                <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
               </div>
               <div class="card-body"><div class="card-body-inner">
                 <div class="cfg-row">
@@ -2654,11 +2809,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
               </div></div>
             </div>
 
-            <div class="card collapsible" data-collapse-key="wr">
-              <div class="card-head card-head--button" data-collapse aria-expanded="true">
+            <div class="card">
+              <div class="card-head">
                 <h3>写作素材库控制</h3>
-                <span class="card-head-spacer"></span>
-                <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
               </div>
               <div class="card-body"><div class="card-body-inner">
                 <div class="cfg-row">
@@ -2682,11 +2835,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
               </div></div>
             </div>
 
-            <div class="card collapsible" data-collapse-key="perf">
-              <div class="card-head card-head--button" data-collapse aria-expanded="true">
+            <div class="card">
+              <div class="card-head">
                 <h3>表现控制</h3>
-                <span class="card-head-spacer"></span>
-                <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
               </div>
               <div class="card-body"><div class="card-body-inner">
                 <div class="cfg-field">
@@ -2702,11 +2853,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
               </div></div>
             </div>
 
-            <div class="card collapsible" data-collapse-key="refusal">
-              <div class="card-head card-head--button" data-collapse aria-expanded="true">
+            <div class="card">
+              <div class="card-head">
                 <h3>应急反拒绝协议</h3>
-                <span class="card-head-spacer"></span>
-                <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
               </div>
               <div class="card-body"><div class="card-body-inner">
                 <div class="cfg-row">
@@ -2731,11 +2880,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
             <span class="cfg-section-sub">沉浸式属性追踪（实验性）</span>
           </div>
 
-          <div class="card collapsible" data-collapse-key="statusbar">
-            <div class="card-head card-head--button" data-collapse aria-expanded="true">
+          <div class="card">
+            <div class="card-head">
               <h3>状态栏配置</h3>
-              <span class="card-head-spacer"></span>
-              <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
             </div>
             <div class="card-body"><div class="card-body-inner">
               <div class="cfg-row">
@@ -2791,11 +2938,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
             <span class="cfg-section-sub">文档知识库与长期记忆</span>
           </div>
 
-          <div class="card collapsible" data-collapse-key="rag">
-            <div class="card-head card-head--button" data-collapse aria-expanded="true">
+          <div class="card">
+            <div class="card-head">
               <h3>向量与模型</h3>
-              <span class="card-head-spacer"></span>
-              <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
             </div>
             <div class="card-body"><div class="card-body-inner">
               <div class="cfg-field">
@@ -2828,11 +2973,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
             </div></div>
           </div>
 
-          <div class="card collapsible" data-collapse-key="memory" style="margin-top:var(--sp-4)">
-            <div class="card-head card-head--button" data-collapse aria-expanded="true">
+          <div class="card" style="margin-top:var(--sp-4)">
+            <div class="card-head">
               <h3>记忆与日志</h3>
-              <span class="card-head-spacer"></span>
-              <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
             </div>
             <div class="card-body"><div class="card-body-inner">
               <div class="cfg-row">
@@ -2877,11 +3020,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
             <span class="cfg-section-sub">流式模式批量控制 · 会话级操作，即时生效</span>
           </div>
 
-          <div class="card collapsible" data-collapse-key="stream">
-            <div class="card-head card-head--button" data-collapse aria-expanded="true">
+          <div class="card">
+            <div class="card-head">
               <h3>流式输出控制</h3>
-              <span class="card-head-spacer"></span>
-              <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
             </div>
             <div class="card-body"><div class="card-body-inner">
               <div class="cfg-row">
@@ -2911,11 +3052,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           </div>
 
           <div class="cfg-cols">
-            <div class="card collapsible" data-collapse-key="health">
-              <div class="card-head card-head--button" data-collapse aria-expanded="true">
+            <div class="card">
+              <div class="card-head">
                 <h3>系统健康度</h3>
-                <span class="card-head-spacer"></span>
-                <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
               </div>
               <div class="card-body"><div class="card-body-inner" style="padding-top:2px">
                 <div class="health-row">
@@ -2932,11 +3071,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
               </div></div>
             </div>
 
-            <div class="card collapsible" data-collapse-key="debug">
-              <div class="card-head card-head--button" data-collapse aria-expanded="true">
+            <div class="card">
+              <div class="card-head">
                 <h3>调试与维护</h3>
-                <span class="card-head-spacer"></span>
-                <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
               </div>
               <div class="card-body"><div class="card-body-inner">
                 <div class="cfg-row">
@@ -2965,11 +3102,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
             </div>
           </div>
 
-          <div class="card card--attention collapsible" data-collapse-key="permission" style="margin-top:var(--sp-4)">
-            <div class="card-head card-head--button" data-collapse aria-expanded="true">
+          <div class="card card--attention" style="margin-top:var(--sp-4)">
+            <div class="card-head">
               <h3>安全与权限控制</h3>
-              <span class="card-head-spacer"></span>
-              <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
             </div>
             <div class="card-body"><div class="card-body-inner">
               <div class="note note--warn">
@@ -3625,36 +3760,12 @@ function saveUiState() {
   }, 400);
 }
 
-/** 配置页卡片折叠：优先用后端记录；无记录时每节首张展开。 */
-function applyCollapseState() {
-  const cards = $$("#pane-config .card.collapsible[data-collapse-key]");
-  if (!cards.length) return;
-  const saved = _uiState.collapsed;
-  const seen = new Set();
-  cards.forEach(card => {
-    const sec = card.closest(".cfg-section");
-    const secId = sec ? sec.id : "";
-    const isFirst = sec && !seen.has(secId);
-    if (secId) seen.add(secId);
-    const key = card.dataset.collapseKey;
-    const collapsed = Object.prototype.hasOwnProperty.call(saved, key) ? !!saved[key] : !isFirst;
-    card.classList.toggle("collapsed", collapsed);
-    const head = card.querySelector(".card-head--button");
-    if (head) head.setAttribute("aria-expanded", String(!collapsed));
-  });
-}
+/* 配置页卡片折叠已整体移除。配置页的用途是让用户扫描所有设置；把卡片默认
+   折成 60px 的条，用户既看不到设置项，又把每一张卡误认成「下拉菜单」。
+   折叠造成的高度差还会在双列网格里拉出大片空洞。
+   折叠状态仍由后端持久化（_uiState.collapsed），但只服务于侧栏分组。 */
 
-function toggleCardCollapse(card) {
-  card.classList.toggle("collapsed");
-  const head = card.querySelector(".card-head--button");
-  if (head) head.setAttribute("aria-expanded", String(!card.classList.contains("collapsed")));
-  const key = card.dataset.collapseKey;
-  if (!key) return;
-  _uiState.collapsed[key] = card.classList.contains("collapsed");
-  saveUiState();
-}
-
-/** 侧栏分组折叠：与卡片折叠共用 _uiState.collapsed，键前缀 sb- 避免撞车。 */
+/** 侧栏分组折叠：_uiState.collapsed 的键加 sb- 前缀，与配置页旧键不冲突。 */
 function toggleSidebarGroup(btn) {
   const key = btn.dataset.collapseGroup;
   if (!key) return;
@@ -3770,30 +3881,52 @@ function createTagInput(containerId, initial, placeholder) {
 
 const wrState = { entries: [], total: 0, page: 1, perPage: 9 };
 const _wrSelected = new Set();
-/* 素材库标题区单击 = 展开/收起，而双击卡片 = 编辑。
-   两者共用同一区域，故单击延迟到双击判定窗口之后再执行；双击时取消它。
-   这样双击不会引起「展开又收起」的抖动，单击手感也只多一帧级的延迟。
-   兜底：系统双击阈值可能慢于 WR_DBLCLICK_MS（慢速双击），首次单击的
-   定时器会先跑掉并真的切换了展开态。因此用 _wrExpandSnapshot 记住
-   整个点击序列开始前的展开态（只在序列首击记录，后续点击不覆盖），
-   并留一段宽限期 _wrExpandIdle 才丢弃，dblclick 时据此回滚。 */
-let _wrExpandTimer = 0;
-let _wrExpandIdle = 0;
-let _wrExpandSnapshot = null;   // { eid, prev } —— 序列首击前的展开态
-const WR_DBLCLICK_MS = 220;
-const WR_EXPAND_GRACE_MS = 500;
-let _wrExpandedId = null;
-let _wrTagCache = {};
+/* 卡片不再内联展开：单击卡片主体直接进编辑模态。
+   此前为「单击展开 + 双击编辑」两套语义共用同一命中区而写的延迟、
+   快照、回滚逻辑（_wrExpandTimer / _wrExpandSnapshot / toggleWRExpand）
+   全部随之删除——卡片高度恒定，网格不会被单张卡撑高，
+   calcPerPage() 按真实几何算出的每页条数才站得住。 */
 let _wrTagInput = null;
-let _wrEditingId = null;
 
-/** 根据视口计算每页条数（原来的动态分页行为保留）。 */
+/** 每页条数 = 列数 × 行数，两侧都按真实几何反推。
+    旧实现用 (innerHeight-260)/200 这类常数估算：窗口高度没变就不会重算，
+    于是 1280×800 与 2560×1440 都得到同一组 rows，屏幕上明明还剩一大块
+    空白却只渲染 9 张卡。这里改为量真实容器：列数由网格可用宽度对
+    minmax(330px) 取整，行数由「内容区可滚动高度 - 头部 - 统计条 -
+    分页栏」对实测卡片高度取整。 */
+const WR_MIN_CARD_W = 330;      // 与 .wr-grid 的 minmax(330px, 1fr) 一致
+const WR_GRID_GAP = 16;         // 与 --sp-4 / .wr-grid 的 gap 一致
+const WR_PAGER_BLOCK = 60;      // .pager 的 margin-top(8) + min-height(52)
+const WR_MIN_PER_PAGE = 4;
+
 function calcPerPage() {
   const grid = $("#wrGrid");
-  const w = (grid && grid.clientWidth) || (window.innerWidth - 260);
-  const cols = Math.max(1, Math.floor(w / 360));
-  const rows = Math.max(2, Math.floor((window.innerHeight - 260) / 200));
-  return Math.min(36, Math.max(6, cols * rows));
+  const content = $("#content");
+  if (!grid || !content) return 9;
+
+  // 列数：列宽下限 + 列间距决定一行能放几张
+  const gridW = grid.clientWidth || content.clientWidth;
+  const cols = Math.max(1, Math.floor((gridW + WR_GRID_GAP) / (WR_MIN_CARD_W + WR_GRID_GAP)));
+
+  // 可用高度：直接量「网格顶边 → 内容区可视底边」的距离，而不是逐个
+  // 累加头部 / 统计条的高度——累加会漏掉各自的 margin-bottom，任何一处
+  // 改间距都要回来同步常数。两处 rect 相减后 scrollTop 自然抵消，
+  // 结果与当前滚动位置无关（分页可能从任意滚动位置触发）。
+  const padBottom = parseFloat(getComputedStyle(content).paddingBottom) || 0;
+  // + scrollTop 把「视口坐标」还原成「内容坐标」：滚动到中途时网格顶边
+  // 会跑到可视区上方，只相减会得到一个偏小的距离。
+  const gridTop = grid.getBoundingClientRect().top
+                - content.getBoundingClientRect().top
+                + content.scrollTop;
+  // 网格下方要留出分页栏（margin-top + min-height）
+  const availH = Math.max(0, content.clientHeight - padBottom - gridTop) - WR_PAGER_BLOCK;
+
+  // 卡片高度：优先量已渲染的真实卡片；空态 / 首屏骨架时退回最小高度
+  const sample = grid.querySelector(".wr-card");
+  const cardH = (sample ? sample.getBoundingClientRect().height : 0) || 108;
+  const rows = Math.max(1, Math.floor((availH + WR_GRID_GAP) / (cardH + WR_GRID_GAP)));
+
+  return Math.min(60, Math.max(WR_MIN_PER_PAGE, cols * rows));
 }
 
 async function loadWR() {
@@ -3846,27 +3979,26 @@ function renderWRGrid() {
     const kws = e.keywords || [];
     const shown = kws.slice(0, 6);
     const rest = kws.length - shown.length;
-    const isOpen = _wrExpandedId === e.entry_id;
     const selected = _wrSelected.has(e.entry_id);
     const tagsHtml = shown.length
       ? `<div class="wr-card-tags">${shown.map(k => `<span class="tag">${esc(k)}</span>`).join("")}` +
         (rest > 0 ? `<span class="tag t3">+${rest}</span>` : "") + `</div>`
       : "";
-    return `<article class="wr-card${isOpen ? " is-open" : ""}${selected ? " is-selected" : ""}" data-eid="${eid}">
+    return `<article class="wr-card${selected ? " is-selected" : ""}" data-eid="${eid}">
       <div class="wr-card-head">
         <label class="check" title="选择此条目">
           <input type="checkbox" data-wr-select ${selected ? "checked" : ""} aria-label="选择 ${esc(e.entry_id)}">
         </label>
-        <div class="grow" data-action="wr-expand" role="button" tabindex="0">
+        <button type="button" class="wr-card-title" data-action="wr-edit">
           <div class="wr-card-name">${esc(e.name || e.entry_id)}</div>
           <div class="wr-card-id">${eid}</div>
-        </div>
+        </button>
         <div class="wr-card-meta">
           <span class="badge badge--${catTone(e.category)}">${esc(e.category || "未分类")}</span>
           <span class="badge">P${e.priority != null ? e.priority : "-"}</span>
         </div>
       </div>
-      ${isOpen ? renderWRExpanded(e) : tagsHtml}
+      ${tagsHtml}
       <div class="wr-card-foot">
         <label class="switch switch--sm" title="启用 / 停用">
           <input type="checkbox" data-wr-toggle ${e.enabled !== false ? "checked" : ""} aria-label="启用 ${esc(e.entry_id)}">
@@ -3883,96 +4015,6 @@ function renderWRGrid() {
       </div>
     </article>`;
   }).join("");
-}
-
-function renderWRExpanded(e) {
-  const eid = esc(e.entry_id);
-  const kwTags = (e.keywords || []).map(k =>
-    `<span class="tag">${esc(k)}<span class="tag-del" data-action="wr-tag-del" data-value="${esc(k)}" role="button" aria-label="移除关键词">×</span></span>`
-  ).join("");
-  return `<div class="wr-expand">
-    <div class="form-row">
-      <div class="form-group" style="flex:2">
-        <label>名称</label>
-        <input class="field" type="text" data-field="name" value="${esc(e.name || "")}">
-      </div>
-      <div class="form-group" style="flex:1">
-        <label>分类</label>
-        <input class="field" type="text" data-field="category" value="${esc(e.category || "")}">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>权重（优先级）</label>
-      <div class="slider">
-        <input type="range" min="1" max="10" value="${e.priority || 5}" data-field="priority">
-        <span class="slider-value" data-priority-value>${e.priority || 5}</span>
-      </div>
-    </div>
-    <div class="form-group">
-      <label>关键词</label>
-      <div class="wr-expand-tags">${kwTags || '<span class="fs-13 t3">暂无关键词</span>'}</div>
-      <input class="field" type="text" style="margin-top:6px" data-field="newtag" placeholder="输入关键词后回车添加">
-    </div>
-    <div class="form-group">
-      <label>内容</label>
-      <textarea class="field field--wide" rows="4" data-field="content">${esc(e.content || "")}</textarea>
-    </div>
-    <div class="row-wrap">
-      <label class="check"><input type="checkbox" data-field="is_constant" ${e.is_constant ? "checked" : ""}><span>常驻</span></label>
-      <span class="grow"></span>
-      <button type="button" class="btn btn--sm btn--filled" data-action="wr-inline-save">保存</button>
-      <button type="button" class="btn btn--sm btn--gray" data-action="wr-expand">收起</button>
-    </div>
-  </div>`;
-}
-
-function toggleWRExpand(eid) {
-  if (_wrExpandedId === eid) { _wrExpandedId = null; renderWRGrid(); return; }
-  _wrExpandedId = eid;
-  const entry = wrState.entries.find(e => e.entry_id === eid);
-  _wrTagCache[eid] = [...((entry && entry.keywords) || [])];
-  renderWRGrid();
-}
-
-function addWRInlineTag(eid, val) {
-  val = String(val || "").trim().replace(/,/g, "");
-  if (!val) return;
-  if (!_wrTagCache[eid]) _wrTagCache[eid] = [];
-  if (!_wrTagCache[eid].includes(val)) _wrTagCache[eid].push(val);
-  const entry = wrState.entries.find(e => e.entry_id === eid);
-  if (entry) entry.keywords = [..._wrTagCache[eid]];
-  renderWRGrid();
-}
-
-function removeWRInlineTag(eid, val) {
-  if (_wrTagCache[eid]) _wrTagCache[eid] = _wrTagCache[eid].filter(t => t !== val);
-  const entry = wrState.entries.find(e => e.entry_id === eid);
-  if (entry) entry.keywords = [...(_wrTagCache[eid] || [])];
-  renderWRGrid();
-}
-
-async function saveWRInline(eid) {
-  const card = document.querySelector(`.wr-card[data-eid="${CSS.escape(eid)}"]`);
-  if (!card) return;
-  const entry = wrState.entries.find(e => e.entry_id === eid);
-  if (!entry) return;
-  const val = (sel) => { const el = card.querySelector(sel); return el ? el.value : null; };
-  const body = {
-    entry_id: eid,
-    category: val('[data-field="category"]') || entry.category,
-    name: val('[data-field="name"]') || entry.name,
-    keywords: _wrTagCache[eid] || entry.keywords,
-    content: val('[data-field="content"]') || "",
-    priority: parseInt(val('[data-field="priority"]'), 10) || entry.priority || 5,
-    is_constant: !!card.querySelector('[data-field="is_constant"]')?.checked,
-    enabled: entry.enabled,
-  };
-  try {
-    await apiPost("/wr/update", body);
-    showToast("已保存", "success");
-    _wrExpandedId = null;
-    loadWR();
-  } catch (e) { showToast(e.message); }
 }
 
 function renderWRPager() {
@@ -3995,8 +4037,12 @@ function goWRPage(p) {
   target = Math.min(pages, Math.max(1, target));
   if (target === wrState.page) return;
   wrState.page = target;
+  // 先置顶再取数：calcPerPage() 读的是内容坐标，置顶后环境与首次进入一致。
+  // 用直接赋值而非 smooth —— 连续点「下一页」时平滑滚动会把每页的动画
+  // 串成一条，页面一直在飘；分页栏已钉在底栏，用户视线不受影响。
+  const content = $("#content");
+  if (content) content.scrollTop = 0;
   loadWR();
-  $("#content")?.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 // ── 批量选择 ──
@@ -4106,7 +4152,6 @@ async function loadWRCategories() {
 }
 
 async function openWRModal(entryId) {
-  _wrEditingId = entryId || null;
   _modalMode = entryId ? "edit" : "create";
   let data = { category: "", entry_id: "", name: "", keywords: [], content: "", priority: 5, is_constant: false, enabled: true };
   if (entryId) {
@@ -4765,12 +4810,12 @@ async function openPersonaModal(personaId) {
   $("#modalTitle").textContent = personaId ? "编辑角色卡" : "新建角色卡";
   $("#modalBody").innerHTML = `
     <div class="segmented" id="pModalTabs" style="margin-bottom:var(--sp-4)" role="tablist">
-      <button type="button" class="is-selected" data-ptab="basic" role="tab" aria-selected="true">基础信息</button>
-      <button type="button" data-ptab="core" role="tab" aria-selected="false">核心设定</button>
-      <button type="button" data-ptab="ext" role="tab" aria-selected="false">高级扩展</button>
+      <button type="button" class="is-selected" data-ptab="basic" role="tab" aria-selected="true" aria-controls="ptab-basic" id="ptabbtn-basic">基础信息</button>
+      <button type="button" data-ptab="core" role="tab" aria-selected="false" aria-controls="ptab-core" id="ptabbtn-core">核心设定</button>
+      <button type="button" data-ptab="ext" role="tab" aria-selected="false" aria-controls="ptab-ext" id="ptabbtn-ext">高级扩展</button>
     </div>
 
-    <div class="ptab is-active" id="ptab-basic">
+    <div class="ptab is-active" id="ptab-basic" role="tabpanel" aria-labelledby="ptabbtn-basic">
       <div class="form-group">
         <label for="pf-name">角色名称</label>
         <input class="field field--wide" type="text" id="pf-name" value="${esc(data.name || "")}" placeholder="必填，如：白芷">
@@ -4798,7 +4843,7 @@ async function openPersonaModal(personaId) {
       </div>
     </div>
 
-    <div class="ptab" id="ptab-core">
+    <div class="ptab" id="ptab-core" role="tabpanel" aria-labelledby="ptabbtn-core">
       <div class="form-group">
         <label for="pf-personality">人格 / 外貌设定</label>
         <textarea class="field field--wide" id="pf-personality" rows="8" placeholder="性格、外貌、语气等核心设定">${esc(cp.personality || "")}</textarea>
@@ -4817,7 +4862,7 @@ async function openPersonaModal(personaId) {
       </div>
     </div>
 
-    <div class="ptab" id="ptab-ext">
+    <div class="ptab" id="ptab-ext" role="tabpanel" aria-labelledby="ptabbtn-ext">
       ${renderExtBlock("wb", "世界书", "搜索世界书…", allWbs, boundWb,
         modeSelect("pf-wb-mode", wbMode, [["auto", "全库激活"], ["custom", "隔离模式"], ["disabled", "完全禁用"]]),
         "全库激活＝所有世界书生效；隔离模式＝仅勾选的生效；完全禁用＝不加载世界书。", "暂无可用的世界书")}
@@ -5828,12 +5873,6 @@ function filterConfig(query) {
     const title = c.querySelector("h3");
     const titleHit = title && title.textContent.toLowerCase().includes(q);
     c.style.display = (anyVisible || titleHit) ? "" : "none";
-    // 命中时自动展开，否则搜索结果会藏在折叠内容里
-    if (titleHit || anyVisible) {
-      c.classList.remove("collapsed");
-      const head = c.querySelector(".card-head--button");
-      if (head) head.setAttribute("aria-expanded", "true");
-    }
   });
   sections.forEach(s => {
     s.style.display = $$(".card", s).some(c => c.style.display !== "none") ? "" : "none";
@@ -5861,7 +5900,11 @@ function switchTab(tab) {
   $$("[data-tab]").forEach(b => {
     const on = b.dataset.tab === tab;
     b.classList.toggle("is-selected", on);
-    if (b.classList.contains("sl-item")) b.setAttribute("aria-selected", on ? "true" : "false");
+    // 侧栏是应用导航，不是标签页：当前页用 aria-current="page" 表达。
+    if (b.classList.contains("sl-item")) {
+      if (on) b.setAttribute("aria-current", "page");
+      else b.removeAttribute("aria-current");
+    }
   });
   $$(".tab-pane").forEach(p => p.classList.toggle("is-active", p.id === "pane-" + tab));
   _lastCfgTab = tab;
@@ -5916,10 +5959,17 @@ function scrollToSection(id) {
   const offset = (nav ? nav.getBoundingClientRect().height : 0) + 12;
   const top = target.getBoundingClientRect().top + ($("#content")?.scrollTop || 0) - offset;
   $("#content")?.scrollTo({ top, behavior: "smooth" });
+  markCfgNav(id);
+}
+
+/** 标出当前所处的配置分区。
+    aria-current 而非 aria-selected：这是页内导航，不是标签页选择。 */
+function markCfgNav(id) {
   $$("#cfgNav > button").forEach(b => {
     const on = b.dataset.target === id;
     b.classList.toggle("is-selected", on);
-    b.setAttribute("aria-selected", on ? "true" : "false");
+    if (on) b.setAttribute("aria-current", "true");
+    else b.removeAttribute("aria-current");
   });
 }
 
@@ -5929,12 +5979,7 @@ function initConfigNavObserver() {
   const io = new IntersectionObserver((entries) => {
     entries.forEach(entry => {
       if (!entry.isIntersecting) return;
-      const id = entry.target.id;
-      $$("#cfgNav > button").forEach(b => {
-        const on = b.dataset.target === id;
-        b.classList.toggle("is-selected", on);
-        b.setAttribute("aria-selected", on ? "true" : "false");
-      });
+      markCfgNav(entry.target.id);
     });
   }, { rootMargin: "-80px 0px -70% 0px", threshold: 0 });
   sections.forEach(s => io.observe(s));
@@ -6068,12 +6113,6 @@ const ACTIONS = {
   "wr-new": () => openWRModal(null),
   "wr-edit": (el) => openWRModal(el.closest(".wr-card").dataset.eid),
   "wr-delete": (el) => deleteWREntry(el.closest(".wr-card").dataset.eid, el),
-  "wr-expand": (el) => toggleWRExpand(el.closest(".wr-card").dataset.eid),
-  "wr-inline-save": (el) => saveWRInline(el.closest(".wr-card").dataset.eid),
-  "wr-tag-del": (el) => {
-    const card = el.closest(".wr-card");
-    if (card) removeWRInlineTag(card.dataset.eid, el.dataset.value);
-  },
   "wr-test": () => openWRTestModal(),
   "wr-export": (el) => exportWR(el),
   "wr-batch-toggle": (el) => wrBatchToggle(el.dataset.value === "1"),
@@ -6165,27 +6204,6 @@ function bindEvents() {
       const action = actEl.dataset.action;
       // 菜单项执行后自动收起；触发器自身由 toggleMoreMenu 管理开合
       if (action !== "more-menu" && e.target.closest(".menu")) closeAllMenus();
-      // 素材库标题区单击 = 展开/收起，双击同一区域 = 编辑。
-      // 只对卡片头部的 .grow 区域延迟：它才是双击编辑的命中区，
-      // 展开区里的「收起」按钮仍即时响应，不引入无谓延迟。
-      if (action === "wr-expand" && actEl.classList.contains("grow")) {
-        const eid = actEl.closest(".wr-card")?.dataset.eid;
-        clearTimeout(_wrExpandTimer);
-        clearTimeout(_wrExpandIdle);
-        // 快照只在序列首击记录：慢速双击时第二击会重进这里，
-        // 若在此覆盖就会把「已切换过的状态」当成原态，回滚变成空操作。
-        if (!_wrExpandSnapshot) _wrExpandSnapshot = { eid, prev: _wrExpandedId };
-        // 首击落在别的卡片上（用户点了 A 的标题又去双击 B）时换掉快照，
-        // 否则会把 A 的旧状态回滚到 B 上。
-        else if (_wrExpandSnapshot.eid !== eid) _wrExpandSnapshot = { eid, prev: _wrExpandedId };
-        _wrExpandTimer = setTimeout(() => {
-          _wrExpandTimer = 0;
-          if (eid) toggleWRExpand(eid);
-          // 宽限期后才丢弃快照：给慢速双击的 dblclick 留出回滚窗口。
-          _wrExpandIdle = setTimeout(() => { _wrExpandSnapshot = null; }, WR_EXPAND_GRACE_MS);
-        }, WR_DBLCLICK_MS);
-        return;
-      }
       const fn = ACTIONS[action];
       if (fn) { fn(actEl, e); return; }
     }
@@ -6202,18 +6220,13 @@ function bindEvents() {
     if (navBtn) { scrollToSection(navBtn.dataset.target); return; }
     const memBtn = e.target.closest("[data-memsub]");
     if (memBtn) { switchMemorySub(memBtn.dataset.memsub); return; }
-    if (e.target.closest("[data-collapse]")) {
-      const card = e.target.closest(".card.collapsible");
-      if (card) toggleCardCollapse(card);
-      return;
-    }
     const del = e.target.closest(".tag-del[data-idx]");
     if (del) return; // 由标签输入内部处理
   });
 
   // 1b) 双击委托：PC 肌肉记忆 —— 双击卡片主体直接编辑。
-  // 单击语义不变（标题区单击仍是 wr-expand 展开/收起），冲突处理见上面
-  // _wrExpandTimer 的注释：单击延迟执行，双击时取消，展开态不会被改动。
+  // 素材卡在单击层已由标题按钮直接进模态（无延迟语义），故这里只剩
+  // 角色卡与记忆表两处双击加速。
   document.addEventListener("dblclick", (e) => {
     // 双击行内按钮 / 开关 / 输入控件时不触发编辑：它们已有各自的单击语义，
     // 例如卡片 footer 的启停开关、删除按钮，双击不应弹编辑窗。
@@ -6227,32 +6240,6 @@ function bindEvents() {
     // 三个 handler 都从真实元素上取值，故直接复用列表里已有的
     // [data-action] 按钮元素（真元素，无需伪造 dataset，最不容易猜错）。
     const run = (action, el) => { const fn = ACTIONS[action]; if (fn) fn(el, e); };
-
-    const card = e.target.closest(".wr-card");
-    if (card) {
-      // 展开区（.wr-expand）本身就是内联编辑器：那里双击若改弹编辑窗，
-      // openWRModal 会从服务端重取数据，未保存的内联修改会静默丢失。
-      // 故只让「卡片主体」（头部 + 标签区 + 空白）响应双击。
-      if (e.target.closest(".wr-expand")) return;
-      e.preventDefault();
-      clearTimeout(_wrExpandTimer);                 // 撤销单击触发的展开/收起
-      clearTimeout(_wrExpandIdle);
-      _wrExpandTimer = 0;
-      // 兜底：慢速双击时首次单击已经生效并重渲染，这里把展开态恢复原样，
-      // 否则用户会看到「卡片被莫名展开/收起」+ 突然弹出编辑窗。
-      const snap = _wrExpandSnapshot;
-      _wrExpandSnapshot = null;
-      if (snap && _wrExpandedId !== snap.prev) {
-        _wrExpandedId = snap.prev;
-        renderWRGrid();
-      }
-      // 重渲染会换掉 DOM 节点，故按 eid 重新取一次实时卡片再执行编辑。
-      const eid = card.dataset.eid;
-      const live = eid ? document.querySelector(`.wr-card[data-eid="${CSS.escape(eid)}"]`) : null;
-      const editBtn = (live || card).querySelector("[data-action='wr-edit']");
-      if (editBtn) run("wr-edit", editBtn);
-      return;
-    }
 
     const pcard = e.target.closest(".persona-card");
     if (pcard) {
@@ -6311,11 +6298,6 @@ function bindEvents() {
     }
     if (t.id === "memFilter") { debouncedMemLoad(); return; }
     if (t.id === "configSearchInput") { filterConfig(t.value); return; }
-    if (t.matches("[data-field='priority']")) {
-      const bubble = t.parentElement.querySelector("[data-priority-value]");
-      if (bubble) bubble.textContent = t.value;
-      return;
-    }
     if (t.id === "c-wb-sens") {
       const v = $("#c-wb-sens-val");
       if (v) v.textContent = t.value;
@@ -6399,12 +6381,6 @@ function bindEvents() {
       if (e.key === "Enter" && t.id === "ragQuery") { e.preventDefault(); testRAGSearch($("[data-action='rag-search']")); return; }
       if (e.key === "Enter" && t.id === "logSession") { e.preventDefault(); loadChatLogs($("[data-action='log-load']")); return; }
       if (e.key === "Enter" && t.id === "vecQuery") { e.preventDefault(); testMemoryVectorSearch($("[data-action='vec-search']")); return; }
-      if (e.key === "Enter" && t.matches("[data-field='newtag']")) {
-        e.preventDefault();
-        const card = t.closest(".wr-card");
-        if (card) { addWRInlineTag(card.dataset.eid, t.value); t.value = ""; }
-        return;
-      }
       return;
     }
     if (e.ctrlKey || e.metaKey) {
@@ -7208,11 +7184,10 @@ async function quillInit() {
   // 按标签序取第一个会在将来插入新表格时静默指错。
   initListKeys($("#memTbody"), "tr", {});
 
-  // 面板状态（折叠、侧栏）从插件侧读取——沙箱内 localStorage 不可用。
+  // 面板状态（侧栏折叠）从插件侧读取——沙箱内 localStorage 不可用。
   // 不在此等待 bridge：等待发生在 api() 内部且已有负缓存，这里再等只会
   // 拖长首屏；bridge 就绪与否不影响本请求的正确性。
   await loadUiState();
-  applyCollapseState();
   applySidebarCollapseState();
 
   // 主题：服务端已在 <html data-theme> 上写好；bridge 亦会推送 isDark。
