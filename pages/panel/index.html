@@ -93,6 +93,10 @@
   --red-fill: rgba(255, 56, 60, .14);
   --orange-fill: rgba(255, 141, 40, .16);
   --yellow-fill: rgba(255, 204, 0, .20);
+  --indigo-fill: rgba(97, 85, 245, .14);
+  --purple-fill: rgba(203, 48, 224, .14);
+  --teal-fill: rgba(0, 195, 208, .18);
+  --pink-fill: rgba(255, 45, 85, .14);
   --accent-fill: rgba(0, 136, 255, .12);
 
   /* 背景层级（HIG：primary / secondary / tertiary） */
@@ -128,7 +132,7 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, .04), 0 1px 8px rgba(0, 0, 0, .04);
   --shadow-2: 0 2px 6px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .08);
   --shadow-3: 0 4px 12px rgba(0, 0, 0, .08), 0 16px 40px rgba(0, 0, 0, .12);
-  --shadow-focus: 0 0 0 4px var(--accent-tint-strong);
+  --shadow-focus: 0 0 0 3px var(--accent-tint-strong);
 
   /* 圆角 — HIG 同心圆角：子元素半径 = 父半径 − 内边距 */
   --r-xs: 4px;
@@ -142,6 +146,17 @@
   --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
   --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
 
+  /* 控件高度令牌 —— 所有并排控件必须引用同一档，避免基线错位 */
+  --h-control: 32px;      /* btn / input.field / select.field / .search input / .segmented */
+  --h-control-sm: 26px;   /* .btn--sm */
+  --h-icon-btn: 30px;     /* .icon-btn 标准 */
+  --h-icon-btn-sm: 22px;  /* 密集卡片行内的图标按钮 */
+  --h-row: 44px;          /* .card-head / .cfg-row / 列表行 */
+
+  /* 字阶与行高 —— 收编文件中散落的字号 / 行高字面量 */
+  --fs-11: 11px; --fs-12: 12px; --fs-13: 13px; --fs-15: 15px; --fs-17: 17px;
+  --lh-tight: 1.25; --lh-body: 1.5; --lh-loose: 1.6;
+
   /* 动效 — 入场用减速曲线、出场用加速曲线，呼应 Apple 的“对称路径” */
   --ease-enter: cubic-bezier(.22, 1, .36, 1);
   --ease-exit: cubic-bezier(.4, 0, 1, 1);
@@ -150,6 +165,9 @@
   --dur-exit: 180ms;
   --dur-micro: 150ms;
   --dur-press: 100ms;
+
+  /* 弹层层级：显式声明，不依赖标记顺序 */
+  --z-scrim: 100; --z-scrim-text: 110; --z-scrim-alert: 120; --z-scrim-crop: 130;
 }
 
 [data-theme="dark"] {
@@ -174,6 +192,10 @@
   --red-fill: rgba(255, 66, 69, .18);
   --orange-fill: rgba(255, 146, 48, .18);
   --yellow-fill: rgba(255, 214, 0, .18);
+  --indigo-fill: rgba(109, 124, 255, .18);
+  --purple-fill: rgba(219, 52, 242, .18);
+  --teal-fill: rgba(0, 210, 224, .18);
+  --pink-fill: rgba(255, 55, 95, .18);
   --accent-fill: rgba(0, 145, 255, .18);
 
   /* 深色模式的层级靠“更亮”表达（HIG：base 更暗、elevated 更亮） */
@@ -208,7 +230,7 @@
 /* ── 2. 基础与重置 ─────────────────────────────────────────────────── */
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
-/* hidden 必须压过组件的 display 声明：.batchbar{display:flex}、.search-clear
+/* hidden 必须压过组件的 display 声明：.menu-item{display:flex}、.search-clear
    这类规则会盖掉 hidden，导致未选中条目时批量操作条照样显示。 */
 [hidden] { display: none !important; }
 
@@ -272,7 +294,6 @@ code, pre, kbd { font-family: var(--font-mono); font-size: .92em; }
 :focus-visible {
   outline: 3px solid var(--accent-tint-strong);
   outline-offset: 2px;
-  border-radius: var(--r-sm);
 }
 
 /* 数字/文本工具类 */
@@ -357,8 +378,7 @@ code, pre, kbd { font-family: var(--font-mono); font-size: .92em; }
 .btn--destructive-tinted { background: var(--red-fill); color: var(--red-text); }
 .btn--destructive-tinted:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 26%, transparent); }
 
-.btn--sm { height: 26px; padding: 0 10px; font-size: 13px; border-radius: var(--r-xs); }
-.btn--lg { height: 38px; padding: 0 var(--sp-4); font-size: 15px; }
+.btn--sm { height: var(--h-control-sm); padding: 0 10px; font-size: 13px; border-radius: var(--r-xs); }
 .btn--block { width: 100%; }
 
 /* 纯图标按钮 — 触控区按 HIG 保证足够大 */
@@ -366,7 +386,7 @@ code, pre, kbd { font-family: var(--font-mono); font-size: .92em; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px; height: 30px;
+  width: var(--h-icon-btn); height: var(--h-icon-btn);
   border: none;
   border-radius: var(--r-sm);
   background: transparent;
@@ -388,6 +408,7 @@ code, pre, kbd { font-family: var(--font-mono); font-size: .92em; }
 /* 分段控件（HIG：≤6 段、等宽、纯文字或纯图标） */
 .segmented {
   display: inline-flex;
+  height: var(--h-control);
   padding: 2px;
   gap: 2px;
   background: var(--fill-tertiary);
@@ -395,7 +416,7 @@ code, pre, kbd { font-family: var(--font-mono); font-size: .92em; }
 }
 .segmented > button {
   flex: 1;
-  height: 26px;
+  height: 28px;
   padding: 0 var(--sp-3);
   border: none;
   border-radius: var(--r-xs);
@@ -404,6 +425,7 @@ code, pre, kbd { font-family: var(--font-mono); font-size: .92em; }
   font-family: inherit;
   font-size: 13px;
   font-weight: 500;
+  line-height: 1;
   white-space: nowrap;
   cursor: pointer;
   transition: background var(--dur-micro) var(--ease-standard),
@@ -513,6 +535,10 @@ select.field {
   background-size: 14px;
   cursor: pointer;
 }
+select.field:focus-visible {
+  outline: 3px solid var(--accent-tint-strong);
+  outline-offset: 2px;
+}
 [data-theme="dark"] select.field {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2398989D' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
 }
@@ -601,8 +627,8 @@ select.field {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  min-height: 34px;
-  padding: 5px 8px;
+  min-height: var(--h-control);
+  padding: 4px 8px;
   border: 1px solid var(--separator);
   border-radius: var(--r-sm);
   background: var(--bg-primary);
@@ -657,8 +683,8 @@ select.field {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  min-height: 44px;
-  padding: var(--sp-3) var(--sp-4);
+  min-height: var(--h-row);
+  padding: var(--sp-2) var(--sp-4);
   cursor: default;
 }
 .card-head h3, .card-head h4 { flex: none; }
@@ -688,30 +714,8 @@ select.field {
 .card-body-inner { padding: 0 var(--sp-4) var(--sp-4); }
 .card.collapsed .card-body { grid-template-rows: 0fr; opacity: 0; }
 
-/* 列表行（HIG：行高至少 44px，标题左、控件右） */
-.list { background: var(--bg-primary); border-radius: var(--r-lg); overflow: hidden; }
-.list-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  min-height: 44px;
-  padding: var(--sp-2) var(--sp-4);
-  position: relative;
-}
-.list-row + .list-row::before {
-  content: "";
-  position: absolute;
-  top: 0; right: 0; left: var(--sp-4);
-  height: .5px;
-  background: var(--separator);
-  transform: scaleY(.5);
-}
-.list-row--stack { align-items: flex-start; flex-direction: column; gap: var(--sp-2); }
-.row-text { flex: 1; min-width: 0; }
-.row-title { font-size: 14px; }
+/* 列表行描述 */
 .row-desc { margin-top: 2px; font-size: 12px; line-height: 1.55; color: var(--label-2); }
-.row-desc--warn { color: var(--orange-text); }
-.row-control { flex: none; display: flex; align-items: center; gap: var(--sp-2); }
 
 /* 行内提示块 */
 .note {
@@ -765,7 +769,11 @@ table.data td {
 }
 table.data tbody tr { transition: background var(--dur-micro) var(--ease-standard); }
 table.data tbody tr:hover { background: var(--fill-quaternary); }
-table.data td.cell-actions { white-space: nowrap; }
+table.data td.cell-actions { white-space: nowrap; vertical-align: middle; }
+/* 记忆表行操作：悬停 / 键盘聚焦到行内控件时显现（保持表宽稳定，不做 display 切换） */
+table.data tbody td.cell-actions { opacity: 0; transition: opacity var(--dur-micro) var(--ease-standard); }
+table.data tbody tr:hover td.cell-actions,
+table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .cell-truncate { display: block; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-pre { white-space: pre-wrap; word-break: break-word; max-width: 520px; }
 
@@ -795,8 +803,10 @@ table.data td.cell-actions { white-space: nowrap; }
 .badge--red    { background: var(--red-fill);    color: var(--red-text); }
 .badge--orange { background: var(--orange-fill); color: var(--orange-text); }
 .badge--yellow { background: var(--yellow-fill); color: var(--yellow-text); }
-.badge--pill { border-radius: var(--r-pill); padding: 0 9px; }
-.badge--solid { background: var(--accent); color: var(--on-accent); }
+.badge--indigo { background: var(--indigo-fill); color: var(--indigo-text); }
+.badge--purple { background: var(--purple-fill); color: var(--purple-text); }
+.badge--teal   { background: var(--teal-fill);   color: var(--teal-text); }
+.badge--pink   { background: var(--pink-fill);   color: var(--pink-text); }
 
 /* 关键徽章用实心填充 + 形状区分（常驻 / 禁用） */
 .badge--const { background: var(--orange); color: #fff; }
@@ -839,7 +849,6 @@ table.data td.cell-actions { white-space: nowrap; }
 .dot--green { background: var(--green); }
 .dot--red { background: var(--red); }
 .dot--orange { background: var(--orange); }
-.dot--hollow { background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; }
 
 /* ── 10. 空状态 / 骨架屏 ────────────────────────────────────────────── */
 .empty-state {
@@ -867,14 +876,26 @@ table.data td.cell-actions { white-space: nowrap; }
 @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 .skeleton-card { height: 108px; border-radius: var(--r-lg); }
 .skeleton-row { height: 44px; border-radius: var(--r-sm); }
-.skeleton-group { display: grid; gap: var(--sp-3); }
 
+/* macOS NSProgressIndicator 风格：8 片花瓣 + 离散步进旋转（非连续弧线） */
 .spinner {
   width: 15px; height: 15px;
-  border: 2px solid currentColor;
-  border-top-color: transparent;
+  flex: none;
   border-radius: 50%;
-  animation: spin .7s linear infinite;
+  background: conic-gradient(
+    currentColor 0deg 45deg,   transparent 45deg 45deg,
+    currentColor 45deg 90deg,  transparent 90deg 90deg,
+    currentColor 90deg 135deg, transparent 135deg 135deg,
+    currentColor 135deg 180deg, transparent 180deg 180deg,
+    currentColor 180deg 225deg, transparent 225deg 225deg,
+    currentColor 225deg 270deg, transparent 270deg 270deg,
+    currentColor 270deg 315deg, transparent 315deg 315deg,
+    currentColor 315deg 360deg
+  );
+  -webkit-mask: radial-gradient(circle, transparent 0 3.2px, #000 3.2px 100%);
+          mask: radial-gradient(circle, transparent 0 3.2px, #000 3.2px 100%);
+  opacity: .85;
+  animation: spin 1s steps(8) infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn .spinner { width: 13px; height: 13px; }
@@ -885,6 +906,36 @@ table.data td.cell-actions { white-space: nowrap; }
   max-width: 1180px;
   margin: 0 auto;
 }
+/* 标题带已自带顶部内边距，主体不再重复留白 */
+.page--bar { padding-top: var(--sp-4); }
+
+/* 通栏标题带：页头与工具栏合并为一条，横跨内容区宽度（不受 .page 的
+   1180px 居中限制），滚动时整体粘住。
+   水平内边距放在内层：这样内层盒子与 .page 的盒子同宽同起点，正文列
+   才能和标题带里的控件严格对齐。 */
+.page-head-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: var(--sp-4) 0 var(--sp-2);
+  background: var(--material-bg);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+}
+.page-head-bar-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 var(--sp-6);
+}
+/* 标题带内的工具栏：不再自己粘住、不再铺第二层材质，交给父级统一提供。
+   position: relative 保证 .toolbar::after 的 top:100% 仍锚在工具栏自身。 */
+.page-head-bar .toolbar {
+  position: relative;
+  background: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.page-head-bar .page-head { margin-bottom: 0; }
 .page-head {
   display: flex;
   align-items: flex-end;
@@ -901,6 +952,7 @@ table.data td.cell-actions { white-space: nowrap; }
   align-items: center;
   gap: var(--sp-2);
   flex-wrap: wrap;
+  min-height: 20px;   /* 骨架屏(14px) → 文字行(19.5px) 切换时不推动下方工具栏 */
   margin-bottom: var(--sp-4);
   font-size: 13px;
   color: var(--label-2);
@@ -924,6 +976,10 @@ table.data td.cell-actions { white-space: nowrap; }
   -webkit-backdrop-filter: var(--material-blur);
   backdrop-filter: var(--material-blur);
 }
+/* 工具栏右侧动作组：必须用 flex 让纯文字按钮与带图标按钮按中线对齐，
+   否则 inline-flex 的按钮会按基线排列，纯文字按钮看上去低 3~4px；
+   间距也应由 gap 控制，而不是源码里的空白字符宽度。 */
+.toolbar-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 /* 工具栏内的搜索框可收缩：优先保证按钮不被挤到第二行 */
 .toolbar > .search { min-width: 120px; flex: 0 1 auto; }
 /* 分隔用的空 span 可被压缩到 0，不占宽度 */
@@ -937,18 +993,60 @@ table.data td.cell-actions { white-space: nowrap; }
   pointer-events: none;
 }
 
-/* 批量操作条：出现在工具栏下方，与选择状态联动 */
-.batchbar {
+/* 选中态胶囊：批量操作从独立操作条收进标题带，仅用一个计数胶囊提示 */
+.select-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  background: var(--accent-tint);
+  color: var(--accent-text);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* 溢出菜单（⋯）：Finder 式把低频操作收进弹出层 */
+.menu-wrap { position: relative; display: inline-flex; }
+/* ⋯ 按钮：方形图标按钮，尺寸跟同排的 .btn / .segmented 对齐（--h-control） */
+.btn.icon-btn { padding: 0; width: var(--h-control); height: var(--h-control); }
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 180px;
+  padding: 4px;
+  border-radius: var(--r-md);
+  background: var(--material-bg-thick);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+  box-shadow: var(--shadow-3);
+  z-index: 30;
+}
+.menu-item {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  flex-wrap: wrap;
-  margin-bottom: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-md);
-  background: var(--accent-tint);
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--sp-2);
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
 }
-.batchbar-count { font-size: 13px; font-weight: 600; color: var(--accent-text); margin-right: auto; }
+.menu-item:hover { background: var(--fill-quaternary); }
+.menu-item .icon { width: 15px; height: 15px; color: var(--label-2); }
+.menu-item--danger { color: var(--red-text); }
+.menu-sep { height: .5px; margin: 4px 0; background: var(--separator); }
+
+/* 忙碌态（非表单控件容器用）：视觉上淡化并屏蔽交互，不改动内容与高度 */
+.is-busy { opacity: .6; pointer-events: none; }
 
 /* ── 12. 外壳：源列表侧栏 / 底部标签栏 / 顶部工具栏 ─────────────────── */
 .layout { display: flex; height: 100%; }
@@ -987,13 +1085,31 @@ table.data td.cell-actions { white-space: nowrap; }
 .sidebar-nav { flex: 1; overflow-y: auto; padding: var(--sp-1) var(--sp-3) var(--sp-4); }
 .sidebar-group { margin-bottom: var(--sp-3); }
 .sidebar-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
   padding: var(--sp-2) var(--sp-2) 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: .03em;
   color: var(--label-3);
   text-transform: uppercase;
+  text-align: left;
 }
+.sidebar-label:hover { color: var(--label-2); }
+.sidebar-label .chev {
+  width: 12px; height: 12px;
+  color: var(--label-3);
+  transition: transform var(--dur-enter) var(--ease-enter);
+}
+/* 折叠：chev 转成「指向本条」，组内导航项隐藏 */
+.sidebar-group.is-collapsed .sidebar-label .chev { transform: rotate(-90deg); }
+.sidebar-group.is-collapsed .sl-item { display: none; }
 /* 选中态 = 圆角填充行（HIG 源列表标准样式），不靠左侧色条 */
 .sl-item {
   display: flex;
@@ -1046,58 +1162,31 @@ table.data td.cell-actions { white-space: nowrap; }
 .tab-pane { display: none; }
 .tab-pane.is-active { display: block; }
 
-/* 底部标签栏（移动端；图标在文字上方、选中用实心字形） */
-.tabbar {
-  display: none;
-  position: fixed;
-  left: 0; right: 0; bottom: 0;
-  z-index: 60;
-  padding: 6px var(--sp-2) calc(6px + env(safe-area-inset-bottom, 0px));
-  background: var(--material-bg);
-  -webkit-backdrop-filter: var(--material-blur);
-  backdrop-filter: var(--material-blur);
-  border-top: .5px solid var(--separator);
-}
-.tabbar-inner { display: flex; }
-.tb-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  padding: 3px 0 1px;
-  border: none;
-  background: transparent;
-  color: var(--label-3);
-  font-family: inherit;
-  font-size: 10px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: color var(--dur-micro) var(--ease-standard);
-}
-.tb-item .icon { width: 24px; height: 24px; stroke-width: 1.6; }
-.tb-item.is-selected { color: var(--accent); }
-.tb-item.is-selected .icon { stroke-width: 2.1; }
-
 /* ── 13. 弹层 ───────────────────────────────────────────────────────── */
 /* 遮罩：HIG 用「调暗以示聚焦」表达模态 */
 .scrim {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--z-scrim);
   display: none;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: var(--sp-5);
+  padding: max(48px, 6vh) var(--sp-5) var(--sp-5);
   background: rgba(0, 0, 0, .38);
   -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
 }
 .scrim.is-open { display: flex; }
-.scrim--center { align-items: center; }
-.scrim--sheet { align-items: flex-end; padding: 0; }
+/* 警告框保持视口居中（不随 macOS sheet 语义靠上） */
+#alertScrim {
+  z-index: var(--z-scrim-alert);
+  align-items: center;
+  padding: var(--sp-5);
+}
+#textScrim { z-index: var(--z-scrim-text); }
+#cropScrim { z-index: var(--z-scrim-crop); }
 
-/* 模态：入场缩放 + 淡入，出场更快（HIG 对称路径、出入同源） */
+/* 模态：macOS sheet 语义 —— 自顶部（标题栏下方）向下垂落 + 淡入，出场更快 */
 .modal {
   width: 100%;
   max-width: 620px;
@@ -1108,14 +1197,14 @@ table.data td.cell-actions { white-space: nowrap; }
   border-radius: var(--r-xl);
   box-shadow: var(--shadow-3);
   overflow: hidden;
-  transform: scale(.96);
+  transform-origin: top center;
+  transform: translateY(-12px) scale(.98);
   opacity: 0;
   transition: transform var(--dur-enter) var(--ease-enter), opacity var(--dur-micro) var(--ease-standard);
 }
-.scrim.is-open .modal { transform: scale(1); opacity: 1; }
-.scrim.is-closing .modal { transform: scale(.97); opacity: 0; transition-duration: var(--dur-exit); }
+.scrim.is-open .modal { transform: translateY(0) scale(1); opacity: 1; }
+.scrim.is-closing .modal { transform: translateY(-8px) scale(.99); opacity: 0; transition-duration: var(--dur-exit); }
 .modal--sm { max-width: 420px; }
-.modal--lg { max-width: 860px; }
 .modal-head {
   display: flex;
   align-items: center;
@@ -1125,7 +1214,6 @@ table.data td.cell-actions { white-space: nowrap; }
 }
 .modal-head h2 { flex: 1; font-size: 17px; }
 .modal-body { flex: 1; overflow-y: auto; padding: var(--sp-5); }
-.modal-body--tight { padding: var(--sp-4) var(--sp-5); }
 .modal-foot {
   display: flex;
   align-items: center;
@@ -1135,7 +1223,6 @@ table.data td.cell-actions { white-space: nowrap; }
   border-top: .5px solid var(--separator);
   background: var(--bg-secondary);
 }
-.modal-foot .foot-spacer { flex: 1; }
 /* 危险操作：标题与按钮用系统红，并配有输入确认词 */
 .danger-box {
   padding: var(--sp-3);
@@ -1145,42 +1232,6 @@ table.data td.cell-actions { white-space: nowrap; }
   font-size: 13px;
   line-height: 1.6;
 }
-
-/* 底部弹层（移动端；抓手 + 下滑关闭，跟手 1:1） */
-.sheet {
-  width: 100%;
-  max-height: 88vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-elevated);
-  border-radius: var(--r-xl) var(--r-xl) 0 0;
-  box-shadow: var(--shadow-3);
-  transform: translateY(100%);
-  transition: transform var(--dur-enter) var(--ease-enter);
-  will-change: transform;
-}
-.scrim.is-open .sheet { transform: translateY(0); }
-.sheet-grabber {
-  display: flex;
-  justify-content: center;
-  padding: 8px 0 4px;
-  cursor: grab;
-  touch-action: none;
-}
-.sheet-grabber::before {
-  content: "";
-  width: 36px; height: 5px;
-  border-radius: var(--r-pill);
-  background: var(--fill-primary);
-}
-.sheet-head {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-5) var(--sp-3);
-}
-.sheet-head h2 { flex: 1; font-size: 17px; }
-.sheet-body { flex: 1; overflow-y: auto; padding: 0 var(--sp-5) var(--sp-5); }
 
 /* 警告框（HIG：≤3 按钮、取消固定用词、破坏性操作红色） */
 .alert {
@@ -1215,6 +1266,7 @@ table.data td.cell-actions { white-space: nowrap; }
   pointer-events: none;
 }
 .banner {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -1317,12 +1369,14 @@ table.data td.cell-actions { white-space: nowrap; }
 .wr-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  align-items: start;   /* 每张卡片按自身内容高度，不被同行最高者拉齐（避免底部空洞） */
   gap: var(--sp-4);
 }
 .wr-card {
   position: relative;
   display: flex;
   flex-direction: column;
+  min-height: 108px;    /* 与骨架屏 .skeleton-card 对齐，极简卡片不过矮 */
   background: var(--bg-primary);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-1);
@@ -1331,8 +1385,6 @@ table.data td.cell-actions { white-space: nowrap; }
               transform var(--dur-press) var(--ease-standard);
 }
 .wr-card:hover { box-shadow: var(--shadow-2); }
-/* 分类色：细色条表达分类，而非大色块（避免与语义色混淆） */
-.wr-stripe { height: 3px; background: var(--fill-tertiary); }
 .wr-card.is-selected { box-shadow: 0 0 0 2px var(--accent), var(--shadow-1); }
 .wr-card-head { display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4) var(--sp-2); }
 .wr-card-name { font-size: 14.5px; font-weight: 600; word-break: break-word; }
@@ -1346,7 +1398,18 @@ table.data td.cell-actions { white-space: nowrap; }
   margin-top: auto;
   padding: var(--sp-2) var(--sp-4) var(--sp-3);
 }
-.wr-card-foot .wr-actions { flex: 1; display: flex; justify-content: flex-end; gap: 4px; }
+/* 行内操作：默认隐藏，悬停 / 键盘聚焦时显现（Finder 范式）。
+   同行的 .switch 是状态而非操作，保持常显。 */
+.wr-card-foot .wr-actions {
+  flex: 1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--dur-micro) var(--ease-standard);
+}
+.wr-card:hover .wr-actions,
+.wr-card:focus-within .wr-actions { opacity: 1; }
 .wr-expand { padding: 0 var(--sp-4) var(--sp-3); border-top: .5px solid var(--separator); margin-top: var(--sp-2); padding-top: var(--sp-3); }
 
 /* ── 16. 世界书 ─────────────────────────────────────────────────────── */
@@ -1379,6 +1442,17 @@ table.data td.cell-actions { white-space: nowrap; }
 }
 .wb-entry + .wb-entry { margin-top: var(--sp-2); }
 .wb-entry-head { display: flex; align-items: flex-start; gap: var(--sp-2); }
+/* 右侧：状态徽章常显；操作按钮悬停 / 聚焦时才显现 */
+.wb-entry-aside { display: flex; align-items: center; gap: 6px; flex: none; }
+.wb-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity var(--dur-micro) var(--ease-standard);
+}
+.wb-entry:hover .wb-entry-actions,
+.wb-entry:focus-within .wb-entry-actions { opacity: 1; }
 .wb-entry-title { font-size: 13.5px; font-weight: 600; word-break: break-word; }
 .wb-entry-id { font-size: 11px; color: var(--label-3); font-family: var(--font-mono); }
 .wb-entry-keys { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
@@ -1398,7 +1472,7 @@ table.data td.cell-actions { white-space: nowrap; }
 .persona-list { display: grid; gap: var(--sp-2); }
 .persona-card {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4);
   background: var(--bg-primary);
@@ -1411,6 +1485,7 @@ table.data td.cell-actions { white-space: nowrap; }
   position: relative;
   width: 48px; height: 48px;
   flex: none;
+  margin-top: 2px;
   border-radius: 50%;
   overflow: hidden;
   background: var(--fill-tertiary);
@@ -1438,8 +1513,12 @@ table.data td.cell-actions { white-space: nowrap; }
   overflow: hidden;
 }
 .persona-modes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.persona-actions { flex: none; display: flex; flex-direction: column; gap: 4px; }
-.persona-grid .persona-actions { flex-direction: row; flex-wrap: wrap; justify-content: flex-end; max-width: 132px; }
+/* 角色卡动作按钮：统一为右对齐的可换行按钮组（单一定义，勿再重复声明） */
+.persona-actions { flex: none; display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 152px; }
+/* 悬停 / 聚焦显现：列表视图宽度紧张时尤其需要 */
+.persona-card .persona-actions { opacity: 0; transition: opacity var(--dur-micro) var(--ease-standard); }
+.persona-card:hover .persona-actions,
+.persona-card:focus-within .persona-actions { opacity: 1; }
 
 /* 头像上传区 */
 .avatar-zone {
@@ -1705,65 +1784,6 @@ table.data td.cell-actions { white-space: nowrap; }
 }
 
 /* ── 21. 响应式与无障碍 ─────────────────────────────────────────────── */
-@media (max-width: 900px) {
-  .sidebar { width: 200px; }
-  .page { padding: var(--sp-4) var(--sp-4) var(--sp-6); }
-}
-
-@media (max-width: 768px) {
-  /* 侧栏收起，改用底部标签栏 */
-  .sidebar { display: none; }
-  .tabbar { display: block; }
-  .page { padding: var(--sp-4) var(--sp-3) 84px; }
-  .page-head h2 { font-size: 22px; }
-  .content { -webkit-overflow-scrolling: touch; }
-  .wr-grid, .persona-grid { grid-template-columns: 1fr; }
-  .form-row { flex-direction: column; gap: 0; }
-  .form-row > .form-group { margin-bottom: var(--sp-4); }
-  .search-layout { flex-direction: column; }
-  .search-layout .search-side { width: 100%; min-width: 0; }
-  .cfg-cols { grid-template-columns: 1fr; }
-  .topper { width: calc(100vw - 16px); }
-  .toaster { top: auto; bottom: 76px; }
-  /* 工具栏：搜索框与筛选独占一行，操作按钮在下一行紧凑排列，
-     避免「导出/导入」被挤成孤零零的第二行。
-     注意只隐藏纯占位用的空 span.grow —— .search 也带 grow 类，不能一起隐藏。 */
-  .toolbar { gap: 6px; }
-  .toolbar > .search { flex: 1 1 100%; max-width: none; }
-  .toolbar > select.field { flex: 1 1 auto; }
-  .toolbar > span.grow { display: none; }
-  .toolbar-actions { flex: 1 1 100%; }
-  /* 移动端弹出对话框与底部弹层一致 */
-  .scrim { align-items: flex-end; padding: 0; }
-  .modal {
-    max-width: none;
-    max-height: 88vh;
-    border-radius: var(--r-xl) var(--r-xl) 0 0;
-    transform: translateY(100%);
-  }
-  .scrim.is-open .modal { transform: translateY(0); }
-  .actionbar { bottom: 76px; }
-  .to-top { right: var(--sp-3); bottom: 76px; }
-  .crop-stage { width: 260px; height: 260px; }
-}
-
-@media (max-width: 560px) {
-  .page-head { flex-direction: column; align-items: flex-start; gap: 2px; }
-  .modal-foot { flex-direction: column-reverse; }
-  .modal-foot .btn { width: 100%; }
-  .table-wrap { margin: 0 calc(var(--sp-3) * -1); }
-}
-
-/* 触控设备：加大点击目标（HIG 建议 ≥44px） */
-@media (pointer: coarse) {
-  .btn { height: 38px; }
-  .btn--sm { height: 32px; }
-  .icon-btn { width: 38px; height: 38px; }
-  .sl-item { height: 40px; }
-  .segmented > button { height: 32px; }
-  .field, .search > input { height: 38px; }
-}
-
 /* 降低动效：改为交叉淡入，去掉位移与弹性（HIG：减少动态而非取消反馈） */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -1773,17 +1793,22 @@ table.data td.cell-actions { white-space: nowrap; }
     scroll-behavior: auto !important;
   }
   .banner { transform: none; }
-  .modal, .sheet { transform: none !important; }
+  .modal { transform: none !important; }
   .btn:active:not(:disabled) { transform: none; }
+  /* 浮层只保留交叉淡入，去掉缩放位移 */
+  .sel-menu, .ctx-menu { transform: none !important; }
 }
 
 /* 降低透明度：材质改为不透明纯色（HIG：减少透明度时保证可读性） */
 @media (prefers-reduced-transparency: reduce) {
-  .sidebar, .tabbar, .toolbar, .actionbar, .to-top, .banner, .alert {
+  .sidebar, .toolbar, .page-head-bar, .menu, .actionbar, .to-top, .banner, .alert,
+  .sel-menu, .ctx-menu {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     background: var(--bg-primary);
   }
+  /* 标题带内的工具栏不承载材质，别被上面的规则重新涂上底色 */
+  .page-head-bar .toolbar { background: none; }
   .toolbar::after { display: none; }
   .scrim { background: rgba(0, 0, 0, .6); backdrop-filter: none; }
 }
@@ -1816,19 +1841,132 @@ table.data td.cell-actions { white-space: nowrap; }
 /* 素材库展开区内的关键词行 */
 .wr-expand-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 
-/* 角色卡动作按钮：统一为右对齐的可换行按钮组 */
-.persona-actions {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  justify-content: flex-end;
-  max-width: 152px;
-}
-
 /* 世界书标题行在窄屏下允许换行 */
 .wb-head { flex-wrap: wrap; }
 .wb-head .grow { min-width: 120px; }
+
+/* ── 23. 自绘下拉（listbox）与右键上下文菜单 ─────────────────────────
+   原生 <select> 保留在 DOM 内作为「值存储 + 数据源」，只把外观与交互
+   交给自绘 UI：.sel-wrap 承载触发器，浮层用 position: fixed，避免被
+   .wr-card / .table-wrap / .wr-expand 的 overflow 裁剪。               */
+
+/* 包装元素：宽度意图由 JS 从原生 select 复制（内联 width / 样式表 max-width） */
+.sel-wrap { position: relative; display: inline-flex; max-width: 100%; }
+
+/* 触发器：必须与同排控件等高（--h-control），否则整行基线错位。
+   flex:1 让它在包装元素有确定宽度时铺满，宽度 auto 时按内容收缩（#wrCat）。 */
+.sel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--h-control);
+  padding: 0 10px;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: var(--bg-primary);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-micro) var(--ease-standard),
+              box-shadow var(--dur-micro) var(--ease-standard),
+              background var(--dur-micro) var(--ease-standard);
+}
+.sel-btn:hover:not(:disabled) { border-color: var(--label-3); }
+/* 自绘控件不参与浏览器默认焦点环（否则按钮默认环与控件环叠加） */
+.sel-btn:focus { outline: none; }
+.sel-btn:focus-visible { border-color: var(--accent); box-shadow: var(--shadow-focus); }
+.sel-btn[aria-expanded="true"] { border-color: var(--accent); }
+.sel-btn:disabled { background: var(--fill-quaternary); color: var(--label-2); cursor: default; }
+.sel-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* chevron 用 currentColor：原先的 data-URI 硬编码 #8E8E93，深色 / 高对比度下不变色 */
+.sel-btn > .icon {
+  width: 14px; height: 14px;
+  color: currentColor;
+  transition: transform var(--dur-micro) var(--ease-standard);
+}
+.sel-btn[aria-expanded="true"] > .icon { transform: rotate(180deg); }
+
+/* 浮层：下拉与右键菜单共用同一套材质 / 圆角 / 阴影语言。
+   必须高于最上层遮罩（--z-scrim-crop: 130）：角色卡编辑器里的模式下拉
+   就开在模态框内，层级不够会被遮罩盖住。 */
+.sel-menu, .ctx-menu {
+  position: fixed;
+  z-index: 140;
+  min-width: 120px;
+  padding: 4px;
+  border-radius: var(--r-md);
+  background: var(--material-bg-thick);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+  box-shadow: var(--shadow-3);
+  /* 用 opacity / transform 表达显隐（display 切换无法过渡） */
+  opacity: 0;
+  transform: scale(.97) translateY(-4px);
+  transform-origin: top center;
+  transition: opacity var(--dur-micro) var(--ease-enter),
+              transform var(--dur-micro) var(--ease-enter);
+}
+.sel-menu { max-height: 320px; overflow-y: auto; }
+/* 向上翻转时锚定底部：交互从来源生长（HIG） */
+.sel-menu.is-up, .ctx-menu.is-up { transform-origin: bottom center; }
+.sel-menu.is-in, .ctx-menu.is-in { opacity: 1; transform: none; }
+.sel-menu.is-out, .ctx-menu.is-out {
+  opacity: 0;
+  transform: scale(.98);
+  transition-duration: var(--dur-exit);
+}
+
+/* 菜单项 */
+.sel-opt, .ctx-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--sp-2);
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.sel-opt:focus, .ctx-item:focus { outline: none; }   /* 高亮由键盘态表达 */
+.sel-opt:hover, .ctx-item:hover { background: var(--fill-quaternary); }
+.sel-opt.is-hl, .ctx-item:focus { background: var(--fill-tertiary); }
+.sel-opt-label, .ctx-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 选中项：强调色文字 + 尾随勾号（HIG：状态不能只靠颜色传达） */
+.sel-opt[aria-selected="true"] { color: var(--accent-text); font-weight: 500; }
+.sel-opt > .icon { width: 15px; height: 15px; color: var(--accent); }
+.sel-opt[aria-disabled="true"] { color: var(--label-3); cursor: default; }
+.sel-opt[aria-disabled="true"]:hover { background: transparent; }
+
+/* 右键菜单专用：快捷键提示 + 危险项 */
+.ctx-menu { min-width: 188px; max-width: 320px; }
+.ctx-item--danger { color: var(--red-text); }
+.ctx-kbd { margin-left: auto; padding-left: var(--sp-3); color: var(--label-3); font-size: 11px; }
+.ctx-sep { height: .5px; margin: 4px 0; background: var(--separator); }
+
+/* ── 24. 桌面端操作便利性：双击编辑 + 方向键导航 ────────────────────── */
+/* 双击卡片 = 直接编辑，故禁用文字选择，避免双击时选中标题文字。
+   卡片内的输入控件显式恢复可选，否则展开区里无法框选文本。
+   记忆表行不改 user-select —— 那里的摘要正文需要能拖选复制，
+   双击产生的选区由 dblclick 委托统一清除。 */
+.wr-card, .persona-card { -webkit-user-select: none; user-select: none; }
+.wr-card input, .wr-card textarea, .wr-card select,
+.persona-card input, .persona-card textarea, .persona-card select {
+  -webkit-user-select: text; user-select: text;
+}
+/* roving tabindex 的焦点环沿用全局 :focus-visible，无需另加规则；
+   聚焦卡片本身会命中既有 :focus-within 规则，自动显现行内操作按钮。 */
 </style>
 </head>
 
@@ -1877,6 +2015,7 @@ table.data td.cell-actions { white-space: nowrap; }
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></symbol>
   <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
 </svg>
 
 <div class="layout">
@@ -1892,7 +2031,9 @@ table.data td.cell-actions { white-space: nowrap; }
     </div>
     <nav class="sidebar-nav" id="sidebarNav" aria-label="主导航">
       <div class="sidebar-group">
-        <div class="sidebar-label">内容</div>
+        <button type="button" class="sidebar-label" data-collapse-group="内容" aria-expanded="true">
+          <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>内容
+        </button>
         <button type="button" class="sl-item is-selected" data-tab="wr" role="tab" aria-selected="true">
           <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
           <span class="sl-item-label">写作素材库</span>
@@ -1910,18 +2051,24 @@ table.data td.cell-actions { white-space: nowrap; }
         </button>
       </div>
       <div class="sidebar-group">
-        <div class="sidebar-label">知识系统</div>
+        <button type="button" class="sidebar-label" data-collapse-group="知识系统" aria-expanded="true">
+          <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>知识系统
+        </button>
         <button type="button" class="sl-item" data-tab="rag" role="tab" aria-selected="false">
           <svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>
           <span class="sl-item-label">文档知识库</span>
+          <span class="sl-badge" id="badge-rag" hidden>0</span>
         </button>
         <button type="button" class="sl-item" data-tab="memory" role="tab" aria-selected="false">
           <svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg>
           <span class="sl-item-label">动态记忆</span>
+          <span class="sl-badge" id="badge-memory" hidden>0</span>
         </button>
       </div>
       <div class="sidebar-group">
-        <div class="sidebar-label">系统</div>
+        <button type="button" class="sidebar-label" data-collapse-group="系统" aria-expanded="true">
+          <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>系统
+        </button>
         <button type="button" class="sl-item" data-tab="config" role="tab" aria-selected="false">
           <svg class="icon" aria-hidden="true"><use href="#i-gear"/></svg>
           <span class="sl-item-label">配置</span>
@@ -1938,51 +2085,63 @@ table.data td.cell-actions { white-space: nowrap; }
 
     <!-- ───── 写作素材库 ───── -->
     <section class="tab-pane is-active" id="pane-wr" role="tabpanel" aria-label="写作素材库">
-      <div class="page">
-        <div class="page-head">
-          <h2>写作素材库</h2>
-          <span class="page-sub" id="wrSub"></span>
-        </div>
-        <div class="stats" id="wrStats"><span class="skeleton" style="width:200px"></span></div>
+      <div class="page-head-bar">
+        <div class="page-head-bar-inner">
+          <div class="page-head">
+            <h2>写作素材库</h2>
+            <span class="page-sub" id="wrSub"></span>
+          </div>
 
-        <div class="toolbar">
-          <label class="search grow" style="max-width:320px">
-            <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-            <input type="search" id="wrSearch" placeholder="搜索关键词、分类、内容" aria-label="搜索素材">
-            <button type="button" class="search-clear" data-action="clear-search" data-target="wrSearch" aria-label="清除搜索">
-              <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
-            </button>
-          </label>
-          <select class="field" id="wrCat" style="width:auto" aria-label="按分类筛选">
-            <option value="">全部分类</option>
-          </select>
-          <label class="check nowrap">
-            <input type="checkbox" id="wrOnlyConst">
-            <span>仅常驻</span>
-          </label>
-          <span class="grow"></span>
-          <div class="toolbar-actions">
-            <button type="button" class="btn btn--filled" data-action="wr-new">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建条目
-            </button>
-            <button type="button" class="btn btn--gray" data-action="wr-test">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-flask"/></svg>匹配测试
-            </button>
-            <button type="button" class="btn btn--gray" data-action="wr-export">导出</button>
-            <label class="btn btn--gray file-btn">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>导入
-              <input type="file" accept=".json" data-file="wr-import" aria-label="导入素材 JSON">
+          <div class="toolbar">
+            <label class="search grow" style="max-width:320px">
+              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+              <input type="search" id="wrSearch" placeholder="搜索关键词、分类、内容" aria-label="搜索素材">
+              <button type="button" class="search-clear" data-action="clear-search" data-target="wrSearch" aria-label="清除搜索">
+                <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+              </button>
             </label>
+            <select class="field" id="wrCat" style="width:auto" aria-label="按分类筛选">
+              <option value="">全部分类</option>
+            </select>
+            <label class="check nowrap">
+              <input type="checkbox" id="wrOnlyConst">
+              <span>仅常驻</span>
+            </label>
+            <span class="grow"></span>
+            <div class="toolbar-actions">
+              <span class="select-pill" id="wrSelectPill" hidden>已选 0</span>
+              <button type="button" class="btn btn--filled" data-action="wr-new">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建条目
+              </button>
+              <div class="menu-wrap">
+                <button type="button" class="btn icon-btn" data-action="more-menu" aria-label="更多操作" aria-haspopup="true" aria-expanded="false">
+                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"/></svg>
+                </button>
+                <div class="menu" id="wrMoreMenu" role="menu" hidden>
+                  <button type="button" class="menu-item" role="menuitem" data-action="wr-test">
+                    <svg class="icon" aria-hidden="true"><use href="#i-flask"/></svg>匹配测试
+                  </button>
+                  <button type="button" class="menu-item" role="menuitem" data-action="wr-export">
+                    <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>导出
+                  </button>
+                  <label class="menu-item file-btn" role="menuitem">
+                    <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>导入
+                    <input type="file" accept=".json" data-file="wr-import" aria-label="导入素材 JSON">
+                  </label>
+                  <div class="menu-sep" data-batch-only hidden></div>
+                  <button type="button" class="menu-item" role="menuitem" data-action="wr-batch-toggle" data-value="1" data-batch-only hidden>批量启用</button>
+                  <button type="button" class="menu-item" role="menuitem" data-action="wr-batch-toggle" data-value="0" data-batch-only hidden>批量禁用</button>
+                  <button type="button" class="menu-item menu-item--danger" role="menuitem" data-action="wr-batch-delete" data-batch-only hidden>批量删除</button>
+                  <button type="button" class="menu-item" role="menuitem" data-action="wr-batch-clear" data-batch-only hidden>取消选择</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
+      </div>
 
-        <div class="batchbar" id="wrBatch" hidden>
-          <span class="batchbar-count" id="wrBatchCount"></span>
-          <button type="button" class="btn btn--sm btn--tinted" data-action="wr-batch-toggle" data-value="1">批量启用</button>
-          <button type="button" class="btn btn--sm btn--gray" data-action="wr-batch-toggle" data-value="0">批量禁用</button>
-          <button type="button" class="btn btn--sm btn--destructive-tinted" data-action="wr-batch-delete">批量删除</button>
-          <button type="button" class="btn btn--sm btn--plain-muted" data-action="wr-batch-clear">取消选择</button>
-        </div>
+      <div class="page page--bar">
+        <div class="stats" id="wrStats"><span class="skeleton" style="width:200px"></span></div>
 
         <div class="wr-grid" id="wrGrid" aria-live="polite">
           <div class="skeleton skeleton-card"></div>
@@ -1996,40 +2155,54 @@ table.data td.cell-actions { white-space: nowrap; }
 
     <!-- ───── 世界书 ───── -->
     <section class="tab-pane" id="pane-wb" role="tabpanel" aria-label="世界书">
-      <div class="page">
-        <div class="page-head">
-          <h2>世界书</h2>
-          <span class="page-sub" id="wbSub"></span>
-        </div>
-        <div class="stats" id="wbStats"><span class="skeleton" style="width:180px"></span></div>
+      <div class="page-head-bar">
+        <div class="page-head-bar-inner">
+          <div class="page-head">
+            <h2>世界书</h2>
+            <span class="page-sub" id="wbSub"></span>
+          </div>
 
-        <div class="toolbar">
-          <label class="search" style="min-width:220px">
-            <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-            <input type="search" id="wbSearch" placeholder="搜索世界书名称或描述" aria-label="搜索世界书">
-            <button type="button" class="search-clear" data-action="clear-search" data-target="wbSearch" aria-label="清除搜索">
-              <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
-            </button>
-          </label>
-          <label class="check nowrap">
-            <input type="checkbox" id="wbOnlyConst">
-            <span>仅常驻</span>
-          </label>
-          <span class="grow"></span>
-          <div class="toolbar-actions">
-            <button type="button" class="btn btn--filled" data-action="wb-new">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建世界书
-            </button>
-            <label class="btn btn--gray file-btn">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>导入
-              <input type="file" accept=".json" data-file="wb-import" aria-label="导入世界书 JSON">
+          <div class="toolbar">
+            <label class="search" style="min-width:220px">
+              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+              <input type="search" id="wbSearch" placeholder="搜索世界书名称或描述" aria-label="搜索世界书">
+              <button type="button" class="search-clear" data-action="clear-search" data-target="wbSearch" aria-label="清除搜索">
+                <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+              </button>
             </label>
-            <button type="button" class="btn btn--gray" data-action="wb-export-st">导出 ST</button>
-            <button type="button" class="btn btn--gray" data-action="wb-reload">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
-            </button>
+            <label class="check nowrap">
+              <input type="checkbox" id="wbOnlyConst">
+              <span>仅常驻</span>
+            </label>
+            <span class="grow"></span>
+            <div class="toolbar-actions">
+              <button type="button" class="btn btn--filled" data-action="wb-new">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建世界书
+              </button>
+              <div class="menu-wrap">
+                <button type="button" class="btn icon-btn" data-action="more-menu" aria-label="更多操作" aria-haspopup="true" aria-expanded="false">
+                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"/></svg>
+                </button>
+                <div class="menu" id="wbMoreMenu" role="menu" hidden>
+                  <label class="menu-item file-btn" role="menuitem">
+                    <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>导入
+                    <input type="file" accept=".json" data-file="wb-import" aria-label="导入世界书 JSON">
+                  </label>
+                  <button type="button" class="menu-item" role="menuitem" data-action="wb-export-st">
+                    <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>导出 ST
+                  </button>
+                  <button type="button" class="menu-item" role="menuitem" data-action="wb-reload">
+                    <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
+      </div>
+
+      <div class="page page--bar">
+        <div class="stats" id="wbStats"><span class="skeleton" style="width:180px"></span></div>
 
         <div id="wbList" aria-live="polite">
           <div class="skeleton skeleton-row" style="margin-bottom:8px"></div>
@@ -2041,44 +2214,56 @@ table.data td.cell-actions { white-space: nowrap; }
 
     <!-- ───── 角色卡 ───── -->
     <section class="tab-pane" id="pane-persona" role="tabpanel" aria-label="角色卡">
-      <div class="page">
-        <div class="page-head">
-          <h2>角色卡</h2>
-          <span class="page-sub" id="personaSub"></span>
-        </div>
-        <div class="stats" id="personaStats"><span class="skeleton" style="width:160px"></span></div>
+      <div class="page-head-bar">
+        <div class="page-head-bar-inner">
+          <div class="page-head">
+            <h2>角色卡</h2>
+            <span class="page-sub" id="personaSub"></span>
+          </div>
 
-        <div class="toolbar">
-          <label class="search" style="min-width:220px">
-            <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-            <input type="search" id="personaSearch" placeholder="搜索角色卡名称" aria-label="搜索角色卡">
-            <button type="button" class="search-clear" data-action="clear-search" data-target="personaSearch" aria-label="清除搜索">
-              <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
-            </button>
-          </label>
-          <div class="segmented segmented--icon" role="group" aria-label="视图切换">
-            <button type="button" id="personaGrid" class="is-selected" data-action="persona-view" data-value="grid" title="网格视图" aria-label="网格视图">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-grid"/></svg>
-            </button>
-            <button type="button" id="personaListBtn" data-action="persona-view" data-value="list" title="列表视图" aria-label="列表视图">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-list"/></svg>
-            </button>
-          </div>
-          <span class="grow"></span>
-          <div class="toolbar-actions">
-            <button type="button" class="btn btn--filled" data-action="persona-new">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建角色卡
-            </button>
-            <button type="button" class="btn btn--gray" data-action="persona-refresh">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
-            </button>
-            <label class="btn btn--gray file-btn">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>导入 V2
-              <input type="file" accept=".png,.jpg,.jpeg,.webp,.json" data-file="persona-import" aria-label="导入角色卡">
+          <div class="toolbar">
+            <label class="search" style="min-width:220px">
+              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+              <input type="search" id="personaSearch" placeholder="搜索角色卡名称" aria-label="搜索角色卡">
+              <button type="button" class="search-clear" data-action="clear-search" data-target="personaSearch" aria-label="清除搜索">
+                <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+              </button>
             </label>
-            <button type="button" class="btn btn--gray" data-action="persona-import-text">文本粘贴导入</button>
+            <div class="segmented segmented--icon" role="group" aria-label="视图切换">
+              <button type="button" id="personaGrid" class="is-selected" data-action="persona-view" data-value="grid" title="网格视图" aria-label="网格视图">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-grid"/></svg>
+              </button>
+              <button type="button" id="personaListBtn" data-action="persona-view" data-value="list" title="列表视图" aria-label="列表视图">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-list"/></svg>
+              </button>
+            </div>
+            <span class="grow"></span>
+            <div class="toolbar-actions">
+              <button type="button" class="btn btn--filled" data-action="persona-new">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建角色卡
+              </button>
+              <div class="menu-wrap">
+                <button type="button" class="btn icon-btn" data-action="more-menu" aria-label="更多操作" aria-haspopup="true" aria-expanded="false">
+                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"/></svg>
+                </button>
+                <div class="menu" id="personaMoreMenu" role="menu" hidden>
+                  <label class="menu-item file-btn" role="menuitem">
+                    <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>导入 V2
+                    <input type="file" accept=".png,.jpg,.jpeg,.webp,.json" data-file="persona-import" aria-label="导入角色卡">
+                  </label>
+                  <button type="button" class="menu-item" role="menuitem" data-action="persona-import-text">文本粘贴导入</button>
+                  <button type="button" class="menu-item" role="menuitem" data-action="persona-refresh">
+                    <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
+      </div>
+
+      <div class="page page--bar">
+        <div class="stats" id="personaStats"><span class="skeleton" style="width:160px"></span></div>
 
         <div id="personaList" aria-live="polite">
           <div class="skeleton skeleton-row" style="margin-bottom:8px"></div>
@@ -2343,7 +2528,7 @@ table.data td.cell-actions { white-space: nowrap; }
 
           <div class="cfg-cols">
             <div class="card collapsible" data-collapse-key="wb">
-              <div class="card-head card-head--button" data-collapse>
+              <div class="card-head card-head--button" data-collapse aria-expanded="true">
                 <h3>世界书注入策略</h3>
                 <span class="card-head-spacer"></span>
                 <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2400,7 +2585,7 @@ table.data td.cell-actions { white-space: nowrap; }
             </div>
 
             <div class="card collapsible" data-collapse-key="wr">
-              <div class="card-head card-head--button" data-collapse>
+              <div class="card-head card-head--button" data-collapse aria-expanded="true">
                 <h3>写作素材库控制</h3>
                 <span class="card-head-spacer"></span>
                 <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2428,7 +2613,7 @@ table.data td.cell-actions { white-space: nowrap; }
             </div>
 
             <div class="card collapsible" data-collapse-key="perf">
-              <div class="card-head card-head--button" data-collapse>
+              <div class="card-head card-head--button" data-collapse aria-expanded="true">
                 <h3>表现控制</h3>
                 <span class="card-head-spacer"></span>
                 <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2448,7 +2633,7 @@ table.data td.cell-actions { white-space: nowrap; }
             </div>
 
             <div class="card collapsible" data-collapse-key="refusal">
-              <div class="card-head card-head--button" data-collapse>
+              <div class="card-head card-head--button" data-collapse aria-expanded="true">
                 <h3>应急反拒绝协议</h3>
                 <span class="card-head-spacer"></span>
                 <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2477,7 +2662,7 @@ table.data td.cell-actions { white-space: nowrap; }
           </div>
 
           <div class="card collapsible" data-collapse-key="statusbar">
-            <div class="card-head card-head--button" data-collapse>
+            <div class="card-head card-head--button" data-collapse aria-expanded="true">
               <h3>状态栏配置</h3>
               <span class="card-head-spacer"></span>
               <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2537,7 +2722,7 @@ table.data td.cell-actions { white-space: nowrap; }
           </div>
 
           <div class="card collapsible" data-collapse-key="rag">
-            <div class="card-head card-head--button" data-collapse>
+            <div class="card-head card-head--button" data-collapse aria-expanded="true">
               <h3>向量与模型</h3>
               <span class="card-head-spacer"></span>
               <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2574,7 +2759,7 @@ table.data td.cell-actions { white-space: nowrap; }
           </div>
 
           <div class="card collapsible" data-collapse-key="memory" style="margin-top:var(--sp-4)">
-            <div class="card-head card-head--button" data-collapse>
+            <div class="card-head card-head--button" data-collapse aria-expanded="true">
               <h3>记忆与日志</h3>
               <span class="card-head-spacer"></span>
               <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2623,7 +2808,7 @@ table.data td.cell-actions { white-space: nowrap; }
           </div>
 
           <div class="card collapsible" data-collapse-key="stream">
-            <div class="card-head card-head--button" data-collapse>
+            <div class="card-head card-head--button" data-collapse aria-expanded="true">
               <h3>流式输出控制</h3>
               <span class="card-head-spacer"></span>
               <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2657,7 +2842,7 @@ table.data td.cell-actions { white-space: nowrap; }
 
           <div class="cfg-cols">
             <div class="card collapsible" data-collapse-key="health">
-              <div class="card-head card-head--button" data-collapse>
+              <div class="card-head card-head--button" data-collapse aria-expanded="true">
                 <h3>系统健康度</h3>
                 <span class="card-head-spacer"></span>
                 <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2678,7 +2863,7 @@ table.data td.cell-actions { white-space: nowrap; }
             </div>
 
             <div class="card collapsible" data-collapse-key="debug">
-              <div class="card-head card-head--button" data-collapse>
+              <div class="card-head card-head--button" data-collapse aria-expanded="true">
                 <h3>调试与维护</h3>
                 <span class="card-head-spacer"></span>
                 <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2711,7 +2896,7 @@ table.data td.cell-actions { white-space: nowrap; }
           </div>
 
           <div class="card card--attention collapsible" data-collapse-key="permission" style="margin-top:var(--sp-4)">
-            <div class="card-head card-head--button" data-collapse>
+            <div class="card-head card-head--button" data-collapse aria-expanded="true">
               <h3>安全与权限控制</h3>
               <span class="card-head-spacer"></span>
               <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>
@@ -2738,30 +2923,6 @@ table.data td.cell-actions { white-space: nowrap; }
 
   </main>
 </div><!-- .layout -->
-
-<!-- ══ 底部标签栏（移动端） ══ -->
-<nav class="tabbar" aria-label="移动端导航">
-  <div class="tabbar-inner">
-    <button type="button" class="tb-item is-selected" data-tab="wr" aria-label="写作素材库">
-      <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>素材库</span>
-    </button>
-    <button type="button" class="tb-item" data-tab="wb" aria-label="世界书">
-      <svg class="icon" aria-hidden="true"><use href="#i-books"/></svg><span>世界书</span>
-    </button>
-    <button type="button" class="tb-item" data-tab="persona" aria-label="角色卡">
-      <svg class="icon" aria-hidden="true"><use href="#i-person"/></svg><span>角色卡</span>
-    </button>
-    <button type="button" class="tb-item" data-tab="rag" aria-label="文档知识库">
-      <svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg><span>知识库</span>
-    </button>
-    <button type="button" class="tb-item" data-tab="memory" aria-label="动态记忆">
-      <svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg><span>记忆</span>
-    </button>
-    <button type="button" class="tb-item" data-tab="config" aria-label="配置">
-      <svg class="icon" aria-hidden="true"><use href="#i-gear"/></svg><span>配置</span>
-    </button>
-  </div>
-</nav>
 
 <!-- ══ 悬浮操作条（仅在有未保存更改时出现） ══ -->
 <div class="actionbar" id="actionBar" role="status">
@@ -2918,12 +3079,14 @@ function compactNum(n) {
   return v >= 10000 ? (v / 1000).toFixed(v >= 100000 ? 0 : 1) + "k" : String(v);
 }
 
-/** 分类色：由名称散列出稳定色相。返回用于细色条的 hsl。 */
-function catColor(name) {
-  if (!name) return "hsl(210, 60%, 55%)";
+/** 分类色：由名称散列出稳定索引，映射到固定 8 色调色板。
+    不用任意色相 —— 白字对比度不可控，且会与语义色（绿=成功/红=危险）撞车。 */
+const CAT_TONES = ["accent", "green", "orange", "yellow", "indigo", "purple", "teal", "pink"];
+function catTone(name) {
+  if (!name) return "accent";
   let h = 0;
   for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
-  return `hsl(${(h % 360 + 360) % 360}, 55%, 52%)`;
+  return CAT_TONES[Math.abs(h) % CAT_TONES.length];
 }
 
 /** 会话 ID 美化：aiocqhttp:GroupMessage:123::persona → 群 123 / persona */
@@ -2984,6 +3147,15 @@ function fileToB64(file) {
 /** 按钮忙碌态：禁用 + 转圈，结束后恢复原内容。 */
 async function withBusy(el, busyText, fn) {
   if (!el) return fn();
+  // 非表单控件（如 .menu-wrap 容器）不能禁用也不该换内容：
+  // 替换 innerHTML 会让容器高度塌陷，整页跟着跳。改用 aria-busy 标记。
+  const isFormControl = typeof el.disabled === "boolean";
+  if (!isFormControl) {
+    el.setAttribute("aria-busy", "true");
+    el.classList.add("is-busy");
+    try { return await fn(); }
+    finally { el.removeAttribute("aria-busy"); el.classList.remove("is-busy"); }
+  }
   const orig = el.innerHTML;
   const wasDisabled = el.disabled;
   el.disabled = true;
@@ -3146,6 +3318,8 @@ function showToast(msg, type = "error") {
 }
 
 function dismissBanner(el) {
+  // 提前关闭（撤销 / 点 ✕）时清掉自动消失定时器，避免孤儿定时器空转
+  if (el && el.__bannerTimer) { clearTimeout(el.__bannerTimer); el.__bannerTimer = null; }
   if (!el || !el.isConnected) return;
   el.classList.add("is-out");
   setTimeout(() => el.remove(), 200);
@@ -3155,6 +3329,28 @@ function dismissBanner(el) {
  * 带撤销动作的横幅（删除类操作的反悔窗口）。
  * 保留旧签名 (msg, type, actionLabel, actionFn, ms)，便于调用点平滑迁移。
  */
+/** 复制文本到剪贴板。面板可能运行在不透明源沙箱 iframe 中，
+ *  此时 textarea + execCommand 是唯一可用路径，故保留回退分支。 */
+function copyText(text) {
+  const done = () => showToast("已复制：" + text, "success");
+  const fallback = () => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;top:-9999px;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      if (ok) done(); else showToast("复制失败，请手动选择复制", "warning");
+    } catch (_) { showToast("复制失败，请手动选择复制", "warning"); }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(fallback);
+  } else fallback();
+}
+
 function showToastWithAction(msg, type, actionLabel, actionFn, ms = 6000) {
   const host = $("#toaster");
   if (!host) return null;
@@ -3179,7 +3375,7 @@ function showToastWithAction(msg, type, actionLabel, actionFn, ms = 6000) {
     dismissBanner(el);
     try { actionFn(); } catch (e) { showToast("撤销失败: " + e.message); }
   });
-  setTimeout(() => dismissBanner(el), ms);
+  el.__bannerTimer = setTimeout(() => dismissBanner(el), ms);
   return el;
 }
 
@@ -3281,17 +3477,47 @@ function showErrorDetail(title, msg) {
 let _modalState = null;   // { type: 'persona' | 'wb-entry' | 'wb-create' }
 let _modalMode = null;    // 'create' | 'edit'
 
+let _lastFocused = null;   // 弹窗打开前的焦点元素，关闭后归还
+let _scrollLockTop = 0;
+
 function openScrim(scrim) {
+  if (!scrim) return;
+  // 焦点归还锚点：仅记录最外层弹层打开前的焦点，避免嵌套弹层互相覆盖
+  if (!_lastFocused) _lastFocused = document.activeElement;
+  // 锁内容区滚动（HIG：模态期间背景不应滚动）
+  const c = $("#content");
+  if (c) { _scrollLockTop = c.scrollTop; c.style.overflow = "hidden"; }
   scrim.classList.remove("is-closing");
   scrim.classList.add("is-open");
+  // 焦点移入弹窗：aria-modal 声明了行为就必须实现，否则 Tab 会走到遮罩后面
+  const box = scrim.querySelector(".modal, .alert");
+  if (box) {
+    if (!box.hasAttribute("tabindex")) box.setAttribute("tabindex", "-1");
+    // 让当前帧先完成布局，再落焦点，避免 Safari/Chromium 抢回焦点
+    requestAnimationFrame(() => {
+      if (!scrim.classList.contains("is-open")) return;
+      const first = box.querySelector("input:not([type=hidden]):not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])");
+      (first || box).focus({ preventScroll: true });
+    });
+  }
 }
 
 function closeScrim(scrim) {
   if (!scrim || !scrim.classList.contains("is-open")) return;
   scrim.classList.add("is-closing");
+  // 浮层挂在 body 下，模态关闭时其锚点会被销毁，必须一并收起
+  closeSelMenus(null);
+  closeCtxMenu(true);
   setTimeout(() => {
     scrim.classList.remove("is-open", "is-closing");
-    if (scrim.id === "scrim") resetSheetTransform();
+    // 仍有多层弹层打开时，不解锁滚动、不归还焦点
+    const stillOpen = ["cropScrim", "alertScrim", "textScrim", "scrim"]
+      .some(id => { const s = document.getElementById(id); return s && s.classList.contains("is-open"); });
+    if (stillOpen) return;
+    const c = $("#content");
+    if (c) { c.style.overflow = ""; c.scrollTop = _scrollLockTop; }
+    if (_lastFocused && _lastFocused.isConnected) { try { _lastFocused.focus({ preventScroll: true }); } catch (_) {} }
+    _lastFocused = null;
   }, 180);
 }
 
@@ -3303,89 +3529,6 @@ function closeModal() {
   if (saveBtn) saveBtn.hidden = false;
   _modalState = null;
   _modalMode = null;
-}
-
-/* ── 底部弹层：跟手下拉关闭（移动端模态即弹层形态） ──────────────── */
-/* Apple 的核心原则：手势必须 1:1 跟手、可中途抓回、松手时把速度交给动画。
-   这里用 rAF 弹簧（临界阻尼）而不是 CSS 过渡，才能做到「从当前屏幕值起步」。 */
-let _sheetDrag = null;
-
-function resetSheetTransform() {
-  const modal = $("#modal");
-  if (modal) { modal.style.transform = ""; modal.style.transition = ""; }
-}
-
-/** 极简弹簧：临界阻尼，从当前位置收敛到目标。 */
-function springTo(el, from, to, onDone) {
-  const stiffness = 320, damping = 2 * Math.sqrt(320); // 临界阻尼
-  let x = from, v = 0, last = performance.now();
-  function step(now) {
-    const dt = Math.min((now - last) / 1000, 0.032);
-    last = now;
-    // 半隐式欧拉积分
-    v += (-stiffness * (x - to) - damping * v) * dt;
-    x += v * dt;
-    el.style.transform = `translateY(${x}px)`;
-    if (Math.abs(x - to) < 0.5 && Math.abs(v) < 5) {
-      el.style.transform = `translateY(${to}px)`;
-      if (onDone) onDone();
-      return;
-    }
-    requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
-}
-
-function initSheetDrag() {
-  const modal = $("#modal");
-  const scrim = $("#scrim");
-  if (!modal || !scrim) return;
-
-  modal.addEventListener("pointerdown", (e) => {
-    // 仅在小屏（弹层形态）且从头部/抓手区域起手时响应，避免与滚动冲突
-    if (window.innerWidth > 768) return;
-    const head = e.target.closest(".modal-head");
-    if (!head) return;
-    _sheetDrag = { startY: e.clientY, y: 0, history: [], id: e.pointerId };
-    modal.style.transition = "none";
-    modal.setPointerCapture(e.pointerId);
-  });
-
-  modal.addEventListener("pointermove", (e) => {
-    if (!_sheetDrag || e.pointerId !== _sheetDrag.id) return;
-    const dy = Math.max(0, e.clientY - _sheetDrag.startY);
-    _sheetDrag.y = dy;
-    const now = performance.now();
-    _sheetDrag.history.push({ y: dy, t: now });
-    while (_sheetDrag.history.length > 5) _sheetDrag.history.shift();
-    modal.style.transform = `translateY(${dy}px)`;
-  });
-
-  const endDrag = (e) => {
-    if (!_sheetDrag || (e && e.pointerId !== _sheetDrag.id)) return;
-    const { y, history } = _sheetDrag;
-    // 释放速度（px/s）：用最近两帧估算
-    let velocity = 0;
-    if (history.length >= 2) {
-      const a = history[0], b = history[history.length - 1];
-      const dt = (b.t - a.t) / 1000;
-      if (dt > 0) velocity = (b.y - a.y) / dt;
-    }
-    _sheetDrag = null;
-    // 速度足够大 或 拖过 1/3 屏高 → 关闭；否则弹回
-    if (velocity > 500 || y > modal.offsetHeight / 3) {
-      modal.style.transform = `translateY(${y}px)`;
-      springTo(modal, y, modal.offsetHeight + 40, () => {
-        resetSheetTransform();
-        scrim.classList.remove("is-open");
-      });
-    } else {
-      springTo(modal, y, 0, () => { modal.style.transform = ""; });
-    }
-  };
-
-  modal.addEventListener("pointerup", endDrag);
-  modal.addEventListener("pointercancel", endDrag);
 }
 
 /* ── E. 面板状态持久化 ───────────────────────────────────────────── */
@@ -3426,15 +3569,64 @@ function applyCollapseState() {
     const key = card.dataset.collapseKey;
     const collapsed = Object.prototype.hasOwnProperty.call(saved, key) ? !!saved[key] : !isFirst;
     card.classList.toggle("collapsed", collapsed);
+    const head = card.querySelector(".card-head--button");
+    if (head) head.setAttribute("aria-expanded", String(!collapsed));
   });
 }
 
 function toggleCardCollapse(card) {
   card.classList.toggle("collapsed");
+  const head = card.querySelector(".card-head--button");
+  if (head) head.setAttribute("aria-expanded", String(!card.classList.contains("collapsed")));
   const key = card.dataset.collapseKey;
   if (!key) return;
   _uiState.collapsed[key] = card.classList.contains("collapsed");
   saveUiState();
+}
+
+/** 侧栏分组折叠：与卡片折叠共用 _uiState.collapsed，键前缀 sb- 避免撞车。 */
+function toggleSidebarGroup(btn) {
+  const key = btn.dataset.collapseGroup;
+  if (!key) return;
+  const group = btn.closest(".sidebar-group");
+  if (!group) return;
+  const collapsed = group.classList.toggle("is-collapsed");
+  btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  _uiState.collapsed["sb-" + key] = collapsed;
+  saveUiState();
+}
+
+/** 恢复侧栏分组折叠态（默认全部展开）。 */
+function applySidebarCollapseState() {
+  $$(".sidebar-label[data-collapse-group]").forEach(btn => {
+    const key = "sb-" + btn.dataset.collapseGroup;
+    const group = btn.closest(".sidebar-group");
+    if (!group) return;
+    const collapsed = !!_uiState.collapsed[key];
+    group.classList.toggle("is-collapsed", collapsed);
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  });
+}
+
+/* ── 溢出菜单（⋯） ─────────────────────────────────────────────────── */
+/* 同一时刻只允许一个菜单展开；开关由点击委托驱动，不逐菜单绑事件。 */
+
+function closeAllMenus(except) {
+  $$(".menu-wrap > .menu").forEach(menu => {
+    if (menu === except) return;
+    menu.hidden = true;
+    const btn = menu.parentElement.querySelector("[data-action='more-menu']");
+    if (btn) btn.setAttribute("aria-expanded", "false");
+  });
+}
+
+function toggleMoreMenu(btn) {
+  const menu = btn.parentElement.querySelector(".menu");
+  if (!menu) return;
+  const willOpen = menu.hidden;
+  closeAllMenus(willOpen ? menu : null);
+  menu.hidden = !willOpen;
+  btn.setAttribute("aria-expanded", willOpen ? "true" : "false");
 }
 
 /* ── 空状态 ────────────────────────────────────────────────────────── */
@@ -3508,6 +3700,18 @@ function createTagInput(containerId, initial, placeholder) {
 
 const wrState = { entries: [], total: 0, page: 1, perPage: 9 };
 const _wrSelected = new Set();
+/* 素材库标题区单击 = 展开/收起，而双击卡片 = 编辑。
+   两者共用同一区域，故单击延迟到双击判定窗口之后再执行；双击时取消它。
+   这样双击不会引起「展开又收起」的抖动，单击手感也只多一帧级的延迟。
+   兜底：系统双击阈值可能慢于 WR_DBLCLICK_MS（慢速双击），首次单击的
+   定时器会先跑掉并真的切换了展开态。因此用 _wrExpandSnapshot 记住
+   整个点击序列开始前的展开态（只在序列首击记录，后续点击不覆盖），
+   并留一段宽限期 _wrExpandIdle 才丢弃，dblclick 时据此回滚。 */
+let _wrExpandTimer = 0;
+let _wrExpandIdle = 0;
+let _wrExpandSnapshot = null;   // { eid, prev } —— 序列首击前的展开态
+const WR_DBLCLICK_MS = 220;
+const WR_EXPAND_GRACE_MS = 500;
 let _wrExpandedId = null;
 let _wrTagCache = {};
 let _wrTagInput = null;
@@ -3579,7 +3783,6 @@ function renderWRGrid() {
         (rest > 0 ? `<span class="tag t3">+${rest}</span>` : "") + `</div>`
       : "";
     return `<article class="wr-card${isOpen ? " is-open" : ""}${selected ? " is-selected" : ""}" data-eid="${eid}">
-      <div class="wr-stripe" style="background:${catColor(e.category)}"></div>
       <div class="wr-card-head">
         <label class="check" title="选择此条目">
           <input type="checkbox" data-wr-select ${selected ? "checked" : ""} aria-label="选择 ${esc(e.entry_id)}">
@@ -3589,7 +3792,7 @@ function renderWRGrid() {
           <div class="wr-card-id">${eid}</div>
         </div>
         <div class="wr-card-meta">
-          <span class="badge" style="background:${catColor(e.category)};color:#fff">${esc(e.category || "未分类")}</span>
+          <span class="badge badge--${catTone(e.category)}">${esc(e.category || "未分类")}</span>
           <span class="badge">P${e.priority != null ? e.priority : "-"}</span>
         </div>
       </div>
@@ -3727,13 +3930,16 @@ function goWRPage(p) {
 }
 
 // ── 批量选择 ──
+/* 选中态驱动：计数胶囊显示「已选 N」，并显隐 ⋯ 菜单内的批量项。
+   批量操作条已删除，入口收敛到溢出菜单。 */
 function updateWRBatchBar() {
-  const bar = $("#wrBatch");
-  if (!bar) return;
   const n = _wrSelected.size;
-  bar.hidden = n === 0;
-  const count = $("#wrBatchCount");
-  if (count) count.textContent = `已选择 ${n} 项`;
+  const pill = $("#wrSelectPill");
+  if (pill) {
+    pill.hidden = n === 0;
+    pill.textContent = `已选 ${n}`;
+  }
+  $$("#wrMoreMenu [data-batch-only]").forEach(el => { el.hidden = n === 0; });
 }
 
 function wrBatchClear() {
@@ -3745,7 +3951,8 @@ function wrBatchClear() {
 async function wrBatchToggle(enabled) {
   const ids = [..._wrSelected];
   if (!ids.length) return;
-  await withBusy($("#wrBatch"), "处理中…", async () => {
+  // 菜单在执行前已收起，忙态反馈落在标题带的选中胶囊上
+  await withBusy($("#wrSelectPill"), "处理中…", async () => {
     try {
       const res = await apiPost("/wr/batch_toggle", { entry_ids: ids, enabled });
       const failed = (res && res.failed) || 0;
@@ -3761,7 +3968,7 @@ async function wrBatchDelete() {
   const ids = [..._wrSelected];
   if (!ids.length) return;
   sandboxConfirm(`确定批量删除 ${ids.length} 个条目？`, async () => {
-    await withBusy($("#wrBatch"), "删除中…", async () => {
+    await withBusy($("#wrSelectPill"), "删除中…", async () => {
       try {
         const snapshot = wrState.entries.filter(e => _wrSelected.has(e.entry_id));
         const res = await apiPost("/wr/batch_delete", { entry_ids: ids });
@@ -4119,15 +4326,17 @@ function renderWBEntry(wbName, e) {
         <div class="wb-entry-title">${esc(e.title || e.id || "(无标题)")}</div>
         <div class="wb-entry-id">${esc(e.id || "")}</div>
       </div>
-      <div class="row" style="gap:6px">
+      <div class="wb-entry-aside">
         ${e.is_constant ? '<span class="badge badge--const">常驻</span>' : ""}
         ${e.enabled === false ? '<span class="badge badge--off">已停用</span>' : ""}
-        <button type="button" class="icon-btn" data-action="wb-entry-edit" title="编辑条目" aria-label="编辑条目">
-          <svg class="icon icon--sm" aria-hidden="true"><use href="#i-pencil"/></svg>
-        </button>
-        <button type="button" class="icon-btn icon-btn--danger" data-action="wb-entry-delete" title="删除条目" aria-label="删除条目">
-          <svg class="icon icon--sm" aria-hidden="true"><use href="#i-trash"/></svg>
-        </button>
+        <div class="wb-entry-actions">
+          <button type="button" class="icon-btn" data-action="wb-entry-edit" title="编辑条目" aria-label="编辑条目">
+            <svg class="icon icon--sm" aria-hidden="true"><use href="#i-pencil"/></svg>
+          </button>
+          <button type="button" class="icon-btn icon-btn--danger" data-action="wb-entry-delete" title="删除条目" aria-label="删除条目">
+            <svg class="icon icon--sm" aria-hidden="true"><use href="#i-trash"/></svg>
+          </button>
+        </div>
       </div>
     </div>
     ${keys.length ? `<div class="wb-entry-keys">${keys.map(k => `<span class="tag">${esc(k)}</span>`).join("")}</div>` : ""}
@@ -4560,6 +4769,8 @@ async function openPersonaModal(personaId) {
     });
   });
   ["wb", "rag", "wr"].forEach(syncExtList);
+  // modeSelect 生成的三处平台模式下拉同样走自绘（模板字符串本身不改）
+  enhanceSelects($("#modalBody"));
 
   if (personaId && data.has_avatar) {
     const img = $("#avatarPreview");
@@ -4916,6 +5127,7 @@ async function loadRAG() {
     set("#ragStatVectors", totalChunks); // 向量数与分块数一一对应
     const sub = $("#ragSub");
     if (sub) sub.textContent = totalDocs ? `· ${totalDocs} 个文档 · ${totalChunks} 个分块` : "";
+    updateBadge("badge-rag", totalDocs);
   } catch (e) {
     $("#ragDocList").innerHTML = renderEmptyState("doc", "加载失败", e.message);
   }
@@ -5020,6 +5232,7 @@ async function loadMemoryOverview() {
     set("#dashSessions", sessions);
     set("#dashToday", today);
     set("#dashIndex", total ? `NumPy (${total})` : "NumPy");
+    updateBadge("badge-memory", total);
     // 进度条按各自维度归一化；延迟一帧以便过渡动画生效
     requestAnimationFrame(() => {
       const bar = (id, pct) => { const el = $(id); if (el) el.style.width = Math.max(4, Math.min(100, pct)) + "%"; };
@@ -5546,7 +5759,11 @@ function filterConfig(query) {
     const titleHit = title && title.textContent.toLowerCase().includes(q);
     c.style.display = (anyVisible || titleHit) ? "" : "none";
     // 命中时自动展开，否则搜索结果会藏在折叠内容里
-    if (titleHit || anyVisible) c.classList.remove("collapsed");
+    if (titleHit || anyVisible) {
+      c.classList.remove("collapsed");
+      const head = c.querySelector(".card-head--button");
+      if (head) head.setAttribute("aria-expanded", "true");
+    }
   });
   sections.forEach(s => {
     s.style.display = $$(".card", s).some(c => c.style.display !== "none") ? "" : "none";
@@ -5595,6 +5812,32 @@ function updateBadge(id, count) {
   else el.hidden = true;
 }
 
+/** 首屏填充侧栏徽章：六个页面中尚未访问过的页面，其计数也应立即显示。
+    各请求独立降级，任一后端接口不可用不影响其余徽章。 */
+async function syncSidebarBadges() {
+  const jobs = [];
+
+  // /info 一次覆盖素材库 / 世界书 / 角色卡
+  jobs.push(api("/info").then(info => {
+    if (!info) return;
+    if (typeof info.wr_count === "number") updateBadge("badge-wr", info.wr_count);
+    if (typeof info.wb_count === "number") updateBadge("badge-wb", info.wb_count);
+    if (typeof info.persona_count === "number") updateBadge("badge-persona", info.persona_count);
+  }).catch(() => {}));
+
+  jobs.push(api("/memory/stats").then(res => {
+    const d = (res && res.data) || res;
+    if (d && typeof d.total_memories === "number") updateBadge("badge-memory", d.total_memories);
+  }).catch(() => {}));
+
+  jobs.push(api("/rag/documents").then(res => {
+    const docs = (res && res.documents) || [];
+    updateBadge("badge-rag", docs.length);
+  }).catch(() => {}));
+
+  await Promise.all(jobs);
+}
+
 /** 配置分区导航：滚动到对应分区并高亮。 */
 function scrollToSection(id) {
   const target = document.getElementById(id);
@@ -5627,12 +5870,114 @@ function initConfigNavObserver() {
   sections.forEach(s => io.observe(s));
 }
 
+/* ── 列表方向键导航（roving tabindex） ─────────────────────────────── */
+
+/** 列表方向键导航（roving tabindex）。
+ *  进入列表后方向键移动焦点，Tab 离开时列表只占一个停留点。
+ *  素材库/角色卡是网格布局，上下键跳一「行」（按实际列数）。
+ *
+ *  绑定用事件委托挂在 container 上：列表内容会被 renderWRGrid /
+ *  renderPersonaPage / loadWB / loadMemoryBrowser 反复重建，而 container
+ *  本身不换，因此重建后无需重新绑定。
+ *  items() 过滤 offsetParent === null，天然跳过隐藏视图（非激活 tab、
+ *  非激活记忆子页）里的项，网格列数也只在可见项上计算。 */
+function initListKeys(container, itemSel, opts = {}) {
+  if (!container) return;
+  // 可见性判定：display:none 的祖先（未激活 tab / 记忆子页）下两者都为空，
+  // 隐藏项就此排除，网格列数也只在可见项上计算。
+  // <tr> 的 offsetParent 行为在浏览器间略有差异，故用 getClientRects 兜底。
+  const visible = (el) => el.offsetParent !== null || el.getClientRects().length > 0;
+  const items = () => [...container.querySelectorAll(itemSel)].filter(visible);
+  const cols = opts.grid ? () => {
+    const list = items();
+    if (list.length < 2) return 1;
+    const firstTop = list[0].getBoundingClientRect().top;
+    const n = list.findIndex(el => el.getBoundingClientRect().top > firstTop + 4);
+    return n > 0 ? n : 1;
+  } : () => 1;
+
+  /** 把「当前项」标记搬到 el，并保证其余项都退回 -1（Tab 只停一次）。 */
+  const setCurrent = (all, el) => {
+    all.forEach(it => it.setAttribute("tabindex", "-1"));
+    el.setAttribute("tabindex", "0");
+  };
+
+  container.addEventListener("keydown", (e) => {
+    // 不抢输入控件的方向键（光标移动、select 选项切换、textarea 换行）
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+    // 自绘下拉 / 右键菜单常挂在卡片内部（.ctx-menu 默认挂进 .wr-card），
+    // 它们有自己的方向键逻辑，此时不该同时搬动列表焦点。
+    if (_selOpen || _ctxOpen) return;
+    if (t && t.closest && t.closest(".sel-menu, .ctx-menu")) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    const list = items();
+    if (!list.length) return;
+    // 事件目标的所属项：焦点常落在卡片子元素（展开区 / 操作按钮）上，
+    // 故先向上找最近的项，再退回「当前项」兜底。
+    const owner = t && t.closest ? t.closest(itemSel) : null;
+    let idx = owner ? list.indexOf(owner) : -1;
+    if (idx < 0) idx = list.findIndex(el => el.getAttribute("tabindex") === "0");
+    if (e.key === "Home") {
+      e.preventDefault();
+      const first = list[0];
+      setCurrent(list, first);
+      first.focus({ preventScroll: true });
+      first.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if (e.key === "End") {
+      e.preventDefault();
+      const last = list[list.length - 1];
+      setCurrent(list, last);
+      last.focus({ preventScroll: true });
+      last.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    let step = 0;
+    switch (e.key) {
+      case "ArrowRight": step = 1; break;
+      case "ArrowLeft": step = -1; break;
+      case "ArrowDown": step = cols(); break;   // 列表视图 cols() 恒为 1
+      case "ArrowUp": step = -cols(); break;
+      default: return;
+    }
+    // 尚未进入列表（没有当前项）时，任一方向键都从首项起步
+    if (idx < 0) idx = step > 0 ? -1 : list.length;
+    const next = idx + step;
+    if (next < 0 || next >= list.length) { e.preventDefault(); return; }   // 到边界就停住，不循环
+    e.preventDefault();
+    const el = list[next];
+    setCurrent(list, el);
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: "nearest" });
+  });
+
+  // 默认全部 -1，只把「当前项」提为 0 —— Tab 进出整个列表只占一个停留点。
+  // 列表此刻可能仍是骨架屏 / 空态，故用 MutationObserver 在内容重建后再补一次；
+  // 即便补不上，方向键首次触发时也会把 tabindex 补齐（见上面的 idx<0 兜底）。
+  const seed = () => {
+    const list = items();
+    if (!list.length) return;
+    let cur = list.findIndex(el => el.getAttribute("tabindex") === "0");
+    if (cur < 0) cur = 0;
+    list.forEach((el, i) => el.setAttribute("tabindex", i === cur ? "0" : "-1"));
+  };
+  seed();
+  if ("MutationObserver" in window) {
+    const mo = new MutationObserver(() => { if (container.isConnected) seed(); else mo.disconnect(); });
+    mo.observe(container, { childList: true });
+  }
+}
+
 /* ── 动作分发表 ────────────────────────────────────────────────────── */
 
 const ACTIONS = {
   // 通用
   "tab": (el) => switchTab(el.dataset.tab),
   "to-top": () => $("#content")?.scrollTo({ top: 0, behavior: "smooth" }),
+  "more-menu": (el) => toggleMoreMenu(el),
   "clear-search": (el) => {
     const input = document.getElementById(el.dataset.target);
     if (!input) return;
@@ -5665,6 +6010,20 @@ const ACTIONS = {
   "wr-batch-delete": () => wrBatchDelete(),
   "wr-batch-clear": () => wrBatchClear(),
   "wr-page": (el) => goWRPage(el.dataset.value),
+  // 右键菜单专用：只补「复制 ID」「切换启用」两个缺失动作，
+  // 编辑 / 删除直接复用上面的 wr-edit / wr-delete（菜单项挂在 .wr-card 内）。
+  "wr-copy-id": (el) => {
+    const card = el.closest(".wr-card");
+    if (card) copyText(card.dataset.eid);
+  },
+  "wr-ctx-toggle": (el) => {
+    const card = el.closest(".wr-card");
+    if (!card) return;
+    const sw = card.querySelector("[data-wr-toggle]");
+    const next = !(sw && sw.checked);
+    if (sw) sw.checked = next;             // 切完重渲染，这里只是给用户即时反馈
+    toggleWREntry(card.dataset.eid, next, sw);
+  },
 
   // 世界书
   "wb-new": () => openWBCreateModal(),
@@ -5723,6 +6082,7 @@ async function saveModal() {
   if (st && st.type === "wb-entry") return saveWBEntry();
   if (st && st.type === "wb-create") return saveWBCreate();
   if (_modalMode === "create" || _modalMode === "edit") return saveWREntry();
+  return;   // 无模态状态时不保存（原实现会误调 saveWREntry）
 }
 
 /* ── 全局事件绑定 ──────────────────────────────────────────────────── */
@@ -5732,11 +6092,39 @@ function bindEvents() {
   document.addEventListener("click", (e) => {
     const actEl = e.target.closest("[data-action]");
     if (actEl) {
-      const fn = ACTIONS[actEl.dataset.action];
+      const action = actEl.dataset.action;
+      // 菜单项执行后自动收起；触发器自身由 toggleMoreMenu 管理开合
+      if (action !== "more-menu" && e.target.closest(".menu")) closeAllMenus();
+      // 素材库标题区单击 = 展开/收起，双击同一区域 = 编辑。
+      // 只对卡片头部的 .grow 区域延迟：它才是双击编辑的命中区，
+      // 展开区里的「收起」按钮仍即时响应，不引入无谓延迟。
+      if (action === "wr-expand" && actEl.classList.contains("grow")) {
+        const eid = actEl.closest(".wr-card")?.dataset.eid;
+        clearTimeout(_wrExpandTimer);
+        clearTimeout(_wrExpandIdle);
+        // 快照只在序列首击记录：慢速双击时第二击会重进这里，
+        // 若在此覆盖就会把「已切换过的状态」当成原态，回滚变成空操作。
+        if (!_wrExpandSnapshot) _wrExpandSnapshot = { eid, prev: _wrExpandedId };
+        // 首击落在别的卡片上（用户点了 A 的标题又去双击 B）时换掉快照，
+        // 否则会把 A 的旧状态回滚到 B 上。
+        else if (_wrExpandSnapshot.eid !== eid) _wrExpandSnapshot = { eid, prev: _wrExpandedId };
+        _wrExpandTimer = setTimeout(() => {
+          _wrExpandTimer = 0;
+          if (eid) toggleWRExpand(eid);
+          // 宽限期后才丢弃快照：给慢速双击的 dblclick 留出回滚窗口。
+          _wrExpandIdle = setTimeout(() => { _wrExpandSnapshot = null; }, WR_EXPAND_GRACE_MS);
+        }, WR_DBLCLICK_MS);
+        return;
+      }
+      const fn = ACTIONS[action];
       if (fn) { fn(actEl, e); return; }
     }
+    const collapseBtn = e.target.closest("[data-collapse-group]");
+    if (collapseBtn) { toggleSidebarGroup(collapseBtn); closeAllMenus(); return; }
+    // 点击菜单之外任何位置 → 关闭所有溢出菜单
+    if (!e.target.closest(".menu-wrap")) closeAllMenus();
     const tabEl = e.target.closest("[data-tab]");
-    if (tabEl && (tabEl.classList.contains("sl-item") || tabEl.classList.contains("tb-item"))) {
+    if (tabEl && tabEl.classList.contains("sl-item")) {
       switchTab(tabEl.dataset.tab);
       return;
     }
@@ -5751,6 +6139,67 @@ function bindEvents() {
     }
     const del = e.target.closest(".tag-del[data-idx]");
     if (del) return; // 由标签输入内部处理
+  });
+
+  // 1b) 双击委托：PC 肌肉记忆 —— 双击卡片主体直接编辑。
+  // 单击语义不变（标题区单击仍是 wr-expand 展开/收起），冲突处理见上面
+  // _wrExpandTimer 的注释：单击延迟执行，双击时取消，展开态不会被改动。
+  document.addEventListener("dblclick", (e) => {
+    // 双击行内按钮 / 开关 / 输入控件时不触发编辑：它们已有各自的单击语义，
+    // 例如卡片 footer 的启停开关、删除按钮，双击不应弹编辑窗。
+    if (e.target.closest("button, input, select, textarea, a, label, .switch, .check, .menu, .ctx-menu, .sel-menu")) return;
+    // 有浮层时（模态 / 自绘下拉 / 右键菜单）不接管双击
+    if ($("#scrim")?.classList.contains("is-open") || _ctxOpen || _selOpen) return;
+
+    // 按 action 名分派，沿用 ACTIONS 里既有的 (el, e) 签名：
+    // wr-edit 取 el.closest(".wr-card").dataset.eid；
+    // persona-edit 取 el.dataset.idx；mem-detail 取 el.dataset.id。
+    // 三个 handler 都从真实元素上取值，故直接复用列表里已有的
+    // [data-action] 按钮元素（真元素，无需伪造 dataset，最不容易猜错）。
+    const run = (action, el) => { const fn = ACTIONS[action]; if (fn) fn(el, e); };
+
+    const card = e.target.closest(".wr-card");
+    if (card) {
+      // 展开区（.wr-expand）本身就是内联编辑器：那里双击若改弹编辑窗，
+      // openWRModal 会从服务端重取数据，未保存的内联修改会静默丢失。
+      // 故只让「卡片主体」（头部 + 标签区 + 空白）响应双击。
+      if (e.target.closest(".wr-expand")) return;
+      e.preventDefault();
+      clearTimeout(_wrExpandTimer);                 // 撤销单击触发的展开/收起
+      clearTimeout(_wrExpandIdle);
+      _wrExpandTimer = 0;
+      // 兜底：慢速双击时首次单击已经生效并重渲染，这里把展开态恢复原样，
+      // 否则用户会看到「卡片被莫名展开/收起」+ 突然弹出编辑窗。
+      const snap = _wrExpandSnapshot;
+      _wrExpandSnapshot = null;
+      if (snap && _wrExpandedId !== snap.prev) {
+        _wrExpandedId = snap.prev;
+        renderWRGrid();
+      }
+      // 重渲染会换掉 DOM 节点，故按 eid 重新取一次实时卡片再执行编辑。
+      const eid = card.dataset.eid;
+      const live = eid ? document.querySelector(`.wr-card[data-eid="${CSS.escape(eid)}"]`) : null;
+      const editBtn = (live || card).querySelector("[data-action='wr-edit']");
+      if (editBtn) run("wr-edit", editBtn);
+      return;
+    }
+
+    const pcard = e.target.closest(".persona-card");
+    if (pcard) {
+      e.preventDefault();
+      const editBtn = pcard.querySelector("[data-action='persona-edit']");
+      if (editBtn) run("persona-edit", editBtn);
+      return;
+    }
+
+    const row = e.target.closest("#memTbody tr");
+    if (row) {
+      const detail = row.querySelector("[data-action='mem-detail']");
+      if (!detail) return;                          // 加载中 / 空态行不响应
+      e.preventDefault();
+      window.getSelection()?.removeAllRanges();     // 清掉双击产生的文字选区
+      run("mem-detail", detail);
+    }
   });
 
   // 2) 变更委托：素材库选择/启停
@@ -5770,6 +6219,9 @@ function bindEvents() {
       return;
     }
     if (t.id === "wrOnlyConst") { wrState.page = 1; loadWR(); return; }
+    // 分类筛选：必须限定 SELECT —— 新建/编辑条目弹窗里也有一个同名的 #wrCat 文本输入框，
+    // 若不加判断，在弹窗里改分类会误触发列表重载并把正在编辑的分页重置掉。
+    if (t.id === "wrCat" && t.tagName === "SELECT") { wrState.page = 1; loadWR(); return; }
     if (t.id === "wbOnlyConst") { setWBOnlyConst(t.checked); return; }
     if (t.id === "memSession") { onMemorySessionChange(); return; }
     // 配置表单变化 → 标记未保存
@@ -5818,10 +6270,41 @@ function bindEvents() {
     const t = e.target;
     // Esc：自顶向下关闭最上层弹层
     if (e.key === "Escape") {
+      // 自绘浮层优先于模态：它们挂得最靠前，Esc 应先收起它们
+      if (_ctxOpen) { closeCtxMenu(); return; }
+      if (_selOpen) { const b = _selOpen.wrap.querySelector(".sel-btn"); closeSelMenus(null); if (b) b.focus({ preventScroll: true }); return; }
+      if ($(".menu-wrap > .menu:not([hidden])")) { closeAllMenus(); return; }
       if ($("#cropScrim")?.classList.contains("is-open")) { closeCropDialog(); return; }
       if ($("#alertScrim")?.classList.contains("is-open")) { closeAlert(); return; }
       if ($("#textScrim")?.classList.contains("is-open")) { closeImportTextModal(); return; }
       if ($("#scrim")?.classList.contains("is-open")) { closeModal(); return; }
+      return;
+    }
+    // Tab 循环：有弹层打开时把焦点限制在最上层弹窗内（focus trap）。
+    // 必须放在 typing 早返回之前，否则输入框内 Tab 不受约束。
+    if (e.key === "Tab") {
+      const scrim = ["cropScrim", "alertScrim", "textScrim", "scrim"]
+        .map(id => document.getElementById(id))
+        .find(s => s && s.classList.contains("is-open"));
+      if (scrim) {
+        const box = scrim.querySelector(".modal, .alert");
+        if (box) {
+          const f = [...box.querySelectorAll("input:not([type=hidden]):not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])")]
+            .filter(el => el.offsetParent !== null);
+          if (f.length) {
+            const first = f[0], last = f[f.length - 1];
+            if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+            else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+          }
+        }
+      }
+    }
+    // Alt+1..6 切换标签页。必须放在 typing 早返回之前：面板里几乎总有输入框持有焦点
+    // （搜索框、配置项），否则用户在任意输入框内都无法用快捷键切页。
+    if (e.altKey && /^[1-6]$/.test(e.key)) {
+      e.preventDefault();
+      const tabs = ["wr", "wb", "persona", "rag", "memory", "config"];
+      switchTab(tabs[Number(e.key) - 1]);
       return;
     }
     const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
@@ -5830,6 +6313,16 @@ function bindEvents() {
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         if ($("#scrim")?.classList.contains("is-open")) { e.preventDefault(); saveModal(); }
         return;
+      }
+      // 确认框内回车提交：输入法组合中（isComposing）不触发，避免中文候选词回车误提交
+      if (e.key === "Enter" && !e.isComposing) {
+        if (t.id === "promptInput") { e.preventDefault(); $("#alertOk")?.click(); return; }
+        if (t.id === "dangerInput") {
+          e.preventDefault();
+          const ok = $("#alertOk");
+          if (ok && !ok.disabled) ok.click();
+          return;
+        }
       }
       // 世界书条目内联搜索：回车不提交
       if (e.key === "Enter" && t.matches("[data-wb-filter]")) { e.preventDefault(); return; }
@@ -5852,13 +6345,6 @@ function bindEvents() {
       }
       return;
     }
-    // Alt+1..6 切换标签页
-    if (e.altKey && /^[1-6]$/.test(e.key)) {
-      e.preventDefault();
-      const tabs = ["wr", "wb", "persona", "rag", "memory", "config"];
-      switchTab(tabs[Number(e.key) - 1]);
-      return;
-    }
     // "/" 聚焦当前页搜索框
     if (e.key === "/") {
       e.preventDefault();
@@ -5872,6 +6358,8 @@ function bindEvents() {
   document.addEventListener("change", (e) => {
     const t = e.target;
     if (t.tagName !== "INPUT" || t.type !== "file") return;
+    // 选文件即等于选定该项操作，菜单可以收起
+    closeAllMenus();
     switch (t.dataset.file) {
       case "wr-import": importWR(t); break;
       case "wb-import": importWBSt(t); break;
@@ -5882,14 +6370,18 @@ function bindEvents() {
     }
   });
 
-  // 6) 头像相关（file / 点击 / 拖拽）
-  const avatarZone = $("#pf-avatar-zone");
-  if (avatarZone) {
-    avatarZone.addEventListener("click", () => $("#pf-avatar-file")?.click());
-    avatarZone.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("#pf-avatar-file")?.click(); }
-    });
-  }
+  // 6) 头像相关（file / 点击 / 键盘）
+  // #pf-avatar-zone 由 openPersonaModal 的模板字符串动态生成，绑定时并不存在，
+  // 故改为委托到 document（与下面 pf-avatar-file 的 change 委托同处）。
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("#pf-avatar-zone")) { $("#pf-avatar-file")?.click(); return; }
+  });
+  document.addEventListener("keydown", (e) => {
+    if ((e.key === "Enter" || e.key === " ") && e.target.closest("#pf-avatar-zone")) {
+      e.preventDefault();
+      $("#pf-avatar-file")?.click();
+    }
+  });
   document.addEventListener("change", (e) => {
     if (e.target.id === "pf-avatar-file") handleAvatarFile(e.target);
   });
@@ -5926,6 +6418,7 @@ function bindEvents() {
   $("#scrim")?.addEventListener("click", (e) => { if (e.target.id === "scrim") closeModal(); });
   $("#textScrim")?.addEventListener("click", (e) => { if (e.target.id === "textScrim") closeImportTextModal(); });
   $("#alertScrim")?.addEventListener("click", (e) => { if (e.target.id === "alertScrim") closeAlert(); });
+  $("#cropScrim")?.addEventListener("click", (e) => { if (e.target.id === "cropScrim") closeCropDialog(); });
 
   // 10) 窗口尺寸变化：网格分页重算
   window.addEventListener("resize", debounce(() => {
@@ -5941,18 +6434,633 @@ const debouncedWRLoad = debounce(loadWR, 300);
 const debouncedWBFilter = debounce(onWBSearchInput, 200);
 const debouncedMemLoad = debounce(loadMemoryBrowser, 300);
 
+/* ── M. 自绘下拉（原生 select 增强） ────────────────────────────────── */
+/* 契约：原生 <select> 仍是唯一的值存储与数据源，填充 / 读取代码（
+   fillProviderSelect、modeSelect、loadWRCategories、loadMemorySessions、
+   applySettings…）一律不改。增强层只做三件事：
+     1. 用 .sel-wrap 包住 select 并插入触发器 / 浮层；
+     2. 遮蔽实例上的 value（读写双向同步触发器文字）；
+     3. 选中时写回 select.value 后派发 change，复用既有 change 委托。
+   select 只在增强完全成功后 hidden，失败则回退原生外观。             */
+
+let _selUid = 0;
+let _selOpen = null;          // { wrap, close } —— 同一时刻只允许一个下拉展开
+
+/** 关闭已展开的下拉（except 为当前要打开的 .sel-wrap）。 */
+function closeSelMenus(except) {
+  if (_selOpen && _selOpen.wrap !== except) _selOpen.close();
+}
+
+/** 立刻收起展开中的下拉，不做出场动画（滚动 / 尺寸变化等会移动锚点的场景）。 */
+function closeSelMenusImmediate() {
+  if (_selOpen) _selOpen.close(true);
+}
+
+/** 取出 select 的选项快照（value / 文本 / 禁用）。 */
+function selOptionList(sel) {
+  return $$("option", sel).map((o, i) => ({
+    value: o.value,
+    label: (o.textContent || "").replace(/\s+/g, " ").trim() || o.value,
+    disabled: !!o.disabled,
+    i,
+  }));
+}
+
+/** 触发器上显示的文字：优先匹配当前值，否则退回原始值 / 首项。 */
+function selButtonLabel(sel) {
+  const opts = $$("option", sel);
+  const hit = opts.find(o => o.value === sel.value);
+  if (hit) return (hit.textContent || "").replace(/\s+/g, " ").trim() || hit.value;
+  if (sel.value) return String(sel.value);
+  return opts.length ? ((opts[0].textContent || "").trim() || opts[0].value) : "";
+}
+
+/** 把原生 select 的宽度意图复制到包装元素（内联 width 优先）。 */
+function applySelWidth(sel, wrap) {
+  const inlineW = (sel.style.width || "").trim();
+  if (inlineW && inlineW !== "auto") { wrap.style.width = inlineW; return; }   // modeSelect: 150px
+  if (inlineW === "auto") return;                                              // #wrCat：按内容收缩
+  wrap.style.width = "100%";
+  if (sel.classList.contains("field--wide")) return;                           // provider 选择：占满放宽
+  if (sel.closest(".cfg-field")) {
+    // .cfg-field .field { max-width: 260px } —— 保留原约束，避免配置页控件变宽
+    const mw = getComputedStyle(sel).maxWidth;
+    wrap.style.maxWidth = (mw && mw !== "none") ? mw : "260px";
+  }
+}
+
+/** 增强单个原生 select。返回控制器或 null（已增强 / 不可增强）。 */
+function enhanceSelect(sel) {
+  if (!sel || sel.tagName !== "SELECT" || !sel.parentNode) return null;
+  if (sel._selApi) return sel._selApi;
+
+  const parent = sel.parentNode;
+  const wrap = document.createElement("span");
+  wrap.className = "sel-wrap";
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "sel-btn";
+  btn.setAttribute("role", "combobox");
+  btn.setAttribute("aria-haspopup", "listbox");
+  btn.setAttribute("aria-expanded", "false");
+  btn.innerHTML = '<span class="sel-label"></span><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg>';
+  const labelEl = btn.querySelector(".sel-label");
+
+  const menu = document.createElement("div");
+  menu.className = "sel-menu";
+  menu.setAttribute("role", "listbox");
+  menu.hidden = true;
+  const menuId = "selmenu-" + (_selUid++);
+  menu.id = menuId;
+  btn.setAttribute("aria-controls", menuId);
+
+  let hlIdx = -1;
+  let closeTimer = 0;
+  let typeBuf = "";
+  let typeTimer = 0;
+  let mo = null;               // options 观察器；随锚点销毁一并 disconnect
+
+  const items = () => $$(".sel-opt", menu);
+
+  const syncBtn = () => {
+    const text = selButtonLabel(sel);
+    labelEl.textContent = text;
+    btn.title = text;
+    btn.disabled = !!sel.disabled;
+  };
+
+  const buildOptions = () => {
+    menu.innerHTML = selOptionList(sel).map((it, idx) => {
+      const on = !it.disabled && it.value === sel.value;
+      return '<button type="button" class="sel-opt" role="option" id="' + menuId + '-o' + idx +
+        '" data-value="' + esc(it.value) + '"' +
+        ' aria-selected="' + (on ? "true" : "false") + '"' +
+        (it.disabled ? ' aria-disabled="true"' : "") + '>' +
+        '<span class="sel-opt-label">' + esc(it.label) + "</span>" +
+        (on ? '<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>' : "") +
+        "</button>";
+    }).join("");
+    hlIdx = -1;
+  };
+
+  const scrollHlIntoView = () => {
+    const el = items()[hlIdx];
+    if (!el) return;
+    const t = el.offsetTop, h = el.offsetHeight;
+    if (t < menu.scrollTop) menu.scrollTop = t - 4;
+    else if (t + h > menu.scrollTop + menu.clientHeight) menu.scrollTop = t + h - menu.clientHeight + 4;
+  };
+
+  const setHl = (idx) => {
+    const list = items();
+    if (!list.length || idx < 0) return;
+    hlIdx = (idx % list.length + list.length) % list.length;
+    list.forEach((el, i) => el.classList.toggle("is-hl", i === hlIdx));
+    const cur = list[hlIdx];
+    btn.setAttribute("aria-activedescendant", cur.id);
+    scrollHlIntoView();
+  };
+
+  /** 从 from 出发按 dir 找下一个可用项（跳过 disabled）。 */
+  const step = (from, dir) => {
+    const list = items();
+    const n = list.length;
+    if (!n) return -1;
+    let j = from;
+    for (let k = 0; k < n; k++) {
+      j = (j + dir + n) % n;
+      if (list[j].getAttribute("aria-disabled") !== "true") return j;
+    }
+    return from;
+  };
+
+  /** 首字母跳转（连续键入按前缀匹配，超时重置）。 */
+  const jumpTo = (buf) => {
+    const list = items();
+    const n = list.length;
+    if (!n) return;
+    const from = hlIdx;
+    const probe = (q) => {
+      for (let k = 1; k <= n; k++) {
+        const j = ((from + k) % n + n) % n;
+        if (list[j].getAttribute("aria-disabled") === "true") continue;
+        if ((list[j].textContent || "").trim().toLowerCase().startsWith(q)) return j;
+      }
+      return -1;
+    };
+    let j = probe(buf);
+    if (j < 0 && buf.length > 1) j = probe(buf.slice(-1));
+    if (j >= 0) setHl(j);
+  };
+
+  const place = () => {
+    const r = btn.getBoundingClientRect();
+    menu.style.minWidth = Math.round(r.width) + "px";
+    // 窄触发器不至于把长文案压成省略号；上限避免长文案撑破视口
+    menu.style.maxWidth = Math.round(Math.min(Math.max(r.width, 200), window.innerWidth - 16)) + "px";
+    const mh = menu.offsetHeight;
+    const mw = menu.offsetWidth;
+    let top = r.bottom + 4;
+    let up = false;
+    if (top + mh > window.innerHeight - 8 && r.top - 4 - mh > 8) { up = true; top = r.top - 4 - mh; }
+    let left = r.left;
+    if (left + mw > window.innerWidth - 8) left = Math.max(8, r.right - mw);
+    menu.style.top = Math.round(Math.max(8, top)) + "px";
+    menu.style.left = Math.round(Math.max(8, left)) + "px";
+    menu.classList.toggle("is-up", up);
+  };
+
+  const syncIfOpen = () => { if (isOpen()) place(); };
+
+  // 出场动画期间的 .is-out 视为「已关闭」，否则快速二次点击会被当成关闭而不响应
+  const isOpen = () => !menu.hidden && !menu.classList.contains("is-out");
+
+  const open = () => {
+    if (btn.disabled) return;
+    if (!menu.hidden && !menu.classList.contains("is-out")) return;
+    clearTimeout(closeTimer);
+    menu.classList.remove("is-out");
+    closeSelMenus(wrap);
+    closeCtxMenu();
+    buildOptions();
+    menu.hidden = false;
+    _selOpen = { wrap, close };
+    let hl = items().findIndex(el => el.getAttribute("aria-selected") === "true" && el.getAttribute("aria-disabled") !== "true");
+    if (hl < 0) hl = items().findIndex(el => el.getAttribute("aria-disabled") !== "true");
+    if (hl >= 0) setHl(hl);
+    btn.setAttribute("aria-expanded", "true");
+    place();
+    if (hl >= 0) scrollHlIntoView();
+    // 浮层挂在 body 下，锚点变化时自己跟（外部滚动则关闭，见 bindOverlayEvents）
+    window.addEventListener("scroll", syncIfOpen, true);
+    window.addEventListener("resize", syncIfOpen);
+    requestAnimationFrame(() => { if (isOpen()) menu.classList.add("is-in"); });
+  };
+
+  const close = (immediate) => {
+    if (menu.hidden || menu.classList.contains("is-out")) return;
+    window.removeEventListener("scroll", syncIfOpen, true);
+    window.removeEventListener("resize", syncIfOpen);
+    menu.classList.remove("is-in");
+    menu.classList.add("is-out");
+    btn.setAttribute("aria-expanded", "false");
+    btn.removeAttribute("aria-activedescendant");
+    if (_selOpen && _selOpen.wrap === wrap) _selOpen = null;
+    hlIdx = -1;
+    if (immediate) { clearTimeout(closeTimer); menu.hidden = true; menu.classList.remove("is-out"); return; }
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(() => {
+      if (menu.classList.contains("is-out")) { menu.hidden = true; menu.classList.remove("is-out"); }
+    }, 200);
+  };
+
+  const choose = (el) => {
+    const v = el.dataset.value;
+    const changed = sel.value !== v;
+    close();
+    if (changed) {
+      sel.value = v;                                    // 被遮蔽的 setter：原型写入 + 触发器同步
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    btn.focus({ preventScroll: true });
+  };
+
+  // ── 事件 ──────────────────────────────────────────────────────────
+  // 按下即响应（HIG），不等 click / mouseup
+  btn.addEventListener("pointerdown", (e) => {
+    if (btn.disabled) return;
+    e.preventDefault();                                  // 阻止默认聚焦，手动接管，避免焦点闪到 <html>
+    btn.focus({ preventScroll: true });                  // 鼠标唤起后键盘可继续操作
+    if (isOpen()) close(); else open();
+  });
+
+  menu.addEventListener("pointerdown", (e) => {
+    const opt = e.target.closest(".sel-opt");
+    if (!opt || opt.getAttribute("aria-disabled") === "true") return;
+    e.preventDefault();
+    choose(opt);
+  });
+
+  btn.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const opened = isOpen();
+    switch (e.key) {
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        if (!opened) { open(); return; }
+        { const cur = items()[hlIdx]; if (cur && cur.getAttribute("aria-disabled") !== "true") choose(cur); else close(); }
+        return;
+      case "ArrowDown":
+        e.preventDefault();
+        if (!opened) { open(); return; }
+        setHl(step(hlIdx, 1)); return;
+      case "ArrowUp":
+        e.preventDefault();
+        if (!opened) { open(); return; }
+        setHl(step(hlIdx, -1)); return;
+      case "Home":
+        if (!opened) return;
+        e.preventDefault();
+        setHl(items().findIndex(el => el.getAttribute("aria-disabled") !== "true")); return;
+      case "End":
+        if (!opened) return;
+        e.preventDefault();
+        setHl(items().map(el => el.getAttribute("aria-disabled") === "true" ? -1 : 0).lastIndexOf(0)); return;
+      case "Escape":
+        if (!opened) return;
+        e.preventDefault();
+        e.stopPropagation();                             // 不要连带关掉外层弹窗
+        close();
+        return;
+      case "Tab":
+        close(true);
+        return;
+      default: break;
+    }
+    // 首字母 / 数字跳转（只认字母数字，避免抢走 "/" 聚焦搜索框等全局快捷键）
+    if (/^[a-z0-9]$/i.test(e.key)) {
+      typeBuf += e.key.toLowerCase();
+      clearTimeout(typeTimer);
+      typeTimer = setTimeout(() => { typeBuf = ""; }, 600);
+      if (!opened) open();
+      jumpTo(typeBuf);
+    }
+  });
+
+  try {
+    // 宽度意图 → 包装元素；DOM 重排完成后再隐藏原生控件
+    parent.insertBefore(wrap, sel);
+    wrap.appendChild(sel);
+    wrap.appendChild(btn);
+    applySelWidth(sel, wrap);
+    // 浮层挂到 body：#wrCat 位于带 backdrop-filter 的 .toolbar 内，那会成为
+    // position:fixed 的包含块，坐标与裁剪都会出错；body 下则是纯视口坐标。
+    menu.style.top = "-9999px";
+    menu.style.left = "-9999px";
+    document.body.appendChild(menu);
+    buildOptions();
+    syncBtn();
+
+    // 遮蔽实例 value：applySettings / loadMemoryBrowser 等读写路径零改动即同步
+    const protoDesc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(sel), "value") ||
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+    if (protoDesc && protoDesc.get && protoDesc.set) {
+      Object.defineProperty(sel, "value", {
+        configurable: true,
+        enumerable: true,
+        get() { return protoDesc.get.call(this); },
+        set(v) { protoDesc.set.call(this, v); syncBtn(); },
+      });
+    }
+
+    // options 被重建（fillProviderSelect / loadWRCategories / loadMemorySessions）时同步菜单与文字
+    mo = new MutationObserver(() => { buildOptions(); syncBtn(); });
+    mo.observe(sel, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["disabled"] });
+
+    sel.dataset.enhanced = "1";
+    sel.hidden = true;                                   // 增强成功后才隐藏 → 失败自动回退原生外观
+  } catch (err) {
+    sel.hidden = false;
+    delete sel.dataset.enhanced;
+    if (mo) mo.disconnect();
+    if (menu.parentNode) menu.remove();
+    if (wrap.parentNode) {
+      wrap.parentNode.insertBefore(sel, wrap);
+      wrap.remove();
+    }
+    return null;
+  }
+
+  const api = {
+    open, close, wrap, sel, btn, menu,
+    sync: () => { buildOptions(); syncBtn(); },
+    dispose: () => {
+      if (mo) { mo.disconnect(); mo = null; }
+      clearTimeout(closeTimer);
+      window.removeEventListener("scroll", syncIfOpen, true);
+      window.removeEventListener("resize", syncIfOpen);
+      menu.remove();
+    },
+  };
+  sel._selApi = api;
+  menu._selApi = api;          // 供 pruneSelMenus 回收孤儿浮层
+  return api;
+}
+
+/** 回收锚点已被销毁的浮层。模态框每次打开都会重建 innerHTML，
+ *  对应的 select 与包装元素一起消失，挂在 body 下的菜单需要显式清理。 */
+function pruneSelMenus() {
+  $$("body > .sel-menu").forEach(menu => {
+    const api = menu._selApi;
+    if (!api || !api.sel.isConnected) {
+      if (api) api.dispose(); else menu.remove();
+      if (_selOpen && _selOpen.wrap === (api && api.wrap)) _selOpen = null;
+    }
+  });
+}
+
+/** 增强容器内所有原生下拉（幂等）。 */
+function enhanceSelects(root) {
+  pruneSelMenus();
+  $$("select.field", root || document).forEach(enhanceSelect);
+}
+
+/* ── N. 右键上下文菜单 ─────────────────────────────────────────────── */
+/* 与下拉共用视觉语言；菜单项复用 data-action 分派，业务逻辑零重写。
+   菜单在打开时才挂到命中元素内部（position: fixed 不受 overflow /
+   层叠结构影响），这样 ACTIONS 中的 el.closest(".wr-card") 等写法
+   无需任何改动即可解析到正确的条目。                                */
+
+let _ctxOpen = null;          // { el, target, keydown }
+let _ctxHost = null;          // 复用的 .ctx-menu 节点
+let _ctxItems = [];           // 当前菜单项（供键盘导航）
+
+const CTX_LETTERS = {};       // 本次菜单的字母快捷键 → 元素
+
+function closeCtxMenu(immediate) {
+  if (!_ctxOpen) return;
+  const { el, keydown } = _ctxOpen;
+  document.removeEventListener("keydown", keydown, true);
+  _ctxOpen = null;
+  _ctxItems = [];
+  Object.keys(CTX_LETTERS).forEach(k => delete CTX_LETTERS[k]);
+  el.classList.remove("is-in");
+  el.classList.add("is-out");
+  const done = () => { if (el.parentNode) el.remove(); el.classList.remove("is-out"); };
+  if (immediate) done();
+  else setTimeout(() => { if (!el.classList.contains("is-in")) done(); }, 200);
+}
+
+/**
+ * 显示上下文菜单。
+ * items: [{ action, label, id?, idx?, value?, core?, kbd?, danger? } | { sep: true }]
+ * mount 是菜单挂载点：默认挂在 targetEl 内部，这样 ACTIONS 里
+ * el.closest(".wr-card") / el.closest(".wb-entry") 的既有写法无需改动；
+ * 只靠 dataset 定位的动作（角色卡 idx、记忆 id）则挂到 body，
+ * 避免把块级元素塞进 <tr> 这类非法嵌套。
+ */
+function showCtxMenu(x, y, targetEl, items, mount) {
+  closeCtxMenu(true);
+  closeSelMenus(null);
+
+  if (!_ctxHost) {
+    _ctxHost = document.createElement("div");
+    _ctxHost.className = "ctx-menu";
+    _ctxHost.setAttribute("role", "menu");
+    _ctxHost.tabIndex = -1;
+  }
+  const el = _ctxHost;
+  el.innerHTML = items.map(it => {
+    if (it.sep) return '<div class="ctx-sep" role="separator"></div>';
+    const attrs =
+      ' data-action="' + esc(it.action) + '"' +
+      (it.id !== undefined ? ' data-id="' + esc(it.id) + '"' : "") +
+      (it.idx !== undefined ? ' data-idx="' + esc(it.idx) + '"' : "") +
+      (it.value !== undefined ? ' data-value="' + esc(it.value) + '"' : "") +
+      (it.core !== undefined ? ' data-core="' + esc(it.core) + '"' : "");
+    return '<button type="button" class="ctx-item' + (it.danger ? " ctx-item--danger" : "") +
+      '" role="menuitem" tabindex="-1"' + attrs + '>' +
+      '<span class="ctx-label">' + esc(it.label) + "</span>" +
+      (it.kbd ? '<span class="ctx-kbd">' + esc(it.kbd) + "</span>" : "") +
+      "</button>";
+  }).join("");
+
+  // 挂载：默认挂在命中元素内部，让既有 ACTIONS 的 closest() 定位保持不变
+  (mount || targetEl).appendChild(el);
+  el.hidden = false;
+  el.classList.remove("is-out");
+  el.style.top = "-9999px";
+  el.style.left = "-9999px";
+
+  // 定位：鼠标位置，贴边自动翻转
+  const mw = el.offsetWidth, mh = el.offsetHeight;
+  const left = (x + mw > window.innerWidth - 8) ? Math.max(8, x - mw) : x;
+  const up = (y + mh > window.innerHeight - 8);
+  const top = up ? Math.max(8, y - mh) : y;
+  el.style.left = Math.round(left) + "px";
+  el.style.top = Math.round(top) + "px";
+  el.classList.toggle("is-up", up);
+
+  _ctxItems = $$(".ctx-item", el);
+  Object.keys(CTX_LETTERS).forEach(k => delete CTX_LETTERS[k]);
+  _ctxItems.forEach(item => {
+    const kbd = item.querySelector(".ctx-kbd");
+    if (kbd && kbd.textContent) CTX_LETTERS[kbd.textContent.toLowerCase()] = item;
+  });
+
+  const keydown = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      const back = targetEl;
+      closeCtxMenu();
+      // 归还焦点：卡片 / 表格行本身不可聚焦，补一个 -1 占位 tabindex
+      if (back && back.isConnected) {
+        if (!back.hasAttribute("tabindex")) back.setAttribute("tabindex", "-1");
+        try { back.focus({ preventScroll: true }); } catch (_) {}
+      }
+      return;
+    }
+    if (e.key === "Tab") { closeCtxMenu(); return; }
+    const idx = _ctxItems.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!_ctxItems.length) return;
+      const dir = e.key === "ArrowDown" ? 1 : -1;
+      const next = _ctxItems[(idx + dir + _ctxItems.length) % _ctxItems.length];
+      next.focus();
+      return;
+    }
+    if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      const t = e.key === "Home" ? _ctxItems[0] : _ctxItems[_ctxItems.length - 1];
+      if (t) t.focus();
+      return;
+    }
+    if ((e.key === "Enter" || e.key === " ") && idx >= 0) {
+      e.preventDefault();
+      document.activeElement.click();
+      return;
+    }
+    if (/^[a-z0-9]$/i.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const hit = CTX_LETTERS[e.key.toLowerCase()];
+      if (hit) { e.preventDefault(); hit.click(); }
+    }
+  };
+  document.addEventListener("keydown", keydown, true);
+
+  _ctxOpen = { el, target: targetEl, keydown };
+  el.classList.add("is-in");
+  const first = _ctxItems[0];
+  if (first) first.focus();
+  else el.focus();
+}
+
+/** 右键命中分派：只有下列容器才拦截，其余交给浏览器原生菜单。 */
+function onContextMenu(e) {
+  const t = e.target;
+  if (!t || !t.closest) return;
+
+  const card = t.closest(".wr-card");
+  if (card) {
+    const eid = card.dataset.eid;
+    const sw = card.querySelector("[data-wr-toggle]");
+    const on = !!(sw && sw.checked);
+    e.preventDefault();
+    showCtxMenu(e.clientX, e.clientY, card, [
+      { action: "wr-edit", label: "编辑条目", kbd: "E" },
+      { action: "wr-copy-id", label: "复制条目 ID", kbd: "C" },
+      { sep: true },
+      { action: "wr-ctx-toggle", label: on ? "停用条目" : "启用条目", kbd: "T" },
+      { sep: true },
+      { action: "wr-delete", label: "删除条目", kbd: "D", danger: true },
+    ]);
+    return;
+  }
+
+  const wbEntry = t.closest(".wb-entry");
+  if (wbEntry) {
+    e.preventDefault();
+    showCtxMenu(e.clientX, e.clientY, wbEntry, [
+      { action: "wb-entry-edit", label: "编辑条目", kbd: "E" },
+      { sep: true },
+      { action: "wb-entry-delete", label: "删除条目", kbd: "D", danger: true },
+    ]);
+    return;
+  }
+
+  const pcard = t.closest(".persona-card");
+  if (pcard) {
+    const src = pcard.querySelector("[data-action='persona-edit']");
+    if (!src) return;
+    const idx = src.dataset.idx;
+    e.preventDefault();
+    showCtxMenu(e.clientX, e.clientY, pcard, [
+      { action: "persona-edit", label: "编辑角色卡", idx, kbd: "E" },
+      { action: "persona-export", label: "导出角色卡", idx, kbd: "X" },
+      { sep: true },
+      { action: "persona-delete", label: "删除角色卡", idx, kbd: "D", danger: true },
+    ], document.body);                                    // 动作只读 data-idx，无需挂在卡片内
+    return;
+  }
+
+  const row = t.closest("table.data tbody tr");
+  if (row) {
+    const detail = row.querySelector("[data-action='mem-detail']");
+    const pin = row.querySelector("[data-action='mem-pin']");
+    if (!detail) return;                                  // 日志表等非记忆行不拦截
+    e.preventDefault();
+    const id = detail.dataset.id;
+    const isCore = pin && pin.dataset.core === "1";
+    showCtxMenu(e.clientX, e.clientY, row, [
+      { action: "mem-detail", label: "查看详情", id, kbd: "I" },
+      { action: "mem-pin", label: isCore ? "取消核心锚定" : "置为核心锚定", id, core: isCore ? "1" : "0", kbd: "P" },
+      { sep: true },
+      { action: "mem-delete", label: "删除记忆", id, kbd: "D", danger: true },
+    ], document.body);                                    // <tr> 内不能塞块级浮层
+  }
+}
+
+/** 浮层的全局关闭时机：点击外部 / 滚动 / 窗口尺寸变化。 */
+function bindOverlayEvents() {
+  document.addEventListener("pointerdown", (e) => {
+    // 浮层挂在 body 下，click 的 target 不在 .sel-wrap 内，须单独放行 .sel-menu
+    if (_selOpen && !e.target.closest(".sel-wrap") && !e.target.closest(".sel-menu")) closeSelMenus(null);
+    if (_ctxOpen && !e.target.closest(".ctx-menu")) closeCtxMenu();
+  }, true);
+
+  document.addEventListener("click", (e) => {
+    // 上下文菜单项交由既有 data-action 委托执行，执行后再收起
+    if (_ctxOpen && e.target.closest(".ctx-menu")) { const t = _ctxOpen; setTimeout(() => { if (_ctxOpen === t) closeCtxMenu(); }, 0); }
+  });
+
+  document.addEventListener("contextmenu", onContextMenu);
+
+  // 原生 label[for] 指向已被隐藏的 select → 转交触发器开合，标签仍可点。
+  // 必须限定在标签所在弹窗内查找：#wrCat 在工具栏与新建条目弹窗里同名，
+  // 全局 getElementById 会命中工具栏那个下拉。
+  document.addEventListener("click", (e) => {
+    const lab = e.target.closest("label[for]");
+    if (!lab || e.target.closest(".sel-wrap")) return;
+    const scope = lab.closest("#modalBody, .modal-body, .scrim");
+    const sel = (scope && scope.querySelector("#" + CSS.escape(lab.htmlFor))) || document.getElementById(lab.htmlFor);
+    if (!sel || !sel._selApi || sel._selApi.btn.disabled) return;
+    e.preventDefault();
+    sel._selApi.btn.focus({ preventScroll: true });
+    if (sel._selApi.menu.hidden) sel._selApi.open(); else sel._selApi.close();
+  });
+
+  // 滚动就收起（锚点已经移走，留一个淡出中的浮层反而不跟手）
+  $("#content")?.addEventListener("scroll", () => { closeSelMenusImmediate(); closeCtxMenu(true); }, { passive: true });
+  window.addEventListener("resize", () => { closeSelMenusImmediate(); closeCtxMenu(true); });
+}
+
 /* ── 初始化 ────────────────────────────────────────────────────────── */
 
 async function quillInit() {
   bindEvents();
-  initSheetDrag();
+  bindOverlayEvents();
+  // 静态原生下拉 → 自绘 listbox（select 仍留在 DOM 里作为值存储）
+  enhanceSelects();
   initConfigNavObserver();
+
+  // 列表方向键导航：容器常驻，内容重建不影响委托绑定。
+  // 角色卡有网格 / 列表两种视图，grid 的列数由实际渲染结果实时计算，两者通用。
+  initListKeys($("#wrGrid"), ".wr-card", { grid: true });
+  initListKeys($("#wbList"), ".wb-item", {});
+  initListKeys($("#personaList"), ".persona-card", { grid: true });
+  // 记忆表用显式 id：面板里有两个 table.data（记忆 / 日志），
+  // 按标签序取第一个会在将来插入新表格时静默指错。
+  initListKeys($("#memTbody"), "tr", {});
 
   // 面板状态（折叠、侧栏）从插件侧读取——沙箱内 localStorage 不可用。
   // 不在此等待 bridge：等待发生在 api() 内部且已有负缓存，这里再等只会
   // 拖长首屏；bridge 就绪与否不影响本请求的正确性。
   await loadUiState();
   applyCollapseState();
+  applySidebarCollapseState();
 
   // 主题：服务端已在 <html data-theme> 上写好；bridge 亦会推送 isDark。
   // 锁住系统偏好的自动跟随，避免覆盖面板主题。
@@ -5991,6 +7099,7 @@ async function quillInit() {
 
   loadWRCategories();
   loadGlobalSettings();
+  syncSidebarBadges();
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", quillInit);

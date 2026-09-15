@@ -1,5 +1,83 @@
 # Changelog
 
+## v5.2.3（桌面化修订）— 面板重建为 macOS 桌面应用形态
+
+上一轮把面板「换皮」为 Apple 设计语言只能算试水。本轮按 macOS 应用的方式**重建**：
+不只配色，而是信息架构、控件体系、材质、动效与操作方式一并对齐。**面向桌面端，移除移动端。**
+
+**架构：边栏优先（Source-first）**
+- 侧栏成为应用骨架：三个分组可折叠（状态持久化到 `/panel/ui_state`），六个页面接入实时计数，
+  首屏即显示（新增 `syncSidebarBadges()`，`/info` + `/memories/stats` + `/rag/documents` 三源并行、各自独立降级）
+- 内容区改为**通栏标题带**：页面标题与视图控件合并到一条通栏 sticky 材质带，
+  正文独立为 `.page`。修掉了此前 sticky 工具栏材质带不横跨内容宽度、顶部留有视觉断口的问题
+- 页面操作收进**主按钮 + `⋯` 溢出菜单**（菜单纯事件委托、点击外部/Esc 关闭、`aria-expanded` 同步）
+- **删除 `.batchbar` 批量操作条**（它靠 `hidden` 弹出且无过渡，每次选中都把网格整体下推），
+  改为「已选 N」胶囊 + `⋯` 菜单内的批量项
+- **行内操作悬停显现**（Finder 范式）：`opacity 0→1`，同时挂 `:hover` 与 `:focus-within` 保证键盘等价；
+  开关等状态控件保持常显
+
+**控件体系：令牌化（对齐问题的根因）**
+- 新增控件高度令牌 `--h-control` / `--h-control-sm` / `--h-icon-btn` / `--h-icon-btn-sm` / `--h-row`，
+  与 macOS 字阶、行高令牌。此前高度全是散落字面量（32/26/30/34/20/22/44/50），任何两个控件并排都会错位
+- `.toolbar-actions` **此前没有任何 CSS 规则**（唯一规则在已删除的移动端媒体查询里），
+  导致其中按钮按**基线**对齐：「导出」「导出 ST」「文本粘贴导入」比带图标的兄弟低 3–4px，
+  间距是源码空白宽度。补上 flex 基础规则后三处工具栏全部对齐
+- `.card-head` 内含 `.btn--sm` 时高 50px、其余 44px → 统一 44px
+- `.segmented` 30px vs 同行 32px，且内部按钮未设 `line-height` → 对齐 32px 并补 `line-height: 1`
+- `.stats` 骨架→真实内容跳 5.5px（每次加载下推整块内容）→ `min-height: 20px`
+- `.tagfield` 34px 夹在两个 32px `.field` 之间 → 32px
+- `.persona-actions` 三处定义互相覆盖、列表视图堆叠把行撑到 86–110px 使头像居中飘浮 → 合并为一条并顶部对齐
+- 表格操作列贴顶（比行视觉中心高约 10px）→ `vertical-align: middle`
+- 骨架屏尺寸对齐真实组件；`.doc-row` 收窄；`.cfg-section` 锚点滚动统一走 `scrollIntoView`
+
+**macOS 桌面交互**
+- **弹层从窗口顶部垂落**（sheet 语义，`transform-origin: top center` + `translateY`），
+  替换原 iOS 居中缩放；`.alert` 保持视口居中（`#alertScrim` 单独覆盖）
+- **右键上下文菜单**（全文件此前 0 处 `contextmenu`）：素材库卡片 / 世界书条目 / 角色卡 / 记忆行，
+  菜单项复用既有 `ACTIONS` 分发，带快捷键提示、危险项红色、贴边自动翻转、键盘可达
+- **自绘下拉 listbox** 替换全部 11 处原生 `<select>`：材质浮层、当前项打勾、
+  ↑↓/Home/End/Enter/Esc/首字母跳转、视口边缘翻转、`role="combobox"/"listbox"/"option"`。
+  **原生 `<select>` 保留为值存储与数据源**（遮蔽实例 `value` + `MutationObserver` 重建 + 写回后派发 `change`），
+  因此 `fillProviderSelect` / `modeSelect` / `applySettings` / `markDirty` 等既有代码**零改动**；
+  仅在增强成功后才隐藏原生控件，JS 出错时自动回退
+- **方向键列表导航**（此前 `Arrow`/`Home`/`End` 零处处理）：roving tabindex + 事件委托，
+  网格按实际列数跳行，`scrollIntoView({block:"nearest"})` 不打断滚动手感
+- **双击编辑**：卡片/行双击直接打开编辑器；用「单击延迟 220ms + 快照回滚」双保险解决与
+  素材库卡片展开的单击冲突
+
+**视觉**
+- 分类色从 **360° 任意色相哈希**改为**固定 8 色调色板**（复用面板语义色令牌）。
+  原实现白字对比度在大部分色相只有 1.78:1–2.20:1（HIG 要求 4.5:1），且 `progression` 会落到正红、
+  与「危险/删除」语义撞车。同时删除卡顶 3px 全宽色带，徽章改淡底深字
+- 素材库网格加 `align-items: start`：此前 grid 默认拉伸使无关键词的 113px 卡片被拉到 161px，
+  底部出现 **48px 空洞**
+- 滚动条改叠加式自动隐藏；spinner 从 iOS 圆环改为 macOS `NSProgressIndicator` 的 8 片花瓣离散步进
+
+**修复既有缺陷（11 项，均经真实浏览器验证）**
+1. `#wrCat` 分类筛选**从未接上 `change` 处理器**——下拉一直在但筛选无效（补处理器，
+   并限定 `SELECT` 以避开新建条目弹窗里的同名文本输入框）
+2. `Alt+1..6` 切页快捷键位于 `typing` 早返回**之后**——面板里总有输入框持有焦点，
+   导致该快捷键实际不可用（提前到早返回之前）
+3. `#pf-avatar-zone` 键盘监听在元素存在前绑定，**永远没绑上**——有 `role="button" tabindex="0"` 却敲不动（改 document 委托）
+4. `.banner-progress` 缺定位祖先，所有进度条**堆在容器底部互相覆盖**（补 `position: relative`）
+5. 确认框内**回车无反应**（`#promptInput` / `#dangerInput` 无分支；补上并保留 `isComposing` 中文输入法保护、
+   危险框校验确认词后才放行）
+6. 四个 scrim 共用 `z-index: 100`，叠放**纯靠标记顺序**（改为显式令牌分层）
+7. 裁剪弹窗不能点遮罩关闭（另外三个都可以）
+8. 弹窗**无焦点陷阱、无焦点归还、无滚动锁**，Tab 会走到遮罩后面
+9. `saveModal()` 在无模态状态时**兜底误调 `saveWREntry()`**
+10. `withBusy` 对容器替换 `innerHTML`，使批量条从 42px 塌到 31px、页面跳动（非表单控件改 `aria-busy` + `.is-busy`）
+11. `showToastWithAction` 撤销后定时器泄漏；折叠卡片缺 `aria-expanded`
+
+**移除移动端**：底部标签栏、全部 `max-width` 断点、`pointer: coarse` 触控放大（在触屏笔记本上会误触发）、
+iOS 上滑 sheet 拖拽（`initSheetDrag` / `springTo`）、`env(safe-area-inset-*)`；
+同时清理约 50 行零引用死 CSS（`.sheet*`、`.list-row*`、`.scrim--center/--sheet`、`.modal--lg`、
+`.foot-spacer`、`.btn--lg`、`.badge--pill/--solid`、`.topper` 等）
+
+**设计参考**：逐条对照 [emilkowalski/skills](https://github.com/emilkowalski/skills) 的
+`apple-design`（WWDC 流体界面）、`emil-design-eng`、`review-animations/STANDARDS`（UI 动效 <300ms、
+入场 ease-out、禁用 ease-in、仅动 transform/opacity、键盘触发的动作不做动效）执行。
+
 ## v5.2.3 — 面板全面重写为 Apple 设计语言 + 字体方案调整
 
 管理面板（`pages/panel/index.html`）从 Material Design 3 整体重写为 Apple HIG 设计语言，

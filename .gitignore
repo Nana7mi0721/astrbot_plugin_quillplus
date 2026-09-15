@@ -73,3 +73,8 @@ knowledge/*.index
 
 # ── 前端重写构建中间产物 ──
 .build/
+
+# 本地测试令牌（不得提交）
+.test_api_token.txt
+.test_asset_token.txt
+.test_jwt.txt
