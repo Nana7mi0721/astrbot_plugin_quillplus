@@ -153,6 +153,14 @@
   --h-icon-btn-sm: 22px;  /* 密集卡片行内的图标按钮 */
   --h-row: 44px;          /* .card-head / .cfg-row / 列表行 */
 
+  /* 控件宽度令牌 —— 配置页表单列的统一标尺。
+     此前宽度由内联 max-width 与 .field--wide 各自为政，同一张卡片里
+     同时出现 211 / 260 / 303 / 1068px 四种宽度，视觉上像是拼凑的控件族。
+     统一为三档后，所有控件的左边缘落在同一条竖线上。 */
+  --w-num: 132px;         /* 数字 + 单位后缀 */
+  --w-ctl: 220px;         /* 普通输入框 / 下拉 / 滑块 */
+  --w-wide: 420px;        /* 多行文本 / 提供商下拉 / 长文本输入 */
+
   /* 字阶与行高 —— 收编文件中散落的字号 / 行高字面量 */
   --fs-11: 11px; --fs-12: 12px; --fs-13: 13px; --fs-15: 15px; --fs-17: 17px;
   --lh-tight: 1.25; --lh-body: 1.5; --lh-loose: 1.6;
@@ -938,13 +946,16 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .page-head-bar .page-head { margin-bottom: 0; }
 .page-head {
   display: flex;
-  align-items: flex-end;
+  /* 基线对齐：副标题（13px）与标题（26px）的字面底边落在同一条线上。
+     此前用 flex-end + 副标题 padding-bottom:4px，两者底边差 4.5px，
+     六个页面标题区都有肉眼可见的错位。 */
+  align-items: baseline;
   gap: var(--sp-3);
   margin-bottom: var(--sp-2);
   flex-wrap: wrap;
 }
 .page-head h2 { font-size: 26px; font-weight: 700; letter-spacing: -.02em; }
-.page-head .page-sub { font-size: 13px; color: var(--label-3); padding-bottom: 4px; }
+.page-head .page-sub { font-size: 13px; color: var(--label-3); }
 
 /* 统计条：一行紧凑数字，弱化到辅助层级 */
 .stats {
@@ -1369,7 +1380,10 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .wr-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
-  align-items: start;   /* 每张卡片按自身内容高度，不被同行最高者拉齐（避免底部空洞） */
+  /* 同行卡片拉齐高度：无标签卡片与多标签卡片同排时，此前底边参差
+     （实测同一行 110 / 158 / 132px）。.wr-card-foot 已是 margin-top:auto，
+     拉齐后开关自动落到统一基线，空洞感由底部对齐抵消。 */
+  align-items: stretch;
   gap: var(--sp-4);
 }
 .wr-card {
@@ -1729,8 +1743,10 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .cfg-row-desc { margin-top: 2px; font-size: 12px; line-height: 1.6; color: var(--label-2); }
 .cfg-row-desc.warn { color: var(--orange-text); }
 .cfg-row-control { flex: none; display: flex; align-items: center; gap: var(--sp-2); }
-.cfg-row--stack { display: block; }
-.cfg-row--stack .cfg-row-control { margin-top: var(--sp-3); }
+/* 长说明行不再把控件换行到左侧：控件始终贴尾边并与文字块垂直居中，
+   与同卡片内其它开关行保持同一条右边缘（此前 .cfg-row--stack 让开关
+   掉到左下角，同一张卡里出现两种控件位置）。 */
+.cfg-row--stack { align-items: center; }
 
 /* 配置页内的字段块（数字/文本/下拉，标签在上） */
 .cfg-field { padding: var(--sp-3) var(--sp-4); position: relative; }
@@ -1740,18 +1756,25 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   height: .5px; background: var(--separator); transform: scaleY(.5);
 }
 .cfg-field-label { display: block; margin-bottom: 5px; font-size: 13px; font-weight: 500; }
-.cfg-field .field { max-width: 260px; }
-.cfg-field .field--wide { max-width: none; }
-/* 数字带单位后缀 */
-.unit-wrap { position: relative; display: inline-flex; align-items: center; }
-.unit-wrap .field { padding-right: 40px; }
+/* 三档宽度：数字 / 普通控件 / 宽控件。全部左对齐到同一条竖线。
+   用 max-width 而非 width，控件在窄卡片里仍能自适应收缩。 */
+.cfg-field .field { max-width: var(--w-ctl); }
+.cfg-field .field--wide { max-width: var(--w-wide); }
+.cfg-field .sel-wrap { max-width: var(--w-ctl); }
+.cfg-field .sel-wrap:has(.field--wide) { max-width: var(--w-wide); }
+/* 数字带单位后缀：外壳定宽，输入框铺满，末尾留出单位位 */
+.unit-wrap { position: relative; display: inline-flex; align-items: center; width: var(--w-num); }
+.unit-wrap .field { padding-right: 40px; max-width: none; width: 100%; }
 .unit {
   position: absolute; right: 10px;
   font-size: 12px; color: var(--label-3);
   pointer-events: none;
 }
 .cfg-inline { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
-.cfg-inline .field { max-width: 200px; }
+.cfg-inline .field { max-width: var(--w-ctl); }
+/* 滑块与同行输入框共用 --w-ctl，滑轨末端与上方输入框右边缘对齐 */
+.cfg-field .slider { max-width: var(--w-ctl); }
+.cfg-field .row-wrap { max-width: var(--w-wide); }
 
 /* 健康度指标 */
 .health-row { display: flex; align-items: center; gap: var(--sp-3); padding: 9px var(--sp-4); position: relative; }
@@ -1770,8 +1793,11 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 /* 权限卡片用警示边框以示其特殊性 */
 .card--attention { box-shadow: 0 0 0 1.5px var(--orange), var(--shadow-1); }
 
-/* 分区内的两列布局 */
-.cfg-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--sp-4); align-items: start; }
+/* 分区内的两列布局。
+   下限用 min(100%, 460px) 而非固定 320px：320px 在常见宽度下会排成 3 列，
+   而「注入引擎」有 4 张卡片、系统与安全有 2 张，3 列必然产生孤行卡片
+   （实测第 4 张单独落到下一行）。两列让卡片宽度更舒展，也消除了孤行。 */
+.cfg-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: var(--sp-4); align-items: start; }
 
 /* 页脚署名（华为字体许可要求显著声明） */
 .page-foot {
@@ -1954,6 +1980,49 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .ctx-item--danger { color: var(--red-text); }
 .ctx-kbd { margin-left: auto; padding-left: var(--sp-3); color: var(--label-3); font-size: 11px; }
 .ctx-sep { height: .5px; margin: 4px 0; background: var(--separator); }
+
+/* ── 23b. 少量固定选项改用分段控件（HIG：分段控件用于「互斥且全部可见」
+   的少数选项；下拉用于「选项多到列不下」或需要复选。
+   2–3 项的下拉在 macOS 上属于误用：用户要多点一次才能看到全部选项，
+   且触发器只显示当前值，其余选项被藏起来。                          */
+.sel-seg {
+  position: relative;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  height: var(--h-control);
+  border-radius: var(--r-sm);
+  background: var(--fill-tertiary);
+  max-width: 100%;
+}
+.sel-seg > button {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 var(--sp-3);
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--label-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-standard),
+              color var(--dur-micro) var(--ease-standard),
+              box-shadow var(--dur-micro) var(--ease-standard);
+}
+.sel-seg > button:hover:not(.is-selected) { color: var(--label); }
+.sel-seg > button.is-selected {
+  background: var(--bg-elevated);
+  color: var(--label);
+  box-shadow: var(--shadow-1);
+}
+.sel-seg > button:focus { outline: none; }
+.sel-seg > button:focus-visible { box-shadow: var(--shadow-focus); }
 
 /* ── 24. 桌面端操作便利性：双击编辑 + 方向键导航 ────────────────────── */
 /* 双击卡片 = 直接编辑，故禁用文字选择，避免双击时选中标题文字。
@@ -2375,7 +2444,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
             </div>
             <div class="dash-card" data-tone="indigo">
               <div class="dash-value" id="dashIndex">—</div>
-              <div class="dash-label">向量索引</div>
+              <div class="dash-label">向量索引 <span class="t3">NumPy</span></div>
               <div class="dash-track"><div class="dash-fill" id="dashBarIndex"></div></div>
             </div>
             <div class="dash-card" data-tone="orange">
@@ -2551,10 +2620,11 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
                 </div>
                 <div class="cfg-field">
                   <label class="cfg-field-label" for="c-wb-pos">提示词注入位置</label>
-                  <select class="field" id="c-wb-pos">
-                    <option value="user_prefix">贴脸输出（user_prefix）— 推荐</option>
-                    <option value="system_end">系统末尾（system_end）</option>
+                  <select class="field field--wide" id="c-wb-pos" data-seg="1">
+                    <option value="user_prefix" data-short="贴脸输出">贴脸输出（user_prefix）— 推荐</option>
+                    <option value="system_end" data-short="系统末尾">系统末尾（system_end）</option>
                   </select>
+                  <span class="hint">贴脸输出：注入在用户消息前，模型注意力最强，推荐。系统末尾：追加到系统提示词尾部。</span>
                 </div>
                 <div class="cfg-field">
                   <label class="cfg-field-label" for="c-wb-sens">匹配灵敏度</label>
@@ -5231,7 +5301,7 @@ async function loadMemoryOverview() {
     set("#dashTotal", total);
     set("#dashSessions", sessions);
     set("#dashToday", today);
-    set("#dashIndex", total ? `NumPy (${total})` : "NumPy");
+    set("#dashIndex", total);
     updateBadge("badge-memory", total);
     // 进度条按各自维度归一化；延迟一帧以便过渡动画生效
     requestAnimationFrame(() => {
@@ -6475,18 +6545,96 @@ function selButtonLabel(sel) {
   return opts.length ? ((opts[0].textContent || "").trim() || opts[0].value) : "";
 }
 
-/** 把原生 select 的宽度意图复制到包装元素（内联 width 优先）。 */
+/** 把标注了 data-seg 的「少量固定选项」下拉改成分段控件。
+ *  契约与 enhanceSelect 一致：原生 select 仍是唯一值存储，点击分段写
+ *  sel.value 后派发 change，因此所有填充 / 读取代码无需改动。
+ *  仅用于互斥、无禁用项、且选项数 2–3 的枚举（HIG：分段控件要求全部选项
+ *  可见；选项多或含禁用项时下拉更合适，此时返回 null 交回 enhanceSelect）。 */
+function enhanceSelectAsSegmented(sel) {
+  if (!sel || sel._selApi || !sel.parentNode) return null;
+  const opts = selOptionList(sel);
+  if (opts.length < 2 || opts.length > 3 || opts.some(o => o.disabled)) return null;
+
+  const wrap = document.createElement("span");
+  wrap.className = "sel-wrap sel-seg";
+  wrap.setAttribute("role", "radiogroup");
+  const shortOf = (o, i) => {
+    const el = $$("option", sel)[i];
+    const s = el && el.dataset ? (el.dataset.short || "").trim() : "";
+    return s || o.label;
+  };
+  wrap.innerHTML = opts.map((o, i) =>
+    `<button type="button" role="radio" data-value="${esc(o.value)}"` +
+    ` class="${o.value === sel.value ? "is-selected" : ""}"` +
+    ` aria-checked="${o.value === sel.value ? "true" : "false"}"` +
+    ` title="${esc(o.label)}">${esc(shortOf(o, i))}</button>`
+  ).join("");
+
+  const btns = $$("button", wrap);
+  const sync = () => btns.forEach(b => {
+    const on = b.dataset.value === sel.value;
+    b.classList.toggle("is-selected", on);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
+
+  const parent = sel.parentNode;
+  parent.insertBefore(wrap, sel);
+  sel.hidden = true;
+  sel.setAttribute("aria-hidden", "true");
+
+  wrap.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b || b.dataset.value === sel.value) return;
+    sel.value = b.dataset.value;
+    sync();
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  // 键盘：左右方向键在分段间移动（HIG 分段控件行为），Home/End 到首尾
+  wrap.addEventListener("keydown", (e) => {
+    const i = btns.indexOf(document.activeElement);
+    if (i < 0) return;
+    let j = -1;
+    if (e.key === "ArrowRight") j = (i + 1) % btns.length;
+    else if (e.key === "ArrowLeft") j = (i - 1 + btns.length) % btns.length;
+    else if (e.key === "Home") j = 0;
+    else if (e.key === "End") j = btns.length - 1;
+    if (j < 0) return;
+    e.preventDefault();
+    btns[j].focus();
+    btns[j].click();
+  });
+
+  const api = {
+    sel, wrap, sync, dispose: () => { wrap.remove(); sel.hidden = false; },
+  };
+
+  // 与下拉同款：遮蔽实例 value，让 applySettings 等既有读写路径零改动同步选中态
+  const protoDesc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(sel), "value") ||
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+  if (protoDesc && protoDesc.get && protoDesc.set) {
+    Object.defineProperty(sel, "value", {
+      configurable: true,
+      enumerable: true,
+      get() { return protoDesc.get.call(this); },
+      set(v) { protoDesc.set.call(this, v); sync(); },
+    });
+  }
+
+  sel._selApi = api;
+  sel.dataset.enhanced = "1";
+  // 选项被外部改写（如后端下发新配置）时同步选中态，与下拉的 MutationObserver 对齐
+  new MutationObserver(sync).observe(sel, { childList: true, subtree: true, attributes: true });
+  return api;
+}
+
+/** 把原生 select 的宽度意图复制到包装元素（内联 width 优先）。
+    配置页内不再写内联 maxWidth —— 宽度交给 .cfg-field .sel-wrap 的
+    三档令牌（--w-ctl / --w-wide），否则 JS 与 CSS 两处定义会再次分叉。 */
 function applySelWidth(sel, wrap) {
   const inlineW = (sel.style.width || "").trim();
   if (inlineW && inlineW !== "auto") { wrap.style.width = inlineW; return; }   // modeSelect: 150px
   if (inlineW === "auto") return;                                              // #wrCat：按内容收缩
   wrap.style.width = "100%";
-  if (sel.classList.contains("field--wide")) return;                           // provider 选择：占满放宽
-  if (sel.closest(".cfg-field")) {
-    // .cfg-field .field { max-width: 260px } —— 保留原约束，避免配置页控件变宽
-    const mw = getComputedStyle(sel).maxWidth;
-    wrap.style.maxWidth = (mw && mw !== "none") ? mw : "260px";
-  }
 }
 
 /** 增强单个原生 select。返回控制器或 null（已增强 / 不可增强）。 */
@@ -6801,10 +6949,15 @@ function pruneSelMenus() {
   });
 }
 
-/** 增强容器内所有原生下拉（幂等）。 */
+/** 增强容器内所有原生下拉（幂等）。
+ *  data-seg 标记者优先尝试分段控件；不满足条件时自动落回自绘下拉。 */
 function enhanceSelects(root) {
   pruneSelMenus();
-  $$("select.field", root || document).forEach(enhanceSelect);
+  $$("select.field", root || document).forEach(sel => {
+    if (sel._selApi) return;
+    if (sel.dataset.seg && enhanceSelectAsSegmented(sel)) return;
+    enhanceSelect(sel);
+  });
 }
 
 /* ── N. 右键上下文菜单 ─────────────────────────────────────────────── */
