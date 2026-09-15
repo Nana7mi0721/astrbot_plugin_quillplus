@@ -1,5 +1,112 @@
 # Changelog
 
+## v5.2.3（功能清理与根因修复）— 世界书徽章 + 侧栏去折叠 + Logo + 三处空间分配
+
+上一轮修完排版后，本轮处理三类问题：一个被误判为「前端时序」的后端 bug、
+一批该删未删的折叠功能，以及三处「空间太多却没有用起来」的布局。
+
+**世界书徽章首屏不显示——根因在后端，不是初始化时序**
+- 现象：首屏侧栏「世界书」没有计数，点一下世界书页才出现。代码里
+  `syncSidebarBadges()` 确实在初始化时调用了，`/info → wb_count → updateBadge`
+  这条路径看起来也完整，所以很容易被误判成前端竞态
+- 实测根因：`_route_core.py:409` 写作 `available_wb = await wb_manager.get_available_worldbooks()`，
+  而 `WorldbookManager.get_available_worldbooks()` 是**同步**方法（内部只有一次
+  加锁读取，返回 list）。`await` 一个 list 会抛 `TypeError: object list can't be
+  used in 'await' expression`，被紧随其后的裸 `except Exception` 以 debug 级别吞掉，
+  于是 `available_wb` 恒为 `[]`、`wb_count` 恒为 0 → 徽章被 `updateBadge` 判为 0 而隐藏
+- 同一处 `get_trigger_log()` 有同样毛病（触发日志也永远为空）
+- 用 AST 全仓扫描「被 await 但定义为同步 def 的方法」，共 5 处，全部修正：
+  - `_route_core.py`：`get_available_worldbooks` / `get_trigger_log`（本次症状根因）
+  - `main.py`：`get_trigger_log`（触发日志注入，开了 `show_trigger_log` 才会走到）
+  - `commands.py`：`reload_all`（`/wb reload` 指令，异常同样被吞）
+  - `web_routes.py`：`reload_all`（面板刷新按钮）
+- `reload_all` 内部做文件 IO，改用 `asyncio.to_thread` 避免阻塞事件循环；
+  另外把这两处的 `logger.debug` 提升为 `logger.warning`——静默降级正是这个
+  问题能藏这么久的原因
+- 实测：修复前 `wb_count = 0`，修复后 `wb_count = 2`；首屏五个徽章
+  145 / 2 / 4 / 6（动态记忆为 0 时按设计隐藏）全部立即显示，无需点击
+
+**侧栏分组折叠：完整移除**
+- 「内容 / 知识系统 / 系统」三组各只有 2~3 项，折叠省不下空间，反而把导航
+  变成需要两次点击的后台管理树。按「先删逻辑再加外观」的顺序清理：
+  - 标记：`<button class="sidebar-label" data-collapse-group aria-expanded>` → `<div class="sidebar-label">`；
+    删除三处 chevron 图标
+  - CSS：删除 `.sidebar-group.is-collapsed` 两条规则与 `.sidebar-label` 的
+    button 外观（cursor/border/background/font-family/text-align）；标题
+    改为静态 section label
+  - JS：删除 `toggleSidebarGroup()` / `applySidebarCollapseState()`、点击委托里的
+    `[data-collapse-group]` 分支、初始化调用
+  - 持久化：`_uiState` / `loadUiState()` / `saveUiState()` 整体删除。侧栏与配置页
+    都不再有可折叠项，界面已无跨刷新需要记住的偏好（沙箱内 localStorage 不可用，
+    所以「无需持久化」等于这段逻辑可以直接删，而不是换一种存储）。
+    插件侧 `/panel/ui_state` 接口保留，供旧客户端平滑过渡
+- 主内容面板的 `role="tabpanel"` 改为 `role="region"`，与上一轮的
+  `aria-current="page"` 导航语义一致
+
+**左上角改用真实插件 Logo**
+- `div.sidebar-logo` 里的「羽」字替换为 `logo.png`。页面的静态资源被
+  AstrBot 限制在 `pages/panel/` 目录内（`resolve_plugin_page_file` 会
+  `relative_to(page_root)` 校验，越界即 404），插件根目录的 `logo.png`
+  无法直接引用，故在 `pages/panel/` 放一份缩到 96×96 的副本
+  （512×512/480KB → 96×96/19KB，面板只显示 30×30，96px 已覆盖 3 倍屏）
+- 保持容器尺寸与布局不变：30×30 定宽定高、`object-fit: cover`、右侧
+  「羽笔 / 版本」基线不受影响（实测文字左边缘对齐、logo 与标题垂直居中）
+- 原图是满幅插画、无透明通道，故不再叠蓝色渐变方块，直接铺满圆角容器；
+  加载失败时回退到「羽」字块（`[hidden]` 全局规则已保证生效），不出现破图
+
+**注入引擎：4 张卡改两列纵向 stack**
+- 按行配对时，605px 的「世界书注入策略」旁边是 357px 的「写作素材库控制」，
+  下方空出 233px，而第二行必须等第一行结束才开始。改为两列纵向栈：
+  左列＝世界书注入策略 + 表现控制，右列＝写作素材库控制 + 应急反拒绝协议，
+  每列各自向下流动，列内用 flex `gap` 而不必指定行
+- 只作用于 `#sec-inject .cfg-cols`；动态记忆、系统与安全等其他页面实测
+  `cfgColsCount` 正常、无 `.cfg-col` 子元素、零空洞
+
+**状态栏：改双列 + 模板编辑器放大**
+- 原先是单张卡里纵向堆叠全部字段，横向空间大量闲置。改为
+  `.sb-layout` 双列：左列六项设置（开关 / 字段 / 剧情走向 / 占位符 /
+  LLM 提取 / 提取模型），右列整列给「渲染 Markdown 模板」
+- 模板 textarea：`rows="12"` + `min-height: 240px`（实测 294px、可见 13 行），
+  宽度占满整列 538px。此处需要 `.sb-col--tpl textarea.field` 提权解除
+  `.cfg-field .field { max-width: var(--w-ctl) }` 的 220px 上限——宽度标尺
+  是给数字/短文本用的，多行模板属于需要整列宽度的例外，且左列控件实测
+  仍分别遵守 420/220px，未被波及
+- 字段 id 全部保留，`CFG_FIELDS` / `applySettings()` 读写路径零改动
+
+**写作素材库：三处修正**
+- 搜索框从 320px 上限改为 `flex: 1 1 240px`（上限 460px）。240px 下限是
+  按 placeholder「搜索关键词、分类、内容」实测的完整宽度定的（文字 154px +
+  内边距 56px + 余量），原先在 320px 里被截断成「搜索关键词、分类、内...」。
+  实测可用宽度 404px > 文字 154px，完整显示
+- 分页页码夹紧：`loadWR()` 拿到 `total` 后计算 `pages`，若 `wrState.page > pages`
+  则夹到 `pages` 并重取一次（`_retried` 防死循环）。此前 `wrState.page` 只在
+  `goWRPage()` 里受约束，resize / 搜索 / 分类筛选 / 删除 / 批量删除改变总页数后
+  会停在越界页拿到空列表（「第 13 / 3 页 · 共 0 条」）。实测：末页 13 时把
+  每页容量放大到 60，页码自动夹到 3；搜索无结果时页码回到 1
+- 标题最多两行：`.wr-card-name` 加 `-webkit-line-clamp: 2`。卡片行高固定 132px，
+  标题不限行数时第三行会被 `overflow: hidden` 切掉并把标签/页脚挤出可见区。
+  实测超长标题（原文 20 倍）高度 20px → 39px 后不再增长，卡片高度仍为 132px
+
+**分页高度来源单一化**
+- `calcPerPage()` 不再量第一张卡（空态/首屏骨架屏时量不到，将来改卡片高度
+  也会与 CSS 脱节），改为读 `getComputedStyle(grid).gridAutoRows`（即
+  `--wr-row-h`）；列间距同样改读 `columnGap`。CSS → JS → 分页三者只有一个来源
+
+**验证**（Chrome CDP，窗口前台；另测 1024×720 与 1920×1300）
+- 首屏：五个徽章立即显示，无需点击；世界书 2 已显示（修复前不显示）
+- 侧栏：三组标题为 `DIV` 静态标签、零 chevron、零 `data-collapse-group`、
+  零折叠态、六个导航项全部可见
+- Logo：HTTP 200 / image/png / 19251 bytes，自然尺寸 96×96、渲染 30×30，
+  `naturalWidth > 0` 即非破图；放大截图复核为正常插画
+- 注入引擎：两列左 258 / 右 832、列间距 16、两列顶边同为 166
+- 状态栏：两列各 538px、间距 24、模板 538×294、可见 13 行、无需横向滚动
+- 素材库：每页 12 张（3 列 × 4 行）、卡片高度唯一 132、无多余滚动；
+  四个分页按钮统一 60×32 且 y 均为 858；连续翻 4 页「下一页」坐标恒为
+  (1271, 858, 60, 32)；末页仅 1 张卡时同样一致
+- resize 往返 1440×900 → 1024×720 → 1920×1300 → 1440×900：每页 12 / 6 / 21 / 12，
+  列数 3 / 2 / 3 / 3，页码始终在有效范围，零横向溢出
+- 六个页面零异常、零 console error；深色主题输入框 `#1C1C1E` + 白字
+
 ## v5.2.3（交互模型收尾）— 卡片不再内联展开 + 分页按真实几何 + 语义校正
 
 承接上一轮的排版收尾，本轮针对「卡片列表」与「配置页导航」两处**交互模型**问题：

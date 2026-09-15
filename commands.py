@@ -111,7 +111,8 @@ async def wb_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
 
     if sub == "reload":
         try:
-            await plugin.wb_manager.reload_all()
+            # reload_all 是同步方法（加锁后重新读盘），不能 await
+            plugin.wb_manager.reload_all()
             count = len(plugin.wb_manager.list_worldbooks())
             event.set_result(MessageEventResult().message(f"已重载全部世界书 ({count} 本)"))
         except Exception as e:

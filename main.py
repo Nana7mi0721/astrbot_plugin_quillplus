@@ -1487,7 +1487,8 @@ class QuillPlugin(Star):
             # 触发日志注入（show_trigger_log 开启时）
             if (self.config.worldbook_show_log and self.wb_manager
                     and hasattr(self.wb_manager, 'get_trigger_log')):
-                trigger_log = await self.wb_manager.get_trigger_log()
+                # get_trigger_log 是同步方法（加锁读一次列表），不能 await
+                trigger_log = self.wb_manager.get_trigger_log()
                 if trigger_log:
                     log_lines = ["[触发日志]"]
                     for t in trigger_log[:10]:

@@ -405,15 +405,19 @@ async def handle_info(wr_manager, wb_manager, persona_count=0,
     available_wb = []
     trigger_log = []
     if wb_manager:
+        # get_available_worldbooks / get_trigger_log 都是**同步**方法（内部只有
+        # 一次加锁读取，返回 list）。此前写作 await，会抛 TypeError 并被下面的
+        # 裸 except 吞掉，于是 available_wb 恒为 []、wb_count 恒为 0——
+        # 侧栏世界书徽章因此首屏不显示（要等切到世界书页由 /wb/list 补上）。
         try:
-            available_wb = await wb_manager.get_available_worldbooks()
+            available_wb = wb_manager.get_available_worldbooks()
         except Exception:
-            logger.debug("[Quill] 获取可用世界书列表失败", exc_info=True)
+            logger.warning("[Quill] 获取可用世界书列表失败", exc_info=True)
         if show_trigger_log and hasattr(wb_manager, 'get_trigger_log'):
             try:
-                trigger_log = await wb_manager.get_trigger_log()
+                trigger_log = wb_manager.get_trigger_log()
             except Exception:
-                logger.debug("[Quill] 获取触发日志失败", exc_info=True)
+                logger.warning("[Quill] 获取触发日志失败", exc_info=True)
     # P1-4: 健康度数据
     health = health_tracker.stats() if health_tracker else None
     return ok({

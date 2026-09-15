@@ -932,7 +932,9 @@ class QuillRoutes:
     async def wb_reload(self):
         """重新从磁盘加载所有世界书后返回列表（供面板刷新按钮用）。"""
         try:
-            await self.wb_manager.reload_all()
+            # reload_all 是同步方法（加锁后重新读盘），不能 await。
+            # 它内部做文件 IO，放到线程里避免阻塞事件循环。
+            await asyncio.to_thread(self.wb_manager.reload_all)
         except Exception:
             logger.warning("[Quill] 世界书重载失败，返回当前缓存列表", exc_info=True)
         return json_response(await handle_wb_list(self.wb_manager))

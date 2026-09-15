@@ -796,6 +796,38 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   gap: var(--sp-3);
   margin-top: var(--sp-3);
 }
+/* 状态栏配置：左列设置项、右列 Markdown 模板。
+   模板编辑器给整列宽度 + 240px 起高（rows=12 约为 260px），
+   窄窗口下自动叠成单列。 */
+.sb-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-6);
+  align-items: start;
+}
+.sb-col { min-width: 0; }
+/* 左列的行/字段自带上下内边距，首尾对齐到右列文字（去掉首尾多余留白） */
+.sb-col > .cfg-row:first-child,
+.sb-col > .cfg-field:first-child { padding-top: 0; }
+.sb-col > .cfg-row:last-child,
+.sb-col > .cfg-field:last-child { padding-bottom: 0; }
+/* 选择器写成 .sb-col--tpl textarea.field 是为了压过 .cfg-field .field
+   （同为 0,0,2,0 时按源序后者胜，且它在本文件中位于后面）。
+   那条规则把配置控件统一限制在 --w-ctl(220px)，而模板编辑器要占满整列
+   （实测列宽 538px，被限制后只剩 220px）。宽度标尺服务于数字/短文本，
+   多行模板是需要整列宽度的例外，故在此显式提权解除上限。 */
+.sb-col--tpl textarea.field {
+  width: 100%;
+  max-width: none;
+  min-height: 240px;
+  resize: vertical;
+  line-height: 1.65;
+  tab-size: 2;
+}
+@media (max-width: 980px) {
+  .sb-layout { grid-template-columns: minmax(0, 1fr); gap: var(--sp-4); }
+}
+
 /* 页面级分页栏（素材库）钉在内容区底部。
    卡片数量随筛选变化，分页栏若留在自然流里，它的 y 坐标每一页都不同，
    连续翻页就得反复找按钮。钉住后按钮位置恒定，鼠标停在原地即可连点。
@@ -1042,6 +1074,16 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .toolbar-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 /* 工具栏内的搜索框可收缩：优先保证按钮不被挤到第二行 */
 .toolbar > .search { min-width: 120px; flex: 0 1 auto; }
+/* 主搜索框（素材库）：它是工具栏里最重要的控件，应当优先吃剩余空间。
+   收缩下限 240px 是按 placeholder「搜索关键词、分类、内容」实测的完整
+   宽度（11 个全角字 ≈ 154px + 左右内边距 56px + 余量）——低于它
+   placeholder 就会被截断成「搜索关键词、分类、内...」。
+   上限 460px：再宽会挤压右侧按钮，收益也为零。 */
+.toolbar > .search--primary {
+  flex: 1 1 240px;
+  min-width: 240px;
+  max-width: 460px;
+}
 /* 分隔用的空 span 可被压缩到 0，不占宽度 */
 .toolbar > span.grow { flex: 1 1 0; min-width: 0; }
 .toolbar::after {
@@ -1129,13 +1171,22 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   gap: var(--sp-2);
   padding: var(--sp-4) var(--sp-4) var(--sp-3);
 }
+/* 插件 Logo：真图铺满固定容器（30×30），圆角与侧栏选中行一致。
+   图片是满幅插画（无透明通道），故不额外套色块；失败时回退到「羽」字块。 */
 .sidebar-logo {
   width: 30px; height: 30px;
   flex: none;
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(160deg, var(--accent), var(--indigo));
+}
+.sidebar-logo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.sidebar-logo-glyph {
+  position: absolute;
+  inset: 0;
   display: grid;
   place-items: center;
-  border-radius: 8px;
-  background: linear-gradient(160deg, var(--accent), var(--indigo));
   color: #fff;
   font-size: 16px;
   font-weight: 700;
@@ -1144,32 +1195,17 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .sidebar-ver { font-size: 11px; color: var(--label-3); font-variant-numeric: tabular-nums; }
 .sidebar-nav { flex: 1; overflow-y: auto; padding: var(--sp-1) var(--sp-3) var(--sp-4); }
 .sidebar-group { margin-bottom: var(--sp-3); }
+/* 分组标题：纯静态 section label（macOS 侧栏的小节标题）。
+   可折叠版本已整体移除——三组各只有 2~3 项，折叠既省不下空间，
+   又把导航变成需要两次点击的后台管理树。标题保留只为分组语义。 */
 .sidebar-label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
   padding: var(--sp-2) var(--sp-2) 4px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-family: inherit;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: .03em;
   color: var(--label-3);
   text-transform: uppercase;
-  text-align: left;
 }
-.sidebar-label:hover { color: var(--label-2); }
-.sidebar-label .chev {
-  width: 12px; height: 12px;
-  color: var(--label-3);
-  transition: transform var(--dur-enter) var(--ease-enter);
-}
-/* 折叠：chev 转成「指向本条」，组内导航项隐藏 */
-.sidebar-group.is-collapsed .sidebar-label .chev { transform: rotate(-90deg); }
-.sidebar-group.is-collapsed .sl-item { display: none; }
 /* 选中态 = 圆角填充行（HIG 源列表标准样式），不靠左侧色条 */
 .sl-item {
   display: flex;
@@ -1474,7 +1510,21 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .wr-card:hover { box-shadow: var(--shadow-2); }
 .wr-card.is-selected { box-shadow: 0 0 0 2px var(--accent), var(--shadow-1); }
 .wr-card-head { display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4) var(--sp-2); }
-.wr-card-name { font-size: 14.5px; font-weight: 600; word-break: break-word; }
+/* 标题最多两行：卡片行高固定 132px，标题不限制行数时第三行会被
+   .wr-card 的 overflow: hidden 直接切掉（且把标签/页脚挤出可见区）。
+   line-clamp 把超长标题收成两行 + 省略号，卡片结构始终完整。
+   行高 1.35 与 --wr-row-h 的 60px 头部预算对应（2×14.5×1.35 ≈ 39px）。 */
+.wr-card-name {
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
 .wr-card-id { margin-top: 1px; font-size: 11.5px; color: var(--label-3); font-family: var(--font-mono); }
 .wr-card-meta { flex: none; display: flex; align-items: center; gap: 6px; }
 /* 单行裁切：标签区高度恒定，网格行高才定型。
@@ -1956,6 +2006,25 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   gap: var(--sp-4);
   align-items: start;
 }
+/* 注入引擎：4 张卡高度差极大（605 / 357 / 269 / 317），按行配对时
+   「写作素材库控制」被拉在 605px 的高卡旁边，下方空出 233px。
+   改成两列纵向栈：左列世界书注入策略 + 表现控制，右列素材库控制 +
+   应急反拒绝协议，每列各自向下流动，空洞消失。
+   列用 flex 而非 grid：两张卡高度不等时无需指定行，交给 gap 即可。 */
+#sec-inject .cfg-cols {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+  align-items: start;
+}
+#sec-inject .cfg-cols > .cfg-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+/* 单列时（窄窗口）列容器本身不再需要额外间距 */
+@media (max-width: 980px) {
+  #sec-inject .cfg-cols { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* 页脚署名（华为字体许可要求显著声明） */
 .page-foot {
@@ -2249,7 +2318,11 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   <!-- ══ 源列表侧栏（桌面） ══ -->
   <aside class="sidebar">
     <div class="sidebar-head">
-      <div class="sidebar-logo" aria-hidden="true">羽</div>
+      <div class="sidebar-logo">
+        <img src="logo.png" alt="" width="30" height="30" decoding="async"
+             onerror="this.hidden=true;this.nextElementSibling.hidden=false;">
+        <span class="sidebar-logo-glyph" hidden aria-hidden="true">羽</span>
+      </div>
       <div>
         <div class="sidebar-title">羽笔</div>
         <div class="sidebar-ver" id="appVersion">Quill</div>
@@ -2257,9 +2330,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
     </div>
     <nav class="sidebar-nav" id="sidebarNav" aria-label="主导航">
       <div class="sidebar-group">
-        <button type="button" class="sidebar-label" data-collapse-group="内容" aria-expanded="true">
-          <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>内容
-        </button>
+        <div class="sidebar-label">内容</div>
         <button type="button" class="sl-item is-selected" data-tab="wr" aria-current="page">
           <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
           <span class="sl-item-label">写作素材库</span>
@@ -2277,9 +2348,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
         </button>
       </div>
       <div class="sidebar-group">
-        <button type="button" class="sidebar-label" data-collapse-group="知识系统" aria-expanded="true">
-          <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>知识系统
-        </button>
+        <div class="sidebar-label">知识系统</div>
         <button type="button" class="sl-item" data-tab="rag">
           <svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>
           <span class="sl-item-label">文档知识库</span>
@@ -2292,9 +2361,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
         </button>
       </div>
       <div class="sidebar-group">
-        <button type="button" class="sidebar-label" data-collapse-group="系统" aria-expanded="true">
-          <svg class="icon chev" aria-hidden="true"><use href="#i-chevron"/></svg>系统
-        </button>
+        <div class="sidebar-label">系统</div>
         <button type="button" class="sl-item" data-tab="config">
           <svg class="icon" aria-hidden="true"><use href="#i-gear"/></svg>
           <span class="sl-item-label">配置</span>
@@ -2319,7 +2386,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           </div>
 
           <div class="toolbar">
-            <label class="search grow" style="max-width:320px">
+            <label class="search search--primary">
               <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
               <input type="search" id="wrSearch" placeholder="搜索关键词、分类、内容" aria-label="搜索素材">
               <button type="button" class="search-clear" data-action="clear-search" data-target="wrSearch" aria-label="清除搜索">
@@ -2753,125 +2820,127 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           </div>
 
           <div class="cfg-cols">
-            <div class="card">
-              <div class="card-head">
-                <h3>世界书注入策略</h3>
+            <div class="cfg-col">
+  <div class="card">
+                <div class="card-head">
+                  <h3>世界书注入策略</h3>
+                </div>
+                <div class="card-body"><div class="card-body-inner">
+                  <div class="cfg-row">
+                    <div class="cfg-row-text"><div class="cfg-row-title">启用世界书匹配</div></div>
+                    <div class="cfg-row-control">
+                      <label class="switch"><input type="checkbox" id="c-wb-enabled"><span class="switch-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-wb-token">注入 Token 估算上限</label>
+                    <div class="unit-wrap"><input class="field" type="number" id="c-wb-token" value="4000"><span class="unit">token</span></div>
+                    <span class="hint">建议 3000–4000。过高会挤占上下文，导致模型忽略状态栏。</span>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-wb-max">单次触发条目上限</label>
+                    <div class="unit-wrap"><input class="field" type="number" id="c-wb-max" value="4"><span class="unit">条</span></div>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-wb-pos">提示词注入位置</label>
+                    <select class="field field--wide" id="c-wb-pos" data-seg="1">
+                      <option value="user_prefix" data-short="贴脸输出">贴脸输出（user_prefix）— 推荐</option>
+                      <option value="system_end" data-short="系统末尾">系统末尾（system_end）</option>
+                    </select>
+                    <span class="hint">贴脸输出：注入在用户消息前，模型注意力最强，推荐。系统末尾：追加到系统提示词尾部。</span>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-wb-sens">匹配灵敏度</label>
+                    <div class="slider">
+                      <input type="range" id="c-wb-sens" min="0" max="1" step="0.1" value="0.7">
+                      <span class="slider-value" id="c-wb-sens-val">0.7</span>
+                    </div>
+                  </div>
+                  <div class="cfg-row">
+                    <div class="cfg-row-text">
+                      <div class="cfg-row-title">全局常驻激活</div>
+                      <div class="cfg-row-desc">每次对话强制注入系统提示词与状态栏，无需触发词。适合纯 RP 场景。</div>
+                    </div>
+                    <div class="cfg-row-control">
+                      <label class="switch"><input type="checkbox" id="c-wb-always"><span class="switch-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="cfg-row">
+                    <div class="cfg-row-text">
+                      <div class="cfg-row-title">显示触发日志</div>
+                      <div class="cfg-row-desc">在 /info 指令中显示最新命中的词条（调试用）。</div>
+                    </div>
+                    <div class="cfg-row-control">
+                      <label class="switch"><input type="checkbox" id="c-wb-show-log"><span class="switch-track"></span></label>
+                    </div>
+                  </div>
+                </div></div>
               </div>
-              <div class="card-body"><div class="card-body-inner">
-                <div class="cfg-row">
-                  <div class="cfg-row-text"><div class="cfg-row-title">启用世界书匹配</div></div>
-                  <div class="cfg-row-control">
-                    <label class="switch"><input type="checkbox" id="c-wb-enabled"><span class="switch-track"></span></label>
-                  </div>
-                </div>
-                <div class="cfg-field">
-                  <label class="cfg-field-label" for="c-wb-token">注入 Token 估算上限</label>
-                  <div class="unit-wrap"><input class="field" type="number" id="c-wb-token" value="4000"><span class="unit">token</span></div>
-                  <span class="hint">建议 3000–4000。过高会挤占上下文，导致模型忽略状态栏。</span>
-                </div>
-                <div class="cfg-field">
-                  <label class="cfg-field-label" for="c-wb-max">单次触发条目上限</label>
-                  <div class="unit-wrap"><input class="field" type="number" id="c-wb-max" value="4"><span class="unit">条</span></div>
-                </div>
-                <div class="cfg-field">
-                  <label class="cfg-field-label" for="c-wb-pos">提示词注入位置</label>
-                  <select class="field field--wide" id="c-wb-pos" data-seg="1">
-                    <option value="user_prefix" data-short="贴脸输出">贴脸输出（user_prefix）— 推荐</option>
-                    <option value="system_end" data-short="系统末尾">系统末尾（system_end）</option>
-                  </select>
-                  <span class="hint">贴脸输出：注入在用户消息前，模型注意力最强，推荐。系统末尾：追加到系统提示词尾部。</span>
-                </div>
-                <div class="cfg-field">
-                  <label class="cfg-field-label" for="c-wb-sens">匹配灵敏度</label>
-                  <div class="slider">
-                    <input type="range" id="c-wb-sens" min="0" max="1" step="0.1" value="0.7">
-                    <span class="slider-value" id="c-wb-sens-val">0.7</span>
-                  </div>
-                </div>
-                <div class="cfg-row">
-                  <div class="cfg-row-text">
-                    <div class="cfg-row-title">全局常驻激活</div>
-                    <div class="cfg-row-desc">每次对话强制注入系统提示词与状态栏，无需触发词。适合纯 RP 场景。</div>
-                  </div>
-                  <div class="cfg-row-control">
-                    <label class="switch"><input type="checkbox" id="c-wb-always"><span class="switch-track"></span></label>
-                  </div>
-                </div>
-                <div class="cfg-row">
-                  <div class="cfg-row-text">
-                    <div class="cfg-row-title">显示触发日志</div>
-                    <div class="cfg-row-desc">在 /info 指令中显示最新命中的词条（调试用）。</div>
-                  </div>
-                  <div class="cfg-row-control">
-                    <label class="switch"><input type="checkbox" id="c-wb-show-log"><span class="switch-track"></span></label>
-                  </div>
-                </div>
-              </div></div>
-            </div>
 
-            <div class="card">
-              <div class="card-head">
-                <h3>写作素材库控制</h3>
-              </div>
-              <div class="card-body"><div class="card-body-inner">
-                <div class="cfg-row">
-                  <div class="cfg-row-text"><div class="cfg-row-title">启用素材库指引</div></div>
-                  <div class="cfg-row-control">
-                    <label class="switch"><input type="checkbox" id="c-wr-enabled"><span class="switch-track"></span></label>
+  <div class="card">
+                <div class="card-head">
+                  <h3>表现控制</h3>
+                </div>
+                <div class="card-body"><div class="card-body-inner">
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-perf-min">强制回复最低字数</label>
+                    <div class="unit-wrap"><input class="field" type="number" id="c-perf-min" value="400"><span class="unit">字</span></div>
+                    <span class="hint">建议 400–800，防止模型越写越短。</span>
                   </div>
-                </div>
-                <div class="cfg-field">
-                  <label class="cfg-field-label" for="c-wr-max">最大注入条数</label>
-                  <div class="unit-wrap"><input class="field" type="number" id="c-wr-max" value="4"><span class="unit">条</span></div>
-                </div>
-                <div class="cfg-field">
-                  <label class="cfg-field-label" for="c-wr-fallback">无匹配时保底回退条数</label>
-                  <div class="unit-wrap"><input class="field" type="number" id="c-wr-fallback" value="2"><span class="unit">条</span></div>
-                </div>
-                <div class="cfg-field">
-                  <label class="cfg-field-label" for="c-wr-dedup">同分类去重上限</label>
-                  <div class="unit-wrap"><input class="field" type="number" id="c-wr-dedup" value="3"><span class="unit">条</span></div>
-                </div>
-              </div></div>
-            </div>
-
-            <div class="card">
-              <div class="card-head">
-                <h3>表现控制</h3>
-              </div>
-              <div class="card-body"><div class="card-body-inner">
-                <div class="cfg-field">
-                  <label class="cfg-field-label" for="c-perf-min">强制回复最低字数</label>
-                  <div class="unit-wrap"><input class="field" type="number" id="c-perf-min" value="400"><span class="unit">字</span></div>
-                  <span class="hint">建议 400–800，防止模型越写越短。</span>
-                </div>
-                <div class="cfg-field">
-                  <label class="cfg-field-label" for="c-perf-max">要求回复最高字数</label>
-                  <div class="unit-wrap"><input class="field" type="number" id="c-perf-max" value="0"><span class="unit">字</span></div>
-                  <span class="hint">填 0 表示不限制。用于防止模型无限发散。</span>
-                </div>
-              </div></div>
-            </div>
-
-            <div class="card">
-              <div class="card-head">
-                <h3>应急反拒绝协议</h3>
-              </div>
-              <div class="card-body"><div class="card-body-inner">
-                <div class="cfg-row">
-                  <div class="cfg-row-text"><div class="cfg-row-title">启用拒绝阻断检测</div></div>
-                  <div class="cfg-row-control">
-                    <label class="switch"><input type="checkbox" id="c-ref-enabled"><span class="switch-track"></span></label>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-perf-max">要求回复最高字数</label>
+                    <div class="unit-wrap"><input class="field" type="number" id="c-perf-max" value="0"><span class="unit">字</span></div>
+                    <span class="hint">填 0 表示不限制。用于防止模型无限发散。</span>
                   </div>
+                </div></div>
+              </div>
+            </div>
+            <div class="cfg-col">
+  <div class="card">
+                <div class="card-head">
+                  <h3>写作素材库控制</h3>
                 </div>
-                <div class="cfg-field">
-                  <label class="cfg-field-label" for="c-ref-pat">触发拦截词（每行一个）</label>
-                  <textarea class="field field--wide" id="c-ref-pat" rows="6"></textarea>
+                <div class="card-body"><div class="card-body-inner">
+                  <div class="cfg-row">
+                    <div class="cfg-row-text"><div class="cfg-row-title">启用素材库指引</div></div>
+                    <div class="cfg-row-control">
+                      <label class="switch"><input type="checkbox" id="c-wr-enabled"><span class="switch-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-wr-max">最大注入条数</label>
+                    <div class="unit-wrap"><input class="field" type="number" id="c-wr-max" value="4"><span class="unit">条</span></div>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-wr-fallback">无匹配时保底回退条数</label>
+                    <div class="unit-wrap"><input class="field" type="number" id="c-wr-fallback" value="2"><span class="unit">条</span></div>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-wr-dedup">同分类去重上限</label>
+                    <div class="unit-wrap"><input class="field" type="number" id="c-wr-dedup" value="3"><span class="unit">条</span></div>
+                  </div>
+                </div></div>
+              </div>
+
+  <div class="card">
+                <div class="card-head">
+                  <h3>应急反拒绝协议</h3>
                 </div>
-              </div></div>
+                <div class="card-body"><div class="card-body-inner">
+                  <div class="cfg-row">
+                    <div class="cfg-row-text"><div class="cfg-row-title">启用拒绝阻断检测</div></div>
+                    <div class="cfg-row-control">
+                      <label class="switch"><input type="checkbox" id="c-ref-enabled"><span class="switch-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-ref-pat">触发拦截词（每行一个）</label>
+                    <textarea class="field field--wide" id="c-ref-pat" rows="6"></textarea>
+                  </div>
+                </div></div>
+              </div>
             </div>
           </div>
-        </section>
 
         <!-- ══ 2. 状态栏 ══ -->
         <section class="cfg-section" id="sec-statusbar">
@@ -2885,47 +2954,57 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
               <h3>状态栏配置</h3>
             </div>
             <div class="card-body"><div class="card-body-inner">
-              <div class="cfg-row">
-                <div class="cfg-row-text">
-                  <div class="cfg-row-title">启用状态栏</div>
-                  <div class="cfg-row-desc warn">受大模型稀疏注意力机制影响，稳定性有限，切换后不保证每次生效。</div>
+              <!-- 双列：左列是逐个设置项（行紧凑），右列专给 Markdown 模板。
+                   模板是要真正手写多行 markdown + {content} 的编辑器，
+                   挤在 420px 宽、3 行的框里没法用；给它整列宽度与高度后
+                   才能一眼看到八行模板内容。 -->
+              <div class="sb-layout">
+                <div class="sb-col">
+                  <div class="cfg-row">
+                    <div class="cfg-row-text">
+                      <div class="cfg-row-title">启用状态栏</div>
+                      <div class="cfg-row-desc warn">受大模型稀疏注意力机制影响，稳定性有限，切换后不保证每次生效。</div>
+                    </div>
+                    <div class="cfg-row-control">
+                      <label class="switch"><input type="checkbox" id="c-sb-enabled"><span class="switch-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-sb-fields">状态栏字段（用 | 分隔，建议 6 个）</label>
+                    <input class="field field--wide" type="text" id="c-sb-fields" value="好感度|关系阶段|心情|位置|穿着|当前想法">
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-sb-plots">剧情走向选项（用 | 分隔）</label>
+                    <input class="field field--wide" type="text" id="c-sb-plots" value="继续当前话题|转换场景|结束互动">
+                    <span class="hint">留空则不显示该行。</span>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-sb-placeholder">缺省占位符</label>
+                    <input class="field" type="text" id="c-sb-placeholder" value="未设置" maxlength="12">
+                    <span class="hint">字段未匹配到值时显示的文本，例如「未知」「—」。</span>
+                  </div>
+                  <div class="cfg-row cfg-row--stack">
+                    <div class="cfg-row-text">
+                      <div class="cfg-row-title">LLM 智能提取</div>
+                      <div class="cfg-row-desc warn">当状态栏格式完全不合规、5 级解析全部失败时，额外调用一次轻量 LLM 提取字段（3 秒超时）。开启后每次失败都会多消耗一次 LLM 调用。</div>
+                    </div>
+                    <div class="cfg-row-control">
+                      <label class="switch"><input type="checkbox" id="c-sb-llm-extract"><span class="switch-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-sb-llm">状态栏提取 LLM 模型</label>
+                    <select class="field field--wide" id="c-sb-llm"></select>
+                    <span class="hint">留空则回退到 RAG 摘要 LLM。建议选择轻量、便宜的模型。</span>
+                  </div>
                 </div>
-                <div class="cfg-row-control">
-                  <label class="switch"><input type="checkbox" id="c-sb-enabled"><span class="switch-track"></span></label>
+                <div class="sb-col sb-col--tpl">
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-sb-tpl">渲染 Markdown 模板</label>
+                    <textarea class="field mono fs-13" id="c-sb-tpl" rows="12" spellcheck="false"></textarea>
+                    <span class="hint">可用占位符 <code>{content}</code> 代表渲染后的状态栏正文。</span>
+                  </div>
                 </div>
-              </div>
-              <div class="cfg-field">
-                <label class="cfg-field-label" for="c-sb-fields">状态栏字段（用 | 分隔，建议 6 个）</label>
-                <input class="field field--wide" type="text" id="c-sb-fields" value="好感度|关系阶段|心情|位置|穿着|当前想法">
-              </div>
-              <div class="cfg-field">
-                <label class="cfg-field-label" for="c-sb-plots">剧情走向选项（用 | 分隔）</label>
-                <input class="field field--wide" type="text" id="c-sb-plots" value="继续当前话题|转换场景|结束互动">
-                <span class="hint">留空则不显示该行。</span>
-              </div>
-              <div class="cfg-field">
-                <label class="cfg-field-label" for="c-sb-placeholder">缺省占位符</label>
-                <input class="field" type="text" id="c-sb-placeholder" value="未设置" maxlength="12">
-                <span class="hint">字段未匹配到值时显示的文本，例如「未知」「—」。</span>
-              </div>
-              <div class="cfg-field">
-                <label class="cfg-field-label" for="c-sb-tpl">渲染 Markdown 模板</label>
-                <textarea class="field field--wide mono fs-13" id="c-sb-tpl" rows="3"></textarea>
-                <span class="hint">可用占位符 <code>{content}</code> 代表渲染后的状态栏正文。</span>
-              </div>
-              <div class="cfg-row cfg-row--stack">
-                <div class="cfg-row-text">
-                  <div class="cfg-row-title">LLM 智能提取</div>
-                  <div class="cfg-row-desc warn">当状态栏格式完全不合规、5 级解析全部失败时，额外调用一次轻量 LLM 提取字段（3 秒超时）。开启后每次失败都会多消耗一次 LLM 调用。</div>
-                </div>
-                <div class="cfg-row-control">
-                  <label class="switch"><input type="checkbox" id="c-sb-llm-extract"><span class="switch-track"></span></label>
-                </div>
-              </div>
-              <div class="cfg-field">
-                <label class="cfg-field-label" for="c-sb-llm">状态栏提取 LLM 模型</label>
-                <select class="field field--wide" id="c-sb-llm"></select>
-                <span class="hint">留空则回退到 RAG 摘要 LLM。建议选择轻量、便宜的模型。</span>
               </div>
             </div></div>
           </div>
@@ -3232,7 +3311,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
      B. API 通信层（Bridge + Fetch 双路径）
      C. 提示横幅与对话框
      D. 模态框
-     E. 状态持久化（后端 /panel/ui_state）
+     E. 会话内存储降级
      F. 写作素材库
      G. 世界书
      H. 角色卡
@@ -3264,7 +3343,7 @@ function debounce(fn, ms) {
  * 沙箱安全的存储。
  * 面板 iframe 为不透明源（sandbox 无 allow-same-origin），直接访问
  * localStorage 会抛 SecurityError；即便不抛，其内容也不会跨刷新留存。
- * 因此这里只作为会话内的降级缓存，真正的持久化走 /panel/ui_state。
+ * 因此这里只作为会话内的降级缓存（会话结束即失效，不再写回插件侧）。
  */
 const store = (() => {
   let mem = Object.create(null);
@@ -3737,57 +3816,10 @@ function closeModal() {
 }
 
 /* ── E. 面板状态持久化 ───────────────────────────────────────────── */
-/* localStorage 在面板沙箱内不可用（不透明源），折叠状态等跨刷新的偏好
-   必须存到插件侧，才能在一次 iframe 重载后仍然记得。 */
-
-let _uiState = { collapsed: {}, sidebar: false };
-let _uiStateTimer = null;
-
-async function loadUiState() {
-  try {
-    const res = await api("/panel/ui_state");
-    if (res && typeof res === "object") {
-      _uiState.collapsed = (res.collapsed && typeof res.collapsed === "object") ? res.collapsed : {};
-      _uiState.sidebar = !!res.sidebar;
-    }
-  } catch (_) { /* 首次安装或旧版本后端时静默降级为默认展开 */ }
-}
-
-function saveUiState() {
-  clearTimeout(_uiStateTimer);
-  _uiStateTimer = setTimeout(() => {
-    apiPost("/panel/ui_state", _uiState).catch(() => { /* 持久化失败不影响使用 */ });
-  }, 400);
-}
-
-/* 配置页卡片折叠已整体移除。配置页的用途是让用户扫描所有设置；把卡片默认
-   折成 60px 的条，用户既看不到设置项，又把每一张卡误认成「下拉菜单」。
-   折叠造成的高度差还会在双列网格里拉出大片空洞。
-   折叠状态仍由后端持久化（_uiState.collapsed），但只服务于侧栏分组。 */
-
-/** 侧栏分组折叠：_uiState.collapsed 的键加 sb- 前缀，与配置页旧键不冲突。 */
-function toggleSidebarGroup(btn) {
-  const key = btn.dataset.collapseGroup;
-  if (!key) return;
-  const group = btn.closest(".sidebar-group");
-  if (!group) return;
-  const collapsed = group.classList.toggle("is-collapsed");
-  btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
-  _uiState.collapsed["sb-" + key] = collapsed;
-  saveUiState();
-}
-
-/** 恢复侧栏分组折叠态（默认全部展开）。 */
-function applySidebarCollapseState() {
-  $$(".sidebar-label[data-collapse-group]").forEach(btn => {
-    const key = "sb-" + btn.dataset.collapseGroup;
-    const group = btn.closest(".sidebar-group");
-    if (!group) return;
-    const collapsed = !!_uiState.collapsed[key];
-    group.classList.toggle("is-collapsed", collapsed);
-    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
-  });
-}
+/* 面板界面状态持久化已整体移除：配置页卡片折叠与侧栏分组折叠都不再存在，
+   面板没有需要跨刷新记住的界面偏好。（localStorage 在面板沙箱内不可用，
+   故「无需持久化」意味着这段逻辑可以直接删除，而不是换一种存储。）
+   插件侧 /panel/ui_state 接口保留，供旧客户端平滑过渡。 */
 
 /* ── 溢出菜单（⋯） ─────────────────────────────────────────────────── */
 /* 同一时刻只允许一个菜单展开；开关由点击委托驱动，不逐菜单绑事件。 */
@@ -3881,10 +3913,8 @@ function createTagInput(containerId, initial, placeholder) {
 
 const wrState = { entries: [], total: 0, page: 1, perPage: 9 };
 const _wrSelected = new Set();
-/* 卡片不再内联展开：单击卡片主体直接进编辑模态。
-   此前为「单击展开 + 双击编辑」两套语义共用同一命中区而写的延迟、
-   快照、回滚逻辑（_wrExpandTimer / _wrExpandSnapshot / toggleWRExpand）
-   全部随之删除——卡片高度恒定，网格不会被单张卡撑高，
+/* 卡片不再内联展开：单击卡片标题直接进编辑模态（openWRModal）。
+   因而卡片高度恒定，网格不会被单张卡撑高，
    calcPerPage() 按真实几何算出的每页条数才站得住。 */
 let _wrTagInput = null;
 
@@ -3895,18 +3925,21 @@ let _wrTagInput = null;
     minmax(330px) 取整，行数由「内容区可滚动高度 - 头部 - 统计条 -
     分页栏」对实测卡片高度取整。 */
 const WR_MIN_CARD_W = 330;      // 与 .wr-grid 的 minmax(330px, 1fr) 一致
-const WR_GRID_GAP = 16;         // 与 --sp-4 / .wr-grid 的 gap 一致
-const WR_PAGER_BLOCK = 60;      // .pager 的 margin-top(8) + min-height(52)
+const WR_FALLBACK_GAP = 16;     // --sp-4 兜底（columnGap 解析失败时用）
+const WR_PAGER_BLOCK = 60;      // .page--bar > .pager 的 min-height(52) + 上缘留白
 const WR_MIN_PER_PAGE = 4;
+const WR_FALLBACK_ROW_H = 132;  // --wr-row-h 兜底（gridAutoRows 解析失败时用）
 
 function calcPerPage() {
   const grid = $("#wrGrid");
   const content = $("#content");
   if (!grid || !content) return 9;
 
-  // 列数：列宽下限 + 列间距决定一行能放几张
+  // 列数：列宽下限 + 列间距决定一行能放几张。
+  // 间距同样读 CSS（columnGap 会被解析成 px），避免改 gap 时漏改 JS。
+  const gap = parseFloat(getComputedStyle(grid).columnGap) || WR_FALLBACK_GAP;
   const gridW = grid.clientWidth || content.clientWidth;
-  const cols = Math.max(1, Math.floor((gridW + WR_GRID_GAP) / (WR_MIN_CARD_W + WR_GRID_GAP)));
+  const cols = Math.max(1, Math.floor((gridW + gap) / (WR_MIN_CARD_W + gap)));
 
   // 可用高度：直接量「网格顶边 → 内容区可视底边」的距离，而不是逐个
   // 累加头部 / 统计条的高度——累加会漏掉各自的 margin-bottom，任何一处
@@ -3921,15 +3954,16 @@ function calcPerPage() {
   // 网格下方要留出分页栏（margin-top + min-height）
   const availH = Math.max(0, content.clientHeight - padBottom - gridTop) - WR_PAGER_BLOCK;
 
-  // 卡片高度：优先量已渲染的真实卡片；空态 / 首屏骨架时退回最小高度
-  const sample = grid.querySelector(".wr-card");
-  const cardH = (sample ? sample.getBoundingClientRect().height : 0) || 108;
-  const rows = Math.max(1, Math.floor((availH + WR_GRID_GAP) / (cardH + WR_GRID_GAP)));
+  // 行高唯一来源：直接读 CSS 的 grid-auto-rows（即 --wr-row-h）。
+  // 量第一张卡会在空态 / 首屏骨架屏时量不到（那时 grid 里只有 skeleton），
+  // 也会在将来卡片高度变化时与 CSS 脱节。读计算样式则始终与布局一致。
+  const cardH = parseFloat(getComputedStyle(grid).gridAutoRows) || WR_FALLBACK_ROW_H;
+  const rows = Math.max(1, Math.floor((availH + gap) / (cardH + gap)));
 
   return Math.min(60, Math.max(WR_MIN_PER_PAGE, cols * rows));
 }
 
-async function loadWR() {
+async function loadWR(_retried) {
   const search = $("#wrSearch")?.value || "";
   const category = $("#wrCat")?.value || "";
   const onlyConst = $("#wrOnlyConst")?.checked || false;
@@ -3944,6 +3978,16 @@ async function loadWR() {
     const data = await api("/wr/list?" + params.toString());
     wrState.entries = data.items || [];
     wrState.total = data.total || 0;
+    // 页码夹紧：窗口 resize / 筛选 / 删除 / 批量删除都会改变总页数，
+    // 而 wrState.page 只在 goWRPage() 里受约束。若当前页已越界，
+    // 后端会返回空列表，界面就停在「第 10 / 8 页 · 共 0 条」的空白页。
+    // 夹紧后重取一次（_retried 防死循环：page 被夹到合法值后必然命中）。
+    const pages = Math.max(1, Math.ceil(wrState.total / wrState.perPage));
+    if (wrState.page > pages) {
+      wrState.page = pages;
+      if (!_retried) return loadWR(true);
+    }
+    if (wrState.page < 1) wrState.page = 1;
     renderWRGrid();
     renderWRPager();
     updateWRStats(data);
@@ -6207,8 +6251,6 @@ function bindEvents() {
       const fn = ACTIONS[action];
       if (fn) { fn(actEl, e); return; }
     }
-    const collapseBtn = e.target.closest("[data-collapse-group]");
-    if (collapseBtn) { toggleSidebarGroup(collapseBtn); closeAllMenus(); return; }
     // 点击菜单之外任何位置 → 关闭所有溢出菜单
     if (!e.target.closest(".menu-wrap")) closeAllMenus();
     const tabEl = e.target.closest("[data-tab]");
@@ -7184,11 +7226,7 @@ async function quillInit() {
   // 按标签序取第一个会在将来插入新表格时静默指错。
   initListKeys($("#memTbody"), "tr", {});
 
-  // 面板状态（侧栏折叠）从插件侧读取——沙箱内 localStorage 不可用。
-  // 不在此等待 bridge：等待发生在 api() 内部且已有负缓存，这里再等只会
-  // 拖长首屏；bridge 就绪与否不影响本请求的正确性。
-  await loadUiState();
-  applySidebarCollapseState();
+  // 侧栏分组与配置卡片都不再有可折叠项，无需恢复界面状态。
 
   // 主题：服务端已在 <html data-theme> 上写好；bridge 亦会推送 isDark。
   // 锁住系统偏好的自动跟随，避免覆盖面板主题。
