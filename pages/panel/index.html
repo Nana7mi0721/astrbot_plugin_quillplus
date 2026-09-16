@@ -124,7 +124,10 @@
 
   /* 材质（毛玻璃） */
   --material-bg: rgba(255, 255, 255, .72);
-  --material-bg-thick: rgba(255, 255, 255, .86);
+  /* 吸顶导航条用的是 thick 档，而它下方穿过的是密集表单卡片、自身文字只有
+     13px。.86 时实测仍有约 14% 的透光，滚动时下方分区标题会在按钮文字间
+     留下一层灰影。提到 .92：模糊带来的层次还在，但文字不可能再被透上来。 */
+  --material-bg-thick: rgba(255, 255, 255, .92);
   --material-edge: rgba(255, 255, 255, .5);
   --material-blur: blur(20px) saturate(180%);
 
@@ -153,6 +156,9 @@
   --h-icon-btn: 30px;     /* .icon-btn 标准 */
   --h-icon-btn-sm: 22px;  /* 密集卡片行内的图标按钮 */
   --h-row: 44px;          /* .card-head / .cfg-row / 列表行 */
+  /* 主编辑 sheet 的内容高度。角色卡“核心设定”是最高的一组表单，
+     统一以此为基准，短表单也保持同一块工作区高度。 */
+  --modal-body-h: min(72vh, 720px);
 
   /* 控件宽度令牌 —— 配置页表单列的统一标尺。
      此前宽度由内联 max-width 与 .field--wide 各自为政，同一张卡片里
@@ -228,7 +234,8 @@
   --separator-opaque: #38383A;
 
   --material-bg: rgba(30, 30, 32, .72);
-  --material-bg-thick: rgba(28, 28, 30, .90);
+  /* 与浅色档同步收紧：透光残留会让白色正文在深色导航条下留下可辨的灰影 */
+  --material-bg-thick: rgba(28, 28, 30, .94);
   --material-edge: rgba(255, 255, 255, .12);
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, .30);
@@ -557,7 +564,9 @@ select.field:focus-visible {
   position: relative;
   display: flex;
   align-items: center;
-  min-width: 160px;
+  /* 下限用于「工具栏里不被压扁」，但硬下限会在极窄内容区里把整行顶出去，
+     所以用 min() 让它在容器更小时跟着收。 */
+  min-width: min(160px, 100%);
 }
 .search > .icon {
   position: absolute;
@@ -658,9 +667,27 @@ select.field:focus-visible {
 .tagfield input:focus { outline: none; }
 
 /* 表单行 */
-.form-row { display: flex; gap: var(--sp-4); }
-.form-row > .form-group { flex: 1; min-width: 0; }
+/* 表单行内两侧字段必须等高：行内各卡共用一份底边距，间距改由行自身承担。
+   此前沿用 .form-group:last-child 的清零规则，右卡没有底边距，而 flex 行的
+   交叉轴高度按「内容 + 外边距」取最大值，于是右卡被拉长到左卡的
+   「内容 + 16px」、左卡停在行底上方 16px —— 实测「条目 ID / 分类」两卡
+   底边为 207.5 / 223.5，「名称 / 权重」为 300 / 316，差值正好一个 --sp-4，
+   就是编辑弹窗里卡片底部参差的原因。
+   现在行内卡片一律不留外边距、由 .form-row 统一给 16px，两卡底边严格对齐，
+   行与行之间的间距总量与改动前一致（原为 92.5 = 76.5 + 16，现为
+   76.5 + 16，下一个字段的起始 y 不变）。 */
+.form-row { display: flex; gap: var(--sp-4); align-items: stretch; margin-bottom: var(--sp-4); }
+.form-row > .form-group { flex: 1; min-width: 0; margin-bottom: 0; }
+/* 行收尾时不再额外留白，与 .form-group 的收尾规则保持一致 */
+.form-row:last-child { margin-bottom: 0; }
 .form-group { margin-bottom: var(--sp-4); }
+/* 弹窗中的文本域按内容自适应；达到上限后内部滚动，不再在底部留下
+   固定 rows 撑出的空白。 */
+.modal-body textarea.field {
+  field-sizing: content;
+  min-height: 64px;
+  max-height: 240px;
+}
 .form-group:last-child { margin-bottom: 0; }
 .form-group > label {
   display: block;
@@ -675,6 +702,52 @@ select.field:focus-visible {
   font-size: 12px;
   line-height: 1.6;
   color: var(--label-3);
+}
+.modal-body .form-group {
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-secondary);
+}
+.modal-body .field,
+.modal-body .sel-btn,
+.modal-body .tagfield {
+  height: 28px;
+}
+.modal-body textarea.field {
+  height: auto;
+}
+.modal-body .check input {
+  width: 18px;
+  height: 18px;
+}
+.form-group > .search {
+  width: 100%;
+  margin-bottom: var(--sp-2);
+  background: var(--bg-primary);
+}
+.form-group > .row {
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.ext-list {
+  max-height: 190px;
+  overflow-y: auto;
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-1);
+  border-radius: var(--r-sm);
+  background: var(--bg-primary);
+}
+.ext-list.is-disabled {
+  opacity: .45;
+}
+.ext-list .check {
+  min-height: 32px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-xs);
+}
+.ext-list .check:hover {
+  background: var(--fill-quaternary);
 }
 
 /* ── 7. 分组列表与卡片 ───────────────────────────────────────────────
@@ -828,41 +901,65 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   .sb-layout { grid-template-columns: minmax(0, 1fr); gap: var(--sp-4); }
 }
 
-/* 页面级分页栏（素材库）钉在内容区底部。
+/* 页面级分页栏（素材库）停在内容区底边。
    卡片数量随筛选变化，分页栏若留在自然流里，它的 y 坐标每一页都不同，
    连续翻页就得反复找按钮。钉住后按钮位置恒定，鼠标停在原地即可连点。
-   限定为 .page--bar 的直接子级：记忆浏览的分页栏在卡片内部，
-   跟着卡片走才是对的，套上 sticky 反而会在滚动时脱离卡片浮起来。 */
-.page--bar > .pager {
+   它是内容区底边的一条「吸底磁贴」，与顶部导航条同构：通栏 + 单侧发丝线。
+   此前做成一块四周圆角、左右缩进、上下都脱离边缘的浮起卡片，问题有三：
+   一是同一屏里出现两块局部圆角玻璃，和铺在它们之间的整片内容列对不齐；
+   二是浮块上方留白处能看见滚过的卡片被切成一条，比色带更碎；
+   三是纵向恰好卡在内容半途，视觉上像一块没归位的浮层。
+   吸底 + 通栏之后只剩上缘一条边和内容相接，用 .5px 发丝线收口即可，
+   纵向的模糊淡出也就不需要了 —— 硬边已经由分隔线明确交代，
+   再用渐隐去软化反而会糊掉卡片的下边缘。
+   材质画在外层（通栏），内容仍走 1180px 居中盒子，与上方卡片同基线。 */
+.pager-bar {
   position: sticky;
   bottom: 0;
   z-index: 15;
-  margin-top: auto;
-  min-height: 52px;
-  padding: var(--sp-2) 0;
-  /* 材质与 .toolbar 同源：内容从下方穿过时靠模糊过渡而非硬分割线 */
-  background: var(--material-bg);
+  flex: none;
+  background: var(--material-bg-thick);
   -webkit-backdrop-filter: var(--material-blur);
   backdrop-filter: var(--material-blur);
+  /* inset 投影代替 border-top：发丝线不占高度，分页栏高度恒定。 */
+  box-shadow: inset 0 .5px 0 var(--separator);
 }
-/* 上缘渐隐：与 .toolbar::after 镜像，避免 52px 的底栏出现硬边 */
-.page--bar > .pager::before {
-  content: "";
-  position: absolute;
-  bottom: 100%; left: 0; right: 0;
-  height: 14px;
-  background: linear-gradient(transparent, var(--material-bg));
-  pointer-events: none;
+.pager-bar-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--sp-2) var(--sp-6);
 }
+/* 分页栏已自带上下内边距，.pager 的 margin-top 会把它顶高一截，
+   算出的可用高度跟着偏小、每页少放一行。 */
+.pager-bar .pager { margin-top: 0; }
 .pager-info { font-size: 13px; color: var(--label-3); font-variant-numeric: tabular-nums; }
 .pager-nav { display: flex; gap: 6px; }
 /* 页面级分页栏的四个按钮定宽等高：文字「首页 / 上一页 / 下一页 / 末页」
    宽度不同，不定宽的话「下一页」的 X 会随按钮内容漂移，连点会点偏。
    限页面级：记忆浏览的分页栏在卡片内部，跟随 .btn--sm 的既有尺寸即可。 */
-.page--bar > .pager .pager-nav .btn {
+.pager-bar .pager-nav .btn {
   min-width: 60px;
   height: var(--h-control);
   justify-content: center;
+}
+/* 极窄窗口：四个定宽按钮 + 页码文字放不下 176px 宽的栏，会横向溢出到
+   视野外（实测 420 宽时右缘多出 138px，被 overflow-x:hidden 裁掉）。
+   收窄按钮并允许换行，让它们始终留在栏内。 */
+@media (max-width: 520px) {
+  .pager-bar-inner { padding: var(--sp-2) var(--sp-4); }
+  .pager-bar .pager { flex-wrap: wrap; justify-content: center; row-gap: var(--sp-2); }
+  .pager-info { flex: 1 0 100%; text-align: center; }
+  .pager-bar .pager-nav .btn { min-width: 0; padding: 0 var(--sp-2); }
+}
+/* 极窄窗口：五段子页签（系统总览/记忆浏览/对话日志/向量检索/导入导出）
+   每个按钮都是 flex:1 + white-space:nowrap，flex 项默认 min-width:auto，
+   不收缩到 min-content 以下，五段文字的最小宽度之和超出可用宽度时整条
+   控件被顶出内容区（实测 420px 下右缘多出 146px，被 overflow-x:hidden
+   裁掉，最后两段根本点不到）。这里允许换行：标签仍保持单行，每行按
+   剩余空间等分撑满，控件高度随之从 32px 变成两行的 62px。 */
+@media (max-width: 620px) {
+  .seg-nav .segmented { display: flex; width: 100%; max-width: 100%; height: auto; flex-wrap: wrap; }
+  .seg-nav .segmented > button { flex: 1 1 auto; }
 }
 
 /* ── 9. 徽章 / 标签 / 状态点 ────────────────────────────────────────── */
@@ -1071,9 +1168,33 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 /* 工具栏右侧动作组：必须用 flex 让纯文字按钮与带图标按钮按中线对齐，
    否则 inline-flex 的按钮会按基线排列，纯文字按钮看上去低 3~4px；
    间距也应由 gap 控制，而不是源码里的空白字符宽度。 */
-.toolbar-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+/* 写作素材库固定为两行：第一行筛选，第二行左侧批量操作、右侧常规操作。
+   批量按钮始终占位，选中时只改变可用状态，避免卡片列表被推下。 */
+.toolbar-actions:has(.wr-batch-actions) {
+  flex: 1 0 100%;
+  justify-content: space-between;
+}
+.wr-batch-actions,
+.wr-main-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.wr-main-actions { margin-left: auto; }
+.wr-batch-actions .btn:disabled {
+  opacity: .38;
+  filter: saturate(.35);
+}
 /* 工具栏内的搜索框可收缩：优先保证按钮不被挤到第二行 */
-.toolbar > .search { min-width: 120px; flex: 0 1 auto; }
+.toolbar > .search { min-width: min(120px, 100%); flex: 0 1 auto; }
 /* 主搜索框（素材库）：它是工具栏里最重要的控件，应当优先吃剩余空间。
    收缩下限 240px 是按 placeholder「搜索关键词、分类、内容」实测的完整
    宽度（11 个全角字 ≈ 154px + 左右内边距 56px + 余量）——低于它
@@ -1081,7 +1202,10 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
    上限 460px：再宽会挤压右侧按钮，收益也为零。 */
 .toolbar > .search--primary {
   flex: 1 1 240px;
-  min-width: 240px;
+  /* 240px 是 placeholder 不截断的下限，但不能写成硬下限：极窄窗口内容区
+     只剩约 210px 时，硬下限会把工具栏顶出容器（实测溢出 30px，被
+     overflow-x:hidden 吞掉右侧按钮）。min() 在宽窗口下结果不变。 */
+  min-width: min(240px, 100%);
   max-width: 460px;
 }
 /* 分隔用的空 span 可被压缩到 0，不占宽度 */
@@ -1301,7 +1425,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .modal {
   width: 100%;
   max-width: 620px;
-  max-height: calc(100vh - 80px);
+  height: min(calc(100vh - 80px), calc(var(--modal-body-h) + 112px));
   display: flex;
   flex-direction: column;
   background: var(--bg-elevated);
@@ -1324,7 +1448,12 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   border-bottom: .5px solid var(--separator);
 }
 .modal-head h2 { flex: 1; font-size: 17px; }
-.modal-body { flex: 1; overflow-y: auto; padding: var(--sp-5); }
+.modal-body {
+  flex: 1;
+  min-height: var(--modal-body-h);
+  overflow-y: auto;
+  padding: var(--sp-5);
+}
 .modal-foot {
   display: flex;
   align-items: center;
@@ -1481,7 +1610,11 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   display: grid;
   /* 列宽下限固定 330px：calcPerPage() 用同一个常量反推列数，
      两边必须一致（改这里就要同步改 JS 里的 WR_MIN_CARD_W）。 */
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  /* min() 兜住比 330px 还窄的容器：内容区在极窄窗口下只剩约 180px，
+     写死 330px 会让网格比容器宽，横向溢出被 .content 的 overflow-x:hidden
+     吞掉，卡片和分页按钮都被裁在视野外。列数仍由 calcPerPage() 按
+     WR_MIN_CARD_W 反推，两者在宽窗口下结果一致。 */
+  grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr));
   /* 行高定型：卡片高度曾随标签行数浮动（实测 110 / 132 / 158 三种），
      同一屏里行与行不等高，网格看上去是「拼」的；分页按 110 估的行数
      也装不下 158 的卡，实测多出 93px 滚动。固定行高后网格完全规整，
@@ -1498,6 +1631,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   position: relative;
   display: flex;
   flex-direction: column;
+  height: 100%;
   /* 高度由网格行高决定（--wr-row-h），min-height 只兜住骨架屏 */
   min-height: var(--wr-row-h);
   background: var(--bg-primary);
@@ -1525,7 +1659,17 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   line-clamp: 2;
   overflow: hidden;
 }
-.wr-card-id { margin-top: 1px; font-size: 11.5px; color: var(--label-3); font-family: var(--font-mono); }
+.wr-card-id {
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--label-3);
+  font-family: var(--font-mono);
+  /* 素材 id 是无空格长串，窄卡片里会撑破网格（实测溢出 6px）；
+     单行省略比换行更符合「标题下方一行标识」的读法。 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .wr-card-meta { flex: none; display: flex; align-items: center; gap: 6px; }
 /* 单行裁切：标签区高度恒定，网格行高才定型。
    完整关键词列表在编辑模态中查看（卡片只做浏览）。 */
@@ -1551,6 +1695,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .wr-card-title {
   flex: 1;
   min-width: 0;
+  /* 极窄卡片下长 id / 无空格标题会把按钮撑宽，进而把卡片网格顶出容器。
+     标题本身已 line-clamp 两行，这里补上溢出收口。 */
+  overflow: hidden;
   padding: 0;
   border: none;
   background: none;
@@ -1592,11 +1739,33 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .wb-item.is-open .wb-head .chev { transform: rotate(90deg); }
 .wb-name { font-size: 14.5px; font-weight: 600; }
 .wb-desc { font-size: 12px; color: var(--label-3); }
-.wb-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-enter) var(--ease-enter); }
+.wb-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--dur-enter) var(--ease-enter),
+              opacity var(--dur-micro) var(--ease-standard);
+}
 .wb-item.is-open .wb-body { grid-template-rows: 1fr; }
-.wb-body > .wb-body-inner { overflow: hidden; }
-.wb-body-inner { padding: 0 var(--sp-4) var(--sp-4); }
-.wb-toolbar { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.wb-item.is-open .wb-body { opacity: 1; }
+/* 折叠时内边距也必须一起收掉。仅把 grid row 收到 0fr 时，内容盒仍保留
+   16px 底边距，收起后会在卡片底部残留空白并参与滚动高度。 */
+.wb-body > .wb-body-inner { overflow: hidden; min-height: 0; }
+.wb-body-inner { padding: 0 var(--sp-4); }
+.wb-item.is-open .wb-body-inner { padding-bottom: var(--sp-4); }
+.wb-toolbar { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); flex-wrap: wrap; }
+.wb-toolbar .search { min-width: 160px; }
+/* 内联搜索的命中行：条目上用 data-hidden 打标记而非内联 display，
+   这样条目列表被 renderWBInner 重建后，只要重放一次过滤就能恢复。 */
+.wb-entry[data-hidden] { display: none; }
+.wb-filter-empty {
+  padding: var(--sp-4) 0 var(--sp-2);
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--label-3);
+}
+.wb-filter-empty[hidden] { display: none; }
+.wb-filter-empty b { color: var(--label-2); font-weight: 600; }
 
 .wb-entry {
   padding: var(--sp-3);
@@ -1631,12 +1800,19 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 }
 
 /* ── 17. 角色卡 ─────────────────────────────────────────────────────── */
-.persona-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--sp-4); }
+.persona-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  grid-auto-rows: 1fr;
+  gap: var(--sp-4);
+  align-items: stretch;
+}
 .persona-list { display: grid; gap: var(--sp-2); }
 .persona-card {
   display: flex;
   align-items: flex-start;
   gap: var(--sp-3);
+  height: 100%;
   padding: var(--sp-3) var(--sp-4);
   background: var(--bg-primary);
   border-radius: var(--r-lg);
@@ -1664,6 +1840,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   color: var(--label-2);
 }
 .persona-body { flex: 1; min-width: 0; }
+.persona-modes { margin-bottom: auto; }
 .persona-name { font-size: 14.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .persona-summary {
   margin-top: 2px;
@@ -1677,11 +1854,18 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 }
 .persona-modes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 /* 角色卡动作按钮：统一为右对齐的可换行按钮组（单一定义，勿再重复声明） */
-.persona-actions { flex: none; display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 152px; }
+.persona-actions {
+  flex: none;
+  align-self: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-end;
+  gap: 4px;
+  justify-content: flex-end;
+  max-width: 152px;
+}
 /* 悬停 / 聚焦显现：列表视图宽度紧张时尤其需要 */
-.persona-card .persona-actions { opacity: 0; transition: opacity var(--dur-micro) var(--ease-standard); }
-.persona-card:hover .persona-actions,
-.persona-card:focus-within .persona-actions { opacity: 1; }
+.persona-card .persona-actions { opacity: 1; }
 
 /* 头像上传区 */
 .avatar-zone {
@@ -1859,8 +2043,16 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .prov-val { flex: 1; min-width: 0; word-break: break-all; }
 
 /* ── 20. 配置页 ─────────────────────────────────────────────────────── */
-/* 分区导航：分段控件 + 尾部搜索，滚动时吸顶 */
-.cfg-nav { margin-bottom: var(--sp-4); }
+/* 分区导航：文字导航 + 尾部搜索，随 .page-head-bar 这条通栏吸顶带一起吸顶。
+   它只是那条带子里的一行，材质与形状都由父带统一提供，自己不再画衬底：
+   父带已经是一条「0.72 白 + 毛玻璃」的通栏吸顶带，若在这一行上再叠一块
+   更白、更窄的底，就变成「控件里套控件」—— 两块半透明白各自乘一次底色，
+   交界处会留下一条横贯整条内容区的台阶（实测台阶级差 3/255，滚动时非常
+   显眼）。macOS 27 的工具栏里只有一层材质。
+   形状也一样跟随父带：直角、通栏。套件里工具栏一律贴住窗口左右边界，
+   圆角只属于最外层窗口（16px），这一行本身不给任何圆角。
+   这里也不再留 margin-bottom：带子到正文的间距由 .page 的 padding-top 提供，
+   留在带内只会把吸顶高度撑高、并把带子的下边缘推离正文。 */
 /* 分区导航是一条页内锚点导航，不是分段控件：
    segmented 表达的是「切换同一区域的内容」，点它会把别的段的内容换掉；
    而这里点击只是滚动到下方对应分区，五段内容始终同时存在（搜索也依赖
@@ -1871,9 +2063,13 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  padding: var(--sp-2) 0 var(--sp-3);
-  /* 覆盖 .toolbar 的换行：导航条与搜索框必须始终同排，
-     否则搜索框掉到第二行会把吸顶高度改掉，滚动锚点跟着漂。 */
+  /* 与 .page-head-bar-inner 同一套盒子：1180px 居中 + 左右 24px，
+     五个标签和搜索框因此与下方表单卡片严格共享同一条左基线。 */
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--sp-2) var(--sp-6);
+  /* 导航条与搜索框必须始终同排：搜索框掉到第二行会把吸顶高度改掉，
+     滚动锚点跟着漂。 */
   flex-wrap: nowrap;
 }
 .cfg-nav-list {
@@ -1881,41 +2077,49 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: 2px;
+  /* 这里本来还垫了一层 --fill-quaternary 的灰底（segmented 的轨道）。
+     玻璃条本身已经是一层材质，再在材质上叠一块控制件的底色，就变成
+     「控件里套控件」——macOS 27 的工具栏里不会出现这种双层底。
+     分区导航是纯文字锚点，五个标签直接坐在玻璃上即可，
+     当前项用染色胶囊表示，不需要先给它们铺一条轨道。 */
+  padding: 0;
+  background: none;
   overflow-x: auto;
   scrollbar-width: none;
 }
 .cfg-nav-list::-webkit-scrollbar { display: none; }
 .cfg-nav-list > button {
   flex: none;
-  padding: 0 var(--sp-3);
-  height: var(--h-control);
+  padding: 0 var(--sp-2);
+  height: 28px;
   border: none;
   background: none;
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--label-2);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-sm);
   cursor: pointer;
   white-space: nowrap;
   position: relative;
   transition: color var(--dur-micro) var(--ease-standard),
-              background var(--dur-micro) var(--ease-standard);
+              background var(--dur-micro) var(--ease-standard),
+              box-shadow var(--dur-micro) var(--ease-standard);
 }
-.cfg-nav-list > button:hover { color: var(--label); background: var(--fill-quaternary); }
-.cfg-nav-list > button.is-selected { color: var(--accent-text); font-weight: 600; }
-/* 当前分区下划线：贴在按钮下沿，不占额外布局高度 */
-.cfg-nav-list > button.is-selected::after {
-  content: "";
-  position: absolute;
-  left: var(--sp-3); right: var(--sp-3); bottom: 2px;
-  height: 2px;
-  border-radius: var(--r-pill);
-  background: var(--accent);
+.cfg-nav-list > button:hover { color: var(--label); background: var(--fill-tertiary); }
+.cfg-nav-list > button.is-selected {
+  /* 当前项改用强调色染色 + 强调色文字：白色实底胶囊在玻璃上会再形成
+     一块不透明色块，滚动时比灰底更抢眼，正是要避免的「第二层衬底」。 */
+  color: var(--accent-text);
+  font-weight: 600;
+  background: var(--accent-tint);
 }
-.cfg-nav .search { flex: none; }
-.cfg-section { margin-bottom: var(--sp-8); scroll-margin-top: 76px; }
+.cfg-nav .search { flex: none; background: var(--fill-quaternary); }
+/* 分区导航行不再单独关闭 .toolbar 的渐变淡出：它现在是标题带的最后一行，
+   和其它页面的工具栏一样用同一条 12px 渐隐收尾，全站吸顶带的底边处理
+   保持一致（不再需要靠 0.5px 发丝线去硬切）。 */
+.cfg-section { margin-bottom: var(--sp-8); scroll-margin-top: 117px; }
 .cfg-section-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: var(--sp-3); flex-wrap: wrap; }
 .cfg-section-head h2 { font-size: 20px; font-weight: 700; letter-spacing: -.015em; }
 .cfg-section-head .cfg-section-sub { font-size: 12.5px; color: var(--label-3); }
@@ -2006,6 +2210,23 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   gap: var(--sp-4);
   align-items: start;
 }
+/* 成对的信息卡按行等高，消除截图里「系统健康度 / 调试与维护」和
+   RAG 顶部两卡底边参差。注入引擎使用纵向列栈，不套用此规则。 */
+#sec-rag > .cfg-cols:first-of-type,
+#sec-system > .cfg-cols,
+.rag-overview {
+  align-items: stretch;
+}
+#sec-rag > .cfg-cols:first-of-type > .card,
+#sec-system > .cfg-cols > .card,
+.rag-overview > .card {
+  height: 100%;
+}
+#sec-rag > .cfg-cols:first-of-type > .card > .card-body,
+#sec-system > .cfg-cols > .card > .card-body,
+.rag-overview > .card > .card-body {
+  height: calc(100% - var(--h-row));
+}
 /* 注入引擎：4 张卡高度差极大（605 / 357 / 269 / 317），按行配对时
    「写作素材库控制」被拉在 605px 的高卡旁边，下方空出 233px。
    改成两列纵向栈：左列世界书注入策略 + 表现控制，右列素材库控制 +
@@ -2024,6 +2245,16 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 /* 单列时（窄窗口）列容器本身不再需要额外间距 */
 @media (max-width: 980px) {
   #sec-inject .cfg-cols { grid-template-columns: minmax(0, 1fr); }
+  .page-head-bar .toolbar {
+    flex-wrap: wrap;
+  }
+  .page-head-bar .toolbar > .grow {
+    display: none;
+  }
+  .page-head-bar .toolbar-actions {
+    flex: 1 0 100%;
+    justify-content: flex-start;
+  }
 }
 
 /* 页脚署名（华为字体许可要求显著声明） */
@@ -2055,11 +2286,12 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 /* 降低透明度：材质改为不透明纯色（HIG：减少透明度时保证可读性） */
 @media (prefers-reduced-transparency: reduce) {
   .sidebar, .toolbar, .page-head-bar, .menu, .actionbar, .to-top, .banner, .alert,
-  .sel-menu, .ctx-menu {
+  .sel-menu, .ctx-menu, .pager-bar {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     background: var(--bg-primary);
   }
+  /* 配置页导航条的材质画在伪元素上，内层已无背景可覆盖 */
   /* 标题带内的工具栏不承载材质，别被上面的规则重新涂上底色 */
   .page-head-bar .toolbar { background: none; }
   .toolbar::after { display: none; }
@@ -2402,31 +2634,27 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
             </label>
             <span class="grow"></span>
             <div class="toolbar-actions">
-              <span class="select-pill" id="wrSelectPill" hidden>已选 0</span>
-              <button type="button" class="btn btn--filled" data-action="wr-new">
-                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建条目
-              </button>
-              <div class="menu-wrap">
-                <button type="button" class="btn icon-btn" data-action="more-menu" aria-label="更多操作" aria-haspopup="true" aria-expanded="false">
-                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"/></svg>
+              <div class="wr-batch-actions">
+                <span class="select-pill" id="wrSelectPill" hidden>已选 0</span>
+                <button type="button" class="btn btn--gray" data-action="wr-batch-toggle" data-value="1" data-batch-action disabled>批量启用</button>
+                <button type="button" class="btn btn--gray" data-action="wr-batch-toggle" data-value="0" data-batch-action disabled>批量禁用</button>
+                <button type="button" class="btn btn--destructive-tinted" data-action="wr-batch-delete" data-batch-action disabled>批量删除</button>
+                <button type="button" class="btn btn--gray" data-action="wr-batch-clear" data-batch-action disabled>取消选择</button>
+              </div>
+              <div class="wr-main-actions">
+                <button type="button" class="btn btn--filled" data-action="wr-new">
+                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建条目
                 </button>
-                <div class="menu" id="wrMoreMenu" role="menu" hidden>
-                  <button type="button" class="menu-item" role="menuitem" data-action="wr-test">
-                    <svg class="icon" aria-hidden="true"><use href="#i-flask"/></svg>匹配测试
-                  </button>
-                  <button type="button" class="menu-item" role="menuitem" data-action="wr-export">
-                    <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>导出
-                  </button>
-                  <label class="menu-item file-btn" role="menuitem">
-                    <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>导入
-                    <input type="file" accept=".json" data-file="wr-import" aria-label="导入素材 JSON">
-                  </label>
-                  <div class="menu-sep" data-batch-only hidden></div>
-                  <button type="button" class="menu-item" role="menuitem" data-action="wr-batch-toggle" data-value="1" data-batch-only hidden>批量启用</button>
-                  <button type="button" class="menu-item" role="menuitem" data-action="wr-batch-toggle" data-value="0" data-batch-only hidden>批量禁用</button>
-                  <button type="button" class="menu-item menu-item--danger" role="menuitem" data-action="wr-batch-delete" data-batch-only hidden>批量删除</button>
-                  <button type="button" class="menu-item" role="menuitem" data-action="wr-batch-clear" data-batch-only hidden>取消选择</button>
-                </div>
+                <button type="button" class="btn btn--gray" data-action="wr-test">
+                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-flask"/></svg>匹配测试
+                </button>
+                <button type="button" class="btn btn--gray" data-action="wr-export">
+                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-download"/></svg>导出
+                </button>
+                <label class="btn btn--gray file-btn">
+                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>导入
+                  <input type="file" accept=".json" data-file="wr-import" aria-label="导入素材 JSON">
+                </label>
               </div>
             </div>
           </div>
@@ -2441,8 +2669,12 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           <div class="skeleton skeleton-card"></div>
           <div class="skeleton skeleton-card"></div>
         </div>
+      </div>
 
-        <div class="pager" id="wrPager"></div>
+      <div class="pager-bar">
+        <div class="pager-bar-inner">
+          <div class="pager" id="wrPager"></div>
+        </div>
       </div>
     </section>
 
@@ -2456,7 +2688,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           </div>
 
           <div class="toolbar">
-            <label class="search" style="min-width:220px">
+            <label class="search" style="min-width:min(220px, 100%)">
               <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
               <input type="search" id="wbSearch" placeholder="搜索世界书名称或描述" aria-label="搜索世界书">
               <button type="button" class="search-clear" data-action="clear-search" data-target="wbSearch" aria-label="清除搜索">
@@ -2472,23 +2704,16 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
               <button type="button" class="btn btn--filled" data-action="wb-new">
                 <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建世界书
               </button>
-              <div class="menu-wrap">
-                <button type="button" class="btn icon-btn" data-action="more-menu" aria-label="更多操作" aria-haspopup="true" aria-expanded="false">
-                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"/></svg>
-                </button>
-                <div class="menu" id="wbMoreMenu" role="menu" hidden>
-                  <label class="menu-item file-btn" role="menuitem">
-                    <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>导入
-                    <input type="file" accept=".json" data-file="wb-import" aria-label="导入世界书 JSON">
-                  </label>
-                  <button type="button" class="menu-item" role="menuitem" data-action="wb-export-st">
-                    <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>导出 ST
-                  </button>
-                  <button type="button" class="menu-item" role="menuitem" data-action="wb-reload">
-                    <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
-                  </button>
-                </div>
-              </div>
+              <label class="btn btn--gray file-btn">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>导入
+                <input type="file" accept=".json" data-file="wb-import" aria-label="导入世界书 JSON">
+              </label>
+              <button type="button" class="btn btn--gray" data-action="wb-export-st">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-download"/></svg>导出 ST
+              </button>
+              <button type="button" class="btn btn--gray" data-action="wb-reload">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
+              </button>
             </div>
           </div>
         </div>
@@ -2515,7 +2740,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           </div>
 
           <div class="toolbar">
-            <label class="search" style="min-width:220px">
+            <label class="search" style="min-width:min(220px, 100%)">
               <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
               <input type="search" id="personaSearch" placeholder="搜索角色卡名称" aria-label="搜索角色卡">
               <button type="button" class="search-clear" data-action="clear-search" data-target="personaSearch" aria-label="清除搜索">
@@ -2535,21 +2760,14 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
               <button type="button" class="btn btn--filled" data-action="persona-new">
                 <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建角色卡
               </button>
-              <div class="menu-wrap">
-                <button type="button" class="btn icon-btn" data-action="more-menu" aria-label="更多操作" aria-haspopup="true" aria-expanded="false">
-                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"/></svg>
-                </button>
-                <div class="menu" id="personaMoreMenu" role="menu" hidden>
-                  <label class="menu-item file-btn" role="menuitem">
-                    <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>导入 V2
-                    <input type="file" accept=".png,.jpg,.jpeg,.webp,.json" data-file="persona-import" aria-label="导入角色卡">
-                  </label>
-                  <button type="button" class="menu-item" role="menuitem" data-action="persona-import-text">文本粘贴导入</button>
-                  <button type="button" class="menu-item" role="menuitem" data-action="persona-refresh">
-                    <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
-                  </button>
-                </div>
-              </div>
+              <label class="btn btn--gray file-btn">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>导入 V2
+                <input type="file" accept=".png,.jpg,.jpeg,.webp,.json" data-file="persona-import" aria-label="导入角色卡">
+              </label>
+              <button type="button" class="btn btn--gray" data-action="persona-import-text">文本导入</button>
+              <button type="button" class="btn btn--gray" data-action="persona-refresh">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
+              </button>
             </div>
           </div>
         </div>
@@ -2573,7 +2791,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
           <span class="page-sub" id="ragSub"></span>
         </div>
 
-        <div class="cfg-cols" style="margin-bottom:var(--sp-4)">
+        <div class="cfg-cols rag-overview" style="margin-bottom:var(--sp-4)">
           <div class="card">
             <div class="card-head"><h3>向量模型</h3></div>
             <div class="card-body"><div class="card-body-inner" id="ragModelInfo">
@@ -2787,7 +3005,8 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 
     <!-- ───── 配置 ───── -->
     <section class="tab-pane" id="pane-config" role="region" aria-label="配置">
-      <div class="page">
+      <div class="page-head-bar">
+        <div class="page-head-bar-inner">
         <div class="page-head">
           <h2>配置</h2>
           <span class="page-sub">修改后需点击底部「保存」提交</span>
@@ -2802,7 +3021,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
               <button type="button" data-target="sec-session">会话与输出</button>
               <button type="button" data-target="sec-system">系统与安全</button>
             </div>
-            <label class="search" style="width:210px">
+            <label class="search" style="flex:0 1 210px;min-width:120px">
               <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
               <input type="search" id="configSearchInput" placeholder="搜索配置项" aria-label="搜索配置项">
               <button type="button" class="search-clear" data-action="clear-search" data-target="configSearchInput" aria-label="清除搜索">
@@ -2811,7 +3030,10 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
             </label>
           </div>
         </nav>
+        </div>
+      </div>
 
+      <div class="page">
         <!-- ══ 1. 注入引擎 ══ -->
         <section class="cfg-section" id="sec-inject">
           <div class="cfg-section-head">
@@ -2891,6 +3113,11 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
                     <label class="cfg-field-label" for="c-perf-max">要求回复最高字数</label>
                     <div class="unit-wrap"><input class="field" type="number" id="c-perf-max" value="0"><span class="unit">字</span></div>
                     <span class="hint">填 0 表示不限制。用于防止模型无限发散。</span>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-perf-max-prompt">提示词硬截断上限</label>
+                    <div class="unit-wrap"><input class="field" type="number" id="c-perf-max-prompt" value="50000"><span class="unit">字符</span></div>
+                    <span class="hint">总提示词的安全上限。内容过多时按优先级丢弃次要素材，常驻协议不会被截掉。</span>
                   </div>
                 </div></div>
               </div>
@@ -3027,6 +3254,15 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
                 <select class="field field--wide" id="c-rag-emb"></select>
                 <span class="hint">用于文本向量化。留空使用本地 bge-small。切换提供商会改变向量维度，已上传文档需重新上传。</span>
               </div>
+              <div class="cfg-row">
+                <div class="cfg-row-text">
+                  <div class="cfg-row-title">允许本地 Embedding 回退</div>
+                  <div class="cfg-row-desc">API 向量模型不可用时，自动使用本地 bge-small 模型。</div>
+                </div>
+                <div class="cfg-row-control">
+                  <label class="switch"><input type="checkbox" id="c-rag-local"><span class="switch-track"></span></label>
+                </div>
+              </div>
               <div class="cfg-field">
                 <label class="cfg-field-label" for="c-rag-rerank">Rerank 重排模型</label>
                 <select class="field field--wide" id="c-rag-rerank"></select>
@@ -3048,6 +3284,11 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
               <div class="cfg-field">
                 <label class="cfg-field-label" for="c-rag-topk">最终注入条数</label>
                 <div class="unit-wrap"><input class="field" type="number" id="c-rag-topk" value="3"><span class="unit">条</span></div>
+              </div>
+              <div class="cfg-field">
+                <label class="cfg-field-label" for="c-rag-dense-topk">向量粗排召回条数</label>
+                <div class="unit-wrap"><input class="field" type="number" id="c-rag-dense-topk" value="5"><span class="unit">条</span></div>
+                <span class="hint">先召回候选，再交给重排模型精筛；建议为最终注入条数的 2-3 倍。</span>
               </div>
             </div></div>
           </div>
@@ -3145,6 +3386,11 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
                   <span class="health-name">状态栏解析成功率</span>
                   <span class="health-rate" id="health-status-rate">—</span>
                   <span class="health-detail" id="health-status-detail">— / —</span>
+                </div>
+                <div class="health-row">
+                  <span class="health-name">写作素材库索引</span>
+                  <span class="health-rate" id="health-wr-index">—</span>
+                  <span class="health-detail" id="health-wr-index-detail">—</span>
                 </div>
                 <span class="hint">滑动窗口最近 20 次，插件重启后清零。</span>
               </div></div>
@@ -3807,6 +4053,13 @@ function closeScrim(scrim) {
 
 function openModal() { openScrim($("#scrim")); }
 
+function autoSizeModalTextareas(root) {
+  (root || $("#modalBody"))?.querySelectorAll("textarea.field").forEach(ta => {
+    ta.style.height = "auto";
+    ta.style.height = Math.min(240, Math.max(64, ta.scrollHeight)) + "px";
+  });
+}
+
 function closeModal() {
   closeScrim($("#scrim"));
   const saveBtn = $("#modalSaveBtn");
@@ -3926,7 +4179,7 @@ let _wrTagInput = null;
     分页栏」对实测卡片高度取整。 */
 const WR_MIN_CARD_W = 330;      // 与 .wr-grid 的 minmax(330px, 1fr) 一致
 const WR_FALLBACK_GAP = 16;     // --sp-4 兜底（columnGap 解析失败时用）
-const WR_PAGER_BLOCK = 60;      // .page--bar > .pager 的 min-height(52) + 上缘留白
+const WR_PAGER_BLOCK = 52;      // .pager-bar 高度（8 + 32 + 8）与 4px 余量
 const WR_MIN_PER_PAGE = 4;
 const WR_FALLBACK_ROW_H = 132;  // --wr-row-h 兜底（gridAutoRows 解析失败时用）
 
@@ -4090,8 +4343,7 @@ function goWRPage(p) {
 }
 
 // ── 批量选择 ──
-/* 选中态驱动：计数胶囊显示「已选 N」，并显隐 ⋯ 菜单内的批量项。
-   批量操作条已删除，入口收敛到溢出菜单。 */
+/* 选中态驱动：计数胶囊显示「已选 N」，批量操作作为同级按钮在选中后出现。 */
 function updateWRBatchBar() {
   const n = _wrSelected.size;
   const pill = $("#wrSelectPill");
@@ -4099,7 +4351,9 @@ function updateWRBatchBar() {
     pill.hidden = n === 0;
     pill.textContent = `已选 ${n}`;
   }
-  $$("#wrMoreMenu [data-batch-only]").forEach(el => { el.hidden = n === 0; });
+  $$("[data-batch-action]").forEach(el => {
+    el.disabled = n === 0;
+  });
 }
 
 function wrBatchClear() {
@@ -4244,6 +4498,7 @@ async function openWRModal(entryId) {
   // 表单 id 与页面搜索框 id 撞名（wrCat），此处用局部查询避免误伤
   $("#modalBody #wrCat").value = data.category || "";
   openModal();
+  autoSizeModalTextareas($("#modalBody"));
   setTimeout(() => { _wrTagInput = createTagInput("wrTagHost", data.keywords || []); }, 40);
 }
 
@@ -4345,6 +4600,10 @@ let wbAll = [];
 let _wbOpenItem = null;
 let _wbEntryTagInput = null;
 let _wbOnlyConst = false;
+/* 每本世界书内联搜索框当前的关键词（按世界书名索引）。
+   条目列表会被整体重建，DOM 里的 <input> 也跟着换新，词若只存在节点上就会
+   随重建一起消失；放在这里渲染期可直接取用。 */
+const _wbFilterQuery = Object.create(null);
 
 async function loadWB(forceOpenName) {
   const el = $("#wbList");
@@ -4392,7 +4651,7 @@ function renderWBList(list, openName) {
     wbCache[wb.name] = wb;
     const n = (wb.entries && wb.entries.length) || 0;
     return `<section class="wb-item" data-wb="${esc(wb.name)}">
-      <div class="wb-head" data-action="wb-toggle" role="button" tabindex="0">
+      <div class="wb-head" data-wb-name="${esc(wb.name)}" data-action="wb-toggle" role="button" tabindex="0">
         <svg class="icon chev" aria-hidden="true"><use href="#i-chevron-right"/></svg>
         <div class="grow">
           <div class="wb-name">${esc(wb.name)}</div>
@@ -4457,24 +4716,42 @@ async function reloadSingleWB(name) {
     if (inner) {
       inner.innerHTML = renderWBInner(name, entries, shown);
       inner.dataset.loaded = "1";
+      reapplyWBEntryFilter(name);
     }
   } catch (e) { showToast("刷新失败：" + e.message); }
 }
 
 function renderWBInner(name, entries, shown) {
   const n = esc(name);
+  // 关键词存在模块级 map 里，而不是只活在 <input> 上：条目列表会被整体
+  // 重渲染（切换「仅常驻」、增删条目后重建），重建时输入框是新节点、value
+  // 为空，之前靠 reapplyWBEntryFilter 读 input.value 恢复会直接提前返回，
+  // 表现成「一重渲染筛选就丢」。渲染时直接从 map 取词并把命中标记一起
+  // 写进 HTML，重建后既不丢词也不闪一下全量。
+  const q = (_wbFilterQuery[name] || "").toLowerCase().trim();
+  const vis = q ? shown.filter(e => wbEntryHit(e, q)) : shown;
+  const inner = vis.length
+    ? vis.map(e => renderWBEntry(name, e)).join("")
+    : renderEmptyState("book", "没有条目", "点击上方「新建条目」添加第一条设定");
+  // 提示只在「本来有条目、但零命中」时出现；一册本就空着时由上面的空状态
+  // 独占说明，两条提示叠着出现会互相打架。
+  const tip = q && shown.length && !vis.length
+    ? `<div class="wb-filter-empty">没有匹配「<b>${esc(_wbFilterQuery[name])}</b>」的条目</div>`
+    : "";
   return `<div class="wb-toolbar">
       <button type="button" class="btn btn--sm btn--filled" data-action="wb-entry-new">
         <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建条目
       </button>
       <label class="search grow">
         <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-        <input type="search" data-wb-filter placeholder="搜索本世界书的设定…" aria-label="搜索本世界书条目">
+        <input type="search" data-wb-filter placeholder="搜索本世界书的设定…" aria-label="搜索本世界书条目" value="${esc(_wbFilterQuery[name] || "")}">
+        <button type="button" class="search-clear" data-action="clear-search" data-scope="wb-filter" aria-label="清除搜索">
+          <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+        </button>
       </label>
       <span class="fs-12 t3 nowrap">${_wbOnlyConst ? `显示 ${shown.length} 条常驻 / ` : ""}共 ${entries.length} 条</span>
     </div>
-    ${shown.length ? shown.map(e => renderWBEntry(name, e)).join("")
-      : renderEmptyState("book", "没有条目", "点击上方「新建条目」添加第一条设定")}`;
+    ${inner}${tip}`;
 }
 
 function renderWBEntry(wbName, e) {
@@ -4518,6 +4795,7 @@ function toggleWB(name) {
     const shown = _wbOnlyConst ? entries.filter(e => e.is_constant) : entries;
     inner.innerHTML = renderWBInner(name, entries, shown);
     inner.dataset.loaded = "1";
+    reapplyWBEntryFilter(name);
   }
 }
 
@@ -4620,6 +4898,7 @@ function openWBEntryModal(wbName, entryId) {
       <label class="check"><input type="checkbox" id="weEnabled" ${(entry ? entry.enabled : true) !== false ? "checked" : ""}><span>启用</span></label>
     </div>`;
   openModal();
+  autoSizeModalTextareas($("#modalBody"));
   setTimeout(() => { _wbEntryTagInput = createTagInput("weTagHost", entry?.keys || []); }, 40);
 }
 
@@ -4796,9 +5075,14 @@ function syncExtList(sys) {
   const modeSel = $(`#pf-${sys}-mode`);
   const list = $(`#pf-${sys}-list`);
   if (!modeSel || !list) return;
-  const off = modeSel.value === "disabled";
-  list.style.opacity = off ? ".45" : "";
-  list.style.pointerEvents = off ? "none" : "";
+  const mode = modeSel.value;
+  const off = mode === "disabled";
+  list.classList.toggle("is-disabled", off);
+  list.style.opacity = "";
+  list.style.pointerEvents = "";
+  list.querySelectorAll("input[type='checkbox']").forEach(cb => {
+    cb.disabled = off;
+  });
 }
 
 function filterCheckboxes(input, listId) {
@@ -4808,6 +5092,73 @@ function filterCheckboxes(input, listId) {
   $$("label", list).forEach(lbl => {
     lbl.style.display = lbl.textContent.toLowerCase().includes(q) ? "" : "none";
   });
+}
+
+/** 世界书「本册条目」内联搜索。
+ *  过滤的是当前展开这一本里的 .wb-entry，用 data-hidden 而不是直接改
+ *  style.display：条目列表由 renderWBInner 整体重渲染（切换「仅常驻」、
+ *  增删条目后端返回后都会重建 DOM），内联样式会随重建一起丢失，
+ *  只留下一个还写着关键词、却什么也没过滤的输入框。
+ *  data-hidden 由 CSS 统一翻译成 display:none，重建后只要输入框里还有词，
+ *  就立刻重新应用一次（见 reloadSingleWB / toggleWB 的调用点）。 */
+function filterWBEntries(input) {
+  const item = input.closest(".wb-item");
+  if (!item) return;
+  const name = item.dataset.wb;
+  const raw = input.value || "";
+  const q = raw.toLowerCase().trim();
+  if (q) _wbFilterQuery[name] = raw; else delete _wbFilterQuery[name];
+  applyWBEntryFilter(item, q, raw);
+}
+
+/** 命中判定：标题、id、关键词、正文拼起来做子串匹配。
+ *  单独拆出来是因为渲染期（renderWBInner）也要用同一套规则，两处若各写
+ *  一份，重建后的结果会和逐字输入时的结果对不上。 */
+function wbEntryHit(e, q) {
+  const hay = [e.title || "", e.id || "", (e.keys || []).join(" "), e.content || ""]
+    .join(" ").toLowerCase();
+  return hay.includes(q);
+}
+
+function applyWBEntryFilter(item, q, raw) {
+  let hit = 0;
+  const entries = $$(".wb-entry", item);
+  entries.forEach(e => {
+    const show = !q || (e.textContent || "").toLowerCase().includes(q);
+    if (show) hit++;
+    e.toggleAttribute("data-hidden", !show);
+  });
+  // 零命中的提示按需新建，而不是只在 HTML 里预留一个再切 hidden：
+  // 提示只在「输入了词且一条都没命中」时才该存在，而首次渲染时输入框
+  // 是空的、不会有这个节点，后续靠切 hidden 就永远切不出提示来。
+  setWBTip(item, q && entries.length && !hit ? (raw || q) : null);
+}
+
+/** 挂载 / 更新 / 移除「没有匹配…」提示。传 null 表示移除。 */
+function setWBTip(item, text) {
+  let tip = $(".wb-filter-empty", item);
+  if (text == null) { if (tip) tip.remove(); return; }
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.className = "wb-filter-empty";
+    const anchor = item.querySelector("[data-wb-inner]") || item;
+    anchor.appendChild(tip);
+  }
+  tip.innerHTML = `没有匹配「<b>${esc(text)}</b>」的条目`;
+  tip.hidden = false;
+}
+
+/** 重渲染后按当前关键词恢复过滤。
+ *  现在 renderWBInner 已经把词和命中结果直接写进 HTML，正常路径下这里
+ *  不需要再做什么；保留它只用于兜底「渲染期没吃到的词」（例如列表由别的
+ *  路径塞进来）。仍读 input.value 是刻意的：那条路径下 map 与 DOM 可能
+ *  已经不同步，以界面为准才不会出现「框里有词、条目全在」的错位。 */
+function reapplyWBEntryFilter(name) {
+  const item = document.querySelector('.wb-item[data-wb="' + CSS.escape(name) + '"]');
+  if (!item) return;
+  const input = $("[data-wb-filter]", item);
+  if (!input || !input.value) return;
+  applyWBEntryFilter(item, input.value.toLowerCase().trim(), input.value);
 }
 
 async function openPersonaModal(personaId) {
@@ -4946,6 +5297,7 @@ async function openPersonaModal(personaId) {
   }
 
   openModal();
+  autoSizeModalTextareas($("#modalBody"));
   _modalState = { type: "persona" };
 }
 
@@ -4962,7 +5314,7 @@ function renderExtBlock(sys, title, ph, options, bound, selectHtml, hint, emptyT
       <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
       <input type="search" placeholder="${esc(ph)}" data-ext-filter="pf-${sys}-list" aria-label="${esc(ph)}">
     </label>
-    <div id="pf-${sys}-list" style="max-height:190px;overflow-y:auto;display:grid;gap:6px;padding:var(--sp-2);border-radius:var(--r-sm);background:var(--bg-secondary)">${body}</div>
+    <div class="ext-list" id="pf-${sys}-list">${body}</div>
     <span class="hint">${esc(hint)}</span>
   </div>`;
 }
@@ -5650,9 +6002,11 @@ async function testMemoryVectorSearch(btn) {
 async function backupExport(btn) {
   await withBusy(btn, "打包中…", async () => {
     try {
-      const blob = await api("/backup/export", { isBlob: true });
+      const res = await api("/backup/export_base64");
+      if (!res || !res.b64_data) throw new Error("备份数据为空");
+      const blob = b64ToBlob(res.b64_data, "application/zip");
       const ts = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 16);
-      downloadBlob(blob, `quill_backup_${ts}.zip`);
+      downloadBlob(blob, res.filename || `quill_backup_${ts}.zip`);
       showToast("备份已下载", "success");
     } catch (e) { showToast("备份失败：" + e.message); }
   });
@@ -5688,6 +6042,7 @@ async function backupRestore(input) {
 
 let _rawConfig = {};
 let _dirty = false;
+let _applyingSettings = false;
 
 /** 配置项 → DOM 的映射表。集中定义确保「读取」与「保存」永不脱节。 */
 const CFG_FIELDS = [
@@ -5695,9 +6050,11 @@ const CFG_FIELDS = [
   ["rag", "embedding_provider_id", "#c-rag-emb", "str"],
   ["rag", "rerank_provider_id", "#c-rag-rerank", "str"],
   ["rag", "llm_provider_id", "#c-rag-llm", "str"],
+  ["rag", "enable_local_embedding", "#c-rag-local", "bool"],
   ["rag", "chunk_size", "#c-rag-chunk", "int"],
   ["rag", "chunk_overlap", "#c-rag-overlap", "int"],
   ["rag", "top_k", "#c-rag-topk", "int"],
+  ["rag", "dense_top_k", "#c-rag-dense-topk", "int"],
   ["rag", "enable_memory", "#c-rag-memory", "bool"],
   ["rag", "enable_autonomous_reflection", "#c-rag-autonomous-reflection", "bool"],
   ["rag", "enable_chat_logging", "#c-rag-log", "bool"],
@@ -5715,6 +6072,7 @@ const CFG_FIELDS = [
   ["writing_resource", "category_dedup_limit", "#c-wr-dedup", "int"],
   ["performance", "min_output_length", "#c-perf-min", "int"],
   ["performance", "max_output_length", "#c-perf-max", "int"],
+  ["performance", "max_prompt_length", "#c-perf-max-prompt", "int"],
   ["status_bar", "enabled", "#c-sb-enabled", "bool"],
   ["status_bar", "default_placeholder", "#c-sb-placeholder", "placeholder"],
   ["status_bar", "fields", "#c-sb-fields", "str"],
@@ -5731,6 +6089,7 @@ const CFG_FIELDS = [
 /** 各字段在渲染时使用的默认值（后端缺键时的兜底）。 */
 const CFG_DEFAULTS = {
   "rag.chunk_size": 500, "rag.chunk_overlap": 50, "rag.top_k": 3,
+  "rag.dense_top_k": 5, "rag.enable_local_embedding": true,
   "rag.enable_autonomous_reflection": true, "rag.enable_chat_logging": true,
   "rag.chat_log_retention_days": 30,
   "worldbook.enabled": true, "worldbook.max_token_limit": 4000, "worldbook.max_dynamic_entries": 4,
@@ -5738,6 +6097,7 @@ const CFG_DEFAULTS = {
   "writing_resource.enabled": true, "writing_resource.max_entries": 4,
   "writing_resource.fallback_top_count": 2, "writing_resource.category_dedup_limit": 3,
   "performance.min_output_length": 400, "performance.max_output_length": 0,
+  "performance.max_prompt_length": 50000,
   "status_bar.fields": "好感度|关系阶段|心情|位置|穿着|当前想法",
   "status_bar.format_template": "**状态栏**\n```\n{content}\n```",
   "status_bar.plot_paths": "继续当前话题|转换场景|结束互动",
@@ -5758,6 +6118,7 @@ function fillProviderSelect(sel, items, emptyLabel) {
 
 /** 把服务端配置写进表单。 */
 function applySettings(providers, cfg) {
+  _applyingSettings = true;
   _rawConfig = cfg || {};
   fillProviderSelect($("#c-rag-emb"), providers.embedding, "（默认本地模型 bge-small）");
   fillProviderSelect($("#c-rag-rerank"), providers.rerank, "（不使用重排）");
@@ -5778,6 +6139,9 @@ function applySettings(providers, cfg) {
   const sens = cfgGet("worldbook", "match_sensitivity", 0.7);
   const sensVal = $("#c-wb-sens-val");
   if (sensVal) sensVal.textContent = sens;
+  // 程序化写表单也会派发 change；用微任务窗口忽略这次同步，
+  // 否则初次加载配置就会被误判成“用户正在编辑”。
+  queueMicrotask(() => { _applyingSettings = false; });
 }
 
 async function loadGlobalSettings() {
@@ -5816,6 +6180,7 @@ async function setStreamModeAll(mode, btn) {
 
 /** 标记有未保存更改（显示底部操作条）。 */
 function markDirty() {
+  if (_applyingSettings) return;
   if (_dirty) return;
   _dirty = true;
   $("#actionBar")?.classList.add("is-visible");
@@ -5853,10 +6218,21 @@ async function saveAllChanges(btn) {
         else add(group, key, el.value);
       });
 
-      for (const u of updates) await apiPost("/config/save", u);
+      if (!updates.length) {
+        showToast("没有需要保存的修改", "success");
+        clearDirty();
+        return;
+      }
 
-      if (updates.length) await loadGlobalSettings();
-      showToast(updates.length ? `已保存 ${updates.length} 项配置（部分设置需重启对话生效）` : "没有需要保存的修改", "success");
+      // 保存与回读必须分开 catch：写已经落盘后再回读失败，若与保存共用一个
+      // try，会把回读的异常报成「保存失败」，用户以为没存上而重复提交。
+      await apiPost("/config/save_batch", { updates });
+      try {
+        await loadGlobalSettings();
+      } catch (e) {
+        console.warn("[Quill] 保存已成功，但回读配置失败：", e);
+      }
+      showToast(`已保存 ${updates.length} 项配置（部分设置需重启对话生效）`, "success");
       clearDirty();
     } catch (e) {
       showToast("保存失败：" + e.message);
@@ -5876,6 +6252,24 @@ async function loadHealth() {
     const info = await api("/info");
     const ver = $("#appVersion");
     if (ver && info && info.version) ver.textContent = String(info.version).replace(/^Quill\s*v?/i, "v");
+
+    // 写作素材库索引状态：FTS 失效时后端会静默退化成全表扫描（结果变慢、排序
+    // 变差），此前没有任何可见面。这里把降级状态显式标红。
+    const ix = info && info.wr_index;
+    if (ix && ix.fts_ok === false) {
+      set("#health-wr-index", "降级");
+      set("#health-wr-index-detail", "全表扫描");
+      tone($("#health-wr-index"), 0);
+    } else if (ix && ix.fts_ok === true) {
+      set("#health-wr-index", "正常");
+      set("#health-wr-index-detail", `${ix.entries || 0} 条`);
+      tone($("#health-wr-index"), 100);
+    } else {
+      set("#health-wr-index", "—");
+      set("#health-wr-index-detail", "—");
+      tone($("#health-wr-index"), null);
+    }
+
     const h = info && info.health;
     if (!h) {
       set("#health-rag-rate", "N/A");
@@ -5894,6 +6288,8 @@ async function loadHealth() {
   } catch (e) {
     set("#health-rag-rate", "N/A");
     set("#health-status-rate", "N/A");
+    set("#health-wr-index", "N/A");
+    set("#health-wr-index-detail", "—");
   }
 }
 
@@ -5999,8 +6395,10 @@ async function syncSidebarBadges() {
 function scrollToSection(id) {
   const target = document.getElementById(id);
   if (!target) return;
-  const nav = $(".cfg-nav");
-  const offset = (nav ? nav.getBoundingClientRect().height : 0) + 12;
+  // 吸顶带是整条 .page-head-bar（页头 + 分区导航），不是其中的导航行：
+  // 拿导航行的高度当偏移会让分区标题停在带子内部被挡住。
+  const bar = $("#pane-config .page-head-bar");
+  const offset = (bar ? bar.getBoundingClientRect().height : 0) + 12;
   const top = target.getBoundingClientRect().top + ($("#content")?.scrollTop || 0) - offset;
   $("#content")?.scrollTo({ top, behavior: "smooth" });
   markCfgNav(id);
@@ -6019,14 +6417,40 @@ function markCfgNav(id) {
 
 function initConfigNavObserver() {
   const sections = $$("#pane-config .cfg-section");
-  if (!sections.length || !("IntersectionObserver" in window)) return;
-  const io = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-      if (!entry.isIntersecting) return;
-      markCfgNav(entry.target.id);
-    });
-  }, { rootMargin: "-80px 0px -70% 0px", threshold: 0 });
-  sections.forEach(s => io.observe(s));
+  const scroller = $("#content");
+  if (!sections.length || !scroller) return;
+
+  // 这里不用 IntersectionObserver。五个分区在 DOM 里不是平级兄弟——后四个
+  // 嵌在 #sec-inject 里，前者的边界把它们整段包住，于是「谁正在视野里」在
+  // 交集模型下无法区分；而且 observer 只给来去事件，向上滚时只有离开事件，
+  // 高亮会停在最后一次进入的分区上不动。改成直接算：取「分区顶边已经越过
+  // 吸顶带下沿」中最靠下的那一个，上下滚都对称，也不依赖 DOM 是否嵌套。
+  let raf = 0;
+  const measure = () => {
+    raf = 0;
+    const bar = $("#pane-config .page-head-bar");
+    // 带高随视口变化（窄屏导航折行后会从 ~105 涨到 ~196），每次测量都重取。
+    const barBottom = bar ? bar.getBoundingClientRect().bottom : 0;
+    let current = sections[0].id;
+    for (const s of sections) {
+      // 留 1px 容差，避免恰好贴线时的抖动。
+      if (s.getBoundingClientRect().top - barBottom <= 1) current = s.id;
+      else break;
+    }
+    // 滚到最底部时最后一段可能永远够不到判定线，此时直接选它，否则底部
+    // 会一直停在上一个分区。
+    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) {
+      current = sections[sections.length - 1].id;
+    }
+    markCfgNav(current);
+  };
+  const onScroll = () => { if (!raf) raf = requestAnimationFrame(measure); };
+
+  scroller.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("resize", onScroll, { passive: true });
+  // 切到配置页时容器尺寸才确定（此前 display:none 下几何全是 0），
+  // 因此初始化后补一帧测量。
+  onScroll();
 }
 
 /* ── 列表方向键导航（roving tabindex） ─────────────────────────────── */
@@ -6138,7 +6562,11 @@ const ACTIONS = {
   "to-top": () => $("#content")?.scrollTo({ top: 0, behavior: "smooth" }),
   "more-menu": (el) => toggleMoreMenu(el),
   "clear-search": (el) => {
-    const input = document.getElementById(el.dataset.target);
+    // 世界书内联搜索框每册一个，没法给唯一 id；用作用域就近取，
+    // 否则 getElementById 只会命中展开列表里的第一个，清错别人的框。
+    const input = el.dataset.scope === "wb-filter"
+      ? el.closest(".wb-item")?.querySelector("[data-wb-filter]")
+      : document.getElementById(el.dataset.target);
     if (!input) return;
     input.value = "";
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -6304,6 +6732,11 @@ function bindEvents() {
   // 2) 变更委托：素材库选择/启停
   document.addEventListener("change", (e) => {
     const t = e.target;
+    if (t.matches("#pf-wb-mode, #pf-rag-mode, #pf-wr-mode")) {
+      const sys = { "pf-wb-mode": "wb", "pf-rag-mode": "rag", "pf-wr-mode": "wr" }[t.id];
+      if (sys) syncExtList(sys);
+      return;
+    }
     if (t.matches("[data-wr-select]")) {
       const card = t.closest(".wr-card");
       if (!card) return;
@@ -6330,6 +6763,10 @@ function bindEvents() {
   // 3) 输入委托：搜索框即时过滤 + 滑块联动 + 标签输入回车
   document.addEventListener("input", (e) => {
     const t = e.target;
+    if (t.matches("#modalBody textarea.field")) {
+      t.style.height = "auto";
+      t.style.height = Math.min(240, Math.max(64, t.scrollHeight)) + "px";
+    }
     if (t.id === "wrSearch") { wrState.page = 1; debouncedWRLoad(); return; }
     if (t.id === "wbSearch") { debouncedWBFilter(); return; }
     if (t.id === "personaSearch") {
@@ -6350,6 +6787,7 @@ function bindEvents() {
       filterCheckboxes(t, t.dataset.extFilter);
       return;
     }
+    if (t.matches("[data-wb-filter]")) { filterWBEntries(t); return; }
     if (t.closest("#pane-config") && t.matches("input, select, textarea")) markDirty();
   });
 

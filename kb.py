@@ -45,6 +45,12 @@ class WritingResourceManager:
         # F4 对齐：与 memory/vector store 一致，串行化 execute+commit 写序列，
         # 防止并发协程（聊天匹配 × Web 面板编辑）交错提交半途事务
         self._lock = asyncio.Lock()
+        # FTS 降级可见性：此前索引失效只记一条 INFO（默认控制台级别下不可见），
+        # 然后静默退化成全表扫描，面板 /info 也不暴露，问题完全不可观测。
+        self._fts_ok: Optional[bool] = None   # None=尚未尝试
+        self._fts_error: Optional[str] = None
+        self._count_write_errors = 0          # match_count 递增失败次数
+        self._log_write_errors = 0            # match_logs 写入失败次数
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -191,12 +197,19 @@ class WritingResourceManager:
         """
         c = await self.conn.cursor()
 
-        # 旧触发器名（rename 主表前必须先 DROP，否则引用会失效）
+        # 旧触发器名（rename 主表前必须先 DROP，否则引用会失效）。
+        # 实际数据库里残留的是 knowledge_ai_*（rename 时没有一起改名的结果），
+        # knowledge_base_ai_* 是更早一代的命名，两种都列上，多列无害。
+        # 注意：仅靠这份名单不够 —— 情况 1「旧表不存在」会提前 return，
+        # 真正的兜底由 _drop_orphan_legacy_triggers 在 _init_db 之后无条件执行。
         legacy_triggers = [
             "update_knowledge_timestamp",
             "knowledge_base_ai_insert",
             "knowledge_base_ai_delete",
             "knowledge_base_ai_update",
+            "knowledge_ai_insert",
+            "knowledge_ai_delete",
+            "knowledge_ai_update",
         ]
 
         # 检查旧主表是否存在
@@ -260,7 +273,11 @@ class WritingResourceManager:
         knowledge_base rename 而来，FTS 表是新建的空表，需要手动回填索引。
         """
         c = await self.conn.cursor()
-        await c.execute("SELECT COUNT(*) FROM writing_resource_fts")
+        # 注意：不能直接 SELECT COUNT(*) FROM writing_resource_fts 来判断索引是否
+        # 为空 —— writing_resource_fts 是 external-content 表（content=writing_resource），
+        # 对它的 COUNT(*) 会回落到内容表，无论索引里有没有数据都返回主表行数。
+        # 真实索引条数要看 _docsize 影子表（每有一条索引记录就写一行）。
+        await c.execute("SELECT COUNT(*) FROM writing_resource_fts_docsize")
         fts_count = (await c.fetchone())[0]
         if fts_count > 0:
             return
@@ -269,19 +286,93 @@ class WritingResourceManager:
         if main_count == 0:
             return
         logger.info(f"[WR] 重建 FTS 索引 ({main_count} 条)")
-        await c.execute(
-            """
-            INSERT INTO writing_resource_fts(rowid, keywords, name, content)
-            SELECT id, keywords, name, content FROM writing_resource
-            """
-        )
+        # 用 fts5 官方的 'rebuild' 命令而不是手工 INSERT SELECT：手工插入的
+        # rowid 与 trigram 分词器的 docsize 记录不匹配时，索引条目会处于
+        # 「半写」状态，MATCH 会漏词但又不报错。
+        await c.execute("INSERT INTO writing_resource_fts(writing_resource_fts) VALUES('rebuild')")
         await self.conn.commit()
+
+    async def _drop_orphan_legacy_triggers(self, c):
+        """删除指向「内容表已消失」的 FTS 表的遗留触发器。
+
+        旧版本（表名还是 knowledge_base 的时代）在迁移时只 rename 了主表，三个
+        触发器 knowledge_ai_insert / _delete / _update 留在了 writing_resource 上，
+        而它们写入的 knowledge_fts 声明的是 content=knowledge_base —— 内容表已随
+        rename 消失。此时 SQLite 执行触发器内部的 INSERT/UPDATE 时读不到内容行，
+        直接把错误冒泡成外层 DML 的失败：DatabaseError("database disk image is
+        malformed")，于是整张 writing_resource 变成只读（列表能看、改不了删不掉）。
+
+        残留分两种：knowledge_fts 虚拟表还在、但它声明的 content=knowledge_base
+        已经消失；或者虚拟表本身也没了（只在触发器 SQL 里留个名字）。两种都会让
+        对 writing_resource 的写全部失败，所以这里同时处理：
+          1. 扫描所有 FTS 虚拟表，找出内容表已不存在的「悬空索引」；
+          2. 连同它的 _data/_idx/_docsize/_config 影子表一起 DROP（否则下次启动
+             还会被当成悬空索引反复命中）；
+          3. 把引用这些悬空索引的触发器清掉，包括引用一个根本不存在的表的触发器。
+        幂等，每次启动跑一遍无副作用。
+        """
+        await c.execute("SELECT name, sql FROM sqlite_master WHERE type='table'")
+        table_rows = await c.fetchall()
+        tables = {row[0] for row in table_rows}
+
+        # 找出内容表已不存在的 FTS 虚拟表
+        orphan_fts = {}
+        for name, sql in table_rows:
+            if not sql or "VIRTUAL TABLE" not in sql.upper():
+                continue
+            match = _re.search(r"content\s*=\s*([A-Za-z_][A-Za-z0-9_]*)", sql)
+            if match and match.group(1) not in tables:
+                orphan_fts[name] = match.group(1)
+
+        await c.execute(
+            "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger'"
+        )
+        dropped = []
+        for name, target, sql in await c.fetchall():
+            if target != "writing_resource" or not sql:
+                continue
+            # 命中悬空索引，或引用了一个连 sqlite_master 里都没有的表
+            hit = [t for t in orphan_fts if t in sql]
+            if not hit:
+                hit = [
+                    t for t in ("knowledge_fts", "knowledge_base_fts")
+                    if t in sql and t not in tables
+                ]
+            if hit:
+                await c.execute(f"DROP TRIGGER IF EXISTS {name}")
+                dropped.append((name, hit[0], orphan_fts.get(hit[0], "已不存在")))
+
+        for name in list(orphan_fts):
+            logger.warning(
+                f"[WR] 清理悬空 FTS 索引 {name}（其内容表 {orphan_fts[name]} 已不存在）"
+            )
+            # 只删影子表，不删虚拟表本身：内容表缺失时 fts5 模块无法构造这个
+            # 虚拟表，DROP TABLE 会报 "vtable constructor failed"。影子表清掉后
+            # 它已是空壳，只要没有触发器引用就不会再被触碰。整个清理都是尽力而为，
+            # 任何一步失败都不该阻断启动（关键修复是上面 DROP TRIGGER）。
+            for suffix in ("_data", "_idx", "_docsize", "_config"):
+                try:
+                    await c.execute(f"DROP TABLE IF EXISTS {name}{suffix}")
+                except Exception as e:
+                    logger.debug(f"[WR] 清理影子表 {name}{suffix} 失败（可忽略）: {e}")
+
+        if dropped or orphan_fts:
+            await self.conn.commit()
+            for name, fts, content in dropped:
+                logger.warning(
+                    f"[WR] 已清理失效触发器 {name}：它写入 {fts}，"
+                    f"而其内容表 {content} 已不存在（此前会导致写入报 malformed）"
+                )
 
     async def initialize(self):
         """Explicit init for non-context-manager usage."""
         await self._connect()
         await self._migrate_legacy_tables()
         await self._init_db()
+        # 必须在 _init_db 之后：_init_db 会创建 writing_resource_fts 与配套的
+        # writing_resource_ai_* 触发器，只有这时才能准确判断哪些触发器指向的
+        # 表是真的不存在，从而只清掉历史残留、不动正常触发器。
+        await self._drop_orphan_legacy_triggers(await self.conn.cursor())
         await self._rebuild_fts_index()
 
     async def close(self):
@@ -565,7 +656,11 @@ class WritingResourceManager:
                 match_score += 2
                 matched_keywords.append(f"({alias})")
 
-        name_lower = entry.get("name", "").lower()
+        # entry.get("name", "") 只在键缺失时给默认值；name 列存的是 NULL 时
+        # 返回 None，直接 .lower() 会抛 AttributeError —— 而 add_entry(name=None)
+        # 是允许的（导入路径就不传 name），于是「库里只要有一条无名字的素材，
+        # 之后每次 match() 都崩」。这里显式兜 None。
+        name_lower = (entry.get("name") or "").lower()
         if name_lower and len(name_lower) >= 2 and name_lower in user_input_lower:
             if name_lower not in [kw.lower() for kw in matched_keywords]:
                 match_score += 1
@@ -626,6 +721,7 @@ class WritingResourceManager:
 
             async with self.conn.execute(sql, params) as cursor:
                 rows = await cursor.fetchall()
+            self._note_fts_ok()
             result = []
             for r in rows:
                 entry = self._row_to_dict(r)
@@ -633,8 +729,29 @@ class WritingResourceManager:
                 result.append(entry)
             return result
         except (sqlite3.Error, ValueError) as e:
-            logger.info(f"[WR] FTS5 match failed, falling back to keyword scan: {e}")
+            self._note_fts_failure(e)
             return await self.keyword_match(user_input, category)
+
+    def _note_fts_ok(self):
+        """标记 FTS 可用；从降级状态恢复时记一条 INFO。"""
+        if self._fts_ok is False:
+            logger.info("[WR] FTS5 索引已恢复可用")
+        self._fts_ok = True
+        self._fts_error = None
+
+    def _note_fts_failure(self, exc: Exception):
+        """记录 FTS 失效。首次 WARNING（含原始异常），后续降为 DEBUG 防刷屏。"""
+        first = self._fts_ok is not False
+        self._fts_ok = False
+        self._fts_error = f"{type(exc).__name__}: {exc}"
+        if first:
+            logger.warning(
+                "[WR] FTS5 索引不可用，已降级为全表扫描（结果可能变慢、排序变差）: %s",
+                exc,
+                exc_info=True,
+            )
+        else:
+            logger.debug("[WR] FTS5 仍不可用: %s", exc)
 
     async def keyword_match(
         self, user_input: str, category: Optional[str] = None
@@ -644,6 +761,9 @@ class WritingResourceManager:
         if category:
             sql += " AND category = ?"
             params.append(category)
+        # 与 match() 的回退路径保持同一上限：此前无 LIMIT，索引失效时会把整张
+        # 表连同 content 全文载入内存。
+        sql += " LIMIT 2000"
         async with self.conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
 
@@ -699,7 +819,7 @@ class WritingResourceManager:
                         await self._log_match(user_input, [e["entry_id"] for e in result], len(result))
                     return result
         except (sqlite3.Error, ValueError) as e:
-            logger.info(f"[WR] FTS5 match in match() failed, using full scan: {e}")
+            self._note_fts_failure(e)
             pass
 
         # --- Fallback: full table scan ---
@@ -752,7 +872,11 @@ class WritingResourceManager:
     # ------------------------------------------------------------------
 
     async def _increment_match_counts(self, row_ids: list[int]):
-        """批量递增多条记录的 match_count，统一 FTS 与全表扫描路径的更新逻辑。"""
+        """批量递增多条记录的 match_count，统一 FTS 与全表扫描路径的更新逻辑。
+
+        失败只记计数与日志、不影响返回的匹配结果（计数是统计量，不该让本轮
+        注入失败），但计数会通过 get_index_status() 暴露到面板，避免"悄悄少记"。
+        """
         if not row_ids:
             return
         try:
@@ -764,17 +888,34 @@ class WritingResourceManager:
                 )
                 await self.conn.commit()
         except sqlite3.Error as e:
+            self._count_write_errors += 1
             logger.error(f"[WR] match_count 批量递增数据库错误: {e}")
         except Exception as e:
+            self._count_write_errors += 1
             logger.error(f"[WR] match_count 批量递增失败: {e}", exc_info=True)
 
     async def _log_match(self, user_input: str, matched_ids: List[str], match_count: int):
-        async with self._lock:
-            await self.conn.execute(
-                "INSERT INTO match_logs (user_input, matched_entries, match_count) VALUES (?, ?, ?)",
-                (user_input[:500], json.dumps(matched_ids, ensure_ascii=False), match_count),
-            )
-            await self.conn.commit()
+        # 写日志失败不能连累调用方：此前无 try，match_logs 一旦写不进去
+        # （库被锁/磁盘满/表结构损坏）整个 match() 会抛异常，本轮 WR 注入静默消失。
+        try:
+            async with self._lock:
+                await self.conn.execute(
+                    "INSERT INTO match_logs (user_input, matched_entries, match_count) VALUES (?, ?, ?)",
+                    (user_input[:500], json.dumps(matched_ids, ensure_ascii=False), match_count),
+                )
+                await self.conn.commit()
+        except Exception as e:
+            self._log_write_errors += 1
+            logger.warning("[WR] match_logs 写入失败（不影响本轮匹配结果）: %s", e, exc_info=True)
+
+    def get_index_status(self) -> Dict:
+        """FTS 索引与匹配日志健康状况，供 /info 暴露（降级必须可见）。"""
+        return {
+            "fts_ok": self._fts_ok,
+            "fts_error": self._fts_error,
+            "count_write_errors": self._count_write_errors,
+            "log_write_errors": self._log_write_errors,
+        }
 
     async def get_match_logs(self, limit: int = 50, offset: int = 0) -> List[Dict]:
         async with self.conn.execute(
@@ -794,9 +935,12 @@ class WritingResourceManager:
         return result
 
     async def clear_match_logs(self) -> int:
-        cursor = await self.conn.execute("DELETE FROM match_logs")
-        await self.conn.commit()
-        return cursor.rowcount
+        # 与 _log_match 的 INSERT 共用同一把锁：此前这里绕过 _lock 直接
+        # execute+commit，并发写入会与 DELETE 交错。
+        async with self._lock:
+            cursor = await self.conn.execute("DELETE FROM match_logs")
+            await self.conn.commit()
+            return cursor.rowcount
 
     # ------------------------------------------------------------------
     # Reference text (pure computation, no I/O)

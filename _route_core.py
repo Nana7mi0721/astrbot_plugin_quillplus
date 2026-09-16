@@ -19,22 +19,32 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+_PLUGIN_VERSION_CACHE: str | None = None
+
+
 def _get_plugin_version() -> str:
-    """从插件根目录的 metadata.yaml 读取版本号。
+    """从插件根目录的 metadata.yaml 读取版本号（进程内缓存）。
 
     修复：此前对 __file__ 做了两次 dirname（跳到 plugins/ 目录），永远找不到
     metadata.yaml，面板标题恒显示硬编码回退值。__file__ 在插件根目录下，
     只需上跳一级。
+
+    另：该函数被 /info 每次请求调用，每次都 open+yaml.safe_load 是事件循环里的
+    阻塞磁盘 IO。版本号在进程生命周期内不会变，缓存一次即可。
     """
+    global _PLUGIN_VERSION_CACHE
+    if _PLUGIN_VERSION_CACHE is not None:
+        return _PLUGIN_VERSION_CACHE
     try:
         import yaml
         import os
         _meta_path = os.path.join(os.path.dirname(__file__), "metadata.yaml")
         with open(_meta_path, "r", encoding="utf-8") as f:
             meta = yaml.safe_load(f)
-        return str(meta.get("version", "unknown"))
+        _PLUGIN_VERSION_CACHE = str(meta.get("version", "unknown"))
     except Exception:
-        return "unknown"
+        _PLUGIN_VERSION_CACHE = "unknown"
+    return _PLUGIN_VERSION_CACHE
 
 
 # ── Response helpers ─────────────────────────────────────────────
@@ -50,6 +60,18 @@ def ok(data: Any = None, **kw) -> dict:
 
 def err(msg: str) -> dict:
     return {"status": "error", "message": msg}
+
+
+def error_text(prefix: str, exc: Exception) -> str:
+    """把异常转成可下发给前端的提示：服务端记全量，前端只给异常类型。
+
+    原始异常文本会带出内部结构——OSError 带绝对路径、sqlite3 带表/列名、向量库
+    带维度细节。此前多处直接把 f"{prefix}: {exc}" 拼进面板提示和群聊回复。
+    校验类异常（ValueError 等）由调用方单独捕获、原样透出；走到这里的都是非预期
+    错误，前端只需要知道哪一步失败，细节留在服务端日志。
+    """
+    logger.error("[Quill] %s: %s", prefix, exc, exc_info=True)
+    return f"{prefix}（{type(exc).__name__}），详情见服务端日志"
 
 
 # ── WR handlers ──────────────────────────────────────────────────
@@ -203,27 +225,43 @@ async def handle_wr_export(wr_manager):
 async def handle_wr_import(wr_manager, entries: list):
     if not wr_manager:
         return err("写作素材库未加载")
+    if not isinstance(entries, list):
+        return err("entries 必须是数组")
     imported = 0
     failed = 0
+    invalid = 0
     for entry in entries:
-        success = await wr_manager.add_entry(
-            category=entry.get("category", "imported"),
-            entry_id=entry["entry_id"],
-            keywords=entry.get("keywords", []),
-            content=entry.get("content", ""),
-            name=entry.get("name"),
-            description=entry.get("description"),
-            aliases=entry.get("aliases"),
-            secondary_keywords=entry.get("secondary_keywords"),
-            priority=entry.get("priority", 5),
-            is_constant=entry.get("is_constant", False),
-        )
+        # 逐条校验：此前直接 entry["entry_id"]，缺字段的条目会抛 KeyError 被
+        # 兜成 HTTP 500，且循环是逐条写入的——前面的条目已经落库，形成「报错
+        # 了但导入了一半」的静默副作用。现在坏条目只计失败并跳过。
+        if not isinstance(entry, dict) or not entry.get("entry_id"):
+            invalid += 1
+            failed += 1
+            continue
+        try:
+            success = await wr_manager.add_entry(
+                category=entry.get("category", "imported"),
+                entry_id=entry["entry_id"],
+                keywords=entry.get("keywords", []),
+                content=entry.get("content", ""),
+                name=entry.get("name"),
+                description=entry.get("description"),
+                aliases=entry.get("aliases"),
+                secondary_keywords=entry.get("secondary_keywords"),
+                priority=entry.get("priority", 5),
+                is_constant=entry.get("is_constant", False),
+            )
+        except Exception as e:
+            logger.warning("[WR] 导入条目 %s 失败: %s", entry.get("entry_id"), e, exc_info=True)
+            success = False
         if success:
             imported += 1
         else:
             failed += 1
-    return ok({"imported": imported, "failed": failed},
-              message=f"Imported {imported} entries, {failed} failed")
+    msg = f"Imported {imported} entries, {failed} failed"
+    if invalid:
+        msg += f" ({invalid} 条缺少 entry_id，已跳过)"
+    return ok({"imported": imported, "failed": failed, "invalid": invalid}, message=msg)
 
 
 async def handle_wr_test(wr_manager, text=None):
@@ -248,9 +286,8 @@ async def handle_wr_categories(wr_manager):
 
 # ── WB handlers ──────────────────────────────────────────────────
 
-async def handle_wb_list(wb_manager):
-    if not wb_manager:
-        return err("世界书管理器未加载")
+def _collect_worldbooks(wb_manager) -> list:
+    """同步收集全部世界书（含深拷贝），由 handle_wb_list 丢进线程池执行。"""
     result = []
     for name in wb_manager.list_worldbooks():
         wb = wb_manager.get_worldbook(name)
@@ -264,6 +301,15 @@ async def handle_wb_list(wb_manager):
             })
         else:
             result.append({"name": name, "description": "", "entry_count": 0, "entries": []})
+    return result
+
+
+async def handle_wb_list(wb_manager):
+    if not wb_manager:
+        return err("世界书管理器未加载")
+    # get_worldbook 对整本书做 deepcopy（同步、持 threading 锁），书大时是事件
+    # 循环里的可见停顿；与同文件的写路径一致，放线程执行。
+    result = await asyncio.to_thread(_collect_worldbooks, wb_manager)
     return ok({"worldbooks": result})
 
 
@@ -272,7 +318,7 @@ async def handle_wb_get(wb_manager, name=None):
         return err("世界书管理器未加载")
     if not name:
         return err("缺少名称")
-    wb = wb_manager.get_worldbook(name)
+    wb = await asyncio.to_thread(wb_manager.get_worldbook, name)
     if not wb:
         return err("世界书未找到")
     return ok(wb)
@@ -341,7 +387,7 @@ async def handle_wb_export_st(wb_manager, name=None):
         return err("世界书管理器未加载")
     if not name:
         return err("缺少 name 参数")
-    wb = wb_manager.get_worldbook(name)
+    wb = await asyncio.to_thread(wb_manager.get_worldbook, name)
     if not wb:
         return err("世界书未找到")
     st_entries = {}
@@ -410,16 +456,28 @@ async def handle_info(wr_manager, wb_manager, persona_count=0,
         # 裸 except 吞掉，于是 available_wb 恒为 []、wb_count 恒为 0——
         # 侧栏世界书徽章因此首屏不显示（要等切到世界书页由 /wb/list 补上）。
         try:
-            available_wb = wb_manager.get_available_worldbooks()
+            # get_available_worldbooks 是**同步**方法（加锁读取 + 深拷贝），
+            # 放线程避免在事件循环里做整库拷贝。
+            available_wb = await asyncio.to_thread(wb_manager.get_available_worldbooks)
         except Exception:
             logger.warning("[Quill] 获取可用世界书列表失败", exc_info=True)
         if show_trigger_log and hasattr(wb_manager, 'get_trigger_log'):
             try:
-                trigger_log = wb_manager.get_trigger_log()
+                trigger_log = await asyncio.to_thread(wb_manager.get_trigger_log)
             except Exception:
                 logger.warning("[Quill] 获取触发日志失败", exc_info=True)
     # P1-4: 健康度数据
     health = health_tracker.stats() if health_tracker else None
+    # FTS 索引状态：降级为全表扫描时前端必须能看见
+    wr_index = None
+    if wr_manager and hasattr(wr_manager, "get_index_status"):
+        try:
+            status = wr_manager.get_index_status()
+            status["entries"] = wr_count
+            status["degraded"] = status.get("fts_ok") is False
+            wr_index = status
+        except Exception:
+            logger.warning("[Quill] 获取 WR 索引状态失败", exc_info=True)
     return ok({
         "wr_count": wr_count,
         "wb_count": len(available_wb),
@@ -429,6 +487,7 @@ async def handle_info(wr_manager, wb_manager, persona_count=0,
         "available_worldbooks": available_wb,
         "trigger_log": trigger_log,
         "health": health,
+        "wr_index": wr_index,
     })
 
 
@@ -466,7 +525,7 @@ async def handle_rag_upload(vector_store, embedding_provider, upload_file, sourc
             "dim": len(embeddings[0]) if embeddings else 0,
         })
     except Exception as e:
-        return err(f"上传失败: {e}")
+        return err(error_text("上传失败", e))
 
 
 async def handle_rag_documents(vector_store):
@@ -475,7 +534,7 @@ async def handle_rag_documents(vector_store):
         docs = await vector_store.list_documents()
         return ok({"documents": docs})
     except Exception as e:
-        return err(f"查询失败: {e}")
+        return err(error_text("查询失败", e))
 
 
 async def handle_rag_delete(vector_store, source):
@@ -484,7 +543,7 @@ async def handle_rag_delete(vector_store, source):
         deleted = await vector_store.delete_by_source(source)
         return ok({"deleted": deleted, "source": source})
     except Exception as e:
-        return err(f"删除失败: {e}")
+        return err(error_text("删除失败", e))
 
 
 async def handle_rag_search(vector_store, embedding_provider, reranker, query, top_k=3):
@@ -500,7 +559,7 @@ async def handle_rag_search(vector_store, embedding_provider, reranker, query, t
         results = await retriever.search_documents(query)
         return ok({"results": results, "query": query})
     except Exception as e:
-        return err(f"检索失败: {e}")
+        return err(error_text("检索失败", e))
 
 
 async def handle_rag_config(embedding_provider, reranker):
@@ -510,7 +569,7 @@ async def handle_rag_config(embedding_provider, reranker):
         rerank_status = reranker.get_status() if reranker else {}
         return ok({"embedding": emb_status, "rerank": rerank_status})
     except Exception as e:
-        return err(f"获取配置失败: {e}")
+        return err(error_text("获取配置失败", e))
 
 
 async def handle_memory_list(memory_store, session_id=None):
@@ -527,7 +586,7 @@ async def handle_memory_list(memory_store, session_id=None):
         memories = await memory_store.list_all_memories(200)
         return ok({"memories": memories, "sessions": []})
     except Exception as e:
-        return err(f"查询失败: {e}")
+        return err(error_text("查询失败", e))
 
 
 async def handle_memory_delete(memory_store, memory_id=None, session_id=None):
@@ -541,7 +600,7 @@ async def handle_memory_delete(memory_store, memory_id=None, session_id=None):
             return ok({"deleted": deleted, "session_id": session_id})
         return err("需要 memory_id 或 session_id")
     except Exception as e:
-        return err(f"删除失败: {e}")
+        return err(error_text("删除失败", e))
 
 
 async def handle_memory_list_all(memory_store, limit=200, page=1, per_page=50):
@@ -558,7 +617,7 @@ async def handle_memory_list_all(memory_store, limit=200, page=1, per_page=50):
         total_pages = max(1, (total + per_page - 1) // per_page)
         return ok({"memories": memories, "total": total, "page": page, "per_page": per_page, "total_pages": total_pages})
     except Exception as e:
-        return err(f"查询失败: {e}")
+        return err(error_text("查询失败", e))
 
 
 async def handle_memory_stats(memory_store):
@@ -567,7 +626,7 @@ async def handle_memory_stats(memory_store):
         stats = await memory_store.get_stats()
         return ok(stats)
     except Exception as e:
-        return err(f"统计失败: {e}")
+        return err(error_text("统计失败", e))
 
 
 async def handle_memory_get(memory_store, memory_id=None):
@@ -580,7 +639,7 @@ async def handle_memory_get(memory_store, memory_id=None):
             return err("记忆不存在")
         return ok(mem)
     except Exception as e:
-        return err(f"查询失败: {e}")
+        return err(error_text("查询失败", e))
 
 
 async def handle_provider_list(context):
@@ -611,16 +670,33 @@ async def handle_provider_list(context):
                 llm.append(item)
         return ok({"embedding": embedding, "rerank": rerank, "llm": llm})
     except Exception as e:
-        return err(f"获取提供商列表失败: {e}")
+        return err(error_text("获取提供商列表失败", e))
 
 
 async def handle_memory_export(memory_store):
-    """导出全部记忆为 JSON 字符串。"""
+    """导出全部记忆为 JSON 字符串（分页读取，避免静默截断）。"""
     try:
-        memories = await memory_store.list_all_memories(10000)
-        return ok({"memories": memories, "total": len(memories)})
+        page_size = 1000
+        max_export = 100000
+        memories: list[dict] = []
+        offset = 0
+        while len(memories) < max_export:
+            batch = await memory_store.list_all_memories(page_size, offset)
+            if not batch:
+                break
+            memories.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += len(batch)
+
+        truncated = len(memories) >= max_export
+        result = {"memories": memories, "total": len(memories)}
+        if truncated:
+            result["truncated"] = True
+            result["message"] = f"记忆数量超过 {max_export} 条，本次导出已截断"
+        return ok(result)
     except Exception as e:
-        return err(f"导出失败: {e}")
+        return err(error_text("导出失败", e))
 
 
 async def handle_memory_prune(memory_store):
@@ -629,7 +705,7 @@ async def handle_memory_prune(memory_store):
         deleted = await memory_store.prune_memories()
         return ok({"deleted": deleted, "message": f"已清理 {deleted} 条低价值记忆"})
     except Exception as e:
-        return err(f"修剪失败: {e}")
+        return err(error_text("修剪失败", e))
 
 
 async def handle_chat_log_list(memory_store, session_id=None, limit=200):
@@ -640,7 +716,7 @@ async def handle_chat_log_list(memory_store, session_id=None, limit=200):
         logs = await memory_store.list_chat_logs(session_id, limit)
         return ok({"session_id": session_id, "logs": logs, "total": len(logs)})
     except Exception as e:
-        return err(f"查询失败: {e}")
+        return err(error_text("查询失败", e))
 
 
 async def handle_chat_log_export(memory_store, session_id=None, format="markdown"):
@@ -651,7 +727,7 @@ async def handle_chat_log_export(memory_store, session_id=None, format="markdown
         text = await memory_store.export_chat_logs(session_id, format)
         return ok({"session_id": session_id, "format": format, "content": text})
     except Exception as e:
-        return err(f"导出失败: {e}")
+        return err(error_text("导出失败", e))
 
 
 async def handle_memory_import(memory_store, embedding_provider, data):
@@ -698,7 +774,7 @@ async def handle_memory_import(memory_store, embedding_provider, data):
         except Exception as e:
             logger.warning(f"[Quill Memory] 批量向量化失败: {e}")
             return ok({"imported": 0, "failed": len(valid_entries) + failed,
-                        "message": f"向量化失败: {e}"})
+                        "message": error_text("向量化失败", e)})
 
         if not all_vectors or len(all_vectors) != len(valid_entries):
             logger.warning(
@@ -726,7 +802,7 @@ async def handle_memory_import(memory_store, embedding_provider, data):
 
         return ok({"imported": imported, "failed": failed, "message": f"成功导入 {imported}/{len(memories)} 条"})
     except Exception as e:
-        return err(f"导入失败: {e}")
+        return err(error_text("导入失败", e))
 
 
 # ── Shared helpers ───────────────────────────────────────────────

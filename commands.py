@@ -14,6 +14,8 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.core.message.message_event_result import MessageEventResult
 from astrbot.core.platform.message_type import MessageType
 
+from ._route_core import error_text
+
 try:
     from astrbot.api import logger
 except ImportError:
@@ -111,12 +113,13 @@ async def wb_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
 
     if sub == "reload":
         try:
-            # reload_all 是同步方法（加锁后重新读盘），不能 await
-            plugin.wb_manager.reload_all()
+            # reload_all 是同步方法（加锁后重新读盘），内部做文件 IO，
+            # 放线程避免阻塞事件循环。
+            await asyncio.to_thread(plugin.wb_manager.reload_all)
             count = len(plugin.wb_manager.list_worldbooks())
             event.set_result(MessageEventResult().message(f"已重载全部世界书 ({count} 本)"))
         except Exception as e:
-            event.set_result(MessageEventResult().message(f"重载失败: {e}"))
+            event.set_result(MessageEventResult().message(error_text("重载失败", e)))
         return
 
     # 未知子命令
@@ -283,7 +286,9 @@ async def _wb_list(plugin, event: AstrMessageEvent):
     lines = [f"可用世界书（✓ 已绑定 | 模式: {persona_mode}）："]
     for i, name in enumerate(books, 1):
         wb = plugin.wb_manager.get_worldbook(name)
-        desc = wb.get("description", "")[:40] if wb else ""
+        # description 未经归一化即可入库（面板创建时可传 JSON null），
+        # .get 的默认值挡不住 None，直接切片会抛 TypeError。
+        desc = (wb.get("description") or "")[:40] if wb else ""
         entry_count = len(wb.get("entries", [])) if wb else 0
 
         mark = "✓" if name in persona_bound else " "
@@ -585,7 +590,7 @@ async def _char_import(plugin, event: AstrMessageEvent, json_text: str):
             f"角色卡导入成功！名称: {name}\n使用 /char {name} 切换到新角色。"
         ))
     except Exception as e:
-        event.set_result(MessageEventResult().message(f"导入失败: {e}"))
+        event.set_result(MessageEventResult().message(error_text("导入失败", e)))
 
 
 async def _resolve_persona_id(plugin, arg: str, event: AstrMessageEvent) -> str | None:
@@ -800,7 +805,7 @@ async def _test_wr(plugin, event: AstrMessageEvent, text: str):
         lines.append(f"输入: {text[:60]}")
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
     except Exception as e:
-        event.set_result(MessageEventResult().message(f"WR 匹配失败: {e}"))
+        event.set_result(MessageEventResult().message(error_text("WR 匹配失败", e)))
 
 
 async def _test_wb(plugin, event: AstrMessageEvent, text: str):
@@ -840,7 +845,7 @@ async def _test_wb(plugin, event: AstrMessageEvent, text: str):
         lines.append(f"输入: {text[:60]}")
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
     except Exception as e:
-        event.set_result(MessageEventResult().message(f"WB 匹配失败: {e}"))
+        event.set_result(MessageEventResult().message(error_text("WB 匹配失败", e)))
 
 
 async def _test_mem(plugin, event: AstrMessageEvent, text: str):
@@ -870,7 +875,7 @@ async def _test_mem(plugin, event: AstrMessageEvent, text: str):
         lines.append(f"输入: {text[:60]}")
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
     except Exception as e:
-        event.set_result(MessageEventResult().message(f"记忆检索失败: {e}"))
+        event.set_result(MessageEventResult().message(error_text("记忆检索失败", e)))
 
 
 async def quill_debug(plugin, event: AstrMessageEvent):
@@ -1041,7 +1046,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             else:
                 event.set_result(MessageEventResult().message(f"序号超出范围: {idx}"))
         except Exception as e:
-            event.set_result(MessageEventResult().message(f"删除失败: {e}"))
+            event.set_result(MessageEventResult().message(error_text("删除失败", e)))
         return
 
     if sub == "clear":
@@ -1059,7 +1064,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
                 msg += f"、{chat_deleted} 条对话日志"
             event.set_result(MessageEventResult().message(msg))
         except Exception as e:
-            event.set_result(MessageEventResult().message(f"清空失败: {e}"))
+            event.set_result(MessageEventResult().message(error_text("清空失败", e)))
         return
 
     if sub == "learn":
@@ -1082,7 +1087,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
                 await plugin.rag_retriever.store_memory_direct(session_id, content)
                 event.set_result(MessageEventResult().message(f"已学习: {content[:50]}..."))
             except Exception as e:
-                event.set_result(MessageEventResult().message(f"学习失败: {e}"))
+                event.set_result(MessageEventResult().message(error_text("学习失败", e)))
             return
 
         # ── 无内容 → 增量总结本地 chat_logs ──
@@ -1111,7 +1116,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         except ValueError as e:
             event.set_result(MessageEventResult().message(f"⚠️ {e}"))
         except Exception as e:
-            event.set_result(MessageEventResult().message(f"❌ 自动总结失败: {e}"))
+            event.set_result(MessageEventResult().message(error_text("自动总结失败", e)))
         return
 
     if sub == "search":
@@ -1135,7 +1140,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             else:
                 event.set_result(MessageEventResult().message("检索器未就绪"))
         except Exception as e:
-            event.set_result(MessageEventResult().message(f"搜索失败: {e}"))
+            event.set_result(MessageEventResult().message(error_text("搜索失败", e)))
         return
 
     # 审查修复：pin/core 分支此前误嵌在 search 块的无条件 return 之后（不可达死代码），
@@ -1176,7 +1181,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             else:
                 event.set_result(MessageEventResult().message(f"序号超出范围: {idx}"))
         except Exception as e:
-            event.set_result(MessageEventResult().message(f"钉住失败: {e}"))
+            event.set_result(MessageEventResult().message(error_text("钉住失败", e)))
         return
 
     if sub == "core":
@@ -1192,7 +1197,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             await plugin.rag_memory_store.update_core_memory(session_id, content, content)
             event.set_result(MessageEventResult().message(f"✅ 核心记忆已更新:\n{content[:200]}"))
         except Exception as e:
-            event.set_result(MessageEventResult().message(f"写入核心记忆失败: {e}"))
+            event.set_result(MessageEventResult().message(error_text("写入核心记忆失败", e)))
         return
 
     event.set_result(MessageEventResult().message(
@@ -1258,7 +1263,7 @@ async def doc_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
             else:
                 event.set_result(MessageEventResult().message("检索器未就绪"))
         except Exception as e:
-            event.set_result(MessageEventResult().message(f"搜索失败: {e}"))
+            event.set_result(MessageEventResult().message(error_text("搜索失败", e)))
         return
 
     if sub == "reload":
@@ -1269,7 +1274,7 @@ async def doc_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
             else:
                 event.set_result(MessageEventResult().message("文档系统未初始化"))
         except Exception as e:
-            event.set_result(MessageEventResult().message(f"重载失败: {e}"))
+            event.set_result(MessageEventResult().message(error_text("重载失败", e)))
         return
 
     event.set_result(MessageEventResult().message(
@@ -1318,7 +1323,7 @@ async def _doc_list(plugin, event: AstrMessageEvent):
         lines.append("     /doc reload           重新加载索引")
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
     except Exception as e:
-        event.set_result(MessageEventResult().message(f"查询失败: {e}"))
+        event.set_result(MessageEventResult().message(error_text("查询失败", e)))
 
 
 async def _doc_bind(plugin, event: AstrMessageEvent, arg: str):

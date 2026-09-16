@@ -37,6 +37,14 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
     Returns:
         文本块列表
     """
+    # 这两个值来自用户在面板里填的配置项，必须在这里做一次范围收敛：
+    # 下面的超长段落兜底是 start += chunk_size - overlap 的固定步长循环，
+    # overlap >= chunk_size 时步长 <= 0，start 永远推进不到 len(sent)，
+    # 就是一个纯 CPU 的死循环（循环体里没有 await），会把整个 AstrBot
+    # 事件循环卡死并一路吃内存直到 OOM。chunk_size <= 0 时 step 同样非正。
+    chunk_size = max(1, int(chunk_size or 1))
+    overlap = max(0, min(int(overlap or 0), chunk_size - 1))
+
     if not text:
         return []
 

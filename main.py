@@ -361,7 +361,21 @@ class QuillPlugin(Star):
             old_kb_path = os.path.join(self.plugin_dir, "knowledge", "quill_kb.db")
             if not os.path.exists(wr_path) and os.path.exists(old_kb_path):
                 try:
-                    os.rename(old_kb_path, wr_path)
+                    # os.replace 而非 rename：若并发/外部已创建目标文件，Windows 下
+                    # rename 直接抛 FileExistsError 回退到旧路径，replace 则原子覆盖。
+                    os.replace(old_kb_path, wr_path)
+                    # sidecar 必须跟随主文件一起改名：SQLite 按「主文件名 + -wal」
+                    # 配对，留在旧名字下的 WAL 不会被新库读取，其中已提交但未
+                    # checkpoint 的事务会静默丢失。
+                    for suffix in ("-wal", "-shm", "-journal"):
+                        old_side = old_kb_path + suffix
+                        if os.path.exists(old_side):
+                            try:
+                                os.replace(old_side, wr_path + suffix)
+                            except OSError as se:
+                                logger.warning(
+                                    f"[Quill] 数据库迁移: sidecar {suffix} 搬迁失败: {se}"
+                                )
                     logger.info("[Quill] 写作素材库数据库已迁移: quill_kb.db → quill_wr.db")
                 except Exception as e:
                     logger.warning(f"[Quill] 数据库迁移失败，使用旧文件: {e}")
@@ -556,6 +570,12 @@ class QuillPlugin(Star):
         必须在解压覆盖文件**之前**调用——否则 Windows 下覆盖运行中的 SQLite
         会让旧连接读到错乱页，且旧内存脏状态会被 autoflush 反向写回、
         覆盖刚恢复的 quill_state.json。
+
+        关闭后立即把 wr_manager 置 None 并刷新路由引用：解压是 to_thread 执行
+        的，事件循环全程可并发服务，而此时旧 manager 已是「已关闭但非 None」的
+        真值对象 —— 路由只做 `if not wr_manager` 判断，会走进已关闭连接抛
+        AssertionError（面板显示 500），聊天路径也会静默丢注入。置 None 后
+        两边都干净降级为「未加载」。
         """
         try:
             await self.state_manager.stop_autoflush()
@@ -567,45 +587,55 @@ class QuillPlugin(Star):
                 await self.wr_manager.close()
             except Exception as e:
                 logger.debug(f"[Quill] 恢复前关闭写作素材库失败（忽略）: {e}")
+        self.wr_manager = None
+        self._refresh_routes_refs()
 
     async def _reload_after_restore(self):
         """备份解压完成后的全量重建：丢弃旧内存态与缓存，从恢复的磁盘数据重新加载。
 
         前置条件：已调用 _prepare_for_restore() 且数据文件已被覆盖到位。
+        无论中途哪一步抛错，都在 finally 里刷新路由引用——否则路由会一直握着
+        旧的（已关闭）引用直到进程重启，面板与聊天路径都不可用。
         """
-        # 1) 重建 StateManager（从恢复后的 quill_state.json 重新加载）
-        data_dir = os.path.join(self.plugin_dir, "data")
-        self.state_manager = StateManager(data_dir=data_dir)
-        # 2) 重建写作素材库连接
-        self.wr_manager = None
-        wr_path = os.path.join(self.plugin_dir, "knowledge", "quill_wr.db")
+        autoflush_ready = False
         try:
-            from .kb import WritingResourceManager
-            self.wr_manager = WritingResourceManager(
-                wr_path, category_dedup_limit=self.config.wr_dedup_limit
-            )
-            await self.wr_manager.initialize()
-        except Exception as e:
+            # 1) 重建 StateManager（从恢复后的 quill_state.json 重新加载）
+            data_dir = os.path.join(self.plugin_dir, "data")
+            self.state_manager = StateManager(data_dir=data_dir)
+            autoflush_ready = True
+            # 2) 重建写作素材库连接
             self.wr_manager = None
-            logger.warning(f"[Quill] 恢复后写作素材库重建失败: {e}")
-        # 3) 世界书重载（无文件句柄，直接重读 JSON）
-        if self.wb_manager:
+            wr_path = os.path.join(self.plugin_dir, "knowledge", "quill_wr.db")
             try:
-                self.wb_manager._load_all()
+                from .kb import WritingResourceManager
+                self.wr_manager = WritingResourceManager(
+                    wr_path, category_dedup_limit=self.config.wr_dedup_limit
+                )
+                await self.wr_manager.initialize()
             except Exception as e:
-                logger.warning(f"[Quill] 恢复后世界书重载失败: {e}")
-        # 4) 角色卡缓存失效（重建实例，重新扫描 data/quill_personas）
-        try:
-            from .persona_manager import QuillPersonaManager
-            self.persona_manager = QuillPersonaManager(
-                os.path.join(self.plugin_dir, "data", "quill_personas")
-            )
-        except Exception as e:
-            logger.warning(f"[Quill] 恢复后角色卡管理器重建失败: {e}")
-        # 5) RAG 组件重建 + 路由引用刷新 + autoflush 重启
-        await self._init_rag()
-        self._refresh_routes_refs()
-        self.state_manager.start_autoflush()
+                self.wr_manager = None
+                logger.warning(f"[Quill] 恢复后写作素材库重建失败: {e}")
+            # 3) 世界书重载（无文件句柄，直接重读 JSON；读盘放到线程避免阻塞事件循环）
+            if self.wb_manager:
+                try:
+                    await asyncio.to_thread(self.wb_manager._load_all)
+                except Exception as e:
+                    logger.warning(f"[Quill] 恢复后世界书重载失败: {e}")
+            # 4) 角色卡缓存失效（重建实例，重新扫描 data/quill_personas）
+            try:
+                from .persona_manager import QuillPersonaManager
+                self.persona_manager = QuillPersonaManager(
+                    os.path.join(self.plugin_dir, "data", "quill_personas")
+                )
+            except Exception as e:
+                logger.warning(f"[Quill] 恢复后角色卡管理器重建失败: {e}")
+            # 5) RAG 组件重建
+            await self._init_rag()
+        finally:
+            # 6) 无条件刷新路由引用 + 恢复 autoflush（StateManager 建好才启动）
+            self._refresh_routes_refs()
+            if autoflush_ready:
+                self.state_manager.start_autoflush()
         logger.info("[Quill] 备份恢复后的组件重建完成")
 
     async def terminate(self) -> None:
@@ -657,60 +687,147 @@ class QuillPlugin(Star):
     # 配置持久化
     # ================================================================
 
-    def save_plugin_config(self, group: str, key: str, value) -> bool:
-        """保存配置项到 AstrBotConfig 并持久化到磁盘。"""
+    def save_plugin_configs(self, updates: list[dict]) -> tuple[bool, str]:
+        """Atomically persist a batch of config updates.
+
+        The Web panel sends all edited fields in one request. Saving them one
+        by one exposed transient config states and could start overlapping RAG
+        rebuilds when the embedding provider changed.
+        """
         if self._raw_config is None:
-            return False
+            return False, "插件配置不可用"
+
+        normalized: list[tuple[str, str, object]] = []
         try:
-            # 确保分组存在（AstrBotConfig extends dict，支持直接赋值）
-            if group not in self._raw_config:
-                self._raw_config[group] = {}
-            self._raw_config[group][key] = value
+            for item in updates:
+                if not isinstance(item, dict):
+                    return False, "配置更新格式无效"
+                group = str(item.get("group", "")).strip()
+                key = str(item.get("key", "")).strip()
+                if not group or not key:
+                    return False, "配置更新缺少 group 或 key"
+                normalized.append((group, key, item.get("value")))
+            if not normalized:
+                return True, "没有需要保存的修改"
 
-            # 热重载：更新内存中所有配置派生属性
-            self.config = QuillConfig(self._raw_config)
-            # 路由实例持有 config/管理器快照引用，重建后必须同步，
-            # 否则 Web 面板读到的是旧配置对象（写入成功却读不回来）
-            self._refresh_routes_refs()
-            self.wr_max_entries = self.config.wr_max_entries
-            self.wr_fallback_top_count = self.config.wr_fallback_top
-            self.wb_max_entries = self.config.worldbook_max_dynamic
-            self.status_bar_enabled = self.config.status_bar_enabled
-            self.status_bar_format_template = self.config.status_bar_format
-            self.love_fields = self.config.status_bar_fields
-            self.refusal_enabled = self.config.refusal_enabled
-            self.refusal_patterns = self.config.refusal_patterns
-            self.debug = self.config.debug_enabled
-            self.prompt_builder = PromptBuilder(self.config)
+            previous = {
+                (group, key): (
+                    group in self._raw_config
+                    and isinstance(self._raw_config.get(group), dict)
+                    and key in self._raw_config[group],
+                    (
+                        self._raw_config.get(group, {}).get(key)
+                        if isinstance(self._raw_config.get(group), dict)
+                        else None
+                    ),
+                )
+                for group, key, _ in normalized
+            }
+            # 下面这一串是把配置值摊平到插件实例属性上的「内存投影」。
+            # 一旦后面的落盘失败需要回滚，这些属性也必须跟着回滚，否则
+            # _raw_config 回到旧值、实例属性却停在新值，运行期读到的是
+            # 「磁盘上没有、内存里生效」的配置，重启后才露出差异。
+            # 快照必须建在 try 之外：回滚分支在 try 内部任何一步（包括第一行）
+            # 抛异常时都会用到它，建在内部会有未赋值的风险。
+            _PROJECTED_ATTRS = (
+                "wr_max_entries", "wr_fallback_top_count", "wb_max_entries",
+                "status_bar_enabled", "status_bar_format_template", "love_fields",
+                "refusal_enabled", "refusal_patterns", "debug", "prompt_builder",
+                "rag_enable_chat_logging", "rag_chat_log_retention_days",
+                "worldbook_always_activate", "panel_theme",
+                "status_bar_plot_paths", "status_bar_default_placeholder",
+            )
+            _MISSING = object()
+            projected_previous = {
+                name: getattr(self, name, _MISSING) for name in _PROJECTED_ATTRS
+            }
+            try:
+                for group, key, value in normalized:
+                    if (
+                        group not in self._raw_config
+                        or not isinstance(self._raw_config[group], dict)
+                    ):
+                        self._raw_config[group] = {}
+                    self._raw_config[group][key] = value
 
-            # 同步对话日志配置（供运行时检测）
-            self.rag_enable_chat_logging = self.config.rag_enable_chat_logging
-            self.rag_chat_log_retention_days = self.config.rag_chat_log_retention_days
-            self.worldbook_always_activate = self.config.worldbook_always_activate
-            self.panel_theme = self.config.panel_theme
-            self.status_bar_plot_paths = self.config.status_bar_plot_paths
-            self.status_bar_default_placeholder = getattr(self.config, "status_bar_default_placeholder", "未设置")
+                self.config = QuillConfig(self._raw_config)
+                self._refresh_routes_refs()
+                self.wr_max_entries = self.config.wr_max_entries
+                self.wr_fallback_top_count = self.config.wr_fallback_top
+                self.wb_max_entries = self.config.worldbook_max_dynamic
+                self.status_bar_enabled = self.config.status_bar_enabled
+                self.status_bar_format_template = self.config.status_bar_format
+                self.love_fields = self.config.status_bar_fields
+                self.refusal_enabled = self.config.refusal_enabled
+                self.refusal_patterns = self.config.refusal_patterns
+                self.debug = self.config.debug_enabled
+                self.prompt_builder = PromptBuilder(self.config)
 
-            # P1-4: Embedding 切换自动重嵌入 — 检测嵌入提供者变更，触发 RAG 重初始化
-            # 审查修复：改用 _spawn（create_task 持引用防 GC 中断，asyncio.get_event_loop
-            # 在 3.10+ 已弃用）；重初始化前会先关闭旧组件连接并刷新 Web 路由引用。
-            if group == "rag" and key == "embedding_provider_id":
-                try:
-                    self._spawn(self._reinit_rag_and_refresh_routes())
-                    logger.info("[Quill] Embedding 提供商已变更，触发 RAG 重初始化")
-                except RuntimeError:
-                    logger.warning("[Quill] 无运行中的事件循环，Embedding 变更将在插件重载后生效")
+                self.rag_enable_chat_logging = self.config.rag_enable_chat_logging
+                self.rag_chat_log_retention_days = self.config.rag_chat_log_retention_days
+                self.worldbook_always_activate = self.config.worldbook_always_activate
+                self.panel_theme = self.config.panel_theme
+                self.status_bar_plot_paths = self.config.status_bar_plot_paths
+                self.status_bar_default_placeholder = getattr(
+                    self.config, "status_bar_default_placeholder", "未设置"
+                )
 
-            # 持久化到磁盘
-            if hasattr(self._raw_config, 'save_config') and callable(self._raw_config.save_config):
-                self._raw_config.save_config()
-            elif hasattr(self.context, 'save_config'):
-                self.context.save_config()
-            logger.info(f"[Quill] 配置已保存: {group}.{key} = {value}")
-            return True
+                if hasattr(self._raw_config, "save_config") and callable(
+                    self._raw_config.save_config
+                ):
+                    self._raw_config.save_config()
+                elif hasattr(self.context, "save_config"):
+                    self.context.save_config()
+                else:
+                    raise RuntimeError("AstrBot 配置对象不支持持久化")
+
+                changed_keys = {(group, key) for group, key, _ in normalized}
+                if ("rag", "embedding_provider_id") in changed_keys:
+                    try:
+                        self._spawn(self._reinit_rag_and_refresh_routes())
+                        logger.info("[Quill] Embedding 提供商已变更，触发 RAG 重初始化")
+                    except RuntimeError:
+                        logger.warning(
+                            "[Quill] 无运行中的事件循环，Embedding 变更将在插件重载后生效"
+                        )
+            except Exception:
+                # Best-effort rollback of the in-memory dict. Disk writes are
+                # atomic inside AstrBotConfig, so a failed write never exposes
+                # a partial JSON file.
+                for (group, key), (existed, old_value) in previous.items():
+                    if not isinstance(self._raw_config.get(group), dict):
+                        self._raw_config[group] = {}
+                    if existed:
+                        self._raw_config[group][key] = old_value
+                    else:
+                        self._raw_config[group].pop(key, None)
+                self.config = QuillConfig(self._raw_config)
+                self._refresh_routes_refs()
+                # 同步回滚上面那批内存投影属性：只回滚 _raw_config 会让
+                # 内存投影停在「保存失败的那个新值」上，而磁盘还是旧值。
+                for name, old in projected_previous.items():
+                    if old is _MISSING:
+                        # 原先就没有这个属性，回滚时一并移除，避免留下残留
+                        self.__dict__.pop(name, None)
+                    else:
+                        setattr(self, name, old)
+                raise
         except Exception as e:
-            logger.warning(f"[Quill] 配置保存失败: {e}")
-            return False
+            logger.warning("[Quill] 配置批量保存失败: %s", e, exc_info=True)
+            # 这条 message 会经 web_routes.config_update 直接下发给面板，不能带原始
+            # 异常文本（OSError 会带出配置文件的绝对路径）。
+            return False, f"配置保存失败（{type(e).__name__}），详情见服务端日志"
+
+        summary = ", ".join(f"{group}.{key}" for group, key, _ in normalized)
+        logger.info("[Quill] 配置已保存 (%d 项): %s", len(normalized), summary)
+        return True, f"已保存 {len(normalized)} 项配置"
+
+    def save_plugin_config(self, group: str, key: str, value) -> bool:
+        """Compatibility wrapper for callers that still save one field."""
+        ok, _ = self.save_plugin_configs(
+            [{"group": group, "key": key, "value": value}]
+        )
+        return ok
 
     # ================================================================
     # LLM Hooks
@@ -1224,7 +1341,9 @@ class QuillPlugin(Star):
         if persona_id and self.persona_manager:
             persona_data = await self.persona_manager.get_persona(persona_id)
             if persona_data:
-                fm = persona_data.get("core_prompts", {}).get("first_message", "").strip()
+                # .get 的默认值只在键缺失时生效；键在但值为 null 时返回 None，
+                # .strip() 会抛 AttributeError 把整个请求打成降级路径。
+                fm = (persona_data.get("core_prompts", {}).get("first_message") or "").strip()
                 if fm:
                     state = await self.state_manager.get_state(target_id)
                     if not state.first_message_injected:

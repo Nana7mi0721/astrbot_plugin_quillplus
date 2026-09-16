@@ -70,7 +70,14 @@ from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 
+from ._backup_util import (
+    build_backup_zip,
+    is_sqlite_bytes,
+    remove_sidecars,
+)
+
 from ._route_core import (
+    error_text,
     handle_wr_list,
     handle_wr_get,
     handle_wr_create,
@@ -113,6 +120,18 @@ from ._route_core import (
 PLUGIN_NAME = "astrbot_plugin_quillplus"
 
 
+async def _json_body() -> dict:
+    """安全地读取 JSON 请求体，保证返回 dict。
+
+    request.json(default={}) 只在「解析失败」时回退默认值：如果请求体本身是合法
+    JSON 但顶层不是对象（字符串 / 数字 / 数组，例如直接 POST 一个 "abc"），它会
+    原样返回，随后 data.get(...) 就抛 AttributeError，被 _api_handler 兜成 500。
+    这里统一收敛成 dict，非对象一律当空对象处理（后续的必填校验会给出 400）。
+    """
+    data = await request.json(default={})
+    return data if isinstance(data, dict) else {}
+
+
 def _api_handler(handler):
     """统一的 handler 异常捕获装饰器。
 
@@ -147,6 +166,9 @@ class QuillRoutes:
         self.persona_manager = persona_manager
         # rag_components: dict with keys: embedding, vector_store, reranker, memory_store, summarizer
         self.rag = rag_components or {}
+        # 备份导出与恢复互斥：此前两个并发恢复会各自解压/重建组件，互相覆盖文件
+        # 与路由引用，没有任何保护。
+        self._maintenance_lock = asyncio.Lock()
 
     # ── 路由注册入口 ──────────────────────────────────────────
 
@@ -204,6 +226,7 @@ class QuillRoutes:
 
         # ── 配置持久化 ──
         _r(f"/{PLUGIN_NAME}/config/save",      self.config_save,    ["POST"],   "保存配置项")
+        _r(f"/{PLUGIN_NAME}/config/save_batch", self.config_save_batch, ["POST"], "批量保存配置项")
         _r(f"/{PLUGIN_NAME}/config/all",       self.config_all,     ["GET"],    "获取全量配置")
 
         # ── RAG 文档知识库 (5 个) ──
@@ -250,6 +273,7 @@ class QuillRoutes:
 
         # ── 全量备份导出/恢复 ──
         _r(f"/{PLUGIN_NAME}/backup/export",   self.backup_export,  ["GET"],    "全量备份导出")
+        _r(f"/{PLUGIN_NAME}/backup/export_base64", self.backup_export_base64, ["GET"], "全量备份导出(Base64)")
         _r(f"/{PLUGIN_NAME}/backup/restore",  self.backup_restore, ["POST"],   "从备份 zip 恢复(二进制)")
         _r(f"/{PLUGIN_NAME}/backup/restore_base64", self.backup_restore_base64, ["POST"], "从备份 zip 恢复(Base64)")
 
@@ -277,7 +301,7 @@ class QuillRoutes:
     @_api_handler
     async def config_save(self):
         """保存配置项。Web 面板已由 AstrBot 鉴权保护，无需二次校验。"""
-        data = await request.json(default={})
+        data = await _json_body()
         group = data.get("group", "")
         key = data.get("key", "")
         value = data.get("value")
@@ -296,6 +320,41 @@ class QuillRoutes:
         if ok:
             return json_response({"status": "ok", "message": f"已保存 {group}.{key}"})
         return error_response("保存失败", status_code=500)
+
+    @_api_handler
+    async def config_save_batch(self):
+        """Persist all changed fields in one transaction and one hot reload."""
+        data = await _json_body()
+        updates = data.get("updates")
+        if not isinstance(updates, list) or not updates:
+            return error_response("缺少 updates 数组", status_code=400)
+        if len(updates) > 64:
+            return error_response("单次最多保存 64 项配置", status_code=400)
+
+        seen: set[tuple[str, str]] = set()
+        for item in updates:
+            if not isinstance(item, dict):
+                return error_response("配置更新格式无效", status_code=400)
+            group = str(item.get("group", "")).strip()
+            key = str(item.get("key", "")).strip()
+            pair = (group, key)
+            if pair not in _ALLOWED_CONFIG_KEYS:
+                return error_response(
+                    f"不支持的配置项: {group}.{key}", status_code=400
+                )
+            if pair in seen:
+                return error_response(
+                    f"重复的配置项: {group}.{key}", status_code=400
+                )
+            seen.add(pair)
+
+        plugin = self.plugin
+        if plugin is None:
+            return error_response("插件实例不可用", status_code=500)
+        saved, message = plugin.save_plugin_configs(updates)
+        if saved:
+            return json_response({"status": "ok", "message": message})
+        return error_response(f"保存失败: {message}", status_code=500)
 
     @_api_handler
     async def config_all(self):
@@ -327,7 +386,7 @@ class QuillRoutes:
     async def panel_theme_save(self):
         """保存面板主题设置。"""
         try:
-            data = await request.json(default={})
+            data = await _json_body()
         except Exception:
             return error_response("无效请求", status_code=400)
         theme = data.get("theme", "light")
@@ -363,7 +422,7 @@ class QuillRoutes:
     async def panel_ui_state_save(self):
         """保存面板界面状态。仅接受白名单字段，且限制体积防止配置膨胀。"""
         try:
-            data = await request.json(default={})
+            data = await _json_body()
         except Exception:
             return error_response("无效请求", status_code=400)
         if not isinstance(data, dict):
@@ -402,7 +461,7 @@ class QuillRoutes:
         plugin = self.plugin
         if plugin is None or plugin.state_manager is None:
             return error_response("插件实例不可用", status_code=500)
-        data = await request.json(default={})
+        data = await _json_body()
         mode = (data.get("mode") or "").strip().lower()
         if mode not in ("auto", "on", "off"):
             return error_response("无效模式，可选: auto/on/off", status_code=400)
@@ -458,7 +517,7 @@ class QuillRoutes:
     async def rag_upload_base64(self):
         """接收前端发来的 Base64 JSON，完美绕过沙盒 FormData 拦截。"""
         import base64
-        data = await request.json(default={})
+        data = await _json_body()
         source = data.get("source", "unknown")
         b64_data = data.get("b64_data", "")
         if not b64_data:
@@ -466,7 +525,7 @@ class QuillRoutes:
         try:
             file_bytes = base64.b64decode(b64_data)
         except Exception as e:
-            return error_response(f"Base64 解码失败: {e}", status_code=400)
+            return error_response(error_text("Base64 解码失败", e), status_code=400)
         if len(file_bytes) > 50 * 1024 * 1024:
             return error_response("文档文件过大（最大 50MB）", status_code=413)
         # 文件类型检测：仅支持纯文本文件
@@ -502,7 +561,7 @@ class QuillRoutes:
     @_api_handler
     async def rag_delete(self):
         """删除文档。"""
-        data = await request.json(default={})
+        data = await _json_body()
         source = data.get("source", "")
         if not source:
             return error_response("缺少 source 参数", status_code=400)
@@ -514,7 +573,7 @@ class QuillRoutes:
     @_api_handler
     async def rag_search(self):
         """语义检索测试。"""
-        data = await request.json(default={})
+        data = await _json_body()
         query = data.get("query", "")
         top_k = data.get("top_k", self.config.rag_top_k if self.config else 3)
         if not query:
@@ -591,7 +650,7 @@ class QuillRoutes:
     @_api_handler
     async def memory_vector_search(self):
         """向量检索 Debug — 对输入文本做 embedding 后全局搜索。"""
-        data = await request.json(default={})
+        data = await _json_body()
         query = data.get("query", "")
         top_k = data.get("top_k", 5)
         if not query:
@@ -611,7 +670,7 @@ class QuillRoutes:
             results = await memory_store.search_all(vector, top_k=top_k)
             return json_response({"results": results, "query": query})
         except Exception as e:
-            return error_response(f"检索失败: {e}", status_code=500)
+            return error_response(error_text("检索失败", e), status_code=500)
 
     @_api_handler
     async def memory_export(self):
@@ -629,7 +688,7 @@ class QuillRoutes:
             return error_response("记忆未初始化", status_code=500)
         embedding = self.rag.get('embedding')
         try:
-            data = await request.json(default={})
+            data = await _json_body()
         except Exception:
             return error_response("请求体不是有效 JSON", status_code=400)
         result = await handle_memory_import(memory_store, embedding, data)
@@ -648,7 +707,7 @@ class QuillRoutes:
     @_api_handler
     async def memory_delete(self):
         """删除记忆。"""
-        data = await request.json(default={})
+        data = await _json_body()
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
             return error_response("记忆未初始化", status_code=500)
@@ -662,7 +721,7 @@ class QuillRoutes:
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
             return error_response("记忆未初始化", status_code=500)
-        data = await request.json(default={})
+        data = await _json_body()
         memory_id = data.get("memory_id")
         is_core = bool(data.get("is_core", False))
         if not memory_id:
@@ -723,7 +782,7 @@ class QuillRoutes:
 
     @_api_handler
     async def wr_get(self):
-        data = await request.json(default={})
+        data = await _json_body()
         return json_response(
             await handle_wr_get(self.wr_manager, data.get("entry_id"))
         )
@@ -731,25 +790,25 @@ class QuillRoutes:
     @_api_handler
     async def wr_create(self):
         return json_response(
-            await handle_wr_create(self.wr_manager, await request.json(default={}))
+            await handle_wr_create(self.wr_manager, await _json_body())
         )
 
     @_api_handler
     async def wr_update(self):
         return json_response(
-            await handle_wr_update(self.wr_manager, await request.json(default={}))
+            await handle_wr_update(self.wr_manager, await _json_body())
         )
 
     @_api_handler
     async def wr_delete(self):
-        data = await request.json(default={})
+        data = await _json_body()
         return json_response(
             await handle_wr_delete(self.wr_manager, data.get("entry_id"))
         )
 
     @_api_handler
     async def wr_toggle(self):
-        data = await request.json(default={})
+        data = await _json_body()
         return json_response(
             await handle_wr_toggle(
                 self.wr_manager,
@@ -764,14 +823,14 @@ class QuillRoutes:
 
     @_api_handler
     async def wr_import(self):
-        data = await request.json(default={})
+        data = await _json_body()
         return json_response(
             await handle_wr_import(self.wr_manager, data.get("entries", []))
         )
 
     @_api_handler
     async def wr_test(self):
-        data = await request.json(default={})
+        data = await _json_body()
         return json_response(
             await handle_wr_test(self.wr_manager, data.get("text"))
         )
@@ -782,13 +841,13 @@ class QuillRoutes:
 
     @_api_handler
     async def wr_batch_delete(self):
-        data = await request.json(default={})
+        data = await _json_body()
         entry_ids = data.get("entry_ids", [])
         return json_response(await handle_wr_batch_delete(self.wr_manager, entry_ids))
 
     @_api_handler
     async def wr_batch_toggle(self):
-        data = await request.json(default={})
+        data = await _json_body()
         entry_ids = data.get("entry_ids", [])
         enabled = bool(data.get("enabled", True))
         return json_response(await handle_wr_batch_toggle(self.wr_manager, entry_ids, enabled))
@@ -801,14 +860,14 @@ class QuillRoutes:
 
     @_api_handler
     async def wb_get(self):
-        data = await request.json(default={})
+        data = await _json_body()
         return json_response(
             await handle_wb_get(self.wb_manager, data.get("name"))
         )
 
     @_api_handler
     async def wb_create(self):
-        data = await request.json(default={})
+        data = await _json_body()
         return json_response(
             await handle_wb_create(
                 self.wb_manager,
@@ -819,14 +878,14 @@ class QuillRoutes:
 
     @_api_handler
     async def wb_delete(self):
-        data = await request.json(default={})
+        data = await _json_body()
         return json_response(
             await handle_wb_delete(self.wb_manager, data.get("name"))
         )
 
     @_api_handler
     async def wb_entry_create(self):
-        data = await request.json(default={})
+        data = await _json_body()
         return json_response(
             await handle_wb_entry_create(
                 self.wb_manager,
@@ -837,7 +896,7 @@ class QuillRoutes:
 
     @_api_handler
     async def wb_entry_update(self):
-        data = await request.json(default={})
+        data = await _json_body()
         entry_id = data.get("entry_id", data.get("id"))
         return json_response(
             await handle_wb_entry_update(
@@ -850,7 +909,7 @@ class QuillRoutes:
 
     @_api_handler
     async def wb_entry_delete(self):
-        data = await request.json(default={})
+        data = await _json_body()
         # 安全防御：兼容前端传 id 或 entry_id 的情况
         entry_id = data.get("entry_id", data.get("id"))
         return json_response(
@@ -900,8 +959,10 @@ class QuillRoutes:
     @_api_handler
     async def wb_import_json(self):
         """接收 JSON 文本数据并导入世界书（绕过沙盒 FormData 限制）。"""
-        data = await request.json(default={})
-        name = data.get("name", "").strip()
+        data = await _json_body()
+        # 显式传 null 时 .get 的默认值不生效（键存在、值为 None），
+        # 直接 .strip() 会抛 AttributeError 被兜成 500。
+        name = (data.get("name") or "").strip()
         file_data = data.get("data", "")
         if not name:
             return error_response("缺少世界书名称", status_code=400)
@@ -980,7 +1041,7 @@ class QuillRoutes:
     @_api_handler
     async def persona_create(self):
         """创建角色卡。"""
-        data = await request.json(default={})
+        data = await _json_body()
         if not self.persona_manager:
             return error_response("角色卡管理器未加载", status_code=500)
         try:
@@ -992,7 +1053,7 @@ class QuillRoutes:
     @_api_handler
     async def persona_update(self):
         """更新角色卡（支持部分更新）。"""
-        data = await request.json(default={})
+        data = await _json_body()
         persona_id = (data.get("id") or "").strip()
         if not persona_id:
             return error_response("缺少 id 参数", status_code=400)
@@ -1007,7 +1068,7 @@ class QuillRoutes:
     @_api_handler
     async def persona_delete(self):
         """删除角色卡。"""
-        data = await request.json(default={})
+        data = await _json_body()
         persona_id = (data.get("id") or "").strip()
         if not persona_id:
             return error_response("缺少 id 参数", status_code=400)
@@ -1045,7 +1106,7 @@ class QuillRoutes:
             url = f"/{PLUGIN_NAME}/avatar/{os.path.basename(rel_path)}"
             return json_response({"url": url, "path": rel_path, "message": "Avatar uploaded"})
         except Exception as e:
-            return error_response(f"保存失败: {e}", status_code=500)
+            return error_response(error_text("保存失败", e), status_code=500)
 
     @_api_handler
     async def upload_avatar_base64(self):
@@ -1054,7 +1115,7 @@ class QuillRoutes:
             return error_response("角色卡管理器未加载", status_code=500)
 
         import base64
-        data = await request.json(default={})
+        data = await _json_body()
         filename = (data.get("filename") or "avatar.png").strip()
         b64_data = (data.get("b64_data") or "").strip()
 
@@ -1064,7 +1125,7 @@ class QuillRoutes:
         try:
             file_bytes = base64.b64decode(b64_data)
         except Exception as e:
-            return error_response(f"Base64 解码失败: {e}", status_code=400)
+            return error_response(error_text("Base64 解码失败", e), status_code=400)
 
         # 验证文件大小 (最大 5MB，与 multipart 接口保持一致)
         if len(file_bytes) > 5 * 1024 * 1024:
@@ -1075,7 +1136,7 @@ class QuillRoutes:
             url = f"/{PLUGIN_NAME}/avatar/{os.path.basename(rel_path)}"
             return json_response({"url": url, "path": rel_path, "message": "Avatar uploaded"})
         except Exception as e:
-            return error_response(f"保存失败: {e}", status_code=500)
+            return error_response(error_text("保存失败", e), status_code=500)
 
     @_api_handler
     async def persona_import(self):
@@ -1122,7 +1183,7 @@ class QuillRoutes:
         except ValueError as e:
             return error_response(str(e), status_code=400)
         except Exception as e:
-            return error_response(f"导入失败: {e}", status_code=500)
+            return error_response(error_text("导入失败", e), status_code=500)
 
     @_api_handler
     async def persona_import_base64(self):
@@ -1131,7 +1192,7 @@ class QuillRoutes:
             return error_response("角色卡管理器未加载", status_code=500)
 
         import base64
-        data = await request.json(default={})
+        data = await _json_body()
         filename = (data.get("filename") or "card.png").strip().lower()
         b64_data = (data.get("b64_data") or "").strip()
 
@@ -1141,7 +1202,7 @@ class QuillRoutes:
         try:
             file_bytes = base64.b64decode(b64_data)
         except Exception as e:
-            return error_response(f"Base64 解码失败: {e}", status_code=400)
+            return error_response(error_text("Base64 解码失败", e), status_code=400)
 
         ext = os.path.splitext(filename)[1].lower()
         if ext not in ('.png', '.jpg', '.jpeg', '.webp', '.json'):
@@ -1171,7 +1232,7 @@ class QuillRoutes:
         except ValueError as e:
             return error_response(str(e), status_code=400)
         except Exception as e:
-            return error_response(f"导入失败: {e}", status_code=500)
+            return error_response(error_text("导入失败", e), status_code=500)
 
     @_api_handler
     async def persona_export(self):
@@ -1217,7 +1278,7 @@ class QuillRoutes:
         except ImportError as e:
             return error_response(str(e), status_code=501)
         except Exception as e:
-            return error_response(f"导出失败: {e}", status_code=500)
+            return error_response(error_text("导出失败", e), status_code=500)
 
     @_api_handler
     async def serve_avatar(self, filename: str):
@@ -1252,7 +1313,7 @@ class QuillRoutes:
         """从剪贴板文本导入角色卡"""
         if not self.persona_manager:
             return error_response("角色卡管理器未加载", status_code=500)
-        data = await request.json(default={})
+        data = await _json_body()
         text = (data.get("text") or "").strip()
         if not text:
             return error_response("缺少 text 参数", status_code=400)
@@ -1263,14 +1324,14 @@ class QuillRoutes:
         except ValueError as e:
             return error_response(str(e), status_code=400)
         except Exception as e:
-            return error_response(f"解析失败: {e}", status_code=400)
+            return error_response(error_text("解析失败", e), status_code=400)
 
     @_api_handler
     async def persona_import_text_base64(self):
         """从剪贴板文本导入角色卡（Base64 绕过沙盒）"""
         if not self.persona_manager:
             return error_response("角色卡管理器未加载", status_code=500)
-        data = await request.json(default={})
+        data = await _json_body()
         b64_text = (data.get("b64_text") or "").strip()
         if not b64_text:
             return error_response("缺少 b64_text 参数", status_code=400)
@@ -1278,7 +1339,7 @@ class QuillRoutes:
         try:
             text = base64.b64decode(b64_text).decode('utf-8')
         except Exception as e:
-            return error_response(f"Base64 解码失败: {e}", status_code=400)
+            return error_response(error_text("Base64 解码失败", e), status_code=400)
         try:
             persona_data = self.persona_manager.parse_clipboard_text(text)
             result = await self.persona_manager.create_persona(persona_data)
@@ -1286,14 +1347,14 @@ class QuillRoutes:
         except ValueError as e:
             return error_response(str(e), status_code=400)
         except Exception as e:
-            return error_response(f"解析失败: {e}", status_code=400)
+            return error_response(error_text("解析失败", e), status_code=400)
 
     @_api_handler
     async def persona_export_base64(self):
         """导出 V2 角色卡（Base64 编码，突破沙盒下载限制）。"""
         if not self.persona_manager:
             return error_response("角色卡管理器未加载", status_code=500)
-        data = await request.json(default={})
+        data = await _json_body()
         persona_id = (data.get("id") or "").strip()
         if not persona_id:
             return error_response("缺少角色 ID", status_code=400)
@@ -1315,55 +1376,74 @@ class QuillRoutes:
             b64_str = base64.b64encode(export_data).decode('ascii')
             return json_response({"filename": filename, "b64_data": b64_str})
         except Exception as e:
-            return error_response(f"导出失败: {e}", status_code=500)
+            return error_response(error_text("导出失败", e), status_code=500)
+
+    async def _build_backup_zip(self) -> tuple[bytes, str, int, list[str]]:
+        """Build one consistent zip snapshot from plugin data directories.
+
+        数据库文件走 SQLite 在线备份 API 生成一致快照（WAL 中未 checkpoint 的
+        已提交事务也包含在内），而不是裸拷主文件——否则热备会静默丢掉最近提交
+        （实测出现过「备份里 0 条记忆，实际 2 条」）。快照失败时退回裸拷并把原因
+        记入 warnings，交由调用方透出，不静默降级。
+        """
+        import io
+        import datetime as _dt
+
+        plugin_root = os.path.dirname(os.path.abspath(__file__))
+        sub_dirs = ["data", "knowledge", "worldbooks"]
+        existing = [
+            d for d in (os.path.join(plugin_root, s) for s in sub_dirs)
+            if os.path.isdir(d)
+        ]
+        if not existing:
+            raise FileNotFoundError("数据目录不存在")
+
+        buf = io.BytesIO()
+        zip_count, warnings = await asyncio.to_thread(build_backup_zip, existing, buf)
+        for w in warnings:
+            logger.warning("[Quill] 备份快照降级: %s", w)
+        fname = (
+            f"quill_backup_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        )
+        return buf.getvalue(), fname, zip_count, warnings
 
     @_api_handler
     async def backup_export(self):
-        """全量备份导出：打包所有插件数据为 zip 下载。
-
-        修复：此前对 __file__ 做了两次 dirname（指到 plugins/ 目录），data 目录
-        永远 404；且只打包 data/，遗漏 knowledge/（三库 DB）与 worldbooks/。
-        现以插件根目录为基准，打包三个数据目录。
-        """
-        import io
-        import zipfile
-        plugin_root = os.path.dirname(os.path.abspath(__file__))
-        sub_dirs = ["data", "knowledge", "worldbooks"]
-        existing = [d for d in (os.path.join(plugin_root, s) for s in sub_dirs) if os.path.isdir(d)]
-        if not existing:
-            return error_response("数据目录不存在", status_code=404)
-
-        buf = io.BytesIO()
-        zip_count = 0
-        def _build_zip():
-            nonlocal zip_count
-            with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for base in existing:
-                    for root, dirs, files in os.walk(base):
-                        for fname in files:
-                            fpath = os.path.join(root, fname)
-                            # 审查修复：zip 条目名必须用 "/" 分隔（Windows 的 os.sep
-                            # 会让跨平台恢复时生成文件名含 "\" 的单个文件）
-                            arcname = os.path.join(
-                                os.path.basename(base), os.path.relpath(fpath, base)
-                            ).replace(os.sep, "/")
-                            # 跳过临时文件与索引缓存
-                            if fname.endswith('.tmp') or fname.endswith('.tmp.bak') or fname.endswith('-wal') or fname.endswith('-shm'):
-                                continue
-                            zf.write(fpath, arcname)
-                            zip_count += 1
-        # P3-4 修复：打包为同步 IO 密集操作，放入线程池避免阻塞事件循环
-        await asyncio.to_thread(_build_zip)
-        buf.seek(0)
+        """Export all plugin data as a binary zip download."""
+        if self._maintenance_lock.locked():
+            return error_response("备份/恢复正在进行中，请稍后再试", status_code=409)
+        async with self._maintenance_lock:
+            try:
+                raw, fname, zip_count, warnings = await self._build_backup_zip()
+            except FileNotFoundError as e:
+                return error_response(str(e), status_code=404)
         logger.info(f"[Quill] 全量备份导出: {zip_count} 个文件")
-        import datetime as _dt
-        # P3-5 修复：file_response 仅支持路径，bytes 用 Response + 下载头
-        fname = f"quill_backup_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         return Response(
-            buf.getvalue(),
+            raw,
             media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename={fname}"}
+            headers={"Content-Disposition": f"attachment; filename={fname}"},
         )
+
+    @_api_handler
+    async def backup_export_base64(self):
+        """Return a zip snapshot as JSON for sandboxed Plugin Page downloads."""
+        import base64
+        if self._maintenance_lock.locked():
+            return error_response("备份/恢复正在进行中，请稍后再试", status_code=409)
+        async with self._maintenance_lock:
+            try:
+                raw, filename, count, warnings = await self._build_backup_zip()
+            except FileNotFoundError as e:
+                return error_response(str(e), status_code=404)
+        logger.info("[Quill] 全量备份导出(Base64): %d 个文件", count)
+        payload = {
+            "filename": filename,
+            "b64_data": base64.b64encode(raw).decode("ascii"),
+            "size": len(raw),
+        }
+        if warnings:
+            payload["warnings"] = warnings
+        return json_response(payload)
 
     @_api_handler
     async def backup_restore(self):
@@ -1382,7 +1462,10 @@ class QuillRoutes:
         raw = await request.body()
         if not raw:
             return error_response("请上传备份文件", status_code=400)
-        return await self._do_restore_bytes(raw)
+        if self._maintenance_lock.locked():
+            return error_response("备份/恢复正在进行中，请稍后再试", status_code=409)
+        async with self._maintenance_lock:
+            return await self._do_restore_bytes(raw)
 
     @_api_handler
     async def backup_restore_base64(self):
@@ -1392,7 +1475,7 @@ class QuillRoutes:
         认证直连 fetch——前端统一走 bridge（JSON）上传，此端点为此而设。
         """
         import base64
-        data = await request.json(default={})
+        data = await _json_body()
         b64 = (data.get("b64_data") or "").strip()
         if not b64:
             return error_response("缺少 b64_data 字段", status_code=400)
@@ -1400,7 +1483,10 @@ class QuillRoutes:
             raw = base64.b64decode(b64)
         except Exception:
             return error_response("Base64 解码失败", status_code=400)
-        return await self._do_restore_bytes(raw)
+        if self._maintenance_lock.locked():
+            return error_response("备份/恢复正在进行中，请稍后再试", status_code=409)
+        async with self._maintenance_lock:
+            return await self._do_restore_bytes(raw)
 
     async def _do_restore_bytes(self, raw: bytes):
         import io
@@ -1409,9 +1495,53 @@ class QuillRoutes:
         root_norm = os.path.normpath(plugin_root)
         allowed_prefixes = ("data/", "knowledge/", "worldbooks/")
 
+        # Fully validate the archive before touching live databases or
+        # stopping autoflush. A corrupt/irrelevant zip must not evict runtime
+        # state or overwrite existing data.
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
+                bad_file = zf.testzip()
+                if bad_file:
+                    return error_response(
+                        f"备份文件损坏: {bad_file}", status_code=400
+                    )
+                candidates = []
+                bad_db = []
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    name = info.filename.replace("\\", "/")
+                    if not any(name.startswith(p) for p in allowed_prefixes):
+                        continue
+                    if name.startswith("/") or ".." in name.split("/"):
+                        continue
+                    dest = os.path.normpath(os.path.join(plugin_root, name))
+                    if not dest.startswith(root_norm + os.sep):
+                        continue
+                    candidates.append(info)
+                    # 覆盖在线库前先确认归档里确实是 SQLite 文件：把非数据库
+                    # 字节写进 quill_wr.db 会直接毁掉现有数据。只读头部若干字节，
+                    # 不必把整个条目解压进内存。
+                    if name.endswith(".db"):
+                        with zf.open(info) as fh:
+                            if not is_sqlite_bytes(fh.read(16)):
+                                bad_db.append(name)
+                if not candidates:
+                    return error_response(
+                        "备份中没有可恢复的数据文件", status_code=400
+                    )
+                if bad_db:
+                    return error_response(
+                        "备份中的数据库文件已损坏，拒绝恢复: " + ", ".join(bad_db),
+                        status_code=400,
+                    )
+        except (zipfile.BadZipFile, OSError) as e:
+            return error_response(error_text("无效的备份文件", e), status_code=400)
+
         extracted_count = 0
         skipped_count = 0
         failed_files: list[str] = []
+        stale_sidecars: list[str] = []
 
         def _extract():
             nonlocal extracted_count, skipped_count
@@ -1435,6 +1565,11 @@ class QuillRoutes:
                         continue
                     try:
                         os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        # 覆盖数据库前先删掉上一次运行留下的 -wal/-shm/-journal：
+                        # 旧 WAL 记录的是**旧库**的页，SQLite 重开恢复后的主文件时
+                        # 会把它当成自己的日志重放，静默回退/损坏刚恢复的数据。
+                        if dest.endswith(".db"):
+                            stale_sidecars.extend(remove_sidecars(dest))
                         # 以校验后的 dest 为落点手写（不使用 zf.extract 的自有路径逻辑）
                         with open(dest, "wb") as f:
                             f.write(zf.read(info))
@@ -1451,11 +1586,23 @@ class QuillRoutes:
             except Exception as e:
                 logger.warning("[Quill] 备份恢复前组件关闭失败: %s", e, exc_info=True)
 
-        await asyncio.to_thread(_extract)
+        # 解压失败（zip 条目 CRC 损坏 / 加密等）也必须走到重建：_prepare_for_restore
+        # 已经把 wr_manager 置 None，若在此中断，组件会一直停在「已准备」状态，
+        # 面板与聊天路径直到重启都不可用。
+        extract_error = None
+        try:
+            await asyncio.to_thread(_extract)
+        except Exception as e:
+            extract_error = e
+            logger.warning("[Quill] 备份恢复: 解压中断: %s", e, exc_info=True)
         logger.info(
             f"[Quill] 备份恢复: 解压 {extracted_count} 个文件, "
             f"跳过 {skipped_count} 个, 失败 {len(failed_files)} 个"
         )
+        if stale_sidecars:
+            logger.info(
+                "[Quill] 备份恢复: 已清理 %d 个陈旧数据库 sidecar", len(stale_sidecars)
+            )
 
         # 解压完成 → 全量重建数据组件 → 刷新 Web 路由引用
         plugin = self.plugin
@@ -1470,6 +1617,8 @@ class QuillRoutes:
         msg = f"已恢复 {extracted_count} 个文件（跳过 {skipped_count} 个）"
         if failed_files:
             msg += f"；{len(failed_files)} 个文件写入失败（详见服务端日志）"
+        if extract_error is not None:
+            msg += f"；解压中断（{type(extract_error).__name__}），数据可能不完整，建议重新恢复"
         if not reload_ok:
             msg += "；组件热重载失败，建议重启 AstrBot 或重载插件"
         return json_response({
