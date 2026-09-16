@@ -51,6 +51,27 @@ from .encryption import decrypt_output
 from .persona_manager import QuillPersonaManager
 
 
+# ── 指令参数切分 ───────────────────────────────────────────────────
+# AstrBot 的 CommandFilter.init_handler_md 把「有默认值的形参」记为**默认值**
+# 本身（而非注解），于是 `rest: GreedyStr = ""` 里的 GreedyStr 标记被丢掉，
+# 该参数退化成普通 str，只吃到一个 token，其余全部丢弃。
+# 实测证据：`/quill test wb 女巫` 解析成 rest='wb'（"女巫" 消失），
+# 导致 /quill test 永远回落到 wr、`/char <含空格的名字>` 必然失败、
+# `/char import <JSON>` 只拿到 JSON 的第一个 token。
+# 因此入口一律改用具名 GreedyStr 形参（无默认值，框架才会按整体剩余文本处理），
+# 再在这里自行按「首个 token + 其余」切分。
+
+
+def _split2(text: str) -> tuple[str, str]:
+    """把「子命令 + 其余参数」切成两段，等价于原来的 arg1/arg2。"""
+    parts = (text or "").strip().split(None, 1)
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[1]
+
+
 # ── Markdown stripper ──────────────────────────────────────────────
 # Telegram 适配器没有设置 parse_mode，Markdown 语法会被原文显示。
 # 在 send_message_to_user 执行前用正则擦除标记，让用户看到干净文本。
@@ -1882,21 +1903,20 @@ class QuillPlugin(Star):
     # ================================================================
 
     @filter.command("wb")
-    async def cmd_wb(self, event: AstrMessageEvent, arg1: str = "", arg2: str = ""):
+    async def cmd_wb(self, event: AstrMessageEvent, args: GreedyStr):
         """世界书管理。用法：/wb | /wb bind <序号|名字> | /wb unbind <序号|名字> | /wb info <序号|名字> | /wb reload"""
+        arg1, arg2 = _split2(args)
         await _cmds.wb_dispatch(self, event, arg1, arg2)
 
     @filter.command("char")
-    async def cmd_char(self, event: AstrMessageEvent, arg: str = ""):
+    async def cmd_char(self, event: AstrMessageEvent, args: GreedyStr):
         """角色卡管理。用法：/char | /char <名字> | /char unset | /char info | /char export | /char import"""
-        await _cmds.char_dispatch(self, event, arg)
+        await _cmds.char_dispatch(self, event, args)
 
     @filter.command("quill")
-    async def cmd_quill(
-        self, event: AstrMessageEvent,
-        arg1: str = "", rest: GreedyStr = ""
-    ):
+    async def cmd_quill(self, event: AstrMessageEvent, args: GreedyStr):
         """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill debug | /quill test <wr|wb|mem> <文字>"""
+        arg1, rest = _split2(args)
         arg1_lower = (arg1 or "").strip().lower()
         if arg1_lower == "help":
             await _cmds.quill_help(event)
@@ -1926,13 +1946,15 @@ class QuillPlugin(Star):
         await _cmds.quill_status(self, event)
 
     @filter.command("memory")
-    async def cmd_memory(self, event: AstrMessageEvent, arg1: str = "", arg2: str = ""):
+    async def cmd_memory(self, event: AstrMessageEvent, args: GreedyStr):
         """动态记忆管理。用法：/memory | /memory list | /memory del <序号> | /memory clear | /memory learn <内容> | /memory search <关键词>"""
+        arg1, arg2 = _split2(args)
         await _cmds.memory_dispatch(self, event, arg1, arg2)
 
     @filter.command("doc")
-    async def cmd_doc(self, event: AstrMessageEvent, arg1: str = "", arg2: str = ""):
+    async def cmd_doc(self, event: AstrMessageEvent, args: GreedyStr):
         """外部文档 RAG 管理。用法：/doc list | /doc bind <序号> | /doc unbind <序号> | /doc search <关键词> | /doc reload"""
+        arg1, arg2 = _split2(args)
         await _cmds.doc_dispatch(self, event, arg1, arg2)
 
     @filter.command("stream")

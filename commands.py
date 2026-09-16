@@ -134,19 +134,49 @@ async def wb_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
     ).use_t2i(False))
 
 
+def _norm_name(text: str) -> str:
+    """归一化名字用于比对：折叠连续空白为单个空格并去首尾。
+
+    AstrBot 的 CommandFilter 会把整条消息里的连续空白压成单空格
+    （`re.sub(r"\\s+", " ", message_str)`），所以用户输入侧已经不可能带
+    连续空格。但**库里的名字可以是任意空白**（例如 "" 这样的双空格），
+    直接字符串相等会让这些名字永远无法通过名字切换/绑定。两侧都做同样的
+    归一化即可对齐。
+    """
+    return " ".join((text or "").split())
+
+
+def _match_name(candidates, wanted: str) -> str | None:
+    """在候选名字里做「归一化后相等」的匹配，先精确后归一化。"""
+    raw = (wanted or "").strip()
+    if not raw:
+        return None
+    for name in candidates:
+        if name == raw:
+            return name
+    target = _norm_name(raw)
+    for name in candidates:
+        if _norm_name(name) == target:
+            return name
+    return None
+
+
 def _resolve_wb_name(plugin, arg: str) -> str | None:
-    """把 '1' / '2' 解析为世界书名。若 arg 是纯数字序号（1-based）则返回对应名字，
-    否则返回 None（调用方继续按字符串名字处理）。"""
+    """把 '1' / '2' 或名字解析为世界书名。
+
+    纯数字按序号（1-based）解析；非数字做名字匹配（含空白归一化）。
+    两者都未命中时返回 None，由调用方决定如何报错。
+    """
     if not arg:
         return None
     s = arg.strip()
-    if not s.isdigit():
-        return None
-    idx = int(s) - 1
     books = plugin.wb_manager.list_worldbooks()
-    if 0 <= idx < len(books):
-        return books[idx]
-    return None
+    if s.isdigit():
+        idx = int(s) - 1
+        if 0 <= idx < len(books):
+            return books[idx]
+        return None
+    return _match_name(books, s)
 
 
 async def _wb_bind(plugin, event: AstrMessageEvent, arg: str):
@@ -608,10 +638,16 @@ async def _resolve_persona_id(plugin, arg: str, event: AstrMessageEvent) -> str 
         ))
         return None
 
-    # 按 id 或 name 匹配
+    # 按 id 或 name 匹配（id 先精确；name 走归一化，兼容库里名字含连续空格）
     for p in personas:
-        if p.get("id") == name or p.get("name") == name:
+        if p.get("id") == name:
             return p.get("id", name)
+    names = [p.get("name") for p in personas if p.get("name")]
+    matched_name = _match_name(names, name)
+    if matched_name is not None:
+        for p in personas:
+            if p.get("name") == matched_name:
+                return p.get("id", matched_name)
 
     event.set_result(MessageEventResult().message(
         f"角色卡不存在: {arg}\n发送 /char 查看列表"
