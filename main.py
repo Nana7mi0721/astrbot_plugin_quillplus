@@ -870,7 +870,11 @@ class QuillPlugin(Star):
 
     @filter.on_waiting_llm_request(priority=100)
     async def on_waiting_llm_request(self, event: AstrMessageEvent):
-        """在流式决策前控制流式模式。"""
+        """在流式决策前切换角色卡专属对话并控制流式模式。"""
+        # 必须最先执行：本事件早于 AstrBot 的 _get_session_conv()，
+        # 在这里切换对话才能对本轮生效（详见 _ensure_persona_conversation）。
+        await self._ensure_persona_conversation(event)
+
         try:
             user_input = event.message_str or ""
             target_id = self._get_target_id(event)
@@ -1269,6 +1273,82 @@ class QuillPlugin(Star):
 
     def _get_memory_session_id(self, target_id: str, persona_id: str) -> str:
         return f"{target_id}::{persona_id}" if persona_id else target_id
+
+    # ── 角色卡 → 对话隔离 ────────────────────────────────────────
+
+    async def _ensure_persona_conversation(self, event: AstrMessageEvent) -> None:
+        """把当前角色卡切到它自己的 AstrBot 对话上，实现对话历史隔离。
+
+        背景：AstrBot 的 conversation 只按 UMO 切分，**不按角色卡切分**。
+        插件的 memories / chat_logs 早已按 `UMO::persona` 隔离，唯独
+        AstrBot 侧那段对话历史（即 `req.contexts`）没有隔离，导致切换角色卡后
+        新角色仍能读到上一个角色的对话。
+
+        这里给每张角色卡绑定一个独立 conversation：
+          * 切到某张卡 → 切到它上次用的对话（切回来仍能看到那段历史）；
+          * 该卡首次使用 → 新建一个空对话。
+
+        时序上必须挂在 `on_waiting_llm_request`：该事件在 AstrBot
+        `_get_session_conv()` **之前**触发（internal.py:225 vs 239），
+        因此这里的切换**对本轮立即生效**；若放到 on_llm_request 则要下一轮才生效。
+
+        一切异常都只记日志并放行：拿不到 conversation_manager 或接口变动时，
+        插件退回「不分对话」的原有行为，绝不让隔离逻辑打断正常聊天。
+        """
+        conv_mgr = getattr(self.context, "conversation_manager", None)
+        if conv_mgr is None:
+            return
+        try:
+            umo = self._get_target_id(event)
+            persona_id = await self.state_manager.get_persona_id(umo)
+            key = persona_id or ""  # 未绑卡时归入空串一档，同样独立
+            mapping = await self.state_manager.get_persona_conv_map(umo)
+            curr_cid = await conv_mgr.get_curr_conversation_id(umo)
+            target_cid = mapping.get(key)
+
+            if target_cid and target_cid == curr_cid:
+                return  # 快路径：已在正确对话，零额外查询
+
+            if target_cid:
+                # 对话可能已被 Dashboard 删除；switch 不校验存在性（conversation_mgr.py:126），
+                # 不校验会导致每轮都切到一个不存在的 cid 而不断新建/泄漏。
+                try:
+                    conv = await conv_mgr.get_conversation(umo, target_cid)
+                except Exception:
+                    conv = None
+                if conv is None:
+                    logger.info(
+                        f"[Quill] 角色卡 {key or '(未绑定)'} 的原对话 {target_cid[:8]} 已不存在，将重建"
+                    )
+                    await self.state_manager.forget_persona_conv(umo, key)
+                    target_cid = None
+
+            if target_cid is None:
+                if not mapping and curr_cid:
+                    # 首次启用隔离：当前角色卡接管现有对话，历史不断
+                    target_cid = curr_cid
+                    logger.info(
+                        f"[Quill] 角色卡 {key or '(未绑定)'} 接管当前对话 "
+                        f"{curr_cid[:8]}（首次启用对话隔离）"
+                    )
+                else:
+                    target_cid = await conv_mgr.new_conversation(
+                        umo, event.get_platform_id()
+                    )
+                    logger.info(
+                        f"[Quill] 已为角色卡 {key or '(未绑定)'} 新建独立对话 "
+                        f"{str(target_cid)[:8]}（对话历史将相互隔离）"
+                    )
+                await self.state_manager.set_persona_conv(umo, key, target_cid)
+
+            if curr_cid != target_cid:
+                await conv_mgr.switch_conversation(umo, target_cid)
+                logger.info(
+                    f"[Quill] 对话已切换 → {str(target_cid)[:8]} "
+                    f"(角色卡: {key or '(未绑定)'})"
+                )
+        except Exception as e:
+            logger.warning(f"[Quill] 角色卡对话隔离失败，本轮沿用当前对话: {e}")
 
     @filter.on_using_llm_tool(priority=200)
     async def on_using_llm_tool(

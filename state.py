@@ -34,6 +34,11 @@ class UserState:
     first_message_injected: bool = False
     unsummarized_turns: int = 0
     last_learned_id: int = 0
+    # persona_id -> AstrBot conversation_id
+    # 用于「切角色卡即隔离对话历史」：每张角色卡各自绑定一个 AstrBot 对话，
+    # 切卡时切换过去，切回来仍能看到该角色卡原来的那段历史。
+    # 未绑定角色卡时用空串 "" 作为键，同样独立成一档。
+    persona_convs: dict = field(default_factory=dict)
 
 
 class StateManager:
@@ -367,6 +372,50 @@ class StateManager:
             if st is None:
                 return ""
             return st.persona_id
+
+    # ── 角色卡 → 对话 映射（对话历史隔离用）────────────────────
+
+    # 单会话最多记住多少张角色卡的对话绑定。超出后按插入顺序淘汰最旧的，
+    # 防止长期运行 + 大量角色卡导致 state 文件无限膨胀。
+    _MAX_PERSONA_CONVS = 32
+
+    async def get_persona_conv_map(self, user_id: str) -> dict:
+        """返回 persona_id → conversation_id 的副本（只读，外部改动不回写）。"""
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None:
+                return {}
+            return dict(st.persona_convs or {})
+
+    async def set_persona_conv(
+        self, user_id: str, persona_id: str, conversation_id: str
+    ) -> None:
+        """记录「该角色卡使用哪个 AstrBot 对话」，立即落盘。"""
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None:
+                st = UserState(user_id=user_id)
+                self._states[user_id] = st
+            convs = st.persona_convs
+            if not isinstance(convs, dict):
+                convs = {}
+                st.persona_convs = convs
+            # 重新赋值以更新插入顺序，使淘汰策略按「最近使用」而非「最早创建」
+            convs.pop(persona_id, None)
+            convs[persona_id] = conversation_id
+            while len(convs) > self._MAX_PERSONA_CONVS:
+                oldest = next(iter(convs))
+                convs.pop(oldest, None)
+        await self._persist()
+
+    async def forget_persona_conv(self, user_id: str, persona_id: str) -> None:
+        """删除某角色卡的对话绑定（对话已被外部删除时用来自愈）。"""
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None or not isinstance(st.persona_convs, dict):
+                return
+            st.persona_convs.pop(persona_id, None)
+        await self._persist()
 
     async def mark_first_message_injected(self, user_id: str) -> None:
         async with self._lock:

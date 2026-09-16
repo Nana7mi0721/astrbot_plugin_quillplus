@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.2.3-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.3.0-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -122,7 +122,7 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 |------|------|
 | `/quill` | 查看五大系统状态总览 |
 | `/quill help` | 折叠式指令速查（按五大系统分组，聊天窗口内可读） |
-| `/quill reset` | 重置当前会话全部记忆与对话日志 |
+| `/quill reset` | 重开当前角色卡这段剧情：清当前卡的对话上下文与日志，**保留动态记忆** |
 | `/quill status` | 查看插件健康度（RAG 检索成功率、状态栏解析成功率等） |
 | `/quill debug` | 调试信息：会话/配置/健康度/Session Vars |
 | `/quill test kb <文字>` | 测试写作素材库匹配 |
@@ -307,6 +307,7 @@ QuillPlus 遵循持续迭代的开发路线，当前（v5.2）已完成以下里
 - ✅ **v5.0** — 重构首发版：平行宇宙双轴隔离、JSON 原子化状态机、全链路异步化、Character Card V2 全量支持
 - ✅ **v5.1** — 全自动自迭代记忆：闲时反思守护进程、核心记忆更新、混合检索 (FTS5+Vector+RRF)、LRU 会话缓存
 - ✅ **v5.2/v5.2.1** — 面板功能补全：对话日志查看器、全量备份导出/恢复、WR 批量操作、移动端底部导航、MD3 全面重构、四轮代码审查修复
+- ✅ **v5.3.0** — 切换角色卡自动隔离对话历史（每张卡绑定独立 AstrBot 对话，切回仍见原历史）；`/quill reset` 改为**保留动态记忆**、只清当前角色卡的对话上下文与日志（重开剧情而非抹掉记忆）
 - ✅ **v5.2.3** — 面板按 Apple HIG 全面重写：系统色/字阶/材质/弹簧动效、图标符号表、事件委托重构；接入 HarmonyOS Sans；修复 3 个沙箱 iframe 专属缺陷（配置页锁死、脚本中断、偏好不持久）
 - ✅ **v5.2.3（桌面化修订）** — 面板重建为 macOS 桌面应用形态：边栏优先架构、控件高度令牌体系、弹层顶部垂落、右键菜单、方向键导航、双击编辑、自绘下拉 listbox、分类固定调色板；移除移动端；修复 11 项既有缺陷（含分类筛选与 Alt+数字快捷键长期失效）
 

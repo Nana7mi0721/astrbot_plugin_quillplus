@@ -474,7 +474,7 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
     if link_info:
         msg_parts.append("已自动挂载：")
         msg_parts.append("；".join(link_info))
-    msg_parts.append("\n建议使用 /quill reset + /reset 清空 Quill 侧状态与上下文，防止旧对话影响新角色。")
+    msg_parts.append("\n对话历史已按角色卡自动隔离，无需手动清理；如需重开本卡剧情用 /quill reset。")
 
     event.set_result(MessageEventResult().message("\n".join(msg_parts)))
 
@@ -699,7 +699,7 @@ async def quill_help(event: AstrMessageEvent):
         "  /quill             系统总览",
         "  /quill status      健康度详情（RAG/状态栏成功率）",
         "  /quill help        本帮助",
-        "  /quill reset       清空记忆+日志+注入状态(配合/reset)",
+        "  /quill reset       重开本角色卡剧情(清对话+日志，保留记忆)",
         "  /quill test <wr|wb|mem> <文字>  系统测试",
         "  /quill debug        调试：注入组成、匹配详情、会话状态",
         "  /stream on|off|auto  流式模式开关",
@@ -1534,20 +1534,22 @@ async def reinject_dispatch(plugin, event: AstrMessageEvent):
 
 
 # ================================================================
-# /quill reset — 清空 Quill 侧会话状态（记忆 + 对话日志 + 注入计数）
+# /quill reset — 重开当前角色卡这段剧情（保留长期记忆）
 # ================================================================
 
 async def quill_reset(plugin, event: AstrMessageEvent):
-    """/quill reset — 清空 Quill 侧会话状态，配合 /reset 实现完整重置。
+    """/quill reset — 清掉当前角色卡的对话上下文与日志，**保留动态记忆**。
 
-    清理内容：
-    - 动态记忆（memories 表中当前 session 的所有记忆）
-    - 对话日志（chat_logs 表中当前 session 的所有记录，避免 Context Restoration 垫入旧上下文）
-    - quill_rounds（注入轮次归零，下次重新注入常驻素材）
-    - unsummarized_turns（反思计数器归零）
+    清理内容（只作用于**当前角色卡**，不影响其他角色卡）：
+    - AstrBot 对话历史（本卡专属 conversation 的 history 清空）
+    - 对话日志（chat_logs 中本卡 session 的记录，避免断点续传垫回旧上下文）
+    - quill_rounds / unsummarized_turns / last_learned_id 归零
 
-    注意：本命令不清理 AstrBot 核心的对话历史（contexts），
-    如需完整重置请额外执行 /reset。
+    **不清**动态记忆（memories）—— 长期记忆跨重置保留，AI 仍记得设定与过往，
+    只是不记得刚才那几分钟的对话。想彻底清记忆请用 /memory clear。
+
+    隔离前提：每个角色卡各自绑定一个 AstrBot 对话（见
+    QuillPlugin._ensure_persona_conversation），所以这里清对话只影响当前卡。
     """
     msg = _check_group_permission(plugin, event)
     if msg:
@@ -1556,28 +1558,41 @@ async def quill_reset(plugin, event: AstrMessageEvent):
 
     target_id = _get_target_id(event)
     persona_id = await plugin.state_manager.get_persona_id(target_id)
+    mem_session_id = f"{target_id}::{persona_id}" if persona_id else target_id
 
-    mem_deleted = 0
     log_deleted = 0
     if plugin.rag_retriever and plugin.rag_retriever.memory_store:
         try:
-            # 批量清理：删除 target_id 下所有 session 的记忆和日志
-            # （含 target_id 本身和 target_id::* 所有 persona），
-            # 防止切换角色卡后 Context Restoration 垫入旧上下文
-            mem_deleted = await plugin.rag_retriever.memory_store.delete_all_session_memories(target_id)
-            log_deleted = await plugin.rag_retriever.memory_store.delete_all_session_chat_logs(target_id)
+            # 只删当前角色卡的日志（此前是 delete_all_session_chat_logs，
+            # 会把所有角色卡的日志一起清掉，与「按卡隔离」相悖）
+            log_deleted = await plugin.rag_retriever.memory_store.delete_session_chat_logs(
+                mem_session_id
+            )
         except Exception as e:
-            logger.warning(f"[Quill] /quill reset 清理记忆失败: {e}")
+            logger.warning(f"[Quill] /quill reset 清理对话日志失败: {e}")
+
+    # 清空当前角色卡专属对话的 AstrBot 历史（与内置 /reset 同款做法）
+    conv_cleared = False
+    conv_mgr = getattr(plugin.context, "conversation_manager", None)
+    if conv_mgr is not None:
+        try:
+            cid = await conv_mgr.get_curr_conversation_id(target_id)
+            if cid:
+                await conv_mgr.update_conversation(target_id, cid, [])
+                conv_cleared = True
+        except Exception as e:
+            logger.warning(f"[Quill] /quill reset 清空对话历史失败: {e}")
 
     await plugin.state_manager.reset_quill_rounds(target_id)
     await plugin.state_manager.reset_unsummarized_turns(target_id)
     await plugin.state_manager.update_last_learned_id(target_id, 0)
 
     msg = "✅ Quill 会话已重置\n"
-    msg += f"  · 动态记忆: 已清空 {mem_deleted} 条\n"
+    msg += "  · 动态记忆: 已保留（长期记忆不受影响）\n"
     msg += f"  · 对话日志: 已清空 {log_deleted} 条\n"
-    msg += f"  · 注入轮次: 已归零\n"
-    msg += f"  · 反思计数: 已归零\n"
-    msg += "\n⚠️ 如需完整重置（含 AstrBot 对话历史），请额外执行 /reset"
+    msg += f"  · 对话上下文: {'已清空' if conv_cleared else '未清空（无法访问会话管理器）'}\n"
+    msg += "  · 注入轮次: 已归零\n"
+    msg += "  · 反思计数: 已归零\n"
+    msg += f"\n（仅影响当前角色卡，其他角色卡的记录未受影响）"
     event.set_result(MessageEventResult().message(msg))
 
