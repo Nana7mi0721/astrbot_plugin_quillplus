@@ -63,7 +63,6 @@ from astrbot.api.web import (
     json_response,
     request,
 )
-from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 # 字节流响应（file_response 仅支持文件路径，不适用内存字节）
 from starlette.responses import Response
@@ -75,6 +74,7 @@ from ._backup_util import (
     is_sqlite_bytes,
     remove_sidecars,
 )
+from ._paths import backup_sources, resolve_archive_dest
 
 from ._route_core import (
     error_text,
@@ -943,12 +943,10 @@ class QuillRoutes:
         if not data:
             return error_response("上传的文件为空", status_code=400)
 
-        # 写入插件数据目录备份
-        target_dir = (
-            Path(get_astrbot_plugin_data_path())
-            / PLUGIN_NAME
-            / "imports"
-        )
+        if self.plugin is None or not getattr(self.plugin, "paths", None):
+            return error_response("插件实例不可用", status_code=500)
+        # 写入导入暂存目录（数据根下的 imports/，不再写进插件目录）
+        target_dir = Path(self.plugin.paths["imports_dir"])
         target_dir.mkdir(parents=True, exist_ok=True)
         await upload.save(target_dir / f"{name}.json")
 
@@ -1385,21 +1383,22 @@ class QuillRoutes:
         已提交事务也包含在内），而不是裸拷主文件——否则热备会静默丢掉最近提交
         （实测出现过「备份里 0 条记忆，实际 2 条」）。快照失败时退回裸拷并把原因
         记入 warnings，交由调用方透出，不静默降级。
+
+        归档范围由 _paths.backup_sources 决定：数据根就位后整根打包
+        （knowledge/、worldbooks/、状态文件落在顶层），旧布局则维持
+        data/、knowledge/、worldbooks/ 三个目录名的历史格式。
         """
         import io
         import datetime as _dt
 
         plugin_root = os.path.dirname(os.path.abspath(__file__))
-        sub_dirs = ["data", "knowledge", "worldbooks"]
-        existing = [
-            d for d in (os.path.join(plugin_root, s) for s in sub_dirs)
-            if os.path.isdir(d)
-        ]
-        if not existing:
+        paths = getattr(self.plugin, "paths", None) or {}
+        sources = backup_sources(paths, plugin_root)
+        if not sources:
             raise FileNotFoundError("数据目录不存在")
 
         buf = io.BytesIO()
-        zip_count, warnings = await asyncio.to_thread(build_backup_zip, existing, buf)
+        zip_count, warnings = await asyncio.to_thread(build_backup_zip, sources, buf)
         for w in warnings:
             logger.warning("[Quill] 备份快照降级: %s", w)
         fname = (
@@ -1492,8 +1491,7 @@ class QuillRoutes:
         import io
         import zipfile
         plugin_root = os.path.dirname(os.path.abspath(__file__))
-        root_norm = os.path.normpath(plugin_root)
-        allowed_prefixes = ("data/", "knowledge/", "worldbooks/")
+        paths = getattr(self.plugin, "paths", None) or {}
 
         # Fully validate the archive before touching live databases or
         # stopping autoflush. A corrupt/irrelevant zip must not evict runtime
@@ -1510,22 +1508,18 @@ class QuillRoutes:
                 for info in zf.infolist():
                     if info.is_dir():
                         continue
-                    name = info.filename.replace("\\", "/")
-                    if not any(name.startswith(p) for p in allowed_prefixes):
+                    # 归档条目名 -> 数据根下的绝对落点（同时过滤路径穿越与非法前缀）
+                    dest = resolve_archive_dest(paths, plugin_root, info.filename)
+                    if dest is None:
                         continue
-                    if name.startswith("/") or ".." in name.split("/"):
-                        continue
-                    dest = os.path.normpath(os.path.join(plugin_root, name))
-                    if not dest.startswith(root_norm + os.sep):
-                        continue
-                    candidates.append(info)
+                    candidates.append((info, dest))
                     # 覆盖在线库前先确认归档里确实是 SQLite 文件：把非数据库
                     # 字节写进 quill_wr.db 会直接毁掉现有数据。只读头部若干字节，
                     # 不必把整个条目解压进内存。
-                    if name.endswith(".db"):
+                    if dest.endswith(".db"):
                         with zf.open(info) as fh:
                             if not is_sqlite_bytes(fh.read(16)):
-                                bad_db.append(name)
+                                bad_db.append(info.filename)
                 if not candidates:
                     return error_response(
                         "备份中没有可恢复的数据文件", status_code=400
@@ -1549,20 +1543,12 @@ class QuillRoutes:
                 for info in zf.infolist():
                     if info.is_dir():
                         continue
-                    # 归一化分隔符（兼容旧版 Windows 备份中含 "\" 的条目名）
+                    dest = resolve_archive_dest(paths, plugin_root, info.filename)
+                    # 非数据条目（例如归档里混入 .py）一律跳过，绝不写插件代码
+                    if dest is None:
+                        skipped_count += 1
+                        continue
                     name = info.filename.replace("\\", "/")
-                    # 白名单：仅允许三个数据目录，杜绝覆盖 .py / 面板 HTML 等
-                    if not any(name.startswith(p) for p in allowed_prefixes):
-                        skipped_count += 1
-                        continue
-                    if name.startswith("/") or ".." in name.split("/"):
-                        skipped_count += 1
-                        continue
-                    dest = os.path.normpath(os.path.join(plugin_root, name))
-                    # 边界校验：dest 必须严格位于插件根目录内（带分隔符边界）
-                    if not dest.startswith(root_norm + os.sep):
-                        skipped_count += 1
-                        continue
                     try:
                         os.makedirs(os.path.dirname(dest), exist_ok=True)
                         # 覆盖数据库前先删掉上一次运行留下的 -wal/-shm/-journal：

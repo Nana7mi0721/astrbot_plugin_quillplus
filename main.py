@@ -39,6 +39,7 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 from .config import QuillConfig
+from ._paths import resolve_data_layout
 from .activation import ActivationDetector
 from .state import StateManager
 from .kb import WritingResourceManager
@@ -212,12 +213,25 @@ class QuillPlugin(Star):
         # P1-4: 健康度追踪器（内存滑动窗口，重启清零）
         self.health_tracker = HealthTracker(window_size=20)
 
+        # --- 运行数据位置 ---
+        # 数据库/世界书/状态原先放在插件目录内（knowledge/、worldbooks/、data/），
+        # 而插件开着长连接，Windows 下更新器删不掉这些文件，更新会中途失败并把
+        # 安装目录留成半新半旧。这里统一迁到 AstrBot 约定的
+        # data/plugin_data/<插件名>/（更新器不碰），并做一次性搬迁。
+        self.paths = resolve_data_layout(self.plugin_dir)
+        if self.paths.get("legacy"):
+            logger.warning(
+                "[Quill] 无法使用外部数据目录，仍在插件目录内读写数据；"
+                "插件更新时请先停用插件，否则会因文件占用而失败。"
+            )
+
         # --- Activation ---
+        # 随插件分发的只读配置，留在插件目录（更新时会被新版覆盖，符合预期）
         activation_path = os.path.join(self.plugin_dir, "activation_triggers.yaml")
         self.activation_detector = ActivationDetector(activation_path)
 
         # --- State ---
-        data_dir = os.path.join(self.plugin_dir, "data")
+        data_dir = self.paths["state_dir"]
         os.makedirs(data_dir, exist_ok=True)
         self.state_manager = StateManager(data_dir=data_dir)
 
@@ -227,7 +241,7 @@ class QuillPlugin(Star):
         self.wr_fallback_top_count = self.config.wr_fallback_top
 
         # --- Worldbook ---
-        wb_dir = os.path.join(self.plugin_dir, "worldbooks")
+        wb_dir = self.paths["worldbooks_dir"]
         try:
             self.wb_manager = WorldbookManager(wb_dir)
             wb_names = self.wb_manager.list_worldbooks()
@@ -240,7 +254,7 @@ class QuillPlugin(Star):
 
         # --- Persona Manager (独立 JSON 角色卡) ---
         self.persona_manager = QuillPersonaManager(
-            os.path.join(self.plugin_dir, "data", "quill_personas")
+            self.paths["personas_dir"], avatar_dir=self.paths["avatars_dir"]
         )
 
         # --- Prompt builder ---
@@ -356,9 +370,9 @@ class QuillPlugin(Star):
         - 过期对话日志清理与低价值记忆修剪
         """
         if self.config.wr_enabled:
-            wr_path = os.path.join(self.plugin_dir, "knowledge", "quill_wr.db")
-            # 迁移旧数据库文件名
-            old_kb_path = os.path.join(self.plugin_dir, "knowledge", "quill_kb.db")
+            wr_path = os.path.join(self.paths["knowledge_dir"], "quill_wr.db")
+            # 迁移旧数据库文件名（同一目录内；_paths 已把整个目录搬到外部数据根）
+            old_kb_path = os.path.join(self.paths["knowledge_dir"], "quill_kb.db")
             if not os.path.exists(wr_path) and os.path.exists(old_kb_path):
                 try:
                     # os.replace 而非 rename：若并发/外部已创建目标文件，Windows 下
@@ -472,8 +486,8 @@ class QuillPlugin(Star):
             )
 
             # Doc RAG 向量库（FAISS + SQLite）
-            rag_db = os.path.join(self.plugin_dir, "knowledge", "quill_rag.db")
-            rag_idx = os.path.join(self.plugin_dir, "knowledge", "quill_rag.index")
+            rag_db = os.path.join(self.paths["knowledge_dir"], "quill_rag.db")
+            rag_idx = os.path.join(self.paths["knowledge_dir"], "quill_rag.index")
             # S2-10: 传入 embedding_provider，切换 provider 时自动重建索引
             self.rag_vector_store = FaissVectorStore(
                 rag_db, rag_idx, embedding_provider=self.rag_embedding
@@ -488,7 +502,7 @@ class QuillPlugin(Star):
             )
 
             # 动态记忆存储（SQLite BLOB）
-            mem_db = os.path.join(self.plugin_dir, "knowledge", "quill_memory.db")
+            mem_db = os.path.join(self.paths["knowledge_dir"], "quill_memory.db")
             self.rag_memory_store = MemoryStore(mem_db)
             await self.rag_memory_store.initialize()
 
@@ -600,12 +614,12 @@ class QuillPlugin(Star):
         autoflush_ready = False
         try:
             # 1) 重建 StateManager（从恢复后的 quill_state.json 重新加载）
-            data_dir = os.path.join(self.plugin_dir, "data")
+            data_dir = self.paths["state_dir"]
             self.state_manager = StateManager(data_dir=data_dir)
             autoflush_ready = True
             # 2) 重建写作素材库连接
             self.wr_manager = None
-            wr_path = os.path.join(self.plugin_dir, "knowledge", "quill_wr.db")
+            wr_path = os.path.join(self.paths["knowledge_dir"], "quill_wr.db")
             try:
                 from .kb import WritingResourceManager
                 self.wr_manager = WritingResourceManager(
@@ -621,11 +635,11 @@ class QuillPlugin(Star):
                     await asyncio.to_thread(self.wb_manager._load_all)
                 except Exception as e:
                     logger.warning(f"[Quill] 恢复后世界书重载失败: {e}")
-            # 4) 角色卡缓存失效（重建实例，重新扫描 data/quill_personas）
+            # 4) 角色卡缓存失效（重建实例，重新扫描 personas 目录）
             try:
                 from .persona_manager import QuillPersonaManager
                 self.persona_manager = QuillPersonaManager(
-                    os.path.join(self.plugin_dir, "data", "quill_personas")
+                    self.paths["personas_dir"], avatar_dir=self.paths["avatars_dir"]
                 )
             except Exception as e:
                 logger.warning(f"[Quill] 恢复后角色卡管理器重建失败: {e}")

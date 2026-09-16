@@ -29,9 +29,31 @@ env/
 Thumbs.db
 desktop.ini
 
-# ── AstrBot / Quill 插件用户数据（含隐私） ──
-imports/
+# ── AstrBot / Quill 运行数据（含隐私，一律不入库）──
+# 运行数据自 v5.2.4 起移出插件目录，改由 _paths.py 存到
+#   <AstrBot data>/plugin_data/astrbot_plugin_quillplus/
+# 下列规则同时兜住「新数据目录被误放进仓库」与「旧布局残留」两种情况。
 data/
+imports/
+data_runtime/
+
+# knowledge/ 只保留两份文档；数据库与其 sidecar 全排除。
+# 注意：不能用 `knowledge/` 直接排除整个目录——父目录被排除后，
+# 其下的 ! 反向白名单会失效（git 不会回溯进被排除的目录）。
+knowledge/*
+!knowledge/KB_ENTRIES.md
+!knowledge/KB_CONTENT_PROPOSAL.md
+
+# 数据库及其 sidecar：-wal 里可能有未 checkpoint 的已提交事务，同样不能入库
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.index
+
+# 世界书：只保留随仓库分发的示例模板，用户自己的世界书不入库
+worldbooks/*.json
+!worldbooks/示例世界书.json
 
 # ── MCP 配置（可能含 API Key） ──
 .mcp.json
@@ -59,14 +81,8 @@ _commit_msg.txt
 htmlcov/
 .tox/
 
-# ── 确保示例文件永远被追踪（不允许被上方规则误排除）──
-!worldbooks/
-!knowledge/
-.test_jwt.txt
 .reasonix/
 .zcode/
-knowledge/*.db
-knowledge/*.index
 
 # ── 前端重写前的原始版本备份（本地保留，不入库）──
 .backup/

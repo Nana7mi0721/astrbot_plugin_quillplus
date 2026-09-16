@@ -124,19 +124,28 @@ def _snapshot_to_temp(src: str, tmp_dir: str) -> str:
     return tmp_path
 
 
-def build_backup_zip(dirs: list[str], buf: io.BytesIO) -> tuple[int, list[str]]:
-    """Write a zip of *dirs* into *buf*.
+def build_backup_zip(sources: list, buf: io.BytesIO) -> tuple[int, list[str]]:
+    """Write a zip of *sources* into *buf*.
+
+    *sources* is a list of ``(archive_prefix, directory)`` pairs; in the new
+    data-root layout the state files sit directly in the root, so the prefix is
+    empty and entries come out as ``knowledge/x.db``, ``quill_state.json``, …
+    A bare string is also accepted for backwards compatibility and archives
+    under the directory's own name, which reproduces the historical layout.
 
     Returns ``(file_count, warnings)``.  Database files are archived as
     consistent snapshots (see module docstring); every other file is copied
     verbatim.  A database that cannot be snapshotted falls back to a raw byte
     copy and is recorded in ``warnings`` so callers can surface the risk
     instead of silently shipping a snapshot that may be missing WAL commits.
-
-    Archive entry names are unchanged from the previous implementation
-    (``<basename-of-dir>/<relative-path>``, forward slashes), so archives
-    remain interchangeable with older releases.
     """
+    pairs: list[tuple[str, str]] = []
+    for item in sources:
+        if isinstance(item, (tuple, list)):
+            pairs.append((item[0], item[1]))
+        else:
+            pairs.append((os.path.basename(item), item))
+
     count = 0
     warnings: list[str] = []
     tmp_root = tempfile.mkdtemp(prefix="quill_backup_")
@@ -164,15 +173,14 @@ def build_backup_zip(dirs: list[str], buf: io.BytesIO) -> tuple[int, list[str]]:
 
     try:
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for base in dirs:
+            for prefix, base in pairs:
                 for root, _dirs, files in os.walk(base):
                     for fname in files:
                         if fname.endswith(_SKIP_SUFFIXES):
                             continue
                         fpath = os.path.join(root, fname)
-                        arcname = os.path.join(
-                            os.path.basename(base), os.path.relpath(fpath, base)
-                        ).replace(os.sep, "/")
+                        parts = [p for p in (prefix, os.path.relpath(fpath, base)) if p]
+                        arcname = os.path.join(*parts).replace(os.sep, "/")
                         try:
                             _archive(is_sqlite_file(fpath), fpath, arcname, zf)
                         except OSError as exc:
