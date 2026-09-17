@@ -427,7 +427,7 @@ harness 的四个翻转窗口都打出了 `[gates] 已还原，md5 回到基线`
    只允许 flips 白名单内的键（见 `.build/harness/quilltest/gates.py`）。
 6. 假 OneBot 用合成 `X-Self-ID`（如 `10000`），不冒充真实客户端。
 7. 测试身份固定 `quilltest`，不碰用户真实 QQ 会话。
-8. 备份 bundle `C:\Users\REISEN\quill_repo_backup_20260916_140851.bundle`
+8. 备份 bundle `quill_repo_backup_*.bundle`（位于用户目录，路径已脱敏）
    **含隐私数据**，别外传。
 
 ### 跑测试的标准姿势
