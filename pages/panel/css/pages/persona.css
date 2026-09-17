@@ -1,0 +1,113 @@
+/* ── 17. 角色卡 ─────────────────────────────────────────────────────── */
+.persona-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  grid-auto-rows: 1fr;
+  gap: var(--sp-4);
+  align-items: stretch;
+}
+.persona-list { display: grid; gap: var(--sp-2); }
+.persona-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  height: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-primary);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow var(--dur-micro) var(--ease-standard);
+}
+.persona-card:hover { box-shadow: var(--shadow-2); }
+.persona-avatar {
+  position: relative;
+  width: 48px; height: 48px;
+  flex: none;
+  margin-top: 2px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--fill-tertiary);
+}
+.persona-list .persona-avatar { width: 38px; height: 38px; }
+.persona-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.persona-initial {
+  position: absolute; inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--label-2);
+}
+.persona-body { flex: 1; min-width: 0; }
+.persona-modes { margin-bottom: auto; }
+.persona-name { font-size: 14.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.persona-summary {
+  margin-top: 2px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--label-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.persona-modes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+/* 角色卡动作按钮：统一为右对齐的可换行按钮组（单一定义，勿再重复声明） */
+.persona-actions {
+  flex: none;
+  align-self: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-end;
+  gap: 4px;
+  justify-content: flex-end;
+  max-width: 152px;
+}
+/* 悬停 / 聚焦显现：列表视图宽度紧张时尤其需要 */
+.persona-card .persona-actions { opacity: 1; }
+
+/* 头像上传区 */
+.avatar-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 116px;
+  padding: var(--sp-3);
+  border: 1.5px dashed var(--separator);
+  border-radius: var(--r-md);
+  background: var(--fill-quaternary);
+  color: var(--label-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--dur-micro) var(--ease-standard), background var(--dur-micro) var(--ease-standard);
+}
+.avatar-zone:hover { border-color: var(--accent); background: var(--accent-tint); }
+.avatar-zone img { width: 92px; height: 92px; border-radius: 50%; object-fit: cover; }
+.avatar-zone .icon { color: var(--label-3); }
+
+/* 裁剪器 */
+.crop-stage {
+  position: relative;
+  width: 300px; height: 300px;
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: #111;
+  cursor: grab;
+  touch-action: none;
+}
+.crop-stage.is-dragging { cursor: grabbing; }
+.crop-stage img { position: absolute; max-width: none; -webkit-user-drag: none; user-select: none; }
+.crop-mask {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2000px rgba(0, 0, 0, .45);
+}
+.crop-mask::after {
+  content: "";
+  position: absolute; inset: 0;
+  border: 2px solid rgba(255, 255, 255, .9);
+  border-radius: 50%;
+}

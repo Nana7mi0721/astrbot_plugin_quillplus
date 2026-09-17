@@ -518,10 +518,18 @@ async def handle_rag_upload(vector_store, embedding_provider, upload_file, sourc
             return err("向量化失败")
 
         # 存储（同步 FAISS + SQLite 操作放入线程池，避免阻塞事件循环）
-        await vector_store.add(chunks, embeddings, source_name)
+        # add() 现在返回实际入库条数、失败则抛异常。0 表示文本进了 SQLite
+        # 但 FAISS 不可用（暂不可检索）——这不能当成成功上报，否则界面显示
+        # 「上传成功」而用户检索不到，是比报错更糟的静默失败。
+        stored = await vector_store.add(chunks, embeddings, source_name)
+        if stored == 0:
+            return err(
+                "文档已保存，但向量索引不可用（faiss 未安装或初始化失败），"
+                "暂无法检索。请检查依赖后重新上传。"
+            )
         return ok({
             "source": source_name,
-            "chunk_count": len(chunks),
+            "chunk_count": stored,
             "dim": len(embeddings[0]) if embeddings else 0,
         })
     except Exception as e:

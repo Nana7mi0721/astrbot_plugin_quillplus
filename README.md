@@ -1,10 +1,10 @@
 # QuillPlus (羽笔) - 多维沉浸式 RP 增强插件
 
-> 世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆，五合一沉浸式 RP 增强插件。
+> 世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆 + 状态栏，六合一沉浸式 RP 增强插件。
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.3.0-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.2.4-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -12,7 +12,7 @@
 
 ## 简介
 
-QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件。它通过世界书、写作素材库、角色卡、文档 RAG 和动态记忆五个模块的联动，为 LLM 驱动的角色提供结构化记忆、上下文注入和状态追踪能力。
+QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件。它通过世界书、写作素材库、角色卡、文档 RAG、动态记忆和状态栏六个模块的联动，为 LLM 驱动的角色提供结构化记忆、上下文注入和状态追踪能力。
 
 支持通过聊天指令（手机端可用）和 Web 管理面板两种方式进行交互。
 
@@ -75,16 +75,19 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 
 追踪角色与用户的交互状态，将 LLM 输出结构化为可读面板。
 
-- 5 级解析器（code block / LOVE_DATA / STATUS / raw / lenient）确保格式兼容
+- 6 级降级解析（code block / LOVE_DATA / STATUS / raw / lenient / LLM 提取）确保格式兼容，逐级命中率可在 /quill debug 查看
 - 工具调用与响应两路钩子协作，避免重复注入
-- 关闭状态栏后自动剥离残留格式
-- 字段名可自定义，支持分支剧情选项生成
-- **LLM 智能提取**：L1-L5 全失败时调用轻量 LLM 做结构化提取（3s 超时保护，默认关闭）
+- 关闭状态栏后自动剥离残留格式（关闭时也会清除历史上下文里已渲染的状态栏，避免边禁边示范）
+- 字段名可自定义，支持分支剧情选项生成；改字段名会同步影响提示词契约、剥离器与解析器
+- **格式契约单一来源**：字段行/示例/选项块统一由 `build_status_contract()` 生成，改一处全链路跟随
+- **平台双模板**：QQ/微信等不渲染 Markdown 的平台自动改用分隔线模板，避免 `**状态栏**` 与围栏原样显示
+- **会话级开关**：`/quill statusbar on|off|auto` 可对单个会话临时覆盖面板开关（不写回配置）
+- **LLM 智能提取**：前 5 级全部失败时调用轻量 LLM 做结构化提取（3s 超时保护，默认关闭）
 - **模型路由**：状态栏提取 LLM 可独立配置（`status_bar.llm_provider_id`），留空回退到 RAG 摘要 LLM，建议配置轻量模型降低成本
 
 ### 安全与并发
 
-- 群聊权限控制：admin_users 白名单仅作用于聊天平台的写指令；Web 面板由 AstrBot 鉴权保护
+- 群聊权限控制：admin_users 白名单作用于聊天平台全部**写类**指令（改持久状态的子命令），读类指令保持开放；Web 面板由 AstrBot 鉴权保护
 - 全量 HTML 转义 + 模式值白名单，防止 XSS 注入
 - 世界书导入名称校验，仅允许字母数字 / 下划线 / 短横线 / CJK
 - 状态文件采用 tmp + fsync + os.replace 原子写入，防崩溃损坏
@@ -252,6 +255,8 @@ Web 依赖（fastapi、quart）通常由 AstrBot 自带，缺失时手动安装�
 | 权限 | 管理员 ID 白名单（仅群聊写指令需要） |
 
 > **权限说明**：`admin_users` 仅作用于聊天平台的群聊写指令。配置后仅白名单用户可在群聊执行写操作，留空时群聊写指令被拦截。私聊与 Web 面板编辑不受此限制——Web 面板由 AstrBot 鉴权保护。
+>
+> 写指令的范围是「会改动持久状态」的全部子命令：角色卡切换/取消/导入、世界书与文档的绑定/解绑/重载、记忆的删除/清空/写入、`/quill reset`、`/reinject`、`/stream` 与 `/quill statusbar` 的写入、以及 `/quill debug`（输出含会话标识与注入构成）。读类指令（list / info / search / 无参数状态查询）在群聊对所有人开放。
 
 ---
 
@@ -307,7 +312,8 @@ QuillPlus 遵循持续迭代的开发路线，当前（v5.2）已完成以下里
 - ✅ **v5.0** — 重构首发版：平行宇宙双轴隔离、JSON 原子化状态机、全链路异步化、Character Card V2 全量支持
 - ✅ **v5.1** — 全自动自迭代记忆：闲时反思守护进程、核心记忆更新、混合检索 (FTS5+Vector+RRF)、LRU 会话缓存
 - ✅ **v5.2/v5.2.1** — 面板功能补全：对话日志查看器、全量备份导出/恢复、WR 批量操作、移动端底部导航、MD3 全面重构、四轮代码审查修复
-- ✅ **v5.3.0** — 切换角色卡自动隔离对话历史（每张卡绑定独立 AstrBot 对话，切回仍见原历史）；`/quill reset` 改为**保留动态记忆**、只清当前角色卡的对话上下文与日志（重开剧情而非抹掉记忆）
+- ✅ **v5.2.4** — 状态栏降级链重构为分级注册表（逐级命中率可见、单级异常不再掀翻整链）；修复三个「面板能改但运行期不生效」缺陷（裸 `[LOVE_DATA]` 在多轮工具调用时泄漏、`rag.enable_memory`/`top_k` 不热生效、`worldbook.enabled` 无消费者）；清理已弃用配置键与死代码；配置页文字/指令帮助/文档全面对齐实现
+- ✅ **v5.2.4（对话隔离）** — 切换角色卡自动隔离对话历史（每张卡绑定独立 AstrBot 对话，切回仍见原历史）；`/quill reset` 改为**保留动态记忆**、只清当前角色卡的对话上下文与日志（重开剧情而非抹掉记忆）
 - ✅ **v5.2.3** — 面板按 Apple HIG 全面重写：系统色/字阶/材质/弹簧动效、图标符号表、事件委托重构；接入 HarmonyOS Sans；修复 3 个沙箱 iframe 专属缺陷（配置页锁死、脚本中断、偏好不持久）
 - ✅ **v5.2.3（桌面化修订）** — 面板重建为 macOS 桌面应用形态：边栏优先架构、控件高度令牌体系、弹层顶部垂落、右键菜单、方向键导航、双击编辑、自绘下拉 listbox、分类固定调色板；移除移动端；修复 11 项既有缺陷（含分类筛选与 Alt+数字快捷键长期失效）
 

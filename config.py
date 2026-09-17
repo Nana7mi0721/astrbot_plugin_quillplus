@@ -9,9 +9,21 @@ AstrBot 启动时扫描 _conf_schema.json，实例化 AstrBotConfig(dict) 注入
 
 from __future__ import annotations
 
+import re
+
 
 # 状态栏默认字段（当 config 解析失败时的硬编码回退）
 _DEFAULT_LOVE_FIELDS = ["好感度", "关系阶段", "心情", "位置", "穿着", "当前想法"]
+
+# 不渲染 Markdown 的平台（按 AstrBot 适配器注册名匹配）。
+# 这些平台上 `**状态栏**` 与 ``` 围栏会原样显示，故改用纯文本模板。
+# 依据：框架里 aiocqhttp 直接发字符串；QQ 官方 API 虽有 markdown 段类型，
+# 但个人/群机器人实际多按纯文本呈现。用户可用 plain_platforms 覆盖。
+_DEFAULT_PLAIN_PLATFORMS = [
+    "aiocqhttp", "qq_official", "qq_official_webhook",
+    "wecom", "wecom_ai_bot", "weixin_oc", "weixin_official_account",
+    "dingtalk", "line",
+]
 
 
 def _get_nested(raw: dict, group: str, default=None):
@@ -110,6 +122,21 @@ class QuillConfig:
         sb = _get_nested(self._raw, "status_bar", {}) or {}
         self.status_bar_enabled: bool = _safe_bool(sb.get("enabled"))
         self.status_bar_format: str = str(sb.get("format_template", "**状态栏**\n```\n{content}\n```"))
+        # 纯文本平台的渲染模板：QQ/微信这类不渲染 Markdown 的平台，
+        # `**` 与 ``` 会原样显示，用户看到的是「**状态栏** ```」这种噪声。
+        # 未知平台仍走 format_template（保持原行为，不破坏原生 Markdown 渲染）。
+        self.status_bar_format_plain: str = str(
+            sb.get("format_template_plain", "───── 状态栏 ─────\n{content}\n────────────────")
+        )
+        # 哪些平台算「纯文本」。按适配器注册名匹配（aiocqhttp / qq_official ...），
+        # 用户可覆盖以适配自建网关。
+        _plain_raw = sb.get("plain_platforms", "") or ""
+        if isinstance(_plain_raw, str) and _plain_raw.strip():
+            self.status_bar_plain_platforms: list[str] = [
+                p.strip().lower() for p in re.split(r"[|,]", _plain_raw) if p.strip()
+            ]
+        else:
+            self.status_bar_plain_platforms = list(_DEFAULT_PLAIN_PLATFORMS)
         # 解析剧情走向选项
         plot_raw = sb.get("plot_paths", "") or ""
         if isinstance(plot_raw, str) and plot_raw.strip():
@@ -131,6 +158,8 @@ class QuillConfig:
         self.status_bar_llm_provider_id: str = str(sb.get("llm_provider_id", "") or "").strip()
         # P1-7: 状态栏字段未匹配时的占位符文本（可配置，默认"未设置"）
         self.status_bar_default_placeholder: str = str(sb.get("default_placeholder", "未设置"))
+        # 状态栏数值变化标注（相对上一轮的 ↑↓ 幅度）
+        self.status_bar_show_delta: bool = _safe_bool(sb.get("show_delta", True))
 
         # ── refusal ──
         ref = _get_nested(self._raw, "refusal", {}) or {}
@@ -144,15 +173,17 @@ class QuillConfig:
         # ── debug ──
         dbg = _get_nested(self._raw, "debug", {}) or {}
         self.debug_enabled: bool = _safe_bool(dbg.get("enabled"))
-        self.panel_theme: str = str(dbg.get("panel_theme", "light"))
-        # 面板界面状态（折叠等），JSON 字符串；沙箱 iframe 内无法用 localStorage
-        self.panel_ui_state: str = str(dbg.get("panel_ui_state", "") or "")
+        # 注入报告独立于 debug 日志开关：debug 是「控制台刷屏」，本项是
+        # 「进聊天记录」，两者受众与副作用完全不同，不能共用一个开关
+        # （生产环境常开着 debug 日志排错，但绝不希望 RP 回复里多一行调试信息）。
+        self.show_inject_report: bool = _safe_bool(dbg.get("show_inject_report"))
 
         # ── permissions ──
         perm = _get_nested(self._raw, "permissions", {}) or {}
         admin_raw = perm.get("admin_users", "") or ""
         if isinstance(admin_raw, str) and admin_raw.strip():
-            import re
+            # 不再在函数内 `import re`：那会让整个 __init__ 里的 re 变成局部名，
+            # 上面 plain_platforms 那段先用到 re 就会 UnboundLocalError。
             self.admin_users: list[str] = [
                 u.strip() for u in re.split(r'[,\n|]+', admin_raw) if u.strip()
             ]

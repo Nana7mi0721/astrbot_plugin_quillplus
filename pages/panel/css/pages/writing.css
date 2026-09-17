@@ -1,0 +1,116 @@
+/* ── 15. 写作素材库 ─────────────────────────────────────────────────── */
+.wr-grid {
+  display: grid;
+  /* 列宽下限固定 330px：calcPerPage() 用同一个常量反推列数，
+     两边必须一致（改这里就要同步改 JS 里的 WR_MIN_CARD_W）。 */
+  /* min() 兜住比 330px 还窄的容器：内容区在极窄窗口下只剩约 180px，
+     写死 330px 会让网格比容器宽，横向溢出被 .content 的 overflow-x:hidden
+     吞掉，卡片和分页按钮都被裁在视野外。列数仍由 calcPerPage() 按
+     WR_MIN_CARD_W 反推，两者在宽窗口下结果一致。 */
+  grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr));
+  /* 行高定型：卡片高度曾随标签行数浮动（实测 110 / 132 / 158 三种），
+     同一屏里行与行不等高，网格看上去是「拼」的；分页按 110 估的行数
+     也装不下 158 的卡，实测多出 93px 滚动。固定行高后网格完全规整，
+     calcPerPage 的算式与实际布局一致。完整关键词在编辑模态里看。 */
+  grid-auto-rows: var(--wr-row-h);
+  gap: var(--sp-4);
+  align-items: stretch;
+  /* 关闭滚动锚定：翻页会整体替换网格内容，浏览器会试图「保持原锚点不动」
+     而在用户没滚动的情况下写入一个 scrollTop（实测翻到第 2 页后残留
+     58.67px）。列表整段换掉的场景里这个补偿只会帮倒忙。 */
+  overflow-anchor: none;
+}
+.wr-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* 高度由网格行高决定（--wr-row-h），min-height 只兜住骨架屏 */
+  min-height: var(--wr-row-h);
+  background: var(--bg-primary);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+  transition: box-shadow var(--dur-micro) var(--ease-standard),
+              transform var(--dur-press) var(--ease-standard);
+}
+.wr-card:hover { box-shadow: var(--shadow-2); }
+.wr-card.is-selected { box-shadow: 0 0 0 2px var(--accent), var(--shadow-1); }
+.wr-card-head { display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4) var(--sp-2); }
+/* 标题最多两行：卡片行高固定 132px，标题不限制行数时第三行会被
+   .wr-card 的 overflow: hidden 直接切掉（且把标签/页脚挤出可见区）。
+   line-clamp 把超长标题收成两行 + 省略号，卡片结构始终完整。
+   行高 1.35 与 --wr-row-h 的 60px 头部预算对应（2×14.5×1.35 ≈ 39px）。 */
+.wr-card-name {
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.wr-card-id {
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--label-3);
+  font-family: var(--font-mono);
+  /* 素材 id 是无空格长串，窄卡片里会撑破网格（实测溢出 6px）；
+     单行省略比换行更符合「标题下方一行标识」的读法。 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wr-card-meta { flex: none; display: flex; align-items: center; gap: 6px; }
+/* 单行裁切：标签区高度恒定，网格行高才定型。
+   完整关键词列表在编辑模态中查看（卡片只做浏览）。 */
+.wr-card-tags {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  padding: 0 var(--sp-4);
+  overflow: hidden;
+}
+.wr-card-tags > .tag { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.wr-card-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: auto;
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+}
+/* 卡片标题：整块可点，单击直接进编辑模态。
+   用 <button> 而非 div[role=button]——原生按钮自带键盘激活（Enter/Space）
+   与焦点语义，不必手工补 keydown。UA 的 padding/border/background
+   在此全部清零，外观与原来的纯文本块一致。 */
+.wr-card-title {
+  flex: 1;
+  min-width: 0;
+  /* 极窄卡片下长 id / 无空格标题会把按钮撑宽，进而把卡片网格顶出容器。
+     标题本身已 line-clamp 两行，这里补上溢出收口。 */
+  overflow: hidden;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--r-xs);
+}
+.wr-card-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 行内操作：默认隐藏，悬停 / 键盘聚焦时显现（Finder 范式）。
+   同行的 .switch 是状态而非操作，保持常显。 */
+.wr-card-foot .wr-actions {
+  flex: 1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--dur-micro) var(--ease-standard);
+}
+.wr-card:hover .wr-actions,
+.wr-card:focus-within .wr-actions { opacity: 1; }

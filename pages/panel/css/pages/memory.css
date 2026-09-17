@@ -1,0 +1,46 @@
+/* ── 19. 动态记忆 ───────────────────────────────────────────────────── */
+/* 分段式子页导航（HIG：≤6 段，纯文字） */
+.seg-nav { margin-bottom: var(--sp-4); }
+.seg-nav .segmented { width: 100%; max-width: 560px; }
+
+.dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--sp-3); }
+.dash-card {
+  padding: var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-1);
+}
+.dash-value { font-size: 28px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.dash-label { margin-top: 2px; font-size: 12.5px; color: var(--label-3); }
+.dash-track {
+  margin-top: var(--sp-3);
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--fill-quaternary);
+  overflow: hidden;
+}
+.dash-fill {
+  height: 100%;
+  width: 0;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  transition: width 800ms var(--ease-enter);
+}
+.dash-card[data-tone="green"] .dash-fill { background: var(--green); }
+.dash-card[data-tone="indigo"] .dash-fill { background: var(--indigo); }
+.dash-card[data-tone="orange"] .dash-fill { background: var(--orange); }
+
+/* 记忆表格里的元信息标签 */
+.mem-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+
+/* 提供商信息行 */
+.prov-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: 5px 0;
+  font-size: 13px;
+}
+.prov-row + .prov-row { border-top: .5px solid var(--separator); }
+.prov-key { flex: none; width: 92px; color: var(--label-3); font-size: 12px; }
+.prov-val { flex: 1; min-width: 0; word-break: break-all; }

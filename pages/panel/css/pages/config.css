@@ -1,0 +1,224 @@
+/* ── 20. 配置页 ─────────────────────────────────────────────────────── */
+/* 分区导航：文字导航 + 尾部搜索，随 .page-head-bar 这条通栏吸顶带一起吸顶。
+   它只是那条带子里的一行，材质与形状都由父带统一提供，自己不再画衬底：
+   父带已经是一条「0.72 白 + 毛玻璃」的通栏吸顶带，若在这一行上再叠一块
+   更白、更窄的底，就变成「控件里套控件」—— 两块半透明白各自乘一次底色，
+   交界处会留下一条横贯整条内容区的台阶（实测台阶级差 3/255，滚动时非常
+   显眼）。macOS 27 的工具栏里只有一层材质。
+   形状也一样跟随父带：直角、通栏。套件里工具栏一律贴住窗口左右边界，
+   圆角只属于最外层窗口（16px），这一行本身不给任何圆角。
+   这里也不再留 margin-bottom：带子到正文的间距由 .page 的 padding-top 提供，
+   留在带内只会把吸顶高度撑高、并把带子的下边缘推离正文。 */
+/* 分区导航是一条页内锚点导航，不是分段控件：
+   segmented 表达的是「切换同一区域的内容」，点它会把别的段的内容换掉；
+   而这里点击只是滚动到下方对应分区，五段内容始终同时存在（搜索也依赖
+   这个前提做联动隐藏）。所以外观上也不能再借用 segmented 的胶囊。
+   它是一个带吸顶的纯文字导航条，当前分区用文字色 + 下划线表示，
+   与 macOS 偏好设置左侧的分节跳转是同一类语义。 */
+.cfg-nav-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  /* 与 .page-head-bar-inner 同一套盒子：1180px 居中 + 左右 24px，
+     五个标签和搜索框因此与下方表单卡片严格共享同一条左基线。 */
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: var(--sp-2) var(--sp-6);
+  /* 导航条与搜索框必须始终同排：搜索框掉到第二行会把吸顶高度改掉，
+     滚动锚点跟着漂。 */
+  flex-wrap: nowrap;
+}
+.cfg-nav-list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  /* 这里本来还垫了一层 --fill-quaternary 的灰底（segmented 的轨道）。
+     玻璃条本身已经是一层材质，再在材质上叠一块控制件的底色，就变成
+     「控件里套控件」——macOS 27 的工具栏里不会出现这种双层底。
+     分区导航是纯文字锚点，五个标签直接坐在玻璃上即可，
+     当前项用染色胶囊表示，不需要先给它们铺一条轨道。 */
+  padding: 0;
+  background: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.cfg-nav-list::-webkit-scrollbar { display: none; }
+.cfg-nav-list > button {
+  flex: none;
+  padding: 0 var(--sp-2);
+  height: 28px;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--label-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  position: relative;
+  transition: color var(--dur-micro) var(--ease-standard),
+              background var(--dur-micro) var(--ease-standard),
+              box-shadow var(--dur-micro) var(--ease-standard);
+}
+.cfg-nav-list > button:hover { color: var(--label); background: var(--fill-tertiary); }
+.cfg-nav-list > button.is-selected {
+  /* 当前项改用强调色染色 + 强调色文字：白色实底胶囊在玻璃上会再形成
+     一块不透明色块，滚动时比灰底更抢眼，正是要避免的「第二层衬底」。 */
+  color: var(--accent-text);
+  font-weight: 600;
+  background: var(--accent-tint);
+}
+.cfg-nav .search { flex: none; background: var(--fill-quaternary); }
+/* 分区导航行不再单独关闭 .toolbar 的渐变淡出：它现在是标题带的最后一行，
+   和其它页面的工具栏一样用同一条 12px 渐隐收尾，全站吸顶带的底边处理
+   保持一致（不再需要靠 0.5px 发丝线去硬切）。 */
+.cfg-section { margin-bottom: var(--sp-8); scroll-margin-top: 117px; }
+.cfg-section-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: var(--sp-3); flex-wrap: wrap; }
+.cfg-section-head h2 { font-size: 20px; font-weight: 700; letter-spacing: -.015em; }
+.cfg-section-head .cfg-section-sub { font-size: 12.5px; color: var(--label-3); }
+
+/* 配置行：标题/说明在左、控件在右（HIG 分组表单标准布局）。
+   水平内边距由 .card-body-inner 统一提供，行内只留垂直方向，
+   这样卡片标题与行文字共享同一条左基线（详见 .card-body-inner 注释）。 */
+.cfg-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-height: 44px;
+  padding: var(--sp-3) 0;
+  position: relative;
+}
+.cfg-row + .cfg-row::before {
+  content: "";
+  position: absolute; top: 0; right: 0; left: 0;
+  height: .5px; background: var(--separator); transform: scaleY(.5);
+}
+.cfg-row-text { flex: 1; min-width: 0; }
+.cfg-row-title { font-size: 14px; }
+.cfg-row-desc { margin-top: 2px; font-size: 12px; line-height: 1.6; color: var(--label-2); }
+.cfg-row-desc.warn { color: var(--orange-text); }
+.cfg-row-control { flex: none; display: flex; align-items: center; gap: var(--sp-2); }
+/* 长说明行不再把控件换行到左侧：控件始终贴尾边并与文字块垂直居中，
+   与同卡片内其它开关行保持同一条右边缘（此前 .cfg-row--stack 让开关
+   掉到左下角，同一张卡里出现两种控件位置）。 */
+.cfg-row--stack { align-items: center; }
+
+/* 配置页内的字段块（数字/文本/下拉，标签在上）。同理只留垂直内边距。 */
+.cfg-field { padding: var(--sp-3) 0; position: relative; }
+.cfg-field + .cfg-field::before {
+  content: "";
+  position: absolute; top: 0; right: 0; left: 0;
+  height: .5px; background: var(--separator); transform: scaleY(.5);
+}
+.cfg-field-label { display: block; margin-bottom: 5px; font-size: 13px; font-weight: 500; }
+/* 三档宽度：数字 / 普通控件 / 宽控件。全部左对齐到同一条竖线。
+   用 max-width 而非 width，控件在窄卡片里仍能自适应收缩。 */
+.cfg-field .field { max-width: var(--w-ctl); }
+.cfg-field .field--wide { max-width: var(--w-wide); }
+.cfg-field .sel-wrap { max-width: var(--w-ctl); }
+.cfg-field .sel-wrap:has(.field--wide) { max-width: var(--w-wide); }
+/* 数字带单位后缀：外壳定宽，输入框铺满，末尾留出单位位 */
+.unit-wrap { position: relative; display: inline-flex; align-items: center; width: var(--w-num); }
+.unit-wrap .field { padding-right: 40px; max-width: none; width: 100%; }
+.unit {
+  position: absolute; right: 10px;
+  font-size: 12px; color: var(--label-3);
+  pointer-events: none;
+}
+.cfg-inline { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.cfg-inline .field { max-width: var(--w-ctl); }
+/* 滑块与同行输入框共用 --w-ctl，滑轨末端与上方输入框右边缘对齐 */
+.cfg-field .slider { max-width: var(--w-ctl); }
+.cfg-field .row-wrap { max-width: var(--w-wide); }
+
+/* 健康度指标 */
+/* 健康度行：与 cfg-row 同样只留垂直内边距（水平由 .card-body-inner 提供） */
+.health-row { display: flex; align-items: center; gap: var(--sp-3); padding: 9px 0; position: relative; }
+.health-row + .health-row::before {
+  content: "";
+  position: absolute; top: 0; left: 0; right: 0;
+  height: .5px; background: var(--separator); transform: scaleY(.5);
+}
+.health-name { flex: 1; font-size: 13.5px; }
+.health-rate { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.health-detail { font-size: 12px; color: var(--label-3); font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
+.is-good { color: var(--green-text); }
+.is-mid { color: var(--orange-text); }
+.is-bad { color: var(--red-text); }
+
+/* 权限卡片用警示边框以示其特殊性 */
+.card--attention { box-shadow: 0 0 0 1.5px var(--orange), var(--shadow-1); }
+
+/* 分区内的两列布局。
+   下限用 min(100%, 460px) 而非固定 320px：320px 在常见宽度下会排成 3 列，
+   而「注入引擎」有 4 张卡片、系统与安全有 2 张，3 列必然产生孤行卡片
+   （实测第 4 张单独落到下一行）。两列让卡片宽度更舒展，也消除了孤行。
+   align-items 用 start：卡片各按内容定高。曾用默认的 stretch 追求「底边
+   对齐」，但同行两张卡内容量差得远时（实测 373 vs 621px），拉伸会在短卡
+   内部留下 233px 空洞——那比底边参差更像缺陷。设置类页面按内容定高，
+   短卡后面直接接下一条，没有假空白。 */
+.cfg-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+  gap: var(--sp-4);
+  align-items: start;
+}
+/* 成对的信息卡按行等高，消除截图里「系统健康度 / 调试与维护」和
+   RAG 顶部两卡底边参差。注入引擎使用纵向列栈，不套用此规则。 */
+#sec-rag > .cfg-cols:first-of-type,
+#sec-system > .cfg-cols,
+.rag-overview {
+  align-items: stretch;
+}
+#sec-rag > .cfg-cols:first-of-type > .card,
+#sec-system > .cfg-cols > .card,
+.rag-overview > .card {
+  height: 100%;
+}
+#sec-rag > .cfg-cols:first-of-type > .card > .card-body,
+#sec-system > .cfg-cols > .card > .card-body,
+.rag-overview > .card > .card-body {
+  height: calc(100% - var(--h-row));
+}
+/* 注入引擎：4 张卡高度差极大（605 / 357 / 269 / 317），按行配对时
+   「写作素材库控制」被拉在 605px 的高卡旁边，下方空出 233px。
+   改成两列纵向栈：左列世界书注入策略 + 表现控制，右列素材库控制 +
+   应急反拒绝协议，每列各自向下流动，空洞消失。
+   列用 flex 而非 grid：两张卡高度不等时无需指定行，交给 gap 即可。 */
+#sec-inject .cfg-cols {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+  align-items: start;
+}
+#sec-inject .cfg-cols > .cfg-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+/* 单列时（窄窗口）列容器本身不再需要额外间距 */
+@media (max-width: 980px) {
+  #sec-inject .cfg-cols { grid-template-columns: minmax(0, 1fr); }
+  .page-head-bar .toolbar {
+    flex-wrap: wrap;
+  }
+  .page-head-bar .toolbar > .grow {
+    display: none;
+  }
+  .page-head-bar .toolbar-actions {
+    flex: 1 0 100%;
+    justify-content: flex-start;
+  }
+}
+
+/* 页脚署名（华为字体许可要求显著声明） */
+.page-foot {
+  margin-top: var(--sp-8);
+  padding-top: var(--sp-4);
+  border-top: .5px solid var(--separator);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--label-3);
+}

@@ -1,0 +1,205 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   目录
+   1. 设计令牌（Apple 系统色 / 字阶 / 间距 / 圆角 / 材质 / 动效）
+   2. 基础与重置
+   3. 图标
+   4. 按钮
+   5. 开关与选择控件
+   6. 输入框 / 搜索框 / 文本域 / 下拉 / 滑块
+   7. 分组列表与卡片
+   8. 表格
+   9. 徽章 / 标签 / 状态点
+  10. 空状态 / 骨架屏 / 加载
+  11. 工具栏与页头
+  12. 源列表侧栏与底部标签栏
+  13. 弹层：模态 / 对话框 / 底部弹层 / 提示横幅
+  14. 悬浮操作条 / 回到顶部
+  15. 页面：写作素材库
+  16. 页面：世界书
+  17. 页面：角色卡
+  18. 页面：文档知识库
+  19. 页面：动态记忆
+  20. 页面：配置
+  21. 响应式与无障碍
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. 设计令牌 ─────────────────────────────────────────────────────
+   颜色取自 Apple HIG 现行发布的系统色（RGB 值）。文字级强调色另设
+   --*-text：系统色作实心填充对比度足够，但作为白底文字时 #0088FF 仅
+   3.52:1，低于 HIG 要求的 4.5:1，故文字场景改用加深变体（≈4.5~4.7:1）。
+   实心按钮上的文字用 600 字重，HIG 规定粗体只需 3:1 即可。            */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* 强调色 */
+  --accent: #0088FF;
+  --accent-text: #0071E3;
+  --accent-tint: rgba(0, 136, 255, .12);
+  --accent-tint-strong: rgba(0, 136, 255, .22);
+  --on-accent: #FFFFFF;
+
+  /* 语义色（默认档 = 实心填充 / 图标；text 档 = 文字） */
+  --green: #34C759;   --green-text: #008932;
+  --red: #FF383C;     --red-text: #E9152D;
+  --orange: #FF8D28;  --orange-text: #C55300;
+  --yellow: #FFCC00;  --yellow-text: #A16A00;
+  --indigo: #6155F5;  --indigo-text: #4B3FD4;
+  --purple: #CB30E0;  --purple-text: #A020B4;
+  --teal: #00C3D0;    --teal-text: #007D87;
+  --pink: #FF2D55;    --pink-text: #D6003C;
+
+  /* 语义色淡底（用于标签、状态胶囊） */
+  --green-fill: rgba(52, 199, 89, .14);
+  --red-fill: rgba(255, 56, 60, .14);
+  --orange-fill: rgba(255, 141, 40, .16);
+  --yellow-fill: rgba(255, 204, 0, .20);
+  --indigo-fill: rgba(97, 85, 245, .14);
+  --purple-fill: rgba(203, 48, 224, .14);
+  --teal-fill: rgba(0, 195, 208, .18);
+  --pink-fill: rgba(255, 45, 85, .14);
+  --accent-fill: rgba(0, 136, 255, .12);
+
+  /* 背景层级（HIG：primary / secondary / tertiary） */
+  --bg-grouped: #F2F2F7;
+  --bg-primary: #FFFFFF;
+  --bg-secondary: #F2F2F7;
+  --bg-tertiary: #FFFFFF;
+  --bg-elevated: #FFFFFF;
+
+  /* 填充（HIG systemFill 四级） */
+  --fill-quaternary: rgba(120, 120, 128, .08);
+  --fill-tertiary: rgba(120, 120, 128, .12);
+  --fill-secondary: rgba(120, 120, 128, .16);
+  --fill-primary: rgba(120, 120, 128, .20);
+
+  /* 文字（HIG 语义标签层级，用透明度表达） */
+  --label: #000000;
+  --label-2: rgba(60, 60, 67, .60);
+  --label-3: rgba(60, 60, 67, .30);
+  --label-4: rgba(60, 60, 67, .18);
+
+  /* 分隔线 */
+  --separator: rgba(60, 60, 67, .29);
+  --separator-opaque: #C6C6C8;
+
+  /* 材质（毛玻璃） */
+  --material-bg: rgba(255, 255, 255, .72);
+  /* 吸顶导航条用的是 thick 档，而它下方穿过的是密集表单卡片、自身文字只有
+     13px。.86 时实测仍有约 14% 的透光，滚动时下方分区标题会在按钮文字间
+     留下一层灰影。提到 .92：模糊带来的层次还在，但文字不可能再被透上来。 */
+  --material-bg-thick: rgba(255, 255, 255, .92);
+  --material-edge: rgba(255, 255, 255, .5);
+  --material-blur: blur(20px) saturate(180%);
+
+  /* 阴影 — Apple 用极淡的投影表达层级，而非硬边框 */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .04), 0 1px 8px rgba(0, 0, 0, .04);
+  --shadow-2: 0 2px 6px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .08);
+  --shadow-3: 0 4px 12px rgba(0, 0, 0, .08), 0 16px 40px rgba(0, 0, 0, .12);
+  --shadow-focus: 0 0 0 3px var(--accent-tint-strong);
+
+  /* 圆角 — HIG 同心圆角：子元素半径 = 父半径 − 内边距 */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-pill: 9999px;
+
+  /* 间距（4pt 基准） */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+
+  /* 控件高度令牌 —— 所有并排控件必须引用同一档，避免基线错位 */
+  --h-control: 32px;      /* btn / input.field / select.field / .search input / .segmented */
+  --wr-row-h: 132px;      /* 素材卡固定行高：头部 60 + 单行标签 22 + 页脚 50 */
+  --h-control-sm: 26px;   /* .btn--sm */
+  --h-icon-btn: 30px;     /* .icon-btn 标准 */
+  --h-icon-btn-sm: 22px;  /* 密集卡片行内的图标按钮 */
+  --h-row: 44px;          /* .card-head / .cfg-row / 列表行 */
+  /* 主编辑 sheet 的内容高度。角色卡“核心设定”是最高的一组表单，
+     统一以此为基准，短表单也保持同一块工作区高度。 */
+  --modal-body-h: min(72vh, 720px);
+
+  /* 控件宽度令牌 —— 配置页表单列的统一标尺。
+     此前宽度由内联 max-width 与 .field--wide 各自为政，同一张卡片里
+     同时出现 211 / 260 / 303 / 1068px 四种宽度，视觉上像是拼凑的控件族。
+     统一为三档后，所有控件的左边缘落在同一条竖线上。 */
+  --w-num: 132px;         /* 数字 + 单位后缀 */
+  --w-ctl: 220px;         /* 普通输入框 / 下拉 / 滑块 */
+  --w-wide: 420px;        /* 多行文本 / 提供商下拉 / 长文本输入 */
+
+  /* 字阶与行高 —— 收编文件中散落的字号 / 行高字面量 */
+  --fs-11: 11px; --fs-12: 12px; --fs-13: 13px; --fs-15: 15px; --fs-17: 17px;
+  --lh-tight: 1.25; --lh-body: 1.5; --lh-loose: 1.6;
+
+  /* 动效 — 入场用减速曲线、出场用加速曲线，呼应 Apple 的“对称路径” */
+  --ease-enter: cubic-bezier(.22, 1, .36, 1);
+  --ease-exit: cubic-bezier(.4, 0, 1, 1);
+  --ease-standard: cubic-bezier(.4, 0, .2, 1);
+  --dur-enter: 260ms;
+  --dur-exit: 180ms;
+  --dur-micro: 150ms;
+  --dur-press: 100ms;
+
+  /* 弹层层级：显式声明，不依赖标记顺序 */
+  --z-scrim: 100; --z-scrim-text: 110; --z-scrim-alert: 120; --z-scrim-crop: 130;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --accent: #0091FF;
+  --accent-text: #0A84FF;
+  --accent-tint: rgba(0, 145, 255, .18);
+  --accent-tint-strong: rgba(0, 145, 255, .30);
+  --on-accent: #FFFFFF;
+
+  --green: #30D158;   --green-text: #30D158;
+  --red: #FF4245;     --red-text: #FF6961;
+  --orange: #FF9230;  --orange-text: #FFA95C;
+  --yellow: #FFD600;  --yellow-text: #FFD600;
+  --indigo: #6D7CFF;  --indigo-text: #8A96FF;
+  --purple: #DB34F2;  --purple-text: #DB34F2;
+  --teal: #00D2E0;    --teal-text: #00D2E0;
+  --pink: #FF375F;    --pink-text: #FF6482;
+
+  --green-fill: rgba(48, 209, 88, .18);
+  --red-fill: rgba(255, 66, 69, .18);
+  --orange-fill: rgba(255, 146, 48, .18);
+  --yellow-fill: rgba(255, 214, 0, .18);
+  --indigo-fill: rgba(109, 124, 255, .18);
+  --purple-fill: rgba(219, 52, 242, .18);
+  --teal-fill: rgba(0, 210, 224, .18);
+  --pink-fill: rgba(255, 55, 95, .18);
+  --accent-fill: rgba(0, 145, 255, .18);
+
+  /* 深色模式的层级靠“更亮”表达（HIG：base 更暗、elevated 更亮） */
+  --bg-grouped: #000000;
+  --bg-primary: #1C1C1E;
+  --bg-secondary: #2C2C2E;
+  --bg-tertiary: #3A3A3C;
+  --bg-elevated: #1C1C1E;
+
+  --fill-quaternary: rgba(120, 120, 128, .18);
+  --fill-tertiary: rgba(120, 120, 128, .24);
+  --fill-secondary: rgba(120, 120, 128, .32);
+  --fill-primary: rgba(120, 120, 128, .36);
+
+  --label: #FFFFFF;
+  --label-2: rgba(235, 235, 245, .60);
+  --label-3: rgba(235, 235, 245, .30);
+  --label-4: rgba(235, 235, 245, .18);
+
+  --separator: rgba(84, 84, 88, .65);
+  --separator-opaque: #38383A;
+
+  --material-bg: rgba(30, 30, 32, .72);
+  /* 与浅色档同步收紧：透光残留会让白色正文在深色导航条下留下可辨的灰影 */
+  --material-bg-thick: rgba(28, 28, 30, .94);
+  --material-edge: rgba(255, 255, 255, .12);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .30);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, .40), 0 8px 24px rgba(0, 0, 0, .40);
+  --shadow-3: 0 4px 16px rgba(0, 0, 0, .50), 0 16px 40px rgba(0, 0, 0, .50);
+}

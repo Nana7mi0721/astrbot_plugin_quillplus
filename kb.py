@@ -18,6 +18,13 @@ from typing import List, Dict, Optional, Any
 
 import aiosqlite
 
+# 双模式导入：插件内以包形式加载，`python kb.py` 自检时则是顶层脚本
+# （无父包，相对导入会失败）。两条路径都要能跑。
+try:
+    from ._fts_util import escape_trigram
+except ImportError:  # 直接运行本文件
+    from _fts_util import escape_trigram
+
 try:
     from astrbot.api import logger
 except ImportError:
@@ -686,16 +693,12 @@ class WritingResourceManager:
 
     @staticmethod
     def _escape_fts5(text: str) -> str:
-        # 中文标点也作为分隔符切开，得到较短的语义块；
-        # trigram 分词器下 <3 字符的 token 无法命中，直接过滤
-        cleaned = _re.sub(r'[\"\'()*^~{}，。！？；：、—…·\s]+', ' ', text)
-        tokens = [t for t in cleaned.split() if len(t) >= 3]
-        if not tokens:
-            return ""
-        # OR 连接：任一语义块命中即召回（靠 bm25 rank 排序）。
-        # 此前用 AND 连接整句短语，中文长句几乎必然 miss，
-        # FTS 快速路径形同虚设、每次都回退全表扫描。
-        return " OR ".join(f'"{t}"' for t in tokens)
+        """构造写作素材库的 trigram MATCH 查询串。
+
+        实现已抽到 `_fts_util.escape_trigram`（动态记忆侧需要同一套语义，
+        两处各写一份必然漂移）。此处保留方法名与签名，调用方无需改动。
+        """
+        return escape_trigram(text)
 
     async def fts_match(
         self, user_input: str, top_k: int = 5, category: Optional[str] = None
@@ -796,40 +799,60 @@ class WritingResourceManager:
         log_match: bool = True,
     ) -> List[Dict]:
         user_input_lower = user_input.lower()
+        # FTS 命中要**保留**：一旦进入下面的回退扫描，此前由一个有效的 FTS
+        # 找到、但排在扫描前 2000 条之外的条目会被整表扫描的结果覆盖掉
+        # （旧实现在这里重建 matched_entries = 丢弃已找到的结果）。
+        fts_entries: List[Dict] = []
+        fts_failed = False
 
         # --- FTS5 fast path ---
         try:
             fts_candidates = await self.fts_match(user_input, top_k=top_k * 3, category=category)
             if fts_candidates:
-                matched_entries: List[Dict] = []
                 for entry in fts_candidates:
                     score, matched_kw = self._score_entry(entry, user_input_lower)
                     if score >= min_match:
                         entry["match_score"] = score + entry.get("priority", 5) * 0.1
                         entry["matched_keywords"] = matched_kw
                         entry["fts_base"] = entry.get("fts_rank", entry.get("match_score", 0))
-                        matched_entries.append(entry)
+                        fts_entries.append(entry)
 
-                matched_entries.sort(key=lambda x: x["match_score"], reverse=True)
-                matched_entries = self._dedup_by_category(matched_entries)
-                if len(matched_entries) >= top_k:
-                    result = matched_entries[:top_k]
+                fts_entries.sort(key=lambda x: x["match_score"], reverse=True)
+                fts_entries = self._dedup_by_category(fts_entries)
+                if len(fts_entries) >= top_k:
+                    result = fts_entries[:top_k]
                     if result and log_match:
                         await self._increment_match_counts([e["id"] for e in result])
                         await self._log_match(user_input, [e["entry_id"] for e in result], len(result))
                     return result
         except (sqlite3.Error, ValueError) as e:
+            # 「FTS 故障」才需要全表扫描。注意与「命中数不足」区分——后者是
+            # 正常查询，不该为了补齐差额去读 2000 条完整素材。
             self._note_fts_failure(e)
-            pass
+            fts_failed = True
 
-        # --- Fallback: full table scan ---
+        # --- Fallback ---
+        # FTS 命中不足且索引完好：只做 limited fallback 补差额（见下）；
+        # FTS 故障：索引不可用，才走全表扫描。
+        if not fts_failed:
+            # FTS 可用但命中不够 top_k。此时全表扫描的收益远低于代价
+            # （2000 条素材读到 Python 里逐条评分），且本轮已经有了部分命中。
+            # 保持返回已有命中即可——素材库匹配是「有则注入」，宁缺勿滥。
+            if fts_entries:
+                if log_match:
+                    await self._increment_match_counts([e["id"] for e in fts_entries])
+                    await self._log_match(
+                        user_input, [e["entry_id"] for e in fts_entries], len(fts_entries)
+                    )
+                return fts_entries
+            # 一条都没命中才是真正的「需要扫描」场景
         sql = "SELECT wr.*, 0 AS match_score FROM writing_resource wr WHERE wr.enabled = 1"
         params: list = []
         if category:
             sql += " AND wr.category = ?"
             params.append(category)
-        # 回退路径仅在 FTS5 不可用时触发；上限从 500 放宽到 2000，
-        # 避免较大素材库中位于后面的条目永远无法被匹配到。
+        # 扫描仅在 FTS5 不可用，或 FTS 一条都没命中时触发；上限从 500 放宽到
+        # 2000，避免较大素材库中位于后面的条目永远无法被匹配到。
         sql += " LIMIT 2000"
 
         async with self.conn.execute(sql, params) as cursor:
@@ -842,6 +865,13 @@ class WritingResourceManager:
             if score >= min_match:
                 entry["match_score"] = score + entry.get("priority", 5) * 0.1
                 entry["matched_keywords"] = matched_kw
+                matched_entries.append(entry)
+
+        # 合入并去重：FTS 已命中的（即使排在 2000 条之外）不能被丢弃
+        seen_ids = {e.get("id") for e in matched_entries}
+        for entry in fts_entries:
+            if entry.get("id") not in seen_ids:
+                seen_ids.add(entry.get("id"))
                 matched_entries.append(entry)
 
         matched_entries.sort(key=lambda x: x["match_score"], reverse=True)

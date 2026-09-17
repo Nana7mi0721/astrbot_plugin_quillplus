@@ -36,6 +36,37 @@ except ImportError:
 # ============================================================
 
 
+# 字段表/剧情选项的兜底默认值。与 config.py 的默认一致，但这里必须自带一份：
+# PromptBuilder 要能被单独构造（自检、单测），不能依赖 QuillConfig 在场。
+_DEFAULT_FIELDS = ["好感度", "关系阶段", "心情", "位置", "穿着", "当前想法"]
+_DEFAULT_PLOT_PATHS = ["继续当前话题", "转换场景", "结束互动"]
+
+# 单个字段在示例里给的样值。契约文本的示例行按字段名查这张表，
+# 查不到就用通用占位（用户自定义字段如「催眠度」走这条）。
+_FIELD_SAMPLES = {
+    "好感度": "85/100（心动到不行）",
+    "关系阶段": "暧昧期",
+    "心情": "害羞（刚才牵到手了）",
+    "位置": "放学路上",
+    "穿着": "便服，围巾",
+    "当前想法": "他手好大...好暖和...",
+    "服从度": "70/100（开始顺从）",
+    "发情度": "40/100（强忍着）",
+}
+
+# 字段名 → 一行说明。仅用于 guide 的「字段说明」段；未知字段用通用说明。
+_FIELD_DESCRIPTIONS = {
+    "好感度": "N/100，后附括号文字说明（如 68/100（有好感但极力否认））",
+    "关系阶段": "当前关系状态标签（如 陌生人、熟悉、暧昧、亲密、支配等）",
+    "心情": "具体情绪，可附括号补充原因（如 慌乱（差点说漏嘴））",
+    "位置": "当前地点",
+    "穿着": "当前服装",
+    "当前想法": "内心独白",
+    "服从度": "N/100，配合度量化（可附括号说明）",
+    "发情度": "N/100，情动程度量化（可附括号说明）",
+}
+
+
 @dataclass
 class PromptSection:
     """A named, prioritised chunk of prompt text.
@@ -75,6 +106,15 @@ class PromptBuilder:
             self.min_output_length: int = config.min_output_length
             self.max_output_length: int = getattr(config, 'max_output_length', 0)
             self.status_bar_enabled: bool = config.status_bar_enabled
+            # 字段表与剧情选项必须拿进来：契约文本由它们生成（见 build_status_contract）。
+            # 此前这两个值只在插件实例上，本类只能把字段顺序写死在示例里，
+            # 导致用户改了字段名/顺序后，示例与实际契约不一致。
+            self.love_fields: list = list(
+                getattr(config, 'status_bar_fields', None) or _DEFAULT_FIELDS
+            )
+            self.status_bar_plot_paths: list = list(
+                getattr(config, 'status_bar_plot_paths', None) or list(_DEFAULT_PLOT_PATHS)
+            )
         else:
             perf = (config or {}).get("performance", {})
             self.max_prompt_length: int = perf.get("max_prompt_length", 50000)
@@ -82,6 +122,20 @@ class PromptBuilder:
             self.max_output_length: int = perf.get("max_output_length", 0)
             sb_cfg = (config or {}).get("status_bar", {})
             self.status_bar_enabled: bool = sb_cfg.get("enabled", False)
+            _raw_fields = sb_cfg.get("fields") or ""
+            if isinstance(_raw_fields, str) and _raw_fields.strip():
+                self.love_fields = [f.strip() for f in _raw_fields.split("|") if f.strip()]
+            elif isinstance(_raw_fields, (list, tuple)):
+                self.love_fields = [str(f).strip() for f in _raw_fields if str(f).strip()]
+            else:
+                self.love_fields = list(_DEFAULT_FIELDS)
+            _raw_plot = sb_cfg.get("plot_paths") or ""
+            if isinstance(_raw_plot, str) and _raw_plot.strip():
+                self.status_bar_plot_paths = [p.strip() for p in _raw_plot.split("|") if p.strip()]
+            elif isinstance(_raw_plot, (list, tuple)):
+                self.status_bar_plot_paths = [str(p).strip() for p in _raw_plot if str(p).strip()]
+            else:
+                self.status_bar_plot_paths = list(_DEFAULT_PLOT_PATHS)
 
         self.token_ratio: float = 1.5  # 保留用于向后兼容，新估算使用 _estimate_tokens
 
@@ -108,12 +162,16 @@ class PromptBuilder:
         wb_manager: Any,
         extra_info: Optional[dict] = None,
         emergency: bool = False,
+        stats: Optional[dict] = None,
     ) -> tuple:
         """Assemble the full system prompt from four layers.
 
         Returns (stable_prompt, dynamic_prompt) tuple.
         stable_prompt contains fixed content (Layer 0 + Layer 1 constants).
         dynamic_prompt contains per-turn content (Layer 1 random + Layer 2 + Layer 3).
+
+        `stats` 为可选的出参 dict，用于回填本轮各来源命中条数（注入报告）。
+        默认 None 时行为与改动前完全一致，既有调用方无需调整。
         """
         extra_info = extra_info or {}
         stable_sections: List[PromptSection] = []
@@ -148,8 +206,13 @@ class PromptBuilder:
             ))
 
         # --- Session state injection (stable, priority=0) ---
+        # 受状态栏开关门控：关闭状态下 tail message 明令禁止输出好感度/关系阶段等
+        # 字段（main.py 的 status_bar_enabled=False 分支），若此处仍把字段名注入
+        # system prompt，就是一边禁止一边示范，模型照抄后又被剥离器擦掉，白耗
+        # token 且与「关闭即干净」的预期相悖。
+        # 注意只停止注入、不清空 session_vars：重新打开时旧状态还在，是连续性体验。
         session_vars = (extra_info or {}).get("session_vars") or {}
-        if session_vars:
+        if session_vars and self.status_bar_enabled:
             state_lines = [f"{k}={v}" for k, v in session_vars.items()]
             stable_sections.append(PromptSection(
                 name="session_state",
@@ -182,7 +245,7 @@ class PromptBuilder:
 
         # --- Layer 1 + Layer 2: content retrieval ---
         layer1_parts, layer2_parts, layer1_random_parts = await self.retrieve_content_layers(
-            wr_manager, wb_manager, extra_info
+            wr_manager, wb_manager, extra_info, stats=stats
         )
 
         # Layer 1 fixed part \u2192 stable
@@ -269,6 +332,7 @@ class PromptBuilder:
         wr_manager: Any,
         wb_manager: Any,
         extra_info: Optional[dict] = None,
+        stats: Optional[dict] = None,
     ) -> tuple:
         """Fetch Layer 1 (constant) and Layer 2 (keyword-matched) content.
 
@@ -276,6 +340,10 @@ class PromptBuilder:
         layer1_parts: fixed constant entries (stable across turns).
         layer1_random_parts: random pool samples (changes each turn).
         layer2_parts: keyword-matched entries (changes each turn).
+
+        `stats` 为可选的出参 dict：填入本轮各来源的命中条数（供注入报告使用）。
+        没有它也能正常工作——出参形态而非返回值形态，是为了不改动既有三元组
+        契约（`_self_test` 等多处按位置解包）。
         """
         extra_info = extra_info or {}
         layer1_parts: List[str] = []
@@ -283,6 +351,12 @@ class PromptBuilder:
         layer2_parts: List[str] = []
         user_input = extra_info.get("user_input", "")
         seen_ids: set = set()
+        # 命中计数（仅用于注入报告）
+        wr_constant_hits = 0
+        wr_match_hits = 0
+        wr_fallback_hits = 0
+        wb_constant_hits = 0
+        wb_match_hits = 0
 
         # === 提取角色卡扩展配置（三态模式）===
         ext = {}
@@ -321,6 +395,7 @@ class PromptBuilder:
                         layer1_parts.append(
                             "\u3010\u7d20\u6750\u3011\n" + content
                         )
+                        wr_constant_hits += 1
                 # Random pool \u2192 separate list
                 for pool_entries in pools.values():
                     if pool_entries:
@@ -328,6 +403,7 @@ class PromptBuilder:
                             layer1_random_parts.append(
                                 "\u3010\u7d20\u6750\u3011\n" + c
                             )
+                            wr_constant_hits += 1
             except Exception as exc:
                 logger.warning("[PromptBuilder] WR constant entries failed: %s", exc)
 
@@ -340,6 +416,7 @@ class PromptBuilder:
                         layer1_parts.append(
                             "\u3010\u4e16\u754c\u89c2\u3011\n" + content
                         )
+                        wb_constant_hits += 1
             except Exception as exc:
                 logger.warning("[PromptBuilder] WB constant entries failed: %s", exc)
 
@@ -367,6 +444,7 @@ class PromptBuilder:
                                 "\u3010\u7d20\u6750\u3011\n" + content
                             )
                             match_count += 1
+                wr_match_hits += match_count
                 if match_count == 0:
                     try:
                         fallback_limit = extra_info.get("wr_fallback_top_count", 2)
@@ -383,6 +461,7 @@ class PromptBuilder:
                                     layer2_parts.append(
                                         "\u3010\u7d20\u6750\u3011\n" + content
                                     )
+                                    wr_fallback_hits += 1
                     except Exception as exc:
                         logger.warning("[PromptBuilder] WR top-entries fallback failed: %s", exc)
             except Exception as exc:
@@ -413,8 +492,18 @@ class PromptBuilder:
                         layer2_parts.append(
                             "\u3010\u4e16\u754c\u89c2\u3011\n" + content
                         )
+                        wb_match_hits += 1
             except Exception as exc:
                 logger.warning("[PromptBuilder] WB keyword match failed: %s", exc)
+
+        if stats is not None:
+            stats["wr"] = wr_constant_hits + wr_match_hits + wr_fallback_hits
+            stats["wr_constant"] = wr_constant_hits
+            stats["wr_match"] = wr_match_hits
+            stats["wr_fallback"] = wr_fallback_hits
+            stats["wb"] = wb_constant_hits + wb_match_hits
+            stats["wb_constant"] = wb_constant_hits
+            stats["wb_match"] = wb_match_hits
 
         return layer1_parts, layer2_parts, layer1_random_parts
 
@@ -517,7 +606,10 @@ class PromptBuilder:
             guide += "  **重要：必须将【故事正文】和【[LOVE_DATA]状态栏及选项】一次性打包，全部放在 messages 参数的 text 字段中**\n"
         else:
             guide += "步骤3：调用 send_message_to_user 发送回复\n"
-            guide += "  **仅输出故事正文，禁止在回复中的任何位置输出状态栏、LOVE_DATA、好感度、Plot Paths 等内容**\n"
+            guide += (
+                "  **仅输出故事正文，禁止在回复中的任何位置输出状态栏、"
+                f"{self.build_status_contract()['forbidden_hint']} 等内容**\n"
+            )
 
         guide += (
             "  **不要先调用其他工具（file_read、shell 等）——现在就用这个工具发送**\n"
@@ -550,28 +642,101 @@ class PromptBuilder:
         )
 
     def build_safety_wrapper(self) -> str:
-        """Layer 3: compact format reminder at the end of dynamic prompt (closest to user)."""
+        """Layer 3: compact format reminder at the end of dynamic prompt (closest to user).
+
+        示例走 build_status_contract()，与 guide / tail message 同源。
+        """
         wrapper = "故事正文中禁止输出任何创作外的文字——不要总结、不要解释、不要询问是否需要继续。\n"
         if self.status_bar_enabled:
+            c = self.build_status_contract()
             wrapper += (
                 "【状态栏强制格式】故事正文结束后必须立刻追加这两部分：\n"
-                "1) 单行状态：[LOVE_DATA] 好感度数值/100（说明） | 关系阶段 | 心情 | 位置 | 穿着 | 当前想法\n"
-                "2) 3个剧情走向选项：>>> 剧情走向 <<< ... <<< 请选择 >>>\n"
-                "示例：[LOVE_DATA] 55/100（相处愉快） | 朋友 | 放松 | 教室 | 校服 | 希望今天也能见到他...\n"
+                f"1) 单行状态：{c['fields_line']}\n"
+                f"2) 3个剧情走向选项：{c['plot_markers']}\n"
+                f"示例：{c['sample_line']}\n"
                 "禁止省略任何字段，禁止用省略号代替状态值。\n"
             )
         else:
             wrapper += (
-                "【禁止】绝对不要输出 [LOVE_DATA]、状态栏、好感度数值、剧情走向选项等任何元数据。\n"
+                f"【禁止】绝对不要输出 {self.build_status_contract()['forbidden_hint']} 等任何元数据。\n"
             )
         return wrapper
 
-    @staticmethod
-    def build_status_bar_guide() -> str:
+    # ----------------------------------------------------------
+    # 状态栏格式契约：单一来源
+    # ----------------------------------------------------------
+
+    def build_status_contract(self) -> dict:
+        """状态栏格式契约的唯一来源。
+
+        为什么要有这个方法：格式契约此前在四处各写一份（状态栏 guide、
+        send_message 步骤3、safety_wrapper、main.py 的 tail message），
+        每处的示例都是手抄的字面量。改一处漏三处就是「提示词互相矛盾」，
+        而字段名/顺序用户可配——用户改了字段后，示例与实际契约必然漂移。
+
+        本方法把「格式行 / 示例行 / 字段说明 / 剧情选项格式」集中生成，
+        四处按需取用，**不再各自手写示例**。
+
+        返回的键：
+          fields_line     —— 契约格式行（`[LOVE_DATA] {好感度} | ...`）
+          sample_line     —— 按当前字段表生成的完整示例行
+          fields_help     —— 逐字段说明（多行）
+          plot_block      —— 剧情走向的三选项格式块
+          plot_markers    —— `>>> ... <<<` 两个标记（给一行式提醒用）
+          forbidden_hint  —— 关闭状态栏时的禁止项（与开启时同源，避免两边漂移）
+        """
+        fields = [f for f in (self.love_fields or []) if f] or list(_DEFAULT_FIELDS)
+        plots = [p for p in (self.status_bar_plot_paths or []) if p] or list(_DEFAULT_PLOT_PATHS)
+
+        fields_line = "[LOVE_DATA] " + " | ".join(f"{{{f}}}" for f in fields)
+        sample_line = "[LOVE_DATA] " + " | ".join(
+            _FIELD_SAMPLES.get(f, "（示例值）") for f in fields
+        )
+
+        help_lines = ["字段说明："]
+        for f in fields:
+            desc = _FIELD_DESCRIPTIONS.get(f, "按当前剧情填写")
+            help_lines.append(f"- {f}：{desc}")
+        # 「好感度」可替换成其它量化指标——这句只在字段表里真有名叫好感度时才加，
+        # 否则用户已经把字段改掉了，还说「好感度只是参考字段名」是自相矛盾。
+        if any("好感度" in f for f in fields):
+            help_lines.append(
+                "  *注意：好感度只是参考字段名，可根据剧情需要替换为其他可量化指标，"
+                "如：催眠度、服从度、淫乱度、信赖度等*"
+            )
+
+        # 三档阶段的参考表只在字段含「好感度」时给，理由同上
+        if any("好感度" in f for f in fields):
+            help_lines.append("")
+            help_lines.append("好感度阶段参考（仅当字段为好感度时适用）：")
+            help_lines.append("0-20：陌生人 | 21-40：友善但疏离 | 41-60：普通朋友")
+            help_lines.append("61-70：萌生好感 | 71-80：强烈好感 | 81-90：爱慕")
+            help_lines.append("91-100：深爱，彻底沦陷")
+
+        plot_options = "\n".join(
+            f"{i}. {p}" for i, p in enumerate(plots[:3] or _DEFAULT_PLOT_PATHS, 1)
+        )
+        plot_block = ">>> 剧情走向 <<<\n" + plot_options + "\n<<< 请选择 >>>"
+
+        return {
+            "fields_line": fields_line,
+            "sample_line": sample_line,
+            "fields_help": "\n".join(help_lines),
+            "plot_block": plot_block,
+            "plot_markers": ">>> 剧情走向 <<< ... <<< 请选择 >>>",
+            "forbidden_hint": (
+                "[LOVE_DATA]、状态栏、好感度数值、关系阶段、心情标签、"
+                "穿着描述、位置信息、剧情走向选项"
+            ),
+        }
+
+    def build_status_bar_guide(self) -> str:
         """Layer 0c: mandatory status bar protocol.
 
         方案D: Prompt 增强 — 加入格式强制强调 + 负例展示 + 正确输出唯一性约束。
+        示例与格式行全部来自 build_status_contract()，不再手写。
         """
+        c = self.build_status_contract()
         return (
             "## 状态栏与剧情走向\n\n"
             "在故事正文描写结束后，你必须追加输出以下内容：\n\n"
@@ -582,30 +747,15 @@ class PromptBuilder:
             "必须使用 [LOVE_DATA] 标签开头，一行内输出，管道符 | 分隔，顺序固定。\n"
             "分隔符只能用 |，字段值内不得包含管道符。\n\n"
             "格式（一行，管道分隔）：\n"
-            "[LOVE_DATA] {好感度} | {关系阶段} | {心情} | {位置} | {穿着} | {当前想法}\n\n"
+            f"{c['fields_line']}\n\n"
             "❌ 错误示例（务必避免）：\n"
             "- 好感度：85（缺少 [LOVE_DATA] 标签）\n"
             "- [LOVE_DATA] 好感度→85 | 心情→放松（使用了 → 而非直接写值）\n"
             "- 好感度=85\\n关系阶段=暧昧（换行输出，未用管道符）\n"
             "- ```\\n好感度：85\\n```（用了代码块而非 [LOVE_DATA] 单行格式）\n\n"
             "✅ 正确示例：\n"
-            "[LOVE_DATA] 85/100（心动到不行） | 暧昧期 | 害羞（刚才牵到手了） | 放学路上 | 便服，围巾 | 他手好大...好暖和...\n\n"
-            "字段说明：\n"
-            "- 好感度：N/100，后附括号文字说明（如 68/100（有好感但极力否认））\n"
-            "  *注意：好感度只是参考字段名，可根据剧情需要替换为其他可量化指标，如：催眠度、服从度、淫乱度、信赖度等*\n"
-            "- 关系阶段：当前关系状态标签（如 陌生人、熟悉、暧昧、亲密、支配等）\n"
-            "- 心情：具体情绪，可附括号补充原因（如 慌乱（差点说漏嘴））\n"
-            "- 位置：当前地点\n"
-            "- 穿着：当前服装\n"
-            "- 当前想法：内心独白\n\n"
-            "好感度阶段参考（仅当字段为好感度时适用）：\n"
-            "0-20：陌生人 | 21-40：友善但疏离 | 41-60：普通朋友\n"
-            "61-70：萌生好感 | 71-80：强烈好感 | 81-90：爱慕\n"
-            "91-100：深爱，彻底沦陷\n\n"
-            "场景示例：\n"
-            "初遇：[LOVE_DATA] 15/100（初次见面） | 陌生人 | 紧张（不知道该怎么搭话） | 校门口 | 制服，书包 | 希望别被看出来我很紧张...\n"
-            "日常：[LOVE_DATA] 55/100（相处愉快） | 朋友 | 放松（和平时一样轻松） | 教室靠窗座位 | 校服，手腕上戴了新发绳 | 今天的风真舒服，要不要约他放学一起走？\n"
-            "亲密：[LOVE_DATA] 85/100（心动到不行） | 暧昧期 | 害羞（刚才牵到手了，脑子一片空白） | 放学路上的樱花道 | 便服，围巾 | 他手好大...好暖和...不行我要说什么才行...\n\n"
+            f"{c['sample_line']}\n\n"
+            f"{c['fields_help']}\n\n"
             "---\n"
             "【剧情走向选项】\n"
             "\n"
@@ -615,11 +765,24 @@ class PromptBuilder:
             "- 各选项应导向不同的剧情可能，不应三个都差不多\n"
             "- 基于当前剧情合理延伸，而非凭空创造新的设定\n\n"
             "格式：\n"
-            ">>> 剧情走向 <<<\n"
-            "1. 选项A——简短说明\n"
-            "2. 选项B——简短说明\n"
-            "3. 选项C——简短说明\n"
-            "<<< 请选择 >>>"
+            f"{c['plot_block']}"
+        )
+
+    def build_status_reminder(self) -> str:
+        """状态栏的**一行式**短提醒（供 main.py 的 tail message 使用）。
+
+        tail message 每轮都追加在用户消息附近，是 token 成本最高的一处。
+        格式细节交给 system prompt 里的 guide（那里是完整契约），这里只做
+        「别忘了」级别的提醒，示例走 contract 的 sample_line，避免两处示例漂移。
+        """
+        c = self.build_status_contract()
+        return (
+            "本轮回复末尾必须严格按以下格式追加状态栏和剧情选项，禁止使用其他格式：\n"
+            f"{c['fields_line']}\n"
+            f"示例：{c['sample_line']}\n"
+            f"{c['plot_block']}\n"
+            "禁止使用 --- 分隔线、> 块引用、```代码块```、或其他格式。"
+            "必须使用上述 [LOVE_DATA] 和 >>> <<< 标记。"
         )
 
 async def _self_test():

@@ -112,6 +112,11 @@ async def wb_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
         return
 
     if sub == "reload":
+        # 重载是全库共享状态的改写（所有会话都会看到新内容），群聊需管理员。
+        msg = _check_group_permission(plugin, event)
+        if msg:
+            event.set_result(MessageEventResult().message(msg))
+            return
         try:
             # reload_all 是同步方法（加锁后重新读盘），内部做文件 IO，
             # 放线程避免阻塞事件循环。
@@ -420,6 +425,10 @@ async def char_dispatch(plugin, event: AstrMessageEvent, arg: str):
         return
 
     if sub == "import":
+        msg = _check_group_permission(plugin, event)
+        if msg:
+            event.set_result(MessageEventResult().message(msg))
+            return
         if not rest:
             event.set_result(MessageEventResult().message("用法: /char import <角色卡 JSON>"))
             return
@@ -660,52 +669,58 @@ async def _resolve_persona_id(plugin, arg: str, event: AstrMessageEvent) -> str 
 # ================================================================
 
 async def quill_help(event: AstrMessageEvent):
-    """P0-3: 折叠式指令速查 — 按五大系统分组，聊天窗口内可读。"""
+    """P0-3: 折叠式指令速查 — 按五大系统分组，聊天窗口内可读。
+
+    行尾 🔒 = 写操作，群聊需管理员（私聊一律放行）。标记必须与
+    `_check_group_permission` 的实际调用点同步，否则帮助与行为漂移。
+    """
     lines = [
         "━━━ 羽笔 QuillPlus 指令速查 ━━━",
         "",
         "【🎭 角色卡 /char】",
         "  /char              列出所有角色卡",
-        "  /char <序号|名字>   切换角色",
-        "  /char unset        取消当前角色",
+        "  /char <序号|名字>   切换角色  🔒",
+        "  /char unset        取消当前角色  🔒",
         "  /char info [序号|名字]  角色详情",
         "  /char export [序号|名字]  导出 V2 卡",
-        "  /char import <JSON>  导入 V2 卡",
+        "  /char import <JSON>  导入 V2 卡  🔒",
         "",
         "【📖 世界书 /wb】",
         "  /wb                列出所有世界书",
-        "  /wb bind <序号|名字>  绑定到当前角色",
-        "  /wb unbind <序号|名字> 解绑从当前角色",
+        "  /wb bind <序号|名字>  绑定到当前角色  🔒",
+        "  /wb unbind <序号|名字> 解绑从当前角色  🔒",
         "  /wb info <序号|名字>  世界书详情",
-        "  /wb reload         重载世界书",
+        "  /wb reload         重载世界书  🔒",
         "",
         "【🧠 动态记忆 /memory】",
         "  /memory            记忆统计",
         "  /memory list [页码]  记忆列表",
-        "  /memory del <序号>  删除记忆",
-        "  /memory clear      清空当前会话记忆",
-        "  /memory learn [内容] 手动添加/增量总结",
+        "  /memory del <序号>  删除记忆  🔒",
+        "  /memory clear      清空当前会话记忆  🔒",
+        "  /memory learn [内容] 手动添加/增量总结  🔒",
         "  /memory search <词>  搜索记忆",
-        "  /memory pin <序号> [on|off]  钉住/取消核心记忆",
+        "  /memory pin <序号> [on|off]  钉住/取消核心记忆  🔒",
+        "  /memory core <内容> 直接写入核心记忆（不参与遗忘）  🔒",
         "",
         "【📄 文档RAG /doc】",
         "  /doc list          文档列表",
-        "  /doc bind <序号>    绑定到当前角色",
-        "  /doc unbind <序号>  解绑从当前角色",
+        "  /doc bind <序号>    绑定到当前角色  🔒",
+        "  /doc unbind <序号>  解绑从当前角色  🔒",
         "  /doc search <关键词>  检索文档",
-        "  /doc reload        重载索引",
+        "  /doc reload        重载索引  🔒",
         "",
         "【⚙️ 系统 /quill】",
-        "  /quill             系统总览",
-        "  /quill status      健康度详情（RAG/状态栏成功率）",
+        "  /quill             系统总览（五库状态 + 健康度）",
         "  /quill help        本帮助",
-        "  /quill reset       重开本角色卡剧情(清对话+日志，保留记忆)",
-        "  /quill test <wr|wb|mem> <文字>  系统测试",
-        "  /quill debug        调试：注入组成、匹配详情、会话状态",
-        "  /stream on|off|auto  流式模式开关",
-        "  /reinject          重置注入状态",
+        "  /quill debug       注入构成、匹配详情、会话状态、降级链命中分布  🔒",
+        "  /quill reset       重开本角色卡剧情（清对话+日志，保留长期记忆）  🔒",
+        "  /quill statusbar [on|off|auto]  状态栏开关（仅本会话；不带参数看当前生效值）",
+        "  /quill test <wr|wb|mem> <文字>  测试检索命中",
+        "  /stream [on|off|auto]  流式模式开关（不带参数看当前值）",
+        "  /reinject          重置注入状态，下次激活重新注入全部常驻素材  🔒",
         "",
-        "━━━ 私聊不受权限限制 ━━━",
+        "━━━ 🔒 = 写操作，群聊需管理员（私聊不受限）━━━",
+        "━━━ 白名单在插件配置·权限 admin_users，留空时群聊写指令全部拒绝 ━━━",
     ]
     event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
 
@@ -787,6 +802,12 @@ async def quill_status(plugin, event: AstrMessageEvent):
                 lines.append(f"  RAG检索成功率: {rag_rate}% ({h['rag']['success']}/{h['rag']['total']})")
             if sb_rate is not None:
                 lines.append(f"  状态栏解析成功率: {sb_rate}% ({h['status_bar']['success']}/{h['status_bar']['total']})")
+            # 降级链逐级命中分布：判断「主力路径是哪一级」，调提示词/字段表时
+            # 有据可依（此前只能 grep 日志文本，看不出比例）
+            lv = h.get("status_bar", {}).get("levels") or {}
+            if lv:
+                top = " · ".join(f"{k}×{v}" for k, v in list(lv.items())[:4])
+                lines.append(f"  降级链命中: {top}")
         except Exception:
             lines.append("  健康度: 查询失败")
 
@@ -915,7 +936,15 @@ async def _test_mem(plugin, event: AstrMessageEvent, text: str):
 
 
 async def quill_debug(plugin, event: AstrMessageEvent):
-    """P2-7: /quill debug — 注入组成查看。显示当前会话的注入详情、匹配状态、配置。"""
+    """P2-7: /quill debug — 注入组成查看。显示当前会话的注入详情、匹配状态、配置。
+
+    群聊需管理员：输出含会话标识（Target/Session/Persona）、字段表、各库条目数
+    与上一轮注入构成，属于内部诊断信息，不对群成员公开。
+    """
+    msg = _check_group_permission(plugin, event)
+    if msg:
+        event.set_result(MessageEventResult().message(msg))
+        return
     target_id = _get_target_id(event)
     lines = ["[Quill Debug Info]"]
 
@@ -968,6 +997,12 @@ async def quill_debug(plugin, event: AstrMessageEvent):
                 lines.append(f"  RAG 成功率: {rag_rate}%")
             if sb_rate is not None:
                 lines.append(f"  状态栏成功率: {sb_rate}%")
+                # 降级链逐级命中分布（次数降序）。调提示词/字段表时用它判断
+                # 「主力路径是哪一级」——此前只能 grep 日志文本，看不出比例。
+                lv = h.get("status_bar", {}).get("levels") or {}
+                if lv:
+                    top = " · ".join(f"{k}×{v}" for k, v in list(lv.items())[:4])
+                    lines.append(f"  降级链命中: {top}")
         except Exception:
             pass
 
@@ -979,6 +1014,11 @@ async def quill_debug(plugin, event: AstrMessageEvent):
             lines.append(f"  Session Vars: {vars_str}")
     except Exception:
         pass
+
+    # 上一轮注入构成（无论 debug 开关都能查，用于调参时的事后核对）
+    if hasattr(plugin, "_format_inject_report"):
+        report = plugin._format_inject_report(plugin._get_inject_report(target_id))
+        lines.append(f"  注入: {report or '（无命中记录）'}")
 
     event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
 
@@ -1303,6 +1343,11 @@ async def doc_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
         return
 
     if sub == "reload":
+        # 与 /wb reload 同理：换掉共享的向量索引，影响所有会话。
+        msg = _check_group_permission(plugin, event)
+        if msg:
+            event.set_result(MessageEventResult().message(msg))
+            return
         try:
             if plugin.rag_retriever and plugin.rag_retriever.vector_store:
                 await plugin.rag_retriever.vector_store.load_index()
@@ -1521,11 +1566,64 @@ async def stream_dispatch(plugin, event: AstrMessageEvent, arg: str):
 
 
 # ================================================================
+# /quill statusbar — 状态栏会话级开关
+# ================================================================
+
+_SB_MODE_MAP = {
+    "on": "on", "off": "off", "auto": "auto",
+    "开": "on", "关": "off", "自动": "auto",
+}
+
+
+async def statusbar_dispatch(plugin, event: AstrMessageEvent, arg: str):
+    """/quill statusbar on|off|auto — 会话级覆盖状态栏开关。
+
+    语义与面板全局开关一致，粒度不同：
+      auto —— 跟随面板（默认）
+      on   —— 本会话强制开（面板关着也生效）
+      off  —— 本会话强制关（面板开着也关闭）
+
+    无参数时只显示当前状态（含生效值与来源），便于排查「为什么没状态栏」。
+    """
+    target_id = _get_target_id(event)
+    arg = (arg or "").strip().lower()
+
+    if arg not in _SB_MODE_MAP:
+        mode = await plugin.state_manager.get_status_bar_mode(target_id)
+        global_on = bool(getattr(plugin, "status_bar_enabled", False))
+        effective = global_on if mode == "auto" else (mode == "on")
+        source = "跟随面板" if mode == "auto" else "会话覆盖"
+        event.set_result(MessageEventResult().message(
+            f"状态栏会话设置: {mode}（{source}）\n"
+            f"面板全局开关: {'开' if global_on else '关'}\n"
+            f"本轮实际生效: {'启用' if effective else '关闭'}\n"
+            "用法: /quill statusbar on|off|auto"
+        ).use_t2i(False))
+        return
+
+    msg = _check_group_permission(plugin, event)
+    if msg:
+        event.set_result(MessageEventResult().message(msg))
+        return
+
+    new_mode = _SB_MODE_MAP[arg]
+    await plugin.state_manager.set_status_bar_mode(target_id, new_mode)
+    names = {"on": "强制开启", "off": "强制关闭", "auto": "跟随面板全局"}
+    event.set_result(MessageEventResult().message(
+        f"状态栏已设为: {names[new_mode]}（仅对当前会话生效）"
+    ))
+
+
+# ================================================================
 # /reinject — 强制重置注入状态
 # ================================================================
 
 async def reinject_dispatch(plugin, event: AstrMessageEvent):
     """/reinject — 重置 quill_rounds，下次激活重新注入全部常驻内容"""
+    msg = _check_group_permission(plugin, event)
+    if msg:
+        event.set_result(MessageEventResult().message(msg))
+        return
     target_id = _get_target_id(event)
     await plugin.state_manager.reset_quill_rounds(target_id)
     event.set_result(MessageEventResult().message(

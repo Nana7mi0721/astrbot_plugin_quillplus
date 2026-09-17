@@ -1,0 +1,122 @@
+/* ── 12. 外壳：源列表侧栏 / 底部标签栏 / 顶部工具栏 ─────────────────── */
+.layout { display: flex; height: 100%; }
+
+/* 侧栏（macOS 源列表） */
+.sidebar {
+  width: 232px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--material-bg-thick);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+  border-right: .5px solid var(--separator);
+  overflow: hidden;
+}
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+}
+/* 插件 Logo：真图铺满固定容器（30×30），圆角与侧栏选中行一致。
+   图片是满幅插画（无透明通道），故不额外套色块；失败时回退到「羽」字块。 */
+.sidebar-logo {
+  width: 30px; height: 30px;
+  flex: none;
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(160deg, var(--accent), var(--indigo));
+}
+.sidebar-logo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.sidebar-logo-glyph {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+}
+.sidebar-title { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.sidebar-ver { font-size: 11px; color: var(--label-3); font-variant-numeric: tabular-nums; }
+.sidebar-nav { flex: 1; overflow-y: auto; padding: var(--sp-1) var(--sp-3) var(--sp-4); }
+.sidebar-group { margin-bottom: var(--sp-3); }
+/* 分组标题：纯静态 section label（macOS 侧栏的小节标题）。
+   可折叠版本已整体移除——三组各只有 2~3 项，折叠既省不下空间，
+   又把导航变成需要两次点击的后台管理树。标题保留只为分组语义。 */
+.sidebar-label {
+  padding: var(--sp-2) var(--sp-2) 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  color: var(--label-3);
+  text-transform: uppercase;
+}
+/* 选中态 = 圆角填充行（HIG 源列表标准样式），不靠左侧色条 */
+.sl-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  margin-bottom: 2px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--label);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-standard);
+}
+.sl-item .icon { width: 17px; height: 17px; color: var(--accent); flex: none; }
+.sl-item:hover:not(.is-selected) { background: var(--fill-quaternary); }
+.sl-item.is-selected { background: var(--accent); color: var(--on-accent); }
+.sl-item.is-selected .icon { color: var(--on-accent); }
+.sl-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sl-badge {
+  flex: none;
+  min-width: 18px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--fill-secondary);
+  color: var(--label-2);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 17px;
+  text-align: center;
+}
+.sl-item.is-selected .sl-badge { background: rgba(255, 255, 255, .28); color: #fff; }
+.sidebar-foot {
+  padding: var(--sp-3) var(--sp-4);
+  border-top: .5px solid var(--separator);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--label-3);
+}
+
+/* 内容滚动区 */
+/* scrollbar-gutter 常驻：素材库翻页时每页卡片数不同（15 / 12），
+   滚动条会随内容长短出现或消失。默认布局下这会把内容宽度改掉约 15px，
+   分页按钮的 x 随之漂移（实测 1271 ↔ 1276），连续翻页时鼠标仍要点偏。
+   预留槽位后宽度恒定；顺带让切换标签页时正文列也不会左右跳动。 */
+.content { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; position: relative; scrollbar-gutter: stable; }
+.tab-pane { display: none; }
+/* 激活页至少占满内容区高度，并作为纵向 flex 容器：
+   素材库的底部分页栏要钉在容器下沿，而 sticky 只在「自然位置已经
+   越过阈值」时才生效——内容不足一屏时自然位置反而更低，分页栏会
+   浮到屏幕中间（实测翻到末页少几张卡时按钮上移 72px）。
+   让主体撑满剩余高度、分页栏 margin-top:auto 推到底，两种情况下
+   按钮坐标才一致。 */
+.tab-pane.is-active { display: flex; flex-direction: column; min-height: 100%; }
+/* width:100% 不可省：.page 自带 margin:0 auto，而交叉轴上的 auto 外边距会
+   让 flex 项按 fit-content 定宽、跳过 stretch——实测页面被压到 405px，
+   卡片网格从 3 列塌成 1 列。显式给出宽度后，max-width 与 auto 外边距
+   重新按预期工作：宽屏居中、窄屏铺满。 */
+.tab-pane.is-active > .page { flex: 1; width: 100%; }

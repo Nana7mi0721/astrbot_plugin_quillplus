@@ -1,0 +1,76 @@
+/* ── 16. 世界书 ─────────────────────────────────────────────────────── */
+.wb-item { background: var(--bg-primary); border-radius: var(--r-lg); box-shadow: var(--shadow-1); overflow: hidden; }
+.wb-item + .wb-item { margin-top: var(--sp-3); }
+.wb-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 48px;
+  padding: var(--sp-2) var(--sp-4);
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-standard);
+}
+.wb-head:hover { background: var(--fill-quaternary); }
+.wb-head .chev { width: 16px; height: 16px; color: var(--label-3); transition: transform var(--dur-enter) var(--ease-enter); }
+.wb-item.is-open .wb-head .chev { transform: rotate(90deg); }
+.wb-name { font-size: 14.5px; font-weight: 600; }
+.wb-desc { font-size: 12px; color: var(--label-3); }
+.wb-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--dur-enter) var(--ease-enter),
+              opacity var(--dur-micro) var(--ease-standard);
+}
+.wb-item.is-open .wb-body { grid-template-rows: 1fr; }
+.wb-item.is-open .wb-body { opacity: 1; }
+/* 折叠时内边距也必须一起收掉。仅把 grid row 收到 0fr 时，内容盒仍保留
+   16px 底边距，收起后会在卡片底部残留空白并参与滚动高度。 */
+.wb-body > .wb-body-inner { overflow: hidden; min-height: 0; }
+.wb-body-inner { padding: 0 var(--sp-4); }
+.wb-item.is-open .wb-body-inner { padding-bottom: var(--sp-4); }
+.wb-toolbar { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); flex-wrap: wrap; }
+.wb-toolbar .search { min-width: 160px; }
+/* 内联搜索的命中行：条目上用 data-hidden 打标记而非内联 display，
+   这样条目列表被 renderWBInner 重建后，只要重放一次过滤就能恢复。 */
+.wb-entry[data-hidden] { display: none; }
+.wb-filter-empty {
+  padding: var(--sp-4) 0 var(--sp-2);
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--label-3);
+}
+.wb-filter-empty[hidden] { display: none; }
+.wb-filter-empty b { color: var(--label-2); font-weight: 600; }
+
+.wb-entry {
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-secondary);
+}
+.wb-entry + .wb-entry { margin-top: var(--sp-2); }
+.wb-entry-head { display: flex; align-items: flex-start; gap: var(--sp-2); }
+/* 右侧：状态徽章常显；操作按钮悬停 / 聚焦时才显现 */
+.wb-entry-aside { display: flex; align-items: center; gap: 6px; flex: none; }
+.wb-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity var(--dur-micro) var(--ease-standard);
+}
+.wb-entry:hover .wb-entry-actions,
+.wb-entry:focus-within .wb-entry-actions { opacity: 1; }
+.wb-entry-title { font-size: 13.5px; font-weight: 600; word-break: break-word; }
+.wb-entry-id { font-size: 11px; color: var(--label-3); font-family: var(--font-mono); }
+.wb-entry-keys { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.wb-entry-content {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--label-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 88px;
+  overflow: hidden;
+}

@@ -8,6 +8,45 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# 检索结果的失败标记键。之所以用「挂在 list 上的属性」而不是改成返回
+# 结构化对象：search_documents / search_memories 的调用方（含面板路由）
+# 都按 list 消费，改成别的对象要改一串调用点、收益却只是类型更漂亮。
+# 约定：带此属性且为 False = 检索出错（空结果是「真没找到」，不带此属性）。
+RAG_OK_ATTR = "_rag_ok"
+RAG_ERROR_ATTR = "_rag_error"
+
+
+class RagResult(list):
+    """list 子类，额外携带「本次检索是否成功」的标记。
+
+    必须子类化 list：内建 list 不允许 setattr（`AttributeError: 'list'
+    object has no attribute`），而调用方按 list 消费结果，所以不能换成
+    别的数据结构。
+    """
+
+    def __init__(self, items=None, ok: bool = True, error: str = ""):
+        super().__init__(items or [])
+        self.ok = ok
+        self.error = error
+
+    @property
+    def _rag_ok(self) -> bool:
+        return self.ok
+
+    @property
+    def _rag_error(self) -> str:
+        return self.error
+
+
+def _rag_failed(reason: str) -> RagResult:
+    """构造一个「检索失败」的空结果（仍是 list，可直接被现有调用方消费）。"""
+    return RagResult([], ok=False, error=str(reason))
+
+
+def rag_ok(result) -> bool:
+    """结果是否来自一次**成功**的检索（空结果也算成功）。"""
+    return bool(getattr(result, RAG_OK_ATTR, True))
+
 
 class QuillRetriever:
     """统一检索入口。
@@ -52,13 +91,19 @@ class QuillRetriever:
         return t
 
     async def search_documents(self, query: str, allowed_sources: list[str] = None) -> list[dict]:
-        """Doc RAG 检索：FAISS 召回 + Rerank 重排（支持按源文档过滤）。"""
+        """Doc RAG 检索：FAISS 召回 + Rerank 重排（支持按源文档过滤）。
+
+        失败不再静默返回 []：异常时把 0 条结果挂上 `_rag_ok=False`，
+        让调用方能区分「确实没找到」（`_rag_ok` 缺省为 True）与
+        「embedding/索引出错」。此前两者都表现为 []，上层统一记
+        record_rag(True)，健康度里检索失败被算成成功。
+        """
         if not self.vector_store or not query:
             return []
         try:
             query_emb = await self.embedding.embed([query])
             if not query_emb:
-                return []
+                return _rag_failed("embedding 返回空向量")
 
             rag_config = getattr(self, 'config', None) and getattr(self.config, '_raw', None) or {}
             dense_top_k = int(rag_config.get('rag', {}).get('dense_top_k', self.top_k))
@@ -75,16 +120,19 @@ class QuillRetriever:
             return raw_results[:self.top_k]
         except Exception as e:
             logger.warning(f"[Quill RAG] 文档检索失败: {e}")
-            return []
+            return _rag_failed(str(e))
 
     async def search_memories(self, session_id: str, query: str) -> list[dict]:
-        """动态记忆检索：SQLite session 隔离 + NumPy 余弦相似度（在线程池中执行）。"""
+        """动态记忆检索：SQLite session 隔离 + NumPy 余弦相似度（在线程池中执行）。
+
+        失败语义同 search_documents：返回带 `_rag_ok=False` 的空列表。
+        """
         if not self.memory_store or not self.enable_memory or not session_id or not query:
             return []
         try:
             query_emb = await self.embedding.embed([query])
             if not query_emb:
-                return []
+                return _rag_failed("embedding 返回空向量")
             results = await self.memory_store.search(session_id, query_emb[0], self.top_k, query_text=query)
             if results:
                 mem_ids = [r["id"] for r in results]
@@ -92,7 +140,7 @@ class QuillRetriever:
             return results
         except Exception as e:
             logger.warning(f"[Quill Memory] 记忆检索失败: {e}")
-            return []
+            return _rag_failed(str(e))
 
     async def get_core_memories(self, session_id: str) -> list[dict]:
         """获取核心记忆（is_core=1），无条件注入，不参与 Top-K 竞争。"""

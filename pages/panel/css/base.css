@@ -1,0 +1,99 @@
+/* ── 2. 基础与重置 ─────────────────────────────────────────────────── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* hidden 必须压过组件的 display 声明：.menu-item{display:flex}、.search-clear
+   这类规则会盖掉 hidden，导致未选中条目时批量操作条照样显示。 */
+[hidden] { display: none !important; }
+
+:root {
+  /* 字体栈：全部使用各系统自带字体，零下载、零 CDN 依赖。
+     拉丁字形优先取系统 UI 字体（macOS 的 SF Pro / Windows 的 Segoe UI），
+     中文字形交给各平台原生中文字体（苹方 / 微软雅黑 / Noto Sans SC）。
+     各平台按顺序命中自己的第一个可用项，缺失即顺延，不会出现豆腐块。 */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+             "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI",
+             "Noto Sans SC", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+
+html { height: 100%; -webkit-text-size-adjust: 100%; }
+
+body {
+  height: 100%;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 400;
+  background: var(--bg-grouped);
+  color: var(--label);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  font-synthesis: none;   /* 只加载 400/500/600 三档，禁止合成伪粗体 */
+}
+
+/* 数字统一等宽，避免计数跳动 */
+.tnum, .sl-badge, .badge, table, input[type="number"] { font-variant-numeric: tabular-nums; }
+
+h1, h2, h3, h4 { font-weight: 600; line-height: 1.25; letter-spacing: -.01em; }
+h1 { font-size: 22px; }
+h2 { font-size: 20px; }
+h3 { font-size: 15px; }
+h4 { font-size: 14px; }
+
+a { color: var(--accent-text); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, pre, kbd { font-family: var(--font-mono); font-size: .92em; }
+
+::selection { background: var(--accent-tint-strong); }
+
+/* 滚动条：细、淡，不抢视觉 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--label-4);
+  border: 3px solid transparent;
+  border-radius: var(--r-pill);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--label-3); background-clip: content-box; }
+
+:focus { outline: none; }
+:focus-visible {
+  outline: 3px solid var(--accent-tint-strong);
+  outline-offset: 2px;
+}
+
+/* 数字/文本工具类 */
+.t2 { color: var(--label-2); }
+.t3 { color: var(--label-3); }
+.fs-12 { font-size: 12px; }
+.fs-13 { font-size: 13px; }
+.mono { font-family: var(--font-mono); }
+.nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row { display: flex; align-items: center; gap: var(--sp-2); }
+.row-wrap { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.grow { flex: 1; min-width: 0; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* ── 3. 图标 ──────────────────────────────────────────────────────────
+   SF Symbols 不可在 Web 分发，故按 SF 风格（24 网格、1.75 描边、圆端圆角）
+   自绘符号表，统一用 <use> 引用，替代原先 33 处重复内联 SVG。         */
+.icon {
+  width: 20px; height: 20px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.icon--sm { width: 16px; height: 16px; stroke-width: 2; }
+.icon--lg { width: 28px; height: 28px; }
+.icon--xl { width: 44px; height: 44px; stroke-width: 1.5; }
+#icon-sprite { display: none; }

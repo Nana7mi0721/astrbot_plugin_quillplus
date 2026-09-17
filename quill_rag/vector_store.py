@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 import asyncio
 import aiosqlite
 
@@ -137,17 +136,31 @@ class FaissVectorStore:
             pass
 
     def _save_index(self):
-        """持久化 FAISS 索引到磁盘。"""
+        """持久化 FAISS 索引到磁盘。
+
+        失败必须**抛出**而非只记日志：调用方（add）据此回滚 SQLite，
+        上层据此向用户报错。此前吞掉异常会导致「界面提示上传成功、
+        但磁盘上没有索引，重启后数据消失」——当前进程能检索只是因为
+        索引还活着在内存里。
+        """
         if self._index is None:
             return
+        import faiss
+        dir_path = os.path.dirname(self.index_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        # 先写临时文件再 os.replace：避免写一半崩溃留下损坏的索引文件
+        # （损坏的索引会在下次 load 时整体失败，比丢失更糟）
+        tmp = f"{self.index_path}.tmp"
         try:
-            import faiss
-            dir_path = os.path.dirname(self.index_path)
-            if dir_path:
-                os.makedirs(dir_path, exist_ok=True)
-            faiss.write_index(self._index, self.index_path)
-        except Exception as e:
-            logger.warning(f"[Quill RAG] FAISS 索引保存失败: {e}")
+            faiss.write_index(self._index, tmp)
+            os.replace(tmp, self.index_path)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except (OSError, FileNotFoundError):
+                pass
+            raise
 
     async def add(self, texts: list[str], embeddings: list[list[float]], source: str, doc_id: str = ""):
         """F11 修复：SQLite 先写 pending 行（faiss_id=-1）拿 rowid → FAISS 写入 →
@@ -156,9 +169,12 @@ class FaissVectorStore:
         S1-3 修复：FAISS ID 直接用 SQLite row_id（AUTOINCREMENT 单调递增、全局唯一），
         彻底删除基于 ntotal 的 ID 生成逻辑（删除后 ntotal 下降会撞库）。
         S1-4 修复：IndexFlatIP 计算内积，add/search 前必须 L2 归一化，否则非真余弦相似度。
+
+        返回成功写入的 chunk 数；**失败一律抛异常**。此前失败时静默 return，
+        上层 `await add()` 不抛就当作成功，于是出现「上传成功但数据未入库」。
         """
         if not texts or not embeddings:
-            return
+            return 0
         if doc_id == "":
             doc_id = source
 
@@ -205,7 +221,7 @@ class FaissVectorStore:
                 # 3. FAISS 失败：回滚 SQLite（用精确 row_ids 删除 pending 行）
                 if not row_ids:
                     logger.warning(f"[Quill RAG] FAISS 写入失败且无 row_ids 可回滚: {e}")
-                    return
+                    raise
                 async with self._lock:
                     placeholders = ",".join("?" for _ in row_ids)
                     await self._conn.execute(
@@ -214,7 +230,9 @@ class FaissVectorStore:
                     )
                     await self._conn.commit()
                 logger.warning(f"[Quill RAG] FAISS 写入失败，已回滚 {len(row_ids)} 行 SQLite: {e}")
-                return
+                # 回滚完成也必须向上报错：数据没进去就是没进去，不能让上层
+                # 以为入库成功（此前这里 return，界面显示「上传成功」）。
+                raise
             # 4. 回填 faiss_id（S1-3 后 faiss_id == row_id，但仍写入以保持一致性和 search 性能）
             async with self._lock:
                 for rid in row_ids:
@@ -223,9 +241,16 @@ class FaissVectorStore:
                         (rid, rid)
                     )
                 await self._conn.commit()
+            # 落库完成：返回实际入库条数供上层核对
+            return len(row_ids)
         else:
-            # FAISS 未初始化，SQLite 行保留 faiss_id=-1（search 会过滤）
-            return
+            # FAISS 不可用（未安装 faiss）。文本已写进 SQLite 且可随索引重建恢复，
+            # 不是丢数据，但**当前检索不到**。返回 0 让上层提示降级而非谎报成功。
+            logger.warning(
+                "[Quill RAG] FAISS 未初始化（faiss 不可用？），%d 条文本已入库但暂不可检索",
+                len(row_ids),
+            )
+            return 0
 
     async def search(self, query_embedding: list[float], top_k: int = 9, allowed_sources: list[str] = None) -> list[dict]:
         """FAISS 检索，支持通过 allowed_sources 按文档 source 过滤。

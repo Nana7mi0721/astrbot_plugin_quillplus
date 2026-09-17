@@ -1,0 +1,227 @@
+/* ── 21. 响应式与无障碍 ─────────────────────────────────────────────── */
+/* 降低动效：改为交叉淡入，去掉位移与弹性（HIG：减少动态而非取消反馈） */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .banner { transform: none; }
+  .modal { transform: none !important; }
+  .btn:active:not(:disabled) { transform: none; }
+  /* 浮层只保留交叉淡入，去掉缩放位移 */
+  .sel-menu, .ctx-menu { transform: none !important; }
+}
+
+/* 降低透明度：材质改为不透明纯色（HIG：减少透明度时保证可读性） */
+@media (prefers-reduced-transparency: reduce) {
+  .sidebar, .toolbar, .page-head-bar, .menu, .actionbar, .to-top, .banner, .alert,
+  .sel-menu, .ctx-menu, .pager-bar {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--bg-primary);
+  }
+  /* 配置页导航条的材质画在伪元素上，内层已无背景可覆盖 */
+  /* 标题带内的工具栏不承载材质，别被上面的规则重新涂上底色 */
+  .page-head-bar .toolbar { background: none; }
+  .toolbar::after { display: none; }
+  .scrim { background: rgba(0, 0, 0, .6); backdrop-filter: none; }
+}
+
+/* 提高对比度：加强分隔与文字对比 */
+@media (prefers-contrast: more) {
+  :root, [data-theme="light"] {
+    --label-2: rgba(60, 60, 67, .82);
+    --label-3: rgba(60, 60, 67, .55);
+    --separator: rgba(60, 60, 67, .55);
+  }
+  [data-theme="dark"] {
+    --label-2: rgba(235, 235, 245, .82);
+    --label-3: rgba(235, 235, 245, .55);
+    --separator: rgba(235, 235, 245, .40);
+  }
+  .card, .wr-card, .persona-card, .wb-item, .dash-card { box-shadow: 0 0 0 1px var(--separator); }
+}
+
+/* ── 22. 补充：模态内分页签 / 记忆子页 / 素材库展开区 / 角色卡动作 ── */
+
+/* 模态框内的分页签内容（角色卡编辑器） */
+.ptab { display: none; }
+.ptab.is-active { display: block; }
+
+/* 记忆子页 */
+.mem-sub { display: none; }
+.mem-sub.is-active { display: block; }
+
+/* 素材库展开区内的关键词行 */
+
+/* 世界书标题行在窄屏下允许换行 */
+.wb-head { flex-wrap: wrap; }
+.wb-head .grow { min-width: 120px; }
+
+/* ── 23. 自绘下拉（listbox）与右键上下文菜单 ─────────────────────────
+   原生 <select> 保留在 DOM 内作为「值存储 + 数据源」，只把外观与交互
+   交给自绘 UI：.sel-wrap 承载触发器，浮层用 position: fixed，避免被
+   .wr-card / .table-wrap 的 overflow 裁剪。                            */
+
+/* 包装元素：宽度意图由 JS 从原生 select 复制（内联 width / 样式表 max-width） */
+.sel-wrap { position: relative; display: inline-flex; max-width: 100%; }
+
+/* 触发器：必须与同排控件等高（--h-control），否则整行基线错位。
+   flex:1 让它在包装元素有确定宽度时铺满，宽度 auto 时按内容收缩（#wrCat）。 */
+.sel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--h-control);
+  padding: 0 10px;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: var(--bg-primary);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-micro) var(--ease-standard),
+              box-shadow var(--dur-micro) var(--ease-standard),
+              background var(--dur-micro) var(--ease-standard);
+}
+.sel-btn:hover:not(:disabled) { border-color: var(--label-3); }
+/* 自绘控件不参与浏览器默认焦点环（否则按钮默认环与控件环叠加） */
+.sel-btn:focus { outline: none; }
+.sel-btn:focus-visible { border-color: var(--accent); box-shadow: var(--shadow-focus); }
+.sel-btn[aria-expanded="true"] { border-color: var(--accent); }
+.sel-btn:disabled { background: var(--fill-quaternary); color: var(--label-2); cursor: default; }
+.sel-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* chevron 用 currentColor：原先的 data-URI 硬编码 #8E8E93，深色 / 高对比度下不变色 */
+.sel-btn > .icon {
+  width: 14px; height: 14px;
+  color: currentColor;
+  transition: transform var(--dur-micro) var(--ease-standard);
+}
+.sel-btn[aria-expanded="true"] > .icon { transform: rotate(180deg); }
+
+/* 浮层：下拉与右键菜单共用同一套材质 / 圆角 / 阴影语言。
+   必须高于最上层遮罩（--z-scrim-crop: 130）：角色卡编辑器里的模式下拉
+   就开在模态框内，层级不够会被遮罩盖住。 */
+.sel-menu, .ctx-menu {
+  position: fixed;
+  z-index: 140;
+  min-width: 120px;
+  padding: 4px;
+  border-radius: var(--r-md);
+  background: var(--material-bg-thick);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+  box-shadow: var(--shadow-3);
+  /* 用 opacity / transform 表达显隐（display 切换无法过渡） */
+  opacity: 0;
+  transform: scale(.97) translateY(-4px);
+  transform-origin: top center;
+  transition: opacity var(--dur-micro) var(--ease-enter),
+              transform var(--dur-micro) var(--ease-enter);
+}
+.sel-menu { max-height: 320px; overflow-y: auto; }
+/* 向上翻转时锚定底部：交互从来源生长（HIG） */
+.sel-menu.is-up, .ctx-menu.is-up { transform-origin: bottom center; }
+.sel-menu.is-in, .ctx-menu.is-in { opacity: 1; transform: none; }
+.sel-menu.is-out, .ctx-menu.is-out {
+  opacity: 0;
+  transform: scale(.98);
+  transition-duration: var(--dur-exit);
+}
+
+/* 菜单项 */
+.sel-opt, .ctx-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--sp-2);
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.sel-opt:focus, .ctx-item:focus { outline: none; }   /* 高亮由键盘态表达 */
+.sel-opt:hover, .ctx-item:hover { background: var(--fill-quaternary); }
+.sel-opt.is-hl, .ctx-item:focus { background: var(--fill-tertiary); }
+.sel-opt-label, .ctx-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 选中项：强调色文字 + 尾随勾号（HIG：状态不能只靠颜色传达） */
+.sel-opt[aria-selected="true"] { color: var(--accent-text); font-weight: 500; }
+.sel-opt > .icon { width: 15px; height: 15px; color: var(--accent); }
+.sel-opt[aria-disabled="true"] { color: var(--label-3); cursor: default; }
+.sel-opt[aria-disabled="true"]:hover { background: transparent; }
+
+/* 右键菜单专用：快捷键提示 + 危险项 */
+.ctx-menu { min-width: 188px; max-width: 320px; }
+.ctx-item--danger { color: var(--red-text); }
+.ctx-kbd { margin-left: auto; padding-left: var(--sp-3); color: var(--label-3); font-size: 11px; }
+.ctx-sep { height: .5px; margin: 4px 0; background: var(--separator); }
+
+/* ── 23b. 少量固定选项改用分段控件（HIG：分段控件用于「互斥且全部可见」
+   的少数选项；下拉用于「选项多到列不下」或需要复选。
+   2–3 项的下拉在 macOS 上属于误用：用户要多点一次才能看到全部选项，
+   且触发器只显示当前值，其余选项被藏起来。                          */
+.sel-seg {
+  position: relative;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  height: var(--h-control);
+  border-radius: var(--r-sm);
+  background: var(--fill-tertiary);
+  max-width: 100%;
+}
+.sel-seg > button {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 var(--sp-3);
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--label-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-standard),
+              color var(--dur-micro) var(--ease-standard),
+              box-shadow var(--dur-micro) var(--ease-standard);
+}
+.sel-seg > button:hover:not(.is-selected) { color: var(--label); }
+.sel-seg > button.is-selected {
+  background: var(--bg-elevated);
+  color: var(--label);
+  box-shadow: var(--shadow-1);
+}
+.sel-seg > button:focus { outline: none; }
+.sel-seg > button:focus-visible { box-shadow: var(--shadow-focus); }
+
+/* ── 24. 桌面端操作便利性：双击编辑 + 方向键导航 ────────────────────── */
+/* 双击卡片 = 直接编辑，故禁用文字选择，避免双击时选中标题文字。
+   卡片内的输入控件显式恢复可选，否则展开区里无法框选文本。
+   记忆表行不改 user-select —— 那里的摘要正文需要能拖选复制，
+   双击产生的选区由 dblclick 委托统一清除。 */
+.wr-card, .persona-card { -webkit-user-select: none; user-select: none; }
+.wr-card input, .wr-card textarea, .wr-card select,
+.persona-card input, .persona-card textarea, .persona-card select {
+  -webkit-user-select: text; user-select: text;
+}
+/* roving tabindex 的焦点环沿用全局 :focus-visible，无需另加规则；
+   聚焦卡片本身会命中既有 :focus-within 规则，自动显现行内操作按钮。 */

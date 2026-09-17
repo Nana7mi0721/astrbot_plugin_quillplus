@@ -20,6 +20,7 @@ v5.0 变化:
 """
 
 import asyncio
+import copy
 import json
 import os
 import re
@@ -116,7 +117,7 @@ _CORE_MEMORY_NL_RE = re.compile(
     r'(?:@记住\s*[：:]|记住\s*[：:]|核心记忆\s*[：:]|@remember\s*[:：])\s*(.+)',
     re.IGNORECASE
 )
-def _build_raw_status_re(fields: list) -> re.Pattern:
+def _build_raw_status_re(fields: list, max_value_len: int | None = 30) -> re.Pattern:
     """方案A: 动态构建 L4 正则 — 用配置字段名替代硬编码白名单，扩展分隔符。
 
     分隔符扩展: [：:=→] 覆盖 '好感度→85' 等非标准格式。
@@ -126,25 +127,138 @@ def _build_raw_status_re(fields: list) -> re.Pattern:
     - 行首锚定 (?:^|\\n) 且消费前导换行符，使 re.sub 能整行干净移除（含列表符号前缀）；
     - 值上限 {1,30}：状态值是短文本；行首的 "字段：长句" 更可能是叙事而非状态栏，
       宁可漏检交给 L5 宽松解析兜底，也不误删正文；
+      上限只属于解析侧。剥离侧（_strip_status_artifacts）以 max_value_len=None
+      调用，刻意不设限：关闭状态栏时要保证不漏，长值行也必须擦掉。二者的不对称
+      是设计，不是遗漏——把长度统一会让长值裸字段行漏到用户屏幕上；
+    - 已知裂缝：本正则只漏 1 个字段时 L5 不会兜底（_lenient_parse_status 内部要求
+      ≥2），该区间最终走默认状态栏兜底，属可接受的兜底行为；
     - [^\\S\\n] 作空白类：覆盖全角空格等 Unicode 空白，但不跨行。
     """
     # 转义字段名并过滤空值
     valid_fields = [re.escape(f) for f in fields if f and f.strip()]
     if not valid_fields:
         valid_fields = [re.escape(f) for f in _DEFAULT_LOVE_FIELDS_RAW]
+    value_pat = (
+        r'([^\n]{1,%d}?)' % max_value_len if max_value_len else r'([^\n]+?)'
+    )
     pattern = (
         r'(?:^|\n)'
         r'[^\S\n]*'
         r'(?:[-\*\•]*[^\S\n]*)?'
         r'(' + '|'.join(valid_fields) + r')'
         r'[^\S\n]*\**[^\S\n]*[：:=→][^\S\n]*'
-        r'([^\n]{1,30}?)'
+        + value_pat +
         r'[^\S\n]*(?=\n|$)'
     )
     return re.compile(pattern, re.MULTILINE)
 
 # 默认字段名（用于 _build_raw_status_re 兜底）
 _DEFAULT_LOVE_FIELDS_RAW = ["好感度", "关系阶段", "心情", "位置", "穿着", "当前想法", "服从度", "发情度"]
+
+
+# ── 状态栏数值变化标注 ─────────────────────────────────────────────
+# 标注形如「好感度：70（↑5）」。之所以用括号包住箭头而不是裸写 `70 ↑`：
+#   1. 裸箭头会与合法值混淆 —— 「心情：上升↑」是模型自己可能写出的正常值，
+#      用裸箭头做标记就无法区分「值本身」与「我们加的标记」；
+#   2. 标注会随 assistant 回复回显进下一轮上下文，模型会模仿。裸箭头一旦
+#      被模仿就会在值里逐轮累积（`70 ↑ ↑ ↑`），括号语法则能被下面的
+#      _normalize_status_value 精确剥离。
+# 该正则同时承担「渲染时匹配字段行」与「解析时剥离标记」两个职责，
+# 二者必须对称，否则标记会渗进 session_vars 并被注入提示词。
+_DELTA_MARK_RE = re.compile(r"\s*[（(]\s*[↑↓]\s*\d*\s*[）)]\s*$")
+
+# 注入报告行（详见 QuillPlugin._format_inject_report / _scrub_inject_report）
+_INJECT_REPORT_LINE_RE = re.compile(r"^[ \t]*〔注入〕.*$", re.MULTILINE)
+
+
+def _normalize_status_value(value: str) -> str:
+    """剥掉值尾部的变化标注，返回干净取值。
+
+    必须在「比对上一轮」与「写入 session_vars」之前调用：标注是我们自己
+    渲染进消息文本的，若被下一轮的 L1/L4/L5 解析器当成取值的一部分读回，
+    就会同时污染两处——状态值逐轮漂移（`70（↑5）（↑5）`），以及
+    session_vars 经 prompt_builder 注入 system prompt 时带上标记。
+    """
+    if not value:
+        return value
+    return _DELTA_MARK_RE.sub("", value).strip()
+
+
+def _extract_numeric(value: str) -> float | None:
+    """从状态值里取出可比对的数值；取不到返回 None。
+
+    状态值是自由文本，这里只认**以数字开头**的形态：纯数字（含正负号、
+    小数点），以及数字后跟单位/区间/百分号的写法（`65/100`、`3 级`、`80%`）。
+    刻意不做「从任意位置抠数字」——`好感度很高`、`心情：很好` 取不到值是对的，
+    比错误地把某处的数字当成状态值要安全。取不到时调用方不给标注（见
+    `_format_delta` 的设计说明）。
+    """
+    if not value:
+        return None
+    m = re.match(r"\s*([+-]?\d+(?:\.\d+)?)\s*(?:$|[/、,，%级点分])", value)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _format_delta(old: str, new: str) -> str:
+    """生成变化标注：仅在两侧都能取到数值时给出 `（↑5）`，否则不给标注。
+
+    为什么不给文本值标一个只有方向的空箭头（`（↑）`）：状态栏里多数字段是
+    自由文本（心情、穿着、当前想法…），它们**每轮都在变**——「当前想法」
+    本来就该换。给这类字段挂箭头不传达任何信息，还会让有价值的数值变化
+    淹没在噪声里。文本字段的新值本身就摆在眼前，用户读到新值便知变化；
+    而数值的「变化幅度」是光看新值拿不到的（`84/100` 看不出是涨了 2 还是 20），
+    这才是标注真正要补的信息。
+    """
+    old_num, new_num = _extract_numeric(old), _extract_numeric(new)
+    if old_num is None or new_num is None:
+        return ""
+    diff = new_num - old_num
+    if diff == 0:
+        return ""
+    arrow = "↑" if diff > 0 else "↓"
+    # 整数差值不显示小数点（65→70 显示 ↑5 而不是 ↑5.0）
+    magnitude = abs(int(diff)) if float(diff).is_integer() else round(abs(diff), 2)
+    return f"（{arrow}{magnitude}）"
+
+
+def _annotate_changes(content: str, changed: dict) -> str:
+    """重写状态栏正文：先剥净旧标注，再给发生变化的字段行追加新标注。
+
+    `content` 为 `字段：值` 逐行文本；`changed` 形如 {字段名: 上一轮值}。
+
+    两个职责合并在一处是刻意的：
+    - 剥旧标注：标注会随 assistant 回复回显进下一轮上下文，模型可能模仿着
+      再写一遍。不剥就会出现 `70（↑5）（↑5）` 逐轮累积。
+    - 加新标注：仅在 `changed` 命中时追加，未变化或取不到旧值的字段保持原样。
+
+    匹配失败不做任何事——标注失败远比标错好。非「字段：值」的行
+    （剧情走向等）原样透传。
+    """
+    if not content:
+        return content
+    out_lines = []
+    for line in content.split("\n"):
+        m = re.match(r"^([^：:]{1,20})[：:]\s*(.+)$", line)
+        if m:
+            field, value = m.group(1).strip(), m.group(2).strip()
+            clean = _normalize_status_value(value)
+            if clean:
+                # 只有出现在 changed 里的字段才谈得上「变化」。字段缺席表示本轮
+                # 未检出变化，绝不能落到 _format_delta 的「无旧值」分支——
+                # 那会给每个未变化字段都挂上一个空箭头。
+                mark = (
+                    _format_delta(changed[field], clean)
+                    if changed and field in changed
+                    else ""
+                )
+                line = f"{field}：{clean}{mark}"
+        out_lines.append(line)
+    return "\n".join(out_lines)
 
 
 class HealthTracker:
@@ -158,6 +272,8 @@ class HealthTracker:
         self._window_size = window_size
         self._rag_results: list[bool] = []      # True=成功, False=失败
         self._status_results: list[bool] = []
+        # 六级降级链各自命中次数（级别名 → 次数），仅供观测，不做判定
+        self._status_levels: dict[str, int] = {}
 
     def record_rag(self, success: bool) -> None:
         self._rag_results.append(success)
@@ -168,6 +284,17 @@ class HealthTracker:
         self._status_results.append(success)
         if len(self._status_results) > self._window_size:
             self._status_results.pop(0)
+
+    def record_status_level(self, level: str) -> None:
+        """记一次「某一级命中」。
+
+        为什么要单独统计：此前只能从日志文本 grep 出「这轮走了 L2」，既没法
+        看比例、也没法在面板上呈现。级别名与日志里的括号内容一致，便于对照。
+        与 record_status 分开：record_status 统计「整栏最终有没有成功产出」，
+        这里统计「哪一级产出的」——L4 单命中会记这里但不记成功（它只清理痕迹，
+        整栏要靠后续级或兜底补）。
+        """
+        self._status_levels[level] = self._status_levels.get(level, 0) + 1
 
     def stats(self) -> dict:
         def _rate(lst):
@@ -184,9 +311,57 @@ class HealthTracker:
                 "total": len(self._status_results),
                 "success": sum(self._status_results),
                 "rate": _rate(self._status_results),
+                # 逐级命中分布（降序）：用于判断主力路径是否需要优化
+                "levels": dict(
+                    sorted(self._status_levels.items(),
+                           key=lambda kv: kv[1], reverse=True)
+                ),
             },
             "window_size": self._window_size,
         }
+
+
+class _StatusLevelResult:
+    """一级降级解析的结果。
+
+    terminal 的语义是这次重构的核心：
+      * True  —— 命中即**结束**降级链（这一级产出了可用的状态数据）；
+      * False —— 文本已改写但**继续下降**。L4 单命中就是这种：它只擦掉那行
+                 可疑的裸字段，不足以重建整栏，所以还要让 L5/L6/兜底接手。
+
+    旧实现把这两种语义藏在 `if not handled:` 的嵌套里（L4 单命中不置 handled
+    就落下去），能跑但读不出意图，也无法统计「哪一级真的产出过状态栏」。
+    """
+
+    __slots__ = ("new_text", "updates", "terminal")
+
+    def __init__(self, new_text: str, updates: dict | None = None,
+                 terminal: bool = True) -> None:
+        self.new_text = new_text
+        self.updates = updates or {}
+        self.terminal = terminal
+
+
+class _StatusLevelContext:
+    """降级链各级共享的输入（避免每级签名拖一长串参数）。
+
+    text      —— 模型原始输出，各级**解析**都用它；
+    new_text  —— 当前输出基座，各级**改写**用它。两者必须分开：
+                 L4 单命中会把裸字段行从 new_text 里剥掉，而 L5 仍要按原文
+                 解析——若改写也从 text 重建，那行裸字段会被重新带回来。
+    """
+
+    __slots__ = ("text", "new_text", "template", "prev_vars", "mk_changed",
+                 "target_id")
+
+    def __init__(self, text: str, new_text: str, template: str, prev_vars: dict,
+                 mk_changed, target_id: str) -> None:
+        self.text = text
+        self.new_text = new_text
+        self.template = template
+        self.prev_vars = prev_vars
+        self.mk_changed = mk_changed
+        self.target_id = target_id
 
 
 def strip_markdown(text: str) -> str:
@@ -231,6 +406,9 @@ class QuillPlugin(Star):
         self.plugin_dir = os.path.dirname(__file__)
         # F5 修复：保留后台 task 引用，防止被 GC 中断
         self._bg_tasks: set = set()
+        # RAG 重建串行化：避免连续保存配置时并发重建互相踩（见 _reinit_rag_...）
+        self._rag_reinit_lock = asyncio.Lock()
+        self._rag_reinit_task: asyncio.Task | None = None
         # P1-4: 健康度追踪器（内存滑动窗口，重启清零）
         self.health_tracker = HealthTracker(window_size=20)
 
@@ -288,12 +466,16 @@ class QuillPlugin(Star):
         # --- Status bar ---
         self.status_bar_enabled = self.config.status_bar_enabled
         self.status_bar_format_template = self.config.status_bar_format
+        self.status_bar_format_plain = self.config.status_bar_format_plain
+        self.status_bar_plain_platforms: List[str] = self.config.status_bar_plain_platforms
         self.love_fields: List[str] = self.config.status_bar_fields
         self.status_bar_plot_paths: list[str] = getattr(self.config, "status_bar_plot_paths", ["继续当前话题", "转换场景", "结束互动"])
         self.status_bar_default_placeholder: str = getattr(self.config, "status_bar_default_placeholder", "未设置")
+        self.status_bar_show_delta: bool = getattr(self.config, "status_bar_show_delta", True)
 
         # --- Debug ---
         self.debug = self.config.debug_enabled
+        self.show_inject_report: bool = getattr(self.config, "show_inject_report", False)
 
         # --- RAG 组件（延迟到 initialize() 初始化）---
         self.rag_embedding = None
@@ -309,6 +491,30 @@ class QuillPlugin(Star):
     # Lifecycle
     # ================================================================
 
+    @staticmethod
+    def _is_valid_reflection(reflection: dict) -> bool:
+        """校验反思结果是否可直接用于写入。
+
+        `reflect_on_logs` 只保证「返回 dict」，不保证字段齐全——LLM 少了某个
+        字段时它照样返回。而 `update_core_memory` 会把取到的值**覆写**进核心
+        记忆行，所以缺字段 = 用空串顶掉已有核心设定，且日志随后被清理、
+        无法回滚。因此写入前必须确认关键字段存在且非空。
+        """
+        if not isinstance(reflection, dict):
+            return False
+        traits = reflection.get("new_core_traits")
+        facts = reflection.get("crucial_facts")
+        trivials = reflection.get("trivial_summaries")
+        # traits/facts 至少一个有实质内容，否则这次反思没有产出，不写不删
+        has_core = bool(isinstance(traits, str) and traits.strip()) or bool(
+            isinstance(facts, str) and facts.strip()
+        )
+        if not has_core:
+            return False
+        # trivial_summaries 允许为空（没有闲聊可提纯），但给了就必须是列表
+        if trivials is not None and not isinstance(trivials, list):
+            return False
+        return True
 
     async def _reflection_loop(self):
         """Phase 4: 全自动自迭代反思守护进程 (Idle Detection)"""
@@ -351,28 +557,57 @@ class QuillPlugin(Star):
                     if count > 30:
                         logger.info(f"[Quill Reflection] 开始对 {session_id} 进行闲时反思归纳...")
                         logs = await store.get_recent_chat_logs(session_id, limit=200)
+                        if not logs:
+                            continue
+                        # 记录本次实际参与摘要的日志 id 批次：删除只能针对这批，
+                        # 不能按「保留最新 2 条」重算——LLM 与 embedding 的等待
+                        # 窗口里会话可能重新活跃并写入新日志，重算会把它们误删。
+                        batch_ids = [lg.get("id") for lg in logs if lg.get("id") is not None]
                         combined = []
                         for log in logs:
                             role = "User" if log.get("role") == "user" else "AI"
                             combined.append(f"{role}: {log.get('content', '')}")
                         combined_text = "\n".join(combined)
-                        
+
                         reflection = await self.rag_retriever.summarizer.reflect_on_logs(combined_text)
                         if reflection:
+                            # 结构校验：reflect_on_logs 只保证返回 dict，不保证字段
+                            # 齐全。字段缺失时 .get(..., "") 会拿到空串，而
+                            # update_core_memory 会把它**覆写**进核心记忆行 ——
+                            # 等于用空白顶掉已有核心设定，且紧接着日志被删，
+                            # 无法回滚。这里必须显式校验后再放行。
+                            if not self._is_valid_reflection(reflection):
+                                logger.warning(
+                                    f"[Quill Reflection] {session_id} 反思结果字段不全，"
+                                    f"已跳过本次写入与日志清理（keys={sorted(reflection.keys())}）"
+                                )
+                                continue
+
                             traits = reflection.get("new_core_traits", "")
                             facts = reflection.get("crucial_facts", "")
                             trivials = reflection.get("trivial_summaries", [])
-                            
-                            # 更新长期核心记忆
-                            await store.update_core_memory(session_id, traits, facts)
-                            
-                            # 将闲聊加入普通记忆并生成向量
-                            for t in trivials:
-                                await self.rag_retriever.store_memory_direct(session_id, t)
-                                
-                            # 删除已经反思过的日志，释放空间 (保留最新的 2 条防止断档)
-                            await store._exec_write("DELETE FROM chat_logs WHERE session_id = ? AND id NOT IN (SELECT id FROM chat_logs WHERE session_id = ? ORDER BY id DESC LIMIT 2)", (session_id, session_id))
-                            logger.info(f"[Quill Reflection] 成功完成 {session_id} 的记忆反思提纯与清理。")
+
+                            # 顺序：先写记忆，确认落库后再清日志。
+                            # 反过来的话，写记忆失败 = 日志已删、摘要也没留下，
+                            # 这段对话永久丢失。
+                            try:
+                                await store.update_core_memory(session_id, traits, facts)
+                                for t in trivials:
+                                    if isinstance(t, str) and t.strip():
+                                        await self.rag_retriever.store_memory_direct(session_id, t)
+                            except Exception as e:
+                                logger.warning(
+                                    f"[Quill Reflection] {session_id} 记忆写入失败，"
+                                    f"保留原始日志待下轮重试: {e}"
+                                )
+                                continue
+
+                            # 只删本次实际处理过的那批 id
+                            removed = await store.delete_chat_logs_by_ids(session_id, batch_ids)
+                            logger.info(
+                                f"[Quill Reflection] 成功完成 {session_id} 的记忆反思提纯"
+                                f"（清理本批 {removed}/{len(batch_ids)} 条日志）。"
+                            )
                             
                             # 控制速率，防止 API 频率过高
                             await asyncio.sleep(10)
@@ -557,8 +792,15 @@ class QuillPlugin(Star):
 
     async def _close_rag_components(self):
         """安全关闭当前 RAG 组件连接。重初始化前必须调用，否则旧 aiosqlite/FAISS
-        句柄泄漏，且（Windows 下）恢复解压覆盖运行中的 DB 文件会读到错乱页。"""
+        句柄泄漏，且（Windows 下）恢复解压覆盖运行中的 DB 文件会读到错乱页。
+
+        关闭前**等待 QuillRetriever 自己的在途后台任务退出**：它持有独立的
+        _bg_tasks（记忆落库 / 有用性统计等），插件的 _bg_tasks 管不到。
+        不等待的话，重建过程中这些任务仍会往刚被 close 的连接里写，
+        报 "Connection closed" 或更糟——静默丢数据。
+        """
         if self.rag_retriever:
+            await self._drain_retriever_tasks()
             for comp, name in (
                 (getattr(self.rag_retriever, "memory_store", None), "memory_store"),
                 (getattr(self.rag_retriever, "vector_store", None), "vector_store"),
@@ -574,6 +816,33 @@ class QuillPlugin(Star):
         self.rag_embedding = None
         self.rag_reranker = None
         self.rag_summarizer = None
+
+    async def _drain_retriever_tasks(self, timeout: float = 10.0) -> int:
+        """等待 retriever 在途后台任务结束，返回等待到的任务数。
+
+        尽力而为：超时后直接返回，不阻塞重建（否则一个卡死的 embedding 请求
+        会把整个重建永久挂起）。异常一律吞掉——这里的目的是「尽量不打断
+        正在写库的任务」，不是保证它们都成功。
+        """
+        tasks = getattr(self.rag_retriever, "_bg_tasks", None)
+        if not tasks:
+            return 0
+        pending = [t for t in list(tasks) if not t.done()]
+        if not pending:
+            return 0
+        logger.info("[Quill] 等待 %d 个 RAG 在途任务结束再关闭组件", len(pending))
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True), timeout=timeout
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(
+                "[Quill] %d 个 RAG 在途任务在 %.0fs 内未结束，强制继续关闭",
+                len(pending), timeout,
+            )
+        except Exception as e:
+            logger.debug(f"[Quill] 等待 RAG 在途任务异常（忽略）: {e}")
+        return len(pending)
 
     def _refresh_routes_refs(self):
         """把最新的管理器/RAG 组件引用同步到已注册的 QuillRoutes 实例。"""
@@ -594,10 +863,51 @@ class QuillPlugin(Star):
         }
 
     async def _reinit_rag_and_refresh_routes(self):
-        """关闭旧 RAG 组件 → 重建 → 刷新 Web 路由引用（Embedding 切换等场景）。"""
-        await self._close_rag_components()
-        await self._init_rag()
-        self._refresh_routes_refs()
+        """关闭旧 RAG 组件 → 重建 → 刷新 Web 路由引用（Embedding 切换等场景）。
+
+        用 _rag_reinit_lock 串行化：连续保存 embedding 配置会各自 spawn 一个
+        重建，并发执行时后者可能在前者 close 了一半的连接时开始初始化，
+        结果是两个半成品互相踩、路由引用指向已关闭的组件。
+        """
+        # 已有一个重建在跑且未结束 → 直接复用它的结果，不叠加第二个。
+        # 用 create_task + 共享 await 的方式去重：后来的调用者等待同一次重建。
+        if self._rag_reinit_lock.locked():
+            logger.info("[Quill] RAG 重建已在进行中，复用本次结果，不重复触发")
+            if self._rag_reinit_task is not None and not self._rag_reinit_task.done():
+                try:
+                    await asyncio.shield(self._rag_reinit_task)
+                except Exception:
+                    pass
+                return
+        async with self._rag_reinit_lock:
+            try:
+                await self._close_rag_components()
+                await self._init_rag()
+            finally:
+                # 无论成功失败都刷新：失败时组件可能部分初始化，路由引用
+                # 必须反映真实状态，否则面板/聊天会握着已关闭的连接。
+                self._refresh_routes_refs()
+
+    def _spawn_rag_reinit(self):
+        """触发一次 RAG 重建（供配置保存路径调用），可安全重复调用。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("[Quill] 无运行中的事件循环，RAG 重建将在插件重载后生效")
+            return
+        if self._rag_reinit_task is not None and not self._rag_reinit_task.done():
+            logger.info("[Quill] RAG 重建任务已在运行，忽略重复触发")
+            return
+
+        async def _run():
+            try:
+                await self._reinit_rag_and_refresh_routes()
+            finally:
+                self._rag_reinit_task = None
+
+        self._rag_reinit_task = loop.create_task(_run())
+        # 也纳入插件自己的任务集合，terminate 时能被统一取消/等待
+        self._bg_tasks.add(self._rag_reinit_task)
 
     async def _prepare_for_restore(self):
         """备份恢复前的准备：停 autoflush（不 flush）+ 关闭持有 DB 句柄的组件。
@@ -766,11 +1076,14 @@ class QuillPlugin(Star):
             # 抛异常时都会用到它，建在内部会有未赋值的风险。
             _PROJECTED_ATTRS = (
                 "wr_max_entries", "wr_fallback_top_count", "wb_max_entries",
-                "status_bar_enabled", "status_bar_format_template", "love_fields",
+                "status_bar_enabled", "status_bar_format_template",
+                "status_bar_format_plain", "status_bar_plain_platforms", "love_fields",
                 "refusal_enabled", "refusal_patterns", "debug", "prompt_builder",
                 "rag_enable_chat_logging", "rag_chat_log_retention_days",
-                "worldbook_always_activate", "panel_theme",
+                "worldbook_always_activate",
                 "status_bar_plot_paths", "status_bar_default_placeholder",
+                "status_bar_show_delta",
+                "show_inject_report",
             )
             _MISSING = object()
             projected_previous = {
@@ -792,20 +1105,52 @@ class QuillPlugin(Star):
                 self.wb_max_entries = self.config.worldbook_max_dynamic
                 self.status_bar_enabled = self.config.status_bar_enabled
                 self.status_bar_format_template = self.config.status_bar_format
+                self.status_bar_format_plain = self.config.status_bar_format_plain
+                self.status_bar_plain_platforms = self.config.status_bar_plain_platforms
                 self.love_fields = self.config.status_bar_fields
                 self.refusal_enabled = self.config.refusal_enabled
                 self.refusal_patterns = self.config.refusal_patterns
                 self.debug = self.config.debug_enabled
+                self.show_inject_report = getattr(
+                    self.config, "show_inject_report", False
+                )
                 self.prompt_builder = PromptBuilder(self.config)
 
                 self.rag_enable_chat_logging = self.config.rag_enable_chat_logging
                 self.rag_chat_log_retention_days = self.config.rag_chat_log_retention_days
                 self.worldbook_always_activate = self.config.worldbook_always_activate
-                self.panel_theme = self.config.panel_theme
                 self.status_bar_plot_paths = self.config.status_bar_plot_paths
                 self.status_bar_default_placeholder = getattr(
                     self.config, "status_bar_default_placeholder", "未设置"
                 )
+                self.status_bar_show_delta = getattr(
+                    self.config, "status_bar_show_delta", True
+                )
+
+                # ── RAG 运行期参数热更新（无需重载插件）──
+                # 这几个值被 QuillRetriever 持有为**普通属性**，构造后不再变化。
+                # 此前 save 流程只重建 self.config，没人把它们同步过去，于是
+                # 面板上改 `enable_memory` / `top_k` 当轮不生效、要重载才生效
+                # （实测：关闭后仍检索到 2 条）。这里补上同步。
+                #
+                # 为什么不用 _reinit_rag_and_refresh_routes()：那会 close 掉
+                # memory_store / vector_store（SQLite + FAISS 句柄），代价与风险
+                # 都远高于改两个属性，而这两个属性本来就不依赖连接。真正需要
+                # 重建的是 embedding/reranker 换 provider，那条路径已单独处理。
+                # 先存下 retriever 的旧值，供保存失败时回滚（见下方 except）。
+                # 这几个属性是热更新的，不属于 _PROJECTED_ATTRS，所以要单独记。
+                _retriever_prev = None
+                if self.rag_retriever is not None:
+                    _retriever_prev = (
+                        self.rag_retriever.top_k,
+                        self.rag_retriever.enable_memory,
+                        self.rag_retriever.config,
+                    )
+                    self.rag_retriever.top_k = self.config.rag_top_k
+                    self.rag_retriever.enable_memory = self.config.rag_enable_memory
+                    # 换掉 retriever 持有的 config 引用，保证它读到的
+                    # `config._raw`（rag_dense_top_k 走这条路）也是新的
+                    self.rag_retriever.config = self.config
 
                 if hasattr(self._raw_config, "save_config") and callable(
                     self._raw_config.save_config
@@ -818,13 +1163,11 @@ class QuillPlugin(Star):
 
                 changed_keys = {(group, key) for group, key, _ in normalized}
                 if ("rag", "embedding_provider_id") in changed_keys:
-                    try:
-                        self._spawn(self._reinit_rag_and_refresh_routes())
-                        logger.info("[Quill] Embedding 提供商已变更，触发 RAG 重初始化")
-                    except RuntimeError:
-                        logger.warning(
-                            "[Quill] 无运行中的事件循环，Embedding 变更将在插件重载后生效"
-                        )
+                    # 走 _spawn_rag_reinit 而非直接 _spawn：连续保存会各起一个
+                    # 重建，并发执行时后一个可能在前一个 close 到一半时开始
+                    # 初始化。这里做去重 + 串行化（内部已处理「无事件循环」）。
+                    self._spawn_rag_reinit()
+                    logger.info("[Quill] Embedding 提供商已变更，触发 RAG 重初始化")
             except Exception:
                 # Best-effort rollback of the in-memory dict. Disk writes are
                 # atomic inside AstrBotConfig, so a failed write never exposes
@@ -846,6 +1189,13 @@ class QuillPlugin(Star):
                         self.__dict__.pop(name, None)
                     else:
                         setattr(self, name, old)
+                # 回滚 Retriever 的热更新字段。这些属性不在 _PROJECTED_ATTRS 里，
+                # 上面的循环覆盖不到：不还原就会出现「面板提示保存失败，但记忆
+                # 开关/检索条数已按新值运行」的不一致状态。
+                if _retriever_prev is not None and self.rag_retriever is not None:
+                    self.rag_retriever.top_k = _retriever_prev[0]
+                    self.rag_retriever.enable_memory = _retriever_prev[1]
+                    self.rag_retriever.config = _retriever_prev[2]
                 raise
         except Exception as e:
             logger.warning("[Quill] 配置批量保存失败: %s", e, exc_info=True)
@@ -913,6 +1263,8 @@ class QuillPlugin(Star):
     # ── 状态栏解析共享方法 ──────────────────────────────────────
 
     # 聚合所有状态栏变体的剥离正则（disabled 模式 + dedup 清理用）
+    # 前 4 条与字段名无关（靠标签/标记识别），字段名只出现在 _strip_bare_fields 里，
+    # 由 _strip_status_artifacts 按 love_fields 动态构建后拼在后面。
     _STRIP_PATTERNS: list = [
         (re.compile(r'\*\*状态栏\*\*[\s\S]*?```[\s\S]*?```'), ''),
         (re.compile(r'\[LOVE_DATA\]\s*.+'), ''),
@@ -921,21 +1273,88 @@ class QuillPlugin(Star):
             r'[>|]{2,}\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*[|<]{2,}\s*.+?\s*[|<]{2,}\s*(?:Select|请选择|选择)\s*[>|]{2,}',
             re.DOTALL | re.IGNORECASE
         ), ''),
-        (re.compile(
-            r'(?:^|\n)\s*(?:[-\*\•]*\s*)?(好感度|关系阶段|心情|位置|穿着|当前想法|服从度|发情度)\s*[：:]\s*.+?(?=\n|$)',
-            re.MULTILINE
-        ), ''),
         (re.compile(r'\[状态栏\][\s\S]*?\[/状态栏\]'), ''),
         (re.compile(r'状态栏[：:][\s\S]*?(?=\n\n|\Z)'), ''),
     ]
 
-    @staticmethod
-    def _strip_status_artifacts(text: str) -> str:
-        """移除文本中所有状态栏相关痕迹（禁用模式 + dedup 清理）。"""
+    # 字段名 → 正则的缓存。键是字段元组，值同 _build_raw_status_re。
+    # 原因：字段名来自面板配置（每次保存都会重建 love_fields 列表），而
+    # 剥离是每条消息都要跑的热路径，不能每次重新 compile。
+    _strip_field_re_cache: dict = {}
+
+    # 「只擦原始标记」用的两条 —— 供发送前兜底钩子在**状态栏开启**时使用。
+    # 刻意不放在 _STRIP_PATTERNS 里：那套是「关闭状态栏」用的完整剥离，
+    # 含匹配 `**状态栏**...``` ``` 的模式，用在开启时会把正常渲染的栏删掉。
+    # 也刻意**不含**裸字段行模式——理由见 _strip_raw_markers 的说明。
+    _STRIP_LOVE_DATA_RE = re.compile(r'\[LOVE_DATA\]\s*.+')
+    _STRIP_LEGACY_STATUS_RE = re.compile(r'\[STATUS\][\s\S]*?\[/STATUS\]')
+
+    @classmethod
+    def _strip_bare_fields_re(cls, fields: list) -> re.Pattern:
+        """按字段名取（或建）剥离用正则——值不设长度上限，见 _build_raw_status_re。"""
+        key = tuple(fields) if fields else ()
+        cached = cls._strip_field_re_cache.get(key)
+        if cached is None:
+            cached = _build_raw_status_re(list(fields), max_value_len=None)
+            # 配置字段数有限，缓存不会无界增长；仍设上限兜底异常调用方
+            if len(cls._strip_field_re_cache) > 32:
+                cls._strip_field_re_cache.clear()
+            cls._strip_field_re_cache[key] = cached
+        return cached
+
+    @classmethod
+    def _strip_status_artifacts(cls, text: str, fields: list | None = None) -> str:
+        """移除文本中所有状态栏相关痕迹（禁用模式 + dedup 清理）。
+
+        fields 传入当前生效的字段表（调用方传 self.love_fields）。此前这里用
+        硬编码的 8 个字段名，而解析侧 L4 用动态字段——用户改字段名后（插件自己
+        的协议文本就建议改成「催眠度/信赖度」），关闭状态栏时裸字段行擦不掉，
+        会原样漏到屏幕上。现改为与解析侧共用同一字段来源。
+        fields=None 时退回默认字段表，保证旧调用点仍可用。
+        """
         if not text:
             return text
         for pattern, replacement in QuillPlugin._STRIP_PATTERNS:
             text = pattern.sub(replacement, text)
+        # 字段名相关的裸字段行：与解析侧同源，保证「能解析就必能擦除」
+        bare_re = QuillPlugin._strip_bare_fields_re(
+            fields or _DEFAULT_LOVE_FIELDS_RAW
+        )
+        text = bare_re.sub('', text)
+        return text.strip()
+
+    @classmethod
+    def _strip_raw_markers(cls, text: str, fields: list | None = None) -> str:
+        """只擦**原始标记**，保留已渲染的状态栏 —— 发送前兜底专用。
+
+        与 `_strip_status_artifacts` 的区别就是「要不要连渲染产物一起擦」：
+
+        `_strip_status_artifacts` 是给「状态栏已关闭」用的，那时
+        `**状态栏**...\\`\\`\\`...\\`\\`\\`` 属于该被清掉的痕迹，所以它第一条模式
+        就把它整段匹配掉。而在状态栏**开启**时，同样的文本正是 L1/L2 的
+        **正常产出**——拿整套剥离器去擦会把状态栏从回复里删掉。
+
+        **这里只擦两种绝无歧义的原始标记**：`[LOVE_DATA]` 行与
+        `[STATUS]...[/STATUS]` 块。它们无论如何都不该出现在最终消息里
+        （渲染后的形态是模板产出，不含这两个标记本身）。
+
+        **刻意不擦裸字段行**——因为「裸字段行」与「渲染后的状态栏内容」
+        在文本上**完全同形**（渲染出来本来就是 `好感度：88` 这样的行）。
+        想区分只能去认模板外壳，而模板是用户可自定义的
+        （`format_template` / `format_template_plain` 都能改），
+        任何白名单都会在自定义模板下失效并误删正文——
+        这个坑实测踩过：用 `[[CUSTOMTPL]]` 这种自定义模板时，
+        按「行首裸字段」擦会把栏里内容整段掏空，只剩一个空壳。
+
+        权衡的依据：实测抓到的**全部**泄漏样本都是模型直接输出的
+        `[LOVE_DATA]` 行（模型照契约走，会带标记）。裸字段块那种偏离契约的
+        输出，常规路径上的 `on_using_llm_tool` 已在处理；为了兜住它而
+        引入「可能误删用户自定义模板内容」的风险不划算。
+        """
+        if not text:
+            return text
+        text = cls._STRIP_LOVE_DATA_RE.sub('', text)
+        text = cls._STRIP_LEGACY_STATUS_RE.sub('', text)
         return text.strip()
 
     @staticmethod
@@ -962,154 +1381,466 @@ class QuillPlugin(Star):
                 updates[matched_field] = val
         return updates if len(updates) >= 2 else {}
 
-    async def _handle_status_bar(self, text: str, target_id: str) -> tuple:
+    # ── 状态栏模板选型（平台分治）───────────────────────────────
+    # 状态栏最终是「模板 + 内容」拼出来的，而模板默认是 Markdown
+    # （`**状态栏**\n```\n{content}\n```）。不渲染 Markdown 的平台上，
+    # `**` 和围栏会原样显示给用户，所以这些平台改用纯文本模板。
+    #
+    # 平台名在每条消息上才拿得到（event.platform_meta），而模板拼接发生在
+    # _handle_status_bar 内部，因此把选好的模板作为参数传进去，而不是在
+    # 渲染处再回头去问 event。
+    async def _effective_status_bar_enabled(self, target_id: str) -> bool:
+        """解析状态栏的最终开关：会话级覆盖 > 面板全局。
+
+        `/quill statusbar on|off|auto` 写的是会话级覆盖值，面板开关是全局默认。
+        两者语义一致（都是「是否启用状态栏」），只是粒度不同：
+          auto —— 跟随面板全局（默认）
+          on   —— 本会话强制开（即使面板关着）
+          off  —— 本会话强制关（即使面板开着）
+
+        每次都现读 state（内存读 + 锁，成本可忽略），不做缓存：用户刚
+        敲完指令的下一轮就要生效，缓存会引入「改了不生效」的窗口。
+        """
+        mode = "auto"
+        try:
+            mode = await self.state_manager.get_status_bar_mode(target_id)
+        except Exception:
+            logger.debug("[Quill] 读取会话级状态栏开关失败", exc_info=True)
+        if mode == "on":
+            return True
+        if mode == "off":
+            return False
+        return self.status_bar_enabled
+
+    def _prompt_builder_for_request(self, status_bar_enabled: bool):
+        """按本轮的最终开关，取一个 PromptBuilder（浅拷贝，必要时覆盖开关）。
+
+        为什么不直接改 self.prompt_builder.status_bar_enabled：它是共享实例，
+        并发请求会互相踩（A 会话设 on 会污染 B 会话）。浅拷贝只复制属性引用，
+        PromptBuilder 不持有连接/任务，拷贝成本可忽略，且绝不落回共享实例。
+
+        为什么不用给 build_system_prompt 加参数：契约文案分散在
+        build_status_bar_guide / build_send_message_guide / build_safety_wrapper
+        三处读取该开关，加参数就得把签名一路改到底；拷贝一次把这四个读取点
+        一次性对齐，改动面最小。
+        """
+        if status_bar_enabled == self.prompt_builder.status_bar_enabled:
+            return self.prompt_builder
+        pb = copy.copy(self.prompt_builder)
+        pb.status_bar_enabled = status_bar_enabled
+        return pb
+
+    @staticmethod
+    def _resolve_platform_name(event) -> str:
+        """取平台适配器名（小写）。取不到返回空串。"""
+        try:
+            pm = getattr(event, "platform_meta", None)
+            if pm is not None:
+                name = (getattr(pm, "name", "") or "").strip().lower()
+                if name:
+                    return name
+        except Exception:
+            logger.debug("[Quill] platform_meta.name 获取失败", exc_info=True)
+        try:
+            return (event.get_platform_name() or "").strip().lower()
+        except Exception:
+            logger.debug("[Quill] get_platform_name() 获取失败", exc_info=True)
+        return ""
+
+    def _status_bar_template_for(self, platform: str) -> str:
+        """按平台返回该用的状态栏模板。
+
+        纯文本平台走 status_bar_format_plain，其余（含未知平台）走
+        status_bar_format。未知平台保持原行为是刻意的：它可能是支持
+        Markdown 的新适配器，贸然改成纯文本反而破坏渲染。
+        """
+        plain = [p for p in (getattr(self, "status_bar_plain_platforms", None) or []) if p]
+        if platform and plain and platform in plain:
+            return self.status_bar_format_plain
+        return self.status_bar_format_template
+
+    async def _handle_status_bar(
+        self, text: str, target_id: str, bar_template: str | None = None
+    ) -> tuple:
         """统一状态栏处理入口。
 
         返回 (formatted_text: str, updates: dict, handled: bool)。
         handled=True 表示文本中已存在有效状态栏并完成了格式化+持久化。
         handled=False 表示未找到状态栏，调用方应注入兜底。
+
+        与上一轮取值的比对读一次 `session_vars` 后全程复用（内存操作），
+        同时供变化标注（L1-L6）与 L4/L5 的缺失字段补齐使用。
+
+        bar_template：本次渲染用的模板。None 时用默认（Markdown）模板——
+        保持既有调用点行为不变。平台分治由调用方经 _status_bar_template_for
+        选好传进来。
         """
         updates = {}
         new_text = text
         handled = False
+        bar_template = bar_template or self.status_bar_format_template
+        prev_vars = await self.state_manager.get_session_vars(target_id)
 
-        # 1. **状态栏** code block
-        m = _STATUS_BLOCK_RE.search(text)
-        if m:
-            block_content = m.group(1).strip()
-            updates = self._parse_status_block(block_content)
-            if updates:
-                handled = True
-                new_text = text  # code block 格式保留原样
-                logger.info("[Quill] 状态栏已处理 (code block)")
+        def _mk_changed(ups: dict) -> dict:
+            """本次取值相对上一轮的变化 {字段: 旧值}；关闭标注时返回空。
 
-        # 2. [LOVE_DATA] inline
-        if not handled:
-            love_updates, love_formatted, raw_line = self._format_love_data(text)
-            if love_updates:
-                updates = love_updates
-                new_text = text.replace(raw_line, love_formatted)
-                handled = True
-                logger.info("[Quill] 状态栏已处理 (LOVE_DATA inline)")
+            两侧都先归一化：模型有时会照抄上一轮我们渲染的标注
+            （`70（↑5）`），不剥掉就会与干净的旧值比较失败、每轮都误报变化。
+            """
+            if not self.status_bar_show_delta:
+                return {}
+            changed = {}
+            for k, v in ups.items():
+                clean_v = _normalize_status_value(v)
+                old = _normalize_status_value(prev_vars.get(k, ""))
+                if old and clean_v and old != clean_v and clean_v != self.status_bar_default_placeholder:
+                    changed[k] = old
+            if changed:
+                logger.debug(f"[Quill] 状态栏字段变化: {changed}")
+            return changed
 
-        # 3. [STATUS] legacy
-        if not handled:
-            m = _STATUS_RE.search(text)
-            if m:
-                status_content = m.group(1).strip()
-                updates = self._parse_legacy_status(status_content)
-                formatted = self.status_bar_format_template.replace("{content}", status_content)
-                new_text = _STATUS_RE.sub(formatted, text)
+        # ── 六级降级链：越靠前越严格，命中即停 ──────────────────
+        # 每级是一个独立方法（_sb_l1.._sb_l6），返回 _StatusLevelResult 或 None。
+        # 拆成注册表而不是一串 `if not handled:` 块，是为了三件事：
+        #   1. 逐级命中率可统计（此前只能 grep 日志文本，看不出比例）；
+        #   2. 「命中即结束」与「已改写但仍需下降」两种语义显式化
+        #      （见 _StatusLevelResult.terminal）；
+        #   3. 某一级抛异常时只降级该级、继续往下走，而不是让整链崩掉
+        #      （旧写法下任何一级抛异常都会冒泡到调用方，状态栏直接消失）。
+        # 顺序即优先级，不要随意调整：越靠前的格式越严格、越可信。
+        ctx = _StatusLevelContext(
+            text=text,
+            new_text=new_text,
+            template=bar_template,
+            prev_vars=prev_vars,
+            mk_changed=_mk_changed,
+            target_id=target_id,
+        )
+        for _lv_name, _lv_attr in self._SB_LEVELS:
+            try:
+                _res = await getattr(self, _lv_attr)(ctx)
+            except Exception:
+                logger.warning(
+                    f"[Quill] 状态栏降级链「{_lv_name}」级异常，继续下降",
+                    exc_info=True,
+                )
+                continue
+            if _res is None:
+                continue
+            new_text = _res.new_text
+            ctx.new_text = new_text
+            if _res.updates:
+                updates = _res.updates
+            self.health_tracker.record_status_level(_lv_name)
+            if _res.terminal:
                 handled = True
-                logger.info("[Quill] 状态栏已处理 (STATUS legacy)")
-
-        # 4. Raw key:value lines — 方案A: 动态字段白名单 + 分隔符扩展
-        if not handled:
-            # 预处理：移除 LLM 可能添加的 --- 分隔线干扰（仅用于解析，不影响输出文本）
-            clean_text_for_parse = re.sub(r'^[-*_]{3,}[ \t]*$', '', text, flags=re.MULTILINE)
-            raw_re = _build_raw_status_re(self.love_fields)
-            raw_matches = raw_re.findall(clean_text_for_parse)
-            if raw_matches:
-                current_vars = await self.state_manager.get_session_vars(target_id)
-                matched_fields = set()
-                parsed_lines = []
-                for fn, fv in raw_matches:
-                    if fn in self.love_fields and fn not in matched_fields:
-                        val = fv.strip()
-                        updates[fn] = val
-                        parsed_lines.append(f"{fn}：{val}")
-                        matched_fields.add(fn)
-                for f_name in self.love_fields:
-                    if f_name not in matched_fields:
-                        val = current_vars.get(f_name, "") or self.status_bar_default_placeholder
-                        updates[f_name] = val
-                        parsed_lines.append(f"{f_name}：{val}")
-                # 用与检测完全相同的正则做对称删除——整行移除（含列表符号前缀，
-                # 前导换行一并消费，不留空行）。此前按字段名单独构造无锚定模式
-                # (rf'{fn}\s*[：:=→].*')，会误删叙事句中间的同名字段到行尾。
-                new_text = raw_re.sub('', new_text)
-                # 剧情走向
-                plot_str = ""
-                pm = _PLOT_PATH_RE.search(new_text)
-                if pm:
-                    plot_content = pm.group(1).strip()
-                    new_text = new_text.replace(pm.group(0), "").strip()
-                    plot_str = f"\n\n>>> 剧情走向 <<<\n{plot_content}\n<<< 请选择 >>>"
-                block_content = "\n".join(parsed_lines) + plot_str
-                beautiful_bar = self.status_bar_format_template.replace("{content}", block_content)
-                new_text = new_text.strip() + "\n\n" + beautiful_bar
-                handled = True
-                logger.info("[Quill] 状态栏已处理 (raw key:value, 动态字段)")
-
-        # 5. Lenient fallback — 方案A: 阈值降为 ≥1（原为 ≥2）
-        if not handled:
-            lenient_updates = self._lenient_parse_status(text, self.love_fields)
-            if lenient_updates and len(lenient_updates) >= 1:
-                # 方案B: 部分提取 + 历史值融合
-                current_vars = await self.state_manager.get_session_vars(target_id)
-                merged = {}
-                for f in self.love_fields:
-                    new_val = lenient_updates.get(f)
-                    if new_val:
-                        merged[f] = new_val
-                    else:
-                        merged[f] = current_vars.get(f, "") or self.status_bar_default_placeholder
-                lines = [f"{f}：{merged[f]}" for f in self.love_fields]
-                bar = self.status_bar_format_template.replace("{content}", "\n".join(lines))
-                new_text = text + "\n\n" + bar
-                updates = merged
-                handled = True
-                logger.info(f"[Quill] 状态栏已处理 (lenient + 部分提取 {len(lenient_updates)}/{len(self.love_fields)} 字段)")
-
-        # 6. 方案C: LLM 智能提取（可选，配置开关启用）
-        if not handled and getattr(self.config, 'status_bar_llm_extract', False):
-            llm_extracted = await self._llm_extract_status(text, target_id)
-            if llm_extracted:
-                current_vars = await self.state_manager.get_session_vars(target_id)
-                merged = {}
-                for f in self.love_fields:
-                    merged[f] = llm_extracted.get(f) or current_vars.get(f, "") or self.status_bar_default_placeholder
-                lines = [f"{f}：{merged[f]}" for f in self.love_fields]
-                bar = self.status_bar_format_template.replace("{content}", "\n".join(lines))
-                new_text = text + "\n\n" + bar
-                updates = merged
-                handled = True
-                logger.info("[Quill] 状态栏已处理 (LLM 智能提取)")
+                break
 
         # P1-1: 所有降级解析均失败时，记录原始文本片段便于调试（不暴露给用户）
-        if not handled and self.status_bar_enabled:
+        # 注意：本函数只在「本轮最终开关为开」时才被调用（调用方已用
+        # _effective_status_bar_enabled 判过），所以这里不再看全局开关——
+        # 否则 /quill statusbar on 覆盖全局关时，这两个分支会被错误跳过。
+        if not handled:
             preview = (text or "")[:200].replace("\n", "\\n")
             logger.info(f"[Quill] 状态栏解析失败（L1-L5 全部未匹配），使用兜底默认状态栏 | target={target_id} | preview={preview!r}")
 
-        # P1-4: 记录状态栏解析成功率（仅在 status_bar_enabled 时计入）
-        if self.status_bar_enabled:
-            self.health_tracker.record_status(handled)
-
-        # P1-5: 状态栏变化高亮 — 对比旧值，将 changed 标记注入 updates
-        _changed = {}
-        if updates and handled:
-            _prev_vars = await self.state_manager.get_session_vars(target_id)
-            for k, v in updates.items():
-                _old = _prev_vars.get(k, "")
-                if _old and _old != v and v != self.status_bar_default_placeholder:
-                    _changed[k] = _old
-            if _changed:
-                logger.debug(f"[Quill] 状态栏字段变化: {_changed}")
+        # P1-4: 记录状态栏解析成功率
+        self.health_tracker.record_status(handled)
 
         # P2-4 修复：所有分支统一在此提交一次状态字段，消除多次独立 await 的竞态
-        # 审查修复：_changed 仅作为返回值携带（供前端/调试观察），绝不写入
-        # session_vars——此前会随 update_session_vars 持久化进 quill_state.json，
-        # 并被 prompt_builder 无白名单遍历注入 system prompt（dict repr 污染模型输入）。
+        # 审查修复：变化标注仅渲染进消息文本，绝不写入 session_vars——此前会把
+        # dict 一并持久化进 quill_state.json，并被 prompt_builder 无白名单遍历注入
+        # system prompt（dict repr 污染模型输入）。
+        # 落库前统一归一化：模型可能照抄上一轮的标注，不清洗就会随
+        # update_session_vars 存进状态并注入提示词，逐轮累积。
         if updates and handled:
-            persist_updates = {k: v for k, v in updates.items() if not k.startswith("_")}
+            persist_updates = {
+                k: _normalize_status_value(v)
+                for k, v in updates.items()
+                if not k.startswith("_") and isinstance(v, str)
+            }
+            updates.update(persist_updates)
             await self._persist_status_vars(persist_updates, target_id)
 
         return new_text, updates, handled
+
+    # ── 降级链各级实现 ─────────────────────────────────────────
+    # 级别名会进日志与统计，改名字要同步 docs/STATUS_BAR.md 与 harness 断言。
+    _SB_LEVELS: tuple = (
+        ("code block", "_sb_l1_code_block"),
+        ("LOVE_DATA inline", "_sb_l2_love_data"),
+        ("STATUS legacy", "_sb_l3_legacy"),
+        ("raw key:value, 动态字段", "_sb_l4_raw"),
+        ("lenient + 部分提取", "_sb_l5_lenient"),
+        ("LLM 智能提取", "_sb_l6_llm_extract"),
+    )
+
+    async def _sb_l1_code_block(self, ctx) -> "_StatusLevelResult | None":
+        """L1：`**状态栏** ``` ... ``` ` —— 只替换块内内容，保留外围 Markdown。
+
+        保留外围结构是刻意的：模型常把标题写在外面，整块重渲染会把它吃掉。
+        """
+        m = _STATUS_BLOCK_RE.search(ctx.text)
+        if not m:
+            return None
+        raw_content = m.group(1)
+        updates = self._parse_status_block(raw_content)
+        if not updates:
+            return None
+        # 首尾空白必须原样带回去——group 1 含包裹内容的换行符，丢掉会把
+        # ``` 围栏与内容挤到同一行，代码块随之失效。
+        lead = raw_content[: len(raw_content) - len(raw_content.lstrip())]
+        trail = raw_content[len(raw_content.rstrip()):]
+        annotated = _annotate_changes(raw_content.strip(), ctx.mk_changed(updates))
+        new_text = (
+            ctx.text[: m.start(1)] + lead + annotated + trail + ctx.text[m.end(1):]
+        )
+        logger.info("[Quill] 状态栏已处理 (code block)")
+        return _StatusLevelResult(new_text, updates)
+
+    async def _sb_l2_love_data(self, ctx) -> "_StatusLevelResult | None":
+        """L2：`[LOVE_DATA] a | b | c` 单行 —— **实际最常命中的一级**。
+
+        guide 明确要求模型输出这个格式（还把代码块列为错误示例），实测 40 次
+        解析里 36 次走这里。此前这一级不套模板、直接把裸字段行替换进正文，
+        导致 format_template 配置在整个子系统的主力路径上从未生效。
+        """
+        love_updates, love_formatted, raw_line = self._format_love_data(ctx.text)
+        if not love_updates:
+            return None
+        annotated = _annotate_changes(love_formatted, ctx.mk_changed(love_updates))
+        # 套用本平台模板，与其余五级一致
+        new_text = ctx.text.replace(
+            raw_line, ctx.template.replace("{content}", annotated)
+        )
+        logger.info("[Quill] 状态栏已处理 (LOVE_DATA inline)")
+        return _StatusLevelResult(new_text, love_updates)
+
+    async def _sb_l3_legacy(self, ctx) -> "_StatusLevelResult | None":
+        """L3：`[STATUS]...[/STATUS]` 旧格式。
+
+        注意这一级**不校验解析结果是否为空**：只要标签在，就算认领（旧行为，
+        有意保留——标签本身就是「模型在写状态栏」的确证，哪怕内容不合格式）。
+        """
+        m = _STATUS_RE.search(ctx.text)
+        if not m:
+            return None
+        status_content = m.group(1).strip()
+        updates = self._parse_legacy_status(status_content)
+        annotated = _annotate_changes(status_content, ctx.mk_changed(updates))
+        formatted = ctx.template.replace("{content}", annotated)
+        new_text = _STATUS_RE.sub(formatted, ctx.text)
+        logger.info("[Quill] 状态栏已处理 (STATUS legacy)")
+        return _StatusLevelResult(new_text, updates)
+
+    async def _sb_l4_raw(self, ctx) -> "_StatusLevelResult | None":
+        """L4：裸 `字段：值` 多行（动态字段 + 分隔符扩展）。
+
+        阈值取「去重后 ≥2」而非 ≥1：单命中更可能是叙事（「他想起她当时的心情：
+        那份悸动」这类行首恰好是字段名的句子），拿一行叙事重建整栏，其余字段
+        全靠历史值补齐，等于用一个可疑值造出一整栏陈旧状态。
+
+        但单命中**必须仍然把那行擦掉**——它会原样发给用户，看着像漏处理。
+        所以拆成两条路：≥2 重建整栏（terminal），单命中只剥离该行并继续下降
+        （non-terminal，交给 L5/L6/兜底补栏）。
+        """
+        # 预处理：移除 LLM 可能添加的 --- 分隔线干扰（仅用于解析，不影响输出文本）
+        clean_text_for_parse = re.sub(
+            r'^[-*_]{3,}[ \t]*$', '', ctx.text, flags=re.MULTILINE
+        )
+        raw_re = _build_raw_status_re(self.love_fields)
+        raw_matches = raw_re.findall(clean_text_for_parse)
+        _seen = {fn for fn, _fv in raw_matches if fn in self.love_fields}
+
+        if len(_seen) >= 2:
+            updates: dict = {}
+            matched_fields = set()
+            for fn, fv in raw_matches:
+                if fn in self.love_fields and fn not in matched_fields:
+                    updates[fn] = fv.strip()
+                    matched_fields.add(fn)
+            changed = ctx.mk_changed(updates)
+            # 补齐缺失字段后再整体标注，保证变化字段与非变化字段同样被剥净旧标注
+            for f_name in self.love_fields:
+                if f_name not in matched_fields:
+                    updates[f_name] = (
+                        ctx.prev_vars.get(f_name, "")
+                        or self.status_bar_default_placeholder
+                    )
+            parsed_lines = [
+                f"{f}：{_normalize_status_value(str(updates.get(f, '')))}"
+                for f in self.love_fields
+            ]
+            # 用与检测完全相同的正则做对称删除——整行移除（含列表符号前缀，
+            # 前导换行一并消费，不留空行）。此前按字段名单独构造无锚定模式
+            # (rf'{fn}\s*[：:=→].*')，会误删叙事句中间的同名字段到行尾。
+            new_text = raw_re.sub('', ctx.new_text)
+            # 剧情走向
+            plot_str = ""
+            pm = _PLOT_PATH_RE.search(new_text)
+            if pm:
+                plot_content = pm.group(1).strip()
+                new_text = new_text.replace(pm.group(0), "").strip()
+                plot_str = f"\n\n>>> 剧情走向 <<<\n{plot_content}\n<<< 请选择 >>>"
+            block_content = _annotate_changes("\n".join(parsed_lines), changed) + plot_str
+            beautiful_bar = ctx.template.replace("{content}", block_content)
+            new_text = new_text.strip() + "\n\n" + beautiful_bar
+            logger.info("[Quill] 状态栏已处理 (raw key:value, 动态字段)")
+            return _StatusLevelResult(new_text, updates)
+
+        if raw_matches:
+            _stripped = raw_re.sub('', ctx.new_text)
+            if _stripped != ctx.new_text:
+                logger.info(
+                    "[Quill] L4 单命中（%s），不重建整栏，仅剥离该行",
+                    "/".join(sorted(_seen)),
+                )
+                return _StatusLevelResult(_stripped, None, terminal=False)
+        return None
+
+    async def _sb_l5_lenient(self, ctx) -> "_StatusLevelResult | None":
+        """L5：宽松解析（key 双向子串匹配）+ 历史值融合。
+
+        阈值 ≥2 由 `_lenient_parse_status` 内部把关，外层不再复述——旧代码在
+        这里写了个恒真的 `>= 1`，让读者以为阈值被调过，实际上空 dict 早已被
+        `if lenient_updates` 挡掉。
+        """
+        lenient_updates = self._lenient_parse_status(ctx.text, self.love_fields)
+        if not lenient_updates:
+            return None
+        merged: dict = {}
+        for f in self.love_fields:
+            new_val = lenient_updates.get(f)
+            merged[f] = new_val if new_val else (
+                ctx.prev_vars.get(f, "") or self.status_bar_default_placeholder
+            )
+        lines = [f"{f}：{merged[f]}" for f in self.love_fields]
+        bar = ctx.template.replace(
+            "{content}", _annotate_changes("\n".join(lines), ctx.mk_changed(merged))
+        )
+        logger.info(
+            f"[Quill] 状态栏已处理 (lenient + 部分提取 "
+            f"{len(lenient_updates)}/{len(self.love_fields)} 字段)"
+        )
+        return _StatusLevelResult(ctx.new_text + "\n\n" + bar, merged)
+
+    async def _sb_l6_llm_extract(self, ctx) -> "_StatusLevelResult | None":
+        """L6：LLM 智能提取（可选，默认关闭——额外 token 消耗）。"""
+        if not getattr(self.config, "status_bar_llm_extract", False):
+            return None
+        llm_extracted = await self._llm_extract_status(ctx.text, ctx.target_id)
+        if not llm_extracted:
+            return None
+        merged: dict = {}
+        for f in self.love_fields:
+            merged[f] = (
+                llm_extracted.get(f)
+                or ctx.prev_vars.get(f, "")
+                or self.status_bar_default_placeholder
+            )
+        lines = [f"{f}：{merged[f]}" for f in self.love_fields]
+        bar = ctx.template.replace(
+            "{content}", _annotate_changes("\n".join(lines), ctx.mk_changed(merged))
+        )
+        logger.info("[Quill] 状态栏已处理 (LLM 智能提取)")
+        return _StatusLevelResult(ctx.new_text + "\n\n" + bar, merged)
 
     async def _persist_status_vars(self, updates: dict, target_id: str) -> None:
         """Persist parsed status fields to session_vars."""
         if updates:
             await self.state_manager.update_session_vars(target_id, updates)
+
+    # ── 本轮注入报告 ────────────────────────────────────────────
+    # 设计：统计**始终**采集并缓存（容量见 _INJECT_REPORT_MAX），回复文本里则
+    # 只在 debug 开启时附一行。这样调灵敏度/top_k 时有据可依（否则所有相关
+    # 配置项都只能凭感觉调），同时不给普通用户的每条消息都加噪声。
+    # /quill debug 无论开关状态都能读到缓存，用于事后排查。
+    _INJECT_REPORT_MAX = 64
+
+    def _remember_inject_report(self, target_id: str, stats: dict) -> None:
+        """缓存本轮注入构成，供回复渲染与 /quill debug 读取。
+
+        写入前补齐标准键（缺的记 0）：这样「采集过但一条没命中」会得到
+        `{'wb':0,...}` → 渲染成「〔注入〕无命中」，而「从没采集过」（缓存里
+        查不到该 target_id，`_get_inject_report` 返回 `{}`）仍然沉默。
+        这条区分是实测踩出来的：RAG 未初始化时 `_run_rag_retrieval` 会提前
+        return，一个键都不填，报告行随之整个消失 —— 用户无法分辨
+        「确实没命中」与「开关没生效」，而开这个开关的全部意义就在于分辨它。
+        """
+        cache = getattr(self, "_inject_reports", None)
+        if cache is None:
+            cache = {}
+            self._inject_reports = cache
+        merged = {"wb": 0, "mem": 0, "wr": 0, "doc": 0, "core_mem": 0}
+        merged.update(stats or {})
+        # 重新赋值以更新插入顺序，使淘汰按「最近使用」而非「最早创建」
+        cache.pop(target_id, None)
+        cache[target_id] = merged
+        while len(cache) > self._INJECT_REPORT_MAX:
+            cache.pop(next(iter(cache)), None)
+
+    def _get_inject_report(self, target_id: str) -> dict:
+        return (getattr(self, "_inject_reports", None) or {}).get(target_id) or {}
+
+    def _append_inject_report(self, text: str, target_id: str) -> str:
+        """在消息末尾追加注入报告行（仅 debug 开启时）。
+
+        追加在状态栏代码块**之外**：报告行若落进 ``` 内会被 _parse_status_block
+        当成字段读走并写进 session_vars，进而注入 system prompt 污染模型输入。
+        """
+        if not self.show_inject_report or not text:
+            return text
+        line = self._format_inject_report(self._get_inject_report(target_id))
+        if not line:
+            return text
+        return text.rstrip() + "\n\n" + line
+
+    @staticmethod
+    def _scrub_inject_report(text: str) -> str:
+        """从对话历史里抹掉上一轮的注入报告行。
+
+        报告只该出现在用户看到的那一条消息里。它作为 assistant 历史回显时会
+        被模型模仿（下一轮自己写一行「〔注入〕…」），且对本轮推理毫无价值，
+        因此在注入前统一清除。
+        """
+        if not text or _INJECT_REPORT_LINE_RE.search(text) is None:
+            return text
+        cleaned = _INJECT_REPORT_LINE_RE.sub("", text)
+        return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+    @staticmethod
+    def _format_inject_report(stats: dict) -> str:
+        """把统计渲染成一行人类可读文本。
+
+        无命中时也返回一行（「〔注入〕无命中」）而不是空串：用户开这个开关
+        就是为了判断「调了参数之后到底有没有召回」。若没命中就不显示，
+        他会分不清「开关没生效」和「确实什么都没命中」。
+
+        文档来源名一并列出（引用溯源），最多 3 个，其余折叠为「等 N 份」。
+        """
+        if not stats:
+            return ""
+        parts = []
+        if stats.get("wb"):
+            parts.append(f"世界书×{stats['wb']}")
+        if stats.get("mem"):
+            parts.append(f"记忆×{stats['mem']}")
+        if stats.get("core_mem"):
+            parts.append(f"核心记忆×{stats['core_mem']}")
+        if stats.get("wr"):
+            parts.append(f"素材×{stats['wr']}")
+        if stats.get("doc"):
+            srcs = stats.get("doc_sources") or []
+            label = f"文档×{stats['doc']}"
+            if srcs:
+                shown = "、".join(srcs[:3])
+                if len(srcs) > 3:
+                    shown += f" 等 {len(srcs)} 份"
+                label += f"（{shown}）"
+            parts.append(label)
+        if not parts:
+            return "〔注入〕无命中"
+        return "〔注入〕" + " · ".join(parts)
 
     def _format_love_data(self, content: str) -> tuple:
         """Parse [LOVE_DATA] line, return (updates_dict, formatted_text, raw_line) or (None, None, None)."""
@@ -1140,8 +1871,15 @@ class QuillPlugin(Star):
                 updates[k.strip()] = v.strip()
         return updates
 
-    async def _build_default_love_data(self, target_id: str) -> str:
-        """构建默认状态栏（当 LLM 未输出状态栏时兜底）。"""
+    async def _build_default_love_data(
+        self, target_id: str, bar_template: str | None = None
+    ) -> str:
+        """构建默认状态栏（当 LLM 未输出状态栏时兜底）。
+
+        bar_template：与 _handle_status_bar 同源的模板参数——兜底栏也要按平台
+        分治，否则 QQ 上正常轮次是纯文本、兜底轮次却冒出 ``` 围栏。
+        """
+        template = bar_template or self.status_bar_format_template
         vars = await self.state_manager.get_session_vars(target_id)
         parts = []
         for field_name in self.love_fields:
@@ -1152,7 +1890,7 @@ class QuillPlugin(Star):
             f"{i+1}. {p}" for i, p in enumerate(self.status_bar_plot_paths)
         ) + "\n<<< 请选择 >>>"
         full_content = love_section + plot_section
-        return f"**状态栏**\n```\n{full_content}\n```"
+        return template.replace("{content}", full_content)
 
     async def _llm_extract_status(self, text: str, target_id: str) -> dict | None:
         """方案C: LLM 智能提取状态栏字段 — 当 L1-L5 全部失败时，调用轻量 LLM 做结构化提取。
@@ -1405,23 +2143,40 @@ class QuillPlugin(Star):
                     logger.info(f"[Quill] 已清理 {modified} 条消息中的 Markdown 标记")
 
             # 状态栏处理（全平台执行）
+            # 本轮最终开关 = 会话级覆盖 > 面板全局（见 _effective_status_bar_enabled）
+            target_id = self._get_target_id(event)
+            _sb_on = await self._effective_status_bar_enabled(target_id)
+            _bar_tpl = self._status_bar_template_for(platform)
             if isinstance(messages, list):
-                target_id = self._get_target_id(event)
+                report_done = False
                 for idx, msg in enumerate(messages):
                     if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
                         # 首条 plain 消息：执行状态栏提取；后续消息：仅清理残留状态栏标记
                         if idx == 0 or not event.get_extra("_quill_status_handled"):
-                            if self.status_bar_enabled:
-                                new_text, _, handled = await self._handle_status_bar(msg["text"], target_id)
+                            if _sb_on:
+                                new_text, _, handled = await self._handle_status_bar(
+                                    msg["text"], target_id, _bar_tpl
+                                )
                                 msg["text"] = new_text
                                 if handled:
                                     event.set_extra("_quill_status_handled", True)
                             else:
-                                msg["text"] = self._strip_status_artifacts(msg["text"])
+                                msg["text"] = self._strip_status_artifacts(
+                                    msg["text"], self.love_fields
+                                )
                         else:
                             # P2-3 修复：首条之后的 plain 消息也清理残留的状态栏标记，
                             # 避免 LLM 多段输出时后续段落的 [LOVE_DATA]/状态栏代码块被原样发给用户
-                            msg["text"] = self._strip_status_artifacts(msg["text"])
+                            msg["text"] = self._strip_status_artifacts(
+                                msg["text"], self.love_fields
+                            )
+                        # 注入报告追加到最后一条 plain 消息上（仅一次）
+                        if not report_done and idx == len(messages) - 1:
+                            before = msg["text"]
+                            msg["text"] = self._append_inject_report(msg["text"], target_id)
+                            if msg["text"] != before:
+                                event.set_extra("_quill_report_added", True)
+                            report_done = True
 
             # JSON 回写：如果原始类型是字符串，序列化回去
             if was_string:
@@ -1504,8 +2259,11 @@ class QuillPlugin(Star):
 
         return activated, wr_activated
 
-    async def _run_rag_retrieval(self, event: AstrMessageEvent, req: ProviderRequest, user_input: str, persona_data, dynamic_prompt: str) -> str:
-        """执行 RAG 检索（Doc + Memory），返回更新后的 dynamic_prompt。"""
+    async def _run_rag_retrieval(self, event: AstrMessageEvent, req: ProviderRequest, user_input: str, persona_data, dynamic_prompt: str, stats: dict | None = None) -> str:
+        """执行 RAG 检索（Doc + Memory），返回更新后的 dynamic_prompt。
+
+        `stats` 为可选出参：回填 doc/mem 的命中条数与文档来源名（注入报告用）。
+        """
         if not (self.rag_retriever and self.rag_retriever.embedding):
             logger.warning(f"[Quill RAG] 文档系统未初始化")
             return dynamic_prompt
@@ -1540,8 +2298,30 @@ class QuillPlugin(Star):
             if rag_context:
                 dynamic_prompt += "\n\n" + rag_context
                 logger.info(f"[Quill RAG] 注入上下文: {len(rag_context)} 字符")
-            # P1-4: 记录 RAG 检索成功
-            self.health_tracker.record_rag(True)
+            if stats is not None:
+                stats["doc"] = len(doc_results)
+                # 去重保序：同一份文档常有多段命中，来源名只列一次
+                seen_src: list[str] = []
+                for r in doc_results:
+                    src = str(r.get("source", "") or "").strip()
+                    if src and src not in seen_src:
+                        seen_src.append(src)
+                stats["doc_sources"] = seen_src
+                stats["mem"] = len(mem_results)
+                stats["core_mem"] = len(core_mems)
+            # P1-4: 记录 RAG 检索结果。此前检索器吞异常返回 []，这里统一记 True，
+            # 于是 embedding/索引故障在健康度里表现为 100% 成功。现在按 rag_ok
+            # 判定：空结果算成功（确实没找到），只有真出错才算失败。
+            from .quill_rag.retrieval import rag_ok as _rag_ok
+            doc_ok = _rag_ok(doc_results)
+            mem_ok = _rag_ok(mem_results)
+            if not doc_ok or not mem_ok:
+                logger.warning(
+                    "[Quill RAG] 检索降级: doc=%s mem=%s",
+                    getattr(doc_results, "_rag_error", "ok"),
+                    getattr(mem_results, "_rag_error", "ok"),
+                )
+            self.health_tracker.record_rag(doc_ok and mem_ok)
         except Exception as e:
             logger.warning(f"[Quill RAG] 检索失败: {e}")
             # P1-4: 记录 RAG 检索失败
@@ -1599,6 +2379,13 @@ class QuillPlugin(Star):
             # 防御性类型守卫：AstrBot 框架契约保证 contexts 为 list，但防止异常值导致崩溃
             if not isinstance(req.contexts, list):
                 req.contexts = []
+            # 抹掉历史里的注入报告行：它只该出现在用户看到的那条消息里，
+            # 回显进上下文会被模型模仿（下一轮自己写一行），且对本轮推理无价值。
+            req.contexts = [
+                ({**c, "content": self._scrub_inject_report(c.get("content", ""))}
+                 if isinstance(c, dict) and isinstance(c.get("content"), str) else c)
+                for c in req.contexts
+            ]
             contexts_is_fresh = not req.contexts or len(req.contexts) <= 1
             if contexts_is_fresh \
                     and getattr(self.config, 'rag_enable_chat_logging', True) \
@@ -1607,6 +2394,26 @@ class QuillPlugin(Star):
                 if recent_logs:
                     req.contexts = recent_logs + req.contexts
                     logger.info(f"[Quill Context] 恢复 {len(recent_logs)} 条上下文（Session: {mem_session_id}）")
+
+            # 关闭状态栏时，抹掉回灌上下文里已渲染的历史状态栏。
+            # 不清掉就是一边用 tail message 明令「禁止输出好感度、关系阶段、心情」，
+            # 一边在历史里给模型看几轮「好感度：85」的示范，属于自己和自己拉锯：
+            # 模型倾向于模仿历史（可见性由读侧剥离兜住，但说服力被白白消耗）。
+            # 必须放在上下文恢复之后：恢复来的 chat_logs 同样带着状态栏。
+            # 开启方向不处理——历史里本来就没有栏，tail message 会教它写。
+            # 用会话级最终开关判断：/quill statusbar off 之后同样要清历史示范。
+            _sb_effective = await self._effective_status_bar_enabled(target_id)
+            if not _sb_effective and req.contexts:
+                _scrubbed = []
+                for c in req.contexts:
+                    if isinstance(c, dict) and isinstance(c.get("content"), str):
+                        clean = self._strip_status_artifacts(
+                            c["content"], self.love_fields
+                        )
+                        _scrubbed.append({**c, "content": clean} if clean != c["content"] else c)
+                    else:
+                        _scrubbed.append(c)
+                req.contexts = _scrubbed
 
             persona_id, persona_data = await self._inject_persona_and_first_message(req, event, target_id)
 
@@ -1711,23 +2518,48 @@ class QuillPlugin(Star):
                 "session_vars": await self.state_manager.get_session_vars(target_id),
             }
 
-            stable_prompt, dynamic_prompt = await self.prompt_builder.build_system_prompt(
-                self.wr_manager, self.wb_manager, extra_info, emergency=emergency
+            # 注入报告统计（本轮各来源命中条数）。始终采集——即使 debug 关闭，
+            # 本轮最终开关：会话级覆盖 > 面板全局。上面（历史 contexts 清理）与
+            # 下面（system prompt 契约、tail message）必须用同一个值，否则会出现
+            # 「system prompt 说别输出、tail 说必须输出」的自相矛盾。
+            _pb = self._prompt_builder_for_request(_sb_effective)
+
+            # /quill debug 也要能查上一轮，见 _last_inject_report。
+            inject_stats: dict = {}
+            # 世界书总开关（默认 True）。此前 `worldbook.enabled` 只在 config.py
+            # 解析与 __repr__ 里出现，运行期**没有任何消费者**——面板上关掉它
+            # 世界书照样注入，属「改了不生效」的死开关。这里把它接到唯一的
+            # 注入点上：关掉就传 None，让 PromptBuilder 跳过全部世界书逻辑
+            # （常驻+关键词匹配）。传 None 而不是加新参数，是因为
+            # `build_system_prompt` 各处判断的都是 `if wb_manager`，
+            # 置空即可整段跳过，且不改变函数签名（prompt_builder 自检里
+            # 就有 `build_system_prompt(None, None, {})` 的用法）。
+            # 按角色卡绑定的 wb_mode 仍在其上层生效：两者是「总闸 × 分闸」。
+            _wb_for_request = self.wb_manager if getattr(
+                self.config, "worldbook_enabled", True
+            ) else None
+            stable_prompt, dynamic_prompt = await _pb.build_system_prompt(
+                self.wr_manager, _wb_for_request, extra_info, emergency=emergency,
+                stats=inject_stats,
             )
 
             # ── RAG 检索（Doc RAG + 动态记忆）──
-            dynamic_prompt = await self._run_rag_retrieval(event, req, user_input, persona_data, dynamic_prompt)
+            dynamic_prompt = await self._run_rag_retrieval(
+                event, req, user_input, persona_data, dynamic_prompt, inject_stats
+            )
 
             # 触发日志注入（show_trigger_log 开启时）
-            if (self.config.worldbook_show_log and self.wb_manager
-                    and hasattr(self.wb_manager, 'get_trigger_log')):
+            if (self.config.worldbook_show_log and _wb_for_request
+                    and hasattr(_wb_for_request, 'get_trigger_log')):
                 # get_trigger_log 是同步方法（加锁读一次列表），不能 await
-                trigger_log = self.wb_manager.get_trigger_log()
+                trigger_log = _wb_for_request.get_trigger_log()
                 if trigger_log:
                     log_lines = ["[触发日志]"]
                     for t in trigger_log[:10]:
                         log_lines.append(f"  {t['worldbook']}/{t['title']} ← {','.join(t['matched_keys'])}")
                     dynamic_prompt += "\n\n" + "\n".join(log_lines)
+
+            self._remember_inject_report(target_id, inject_stats)
 
             req.system_prompt = self.prompt_builder.inject_prompt(
                 req.system_prompt or "", stable_prompt, dynamic_prompt,
@@ -1735,20 +2567,10 @@ class QuillPlugin(Star):
             )
 
             if persona_id:
-                if self.status_bar_enabled:
-                    fields_format = " | ".join(f"{{{f}}}" for f in self.love_fields)
-                    tail = (
-                        "\n\n[System] 本轮回复末尾必须严格按以下格式追加状态栏和剧情选项，禁止使用其他格式：\n"
-                        f"[LOVE_DATA] {fields_format}\n"
-                        f"示例：[LOVE_DATA] 55/100（好感说明） | 朋友 | 放松 | 教室 | 校服 | 希望今天也能见到他...\n"
-                        "之后输出：\n"
-                        ">>> 剧情走向 <<<\n"
-                        "1. 继续当前话题\n"
-                        "2. 转换场景\n"
-                        "3. 结束互动\n"
-                        "<<< 请选择 >>>\n"
-                        "禁止使用 --- 分隔线、> 块引用、```代码块```、或其他格式。必须使用上述 [LOVE_DATA] 和 >>> <<< 标记。"
-                    )
+                if _sb_effective:
+                    # 契约文本由 PromptBuilder 单一来源生成（格式行/示例/选项块），
+                    # 此处不再手抄示例——此前四处各写一份，字段名或顺序一变就漂移。
+                    tail = "\n\n[System] " + _pb.build_status_reminder()
                 else:
                     tail = (
                         "\n\n[System] 禁止输出任何格式的状态栏、[LOVE_DATA]、"
@@ -1823,24 +2645,32 @@ class QuillPlugin(Star):
             # 状态栏处理
             target_id = self._get_target_id(event)
 
-            if self.status_bar_enabled:
+            # 会话级最终开关（与请求侧同一个解析函数，保证前后一致）
+            _sb_effective = await self._effective_status_bar_enabled(target_id)
+            _bar_tpl = self._status_bar_template_for(self._resolve_platform_name(event))
+
+            if _sb_effective:
 
                 if event.get_extra("_quill_status_handled"):
                     # 工具钩子已处理完毕 — 仅剥离 resp.completion_text 中的
                     # 原始状态栏残留（LLM 可能同时在 content 字段也输出了）
                     content = resp.completion_text or ""
-                    stripped = self._strip_status_artifacts(content)
+                    stripped = self._strip_status_artifacts(content, self.love_fields)
                     if stripped != content:
                         resp.completion_text = stripped
                         logger.info("[Quill] 已剥离 resp.completion_text 中的状态栏残留")
                 else:
                     # 工具钩子未命中 — 在此处作为最终安全网处理
                     content = resp.completion_text or ""
-                    new_text, _, handled = await self._handle_status_bar(content, target_id)
+                    new_text, _, handled = await self._handle_status_bar(
+                        content, target_id, _bar_tpl
+                    )
                     if not handled:
                         persona_id = await self.state_manager.get_persona_id(target_id)
                         if persona_id:
-                            default_bar = await self._build_default_love_data(target_id)
+                            default_bar = await self._build_default_love_data(
+                                target_id, _bar_tpl
+                            )
                             new_text = (new_text or "") + "\n" + default_bar
                             logger.info("[Quill] 状态栏兜底注入")
                     resp.completion_text = new_text
@@ -1848,7 +2678,18 @@ class QuillPlugin(Star):
             else:
                 # 禁用模式：彻底擦除所有状态栏痕迹
                 content = resp.completion_text or ""
-                resp.completion_text = self._strip_status_artifacts(content)
+                resp.completion_text = self._strip_status_artifacts(
+                    content, self.love_fields
+                )
+
+            # 注入报告（仅开关开启时）。工具路径已在 on_llm_tool_respond 里
+            # 追加过，用标记去重——两条路径都会跑到本函数，否则会出现两行报告。
+            if (self.show_inject_report and not event.get_extra("_quill_report_added")
+                    and (resp.completion_text or "").strip()):
+                resp.completion_text = self._append_inject_report(
+                    resp.completion_text, target_id
+                )
+                event.set_extra("_quill_report_added", True)
 
             if not event.get_extra("_quill_activated"):
                 return
@@ -1905,7 +2746,22 @@ class QuillPlugin(Star):
             return
 
         logger.info("[Quill] send_message_to_user 已调用")
-        event.set_extra("_quill_activated", False)
+
+        # 记忆/反思只做一次 —— 但**不能用总闸门来兼职**。
+        #
+        # 这里此前写的是 `event.set_extra("_quill_activated", False)`，而
+        # `_quill_activated` 是本轮的**总闸门**，被 on_using_llm_tool(1771) 与
+        # on_llm_response(2341) 读取。清掉它等于宣布「本轮插件下班」：此后
+        # 所有工具调用都不再经过插件，状态栏不处理、残留不剥离。
+        # 而模型在 agent 模式下会**多次**调用 send_message_to_user（正文一段、
+        # 状态栏单独一段；实测 7 轮里 3 轮如此），第 2 次之后的内容就带着裸
+        # [LOVE_DATA] 直达用户，看起来像「漏处理」。
+        #
+        # 拆成专用标记后语义单一：只保证记忆存储与反思调度不重复执行，
+        # 不影响后续工具调用继续被处理。
+        if event.get_extra("_quill_memorized"):
+            return
+        event.set_extra("_quill_memorized", True)
 
         # ── 动态记忆存储（异步后台任务，不阻塞响应）──
         if (self.rag_retriever and self.rag_retriever.enable_memory
@@ -1979,6 +2835,81 @@ class QuillPlugin(Star):
                 logger.warning(f"[Quill Memory] 记忆存储调度失败: {e}")
 
     # ================================================================
+    # 最后一道防线：发送前擦除残留状态栏
+    # ================================================================
+
+    @filter.on_decorating_result(priority=100)
+    async def on_decorating_result(self, event: AstrMessageEvent):
+        """消息**发送前**的最后一次清洗——擦掉漏网的状态栏残留。
+
+        为什么需要这一道（这不是重复劳动，覆盖的是别的钩子够不到的情况）：
+
+        `on_using_llm_tool` 只能改写**工具参数**（`send_message_to_user` 的
+        messages）。但 agent loop 每一轮迭代都会**先** `yield` 该轮的
+        `llm_resp.result_chain`（`tool_loop_agent_runner.py:917`），**然后**才走
+        `_handle_function_tools`（同文件 `:982`）触发工具钩子。也就是说：
+        模型在**不调用工具**的那一轮直接输出的文本，会先于任何工具钩子被推送，
+        插件根本没机会处理它。
+
+        实测（`docs/probe_no_leak.py`）：一轮里模型被纠正后连发了 18 次
+        `send_message_to_user`，其中 17 次都被正常处理，唯独夹在中间那次
+        「直接输出一行裸 `[LOVE_DATA]`」的迭代绕过了全部钩子，直达用户。
+
+        这一钩子在 `result_decorate` 阶段、**真正发送之前**触发
+        （`core/pipeline/result_decorate/stage.py:158`），拿到的是最终
+        MessageChain，因此能兜住任何来源的残留。
+
+        **两档强度，取决于本轮状态栏是否启用**（这一点是踩过坑才分清的）：
+
+        * 启用时——只擦**原始标记**（`[LOVE_DATA]`、`[STATUS]`、裸字段行）。
+          **绝不能**用整套 `_strip_status_artifacts`：它第一条模式就匹配
+          `**状态栏**...\\`\\`\\`...\\`\\`\\``，那是 L1/L2 **正常渲染**的产物，
+          整段擦掉等于把状态栏从回复里删掉（第一版就是这么把 A/C 两项测挂的）。
+        * 关闭时——用整套剥离器。此时渲染过的状态栏**本就不该出现**
+          （历史上下文那侧也在同步清理），擦掉正是期望行为。
+
+        另外**不做**「补栏」：此刻正文已定型，补栏会与前面已发出的分段重复；
+        发送前只做减法。
+        """
+        try:
+            # 会话级覆盖 > 面板全局：关闭方向必须清，开启方向只清原始标记
+            enabled = await self._effective_status_bar_enabled(
+                self._get_target_id(event)
+            )
+
+            result = event.get_result()
+            if result is None:
+                return
+            chain = getattr(result, "chain", None)
+            if not chain:
+                return
+
+            from astrbot.core.message.components import Plain
+
+            cleaned = 0
+            for comp in chain:
+                if not isinstance(comp, Plain):
+                    continue
+                text = getattr(comp, "text", "") or ""
+                if not text:
+                    continue
+                if enabled:
+                    stripped = self._strip_raw_markers(text, self.love_fields)
+                else:
+                    stripped = self._strip_status_artifacts(text, self.love_fields)
+                if stripped != text:
+                    comp.text = stripped
+                    cleaned += 1
+            if cleaned:
+                logger.info(
+                    f"[Quill] 发送前擦除 {cleaned} 段状态栏残留"
+                    f"（{'原始标记' if enabled else '全套剥离'}）"
+                )
+        except Exception:
+            # 发送前钩子绝不能抛：抛了会中断整条回复的发送
+            logger.warning("[Quill] 发送前清理异常，已放行", exc_info=True)
+
+    # ================================================================
     # 用户指令
     # ================================================================
 
@@ -1990,12 +2921,12 @@ class QuillPlugin(Star):
 
     @filter.command("char")
     async def cmd_char(self, event: AstrMessageEvent, args: GreedyStr):
-        """角色卡管理。用法：/char | /char <名字> | /char unset | /char info | /char export | /char import"""
+        """角色卡管理。用法：/char | /char <序号|名字> | /char unset | /char info [序号|名字] | /char export [序号|名字] | /char import <JSON>"""
         await _cmds.char_dispatch(self, event, args)
 
     @filter.command("quill")
     async def cmd_quill(self, event: AstrMessageEvent, args: GreedyStr):
-        """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill debug | /quill test <wr|wb|mem> <文字>"""
+        """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill debug | /quill statusbar [on|off|auto] | /quill test <wr|wb|mem> <文字>"""
         arg1, rest = _split2(args)
         arg1_lower = (arg1 or "").strip().lower()
         if arg1_lower == "help":
@@ -2006,6 +2937,9 @@ class QuillPlugin(Star):
             return
         if arg1_lower == "debug":
             await _cmds.quill_debug(self, event)
+            return
+        if arg1_lower == "statusbar":
+            await _cmds.statusbar_dispatch(self, event, rest)
             return
         if arg1_lower == "test":
             text = (rest or "").strip()
@@ -2027,7 +2961,7 @@ class QuillPlugin(Star):
 
     @filter.command("memory")
     async def cmd_memory(self, event: AstrMessageEvent, args: GreedyStr):
-        """动态记忆管理。用法：/memory | /memory list | /memory del <序号> | /memory clear | /memory learn <内容> | /memory search <关键词>"""
+        """动态记忆管理。用法：/memory | /memory list [页码] | /memory del <序号> | /memory clear | /memory learn [内容] | /memory search <关键词> | /memory pin <序号> [on|off] | /memory core <内容>"""
         arg1, arg2 = _split2(args)
         await _cmds.memory_dispatch(self, event, arg1, arg2)
 

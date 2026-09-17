@@ -90,7 +90,7 @@
         "type": "bool",
         "description": "启用世界书",
         "default": true,
-        "hint": "关闭后停用世界书系统。"
+        "hint": "世界书总开关。关闭后所有会话都不再注入世界书（常驻条目与关键词条目一并停用）；角色卡上的单卡绑定设置仍然保留，重新开启即恢复。"
       },
       "max_dynamic_entries": {
         "type": "int",
@@ -122,7 +122,7 @@
         "type": "bool",
         "description": "显示触发日志",
         "default": false,
-        "hint": "调试用。可在发送 /info 时顺带查看最新一轮命中了哪些词条。"
+        "hint": "调试用。开启后，Web 面板的插件状态里会列出最新一轮世界书命中了哪些条目（含命中的关键词）；也可用 /quill debug 查看注入构成。"
       },
       "always_activate": {
         "type": "bool",
@@ -197,13 +197,13 @@
         "type": "bool",
         "description": "启用状态栏",
         "default": true,
-        "hint": "[核心开关] 开启后，大模型将在工具调用时自动打包输出状态栏。关闭则仅输出纯剧情。"
+        "hint": "[核心开关] 开启后，大模型将在工具调用时自动打包输出状态栏，插件负责解析并渲染；关闭则仅输出纯剧情，并自动清除历史里残留的状态栏痕迹。这是**全局默认值**——单个会话可用聊天指令 /quill statusbar on|off 临时覆盖（覆盖值不写回本配置）。"
       },
       "fields": {
         "type": "text",
         "description": "状态栏字段（管道分隔）",
         "default": "好感度|关系阶段|心情|位置|穿着|当前想法",
-        "hint": "请严格保持 6 个字段名，用 | 隔开。可自由替换词汇如：服从度|发情度 等。"
+        "hint": "用 | 分隔字段名，可自由替换词汇（如 服从度|发情度）。建议填满 6 个：不足 6 个会自动补空位，状态栏会出现空字段行。改这里会同步影响提示词契约、剥离器与解析器的字段白名单，无需重启即生效。"
       },
       "format_template": {
         "type": "text",
@@ -215,13 +215,13 @@
         "type": "text",
         "description": "剧情走向选项",
         "default": "继续当前话题|转换场景|结束互动",
-        "hint": "状态栏下方显示的分支选项，用 | 分隔。空字符串则不显示。"
+        "hint": "状态栏下方显示的分支选项，用 | 分隔。留空则使用内置默认三项（继续当前话题|转换场景|结束互动）——**不是**不显示。"
       },
       "llm_extract": {
         "type": "bool",
         "description": "LLM 智能提取（实验性）",
         "default": false,
-        "hint": "当 L1-L5 解析全部失败时，调用轻量 LLM 从文本中智能提取状态字段。有 3s 超时保护，失败自动放弃。默认关闭。"
+        "hint": "当六级降级链（L1 代码块 → L2 [LOVE_DATA] → L3 [STATUS] → L4 裸字段 → L5 宽松解析）全部失败时，调用轻量 LLM 从文本中提取状态字段。3s 超时保护，失败自动放弃。默认关闭（会额外消耗 token）。"
       },
       "llm_provider_id": {
         "type": "string",
@@ -235,6 +235,24 @@
         "description": "缺省占位符文本",
         "default": "未设置",
         "hint": "当状态栏字段未匹配到值时显示的占位符。可自定义，如「未知」「—」等。"
+      },
+      "show_delta": {
+        "type": "bool",
+        "description": "标注字段变化幅度",
+        "default": true,
+        "hint": "开启后，可量化的状态字段（如好感度）相对上一轮的变化会带上标注，形如「好感度：84/100（↑2）」。文本字段（心情、位置、当前想法等）不加标注——它们每轮都在变，新值本身就说明了变化，挂箭头只会淹没真正有价值的数值变化。"
+      },
+      "format_template_plain": {
+        "type": "text",
+        "description": "纯文本平台渲染模板",
+        "default": "───── 状态栏 ─────\n{content}\n────────────────",
+        "hint": "QQ/微信这类不渲染 Markdown 的平台用这份模板（{content} 为内容占位符）。默认模板里的 `**状态栏**` 与 ``` 围栏在纯文本平台会原样显示，故改用分隔线排版。留空则退回上面那份模板。"
+      },
+      "plain_platforms": {
+        "type": "text",
+        "description": "按纯文本渲染的平台（管道分隔）",
+        "default": "",
+        "hint": "填 AstrBot 的适配器名，多个用 | 分隔，如 aiocqhttp|qq_official。留空使用内置默认：aiocqhttp、qq_official、qq_official_webhook、wecom、wecom_ai_bot、weixin_oc、weixin_official_account、dingtalk、line。未知平台一律走 Markdown 模板（不破坏原生渲染）。"
       }
     }
   },
@@ -267,17 +285,11 @@
         "default": false,
         "hint": "开启后在控制台打印极其详细的匹配详情（会刷屏，非开发排错勿开）。"
       },
-      "panel_theme": {
-        "type": "string",
-        "description": "面板主题（已弃用）",
-        "default": "light",
-        "hint": "已弃用：面板主题现由 AstrBot 面板本身控制，插件面板自动跟随。此项仅保留以兼容旧配置。"
-      },
-      "panel_ui_state": {
-        "type": "text",
-        "description": "面板界面状态（自动维护，勿手改）",
-        "default": "",
-        "hint": "记录配置页卡片折叠状态等界面偏好。插件面板运行在沙箱 iframe 中无法使用 localStorage，故由后端持久化。请勿手动编辑。"
+      "show_inject_report": {
+        "type": "bool",
+        "description": "在回复末尾显示注入报告",
+        "default": false,
+        "hint": "开启后每轮回复末尾附一行「〔注入〕世界书×2 · 记忆×3 · 素材×2 · 文档×1（来源名）」，用于核对灵敏度/top_k 等参数的调整效果。会进入聊天记录，纯沉浸 RP 时可关闭；关闭后仍可用 /quill debug 查看上一轮构成。"
       }
     }
   },

@@ -12,6 +12,11 @@ import numpy as np
 from collections import OrderedDict
 import json
 
+try:
+    from .._fts_util import escape_trigram, short_tokens
+except ImportError:  # 直接运行本文件时无父包
+    from _fts_util import escape_trigram, short_tokens
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,7 +90,29 @@ class MemoryStore:
             await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_session ON chat_logs(session_id)")
             await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_ts ON chat_logs(timestamp)")
             
-            await self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(summary, content, tokenize='unicode61');")
+            # ── FTS5 分词器迁移：unicode61 → trigram ──
+            # `CREATE ... IF NOT EXISTS` 不会改变已存在表的 tokenizer，老库必须
+            # 显式重建。unicode61 把整句连续中文当成一个 token，子串查询恒不命中
+            # （实测：整句入库后 MATCH '生日' 得 0 行），记忆检索的关键词通道
+            # 因此形同虚设，全靠向量通道兜底。
+            # 重建后由下方回填逻辑（COUNT==0 分支）重新灌数据。
+            try:
+                cur = await self._conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_fts'"
+                )
+                row = await cur.fetchone()
+                if row and row[0] and "trigram" not in row[0].lower():
+                    logger.info("[Quill Memory] memories_fts 分词器升级为 trigram，重建索引")
+                    # 触发器跟着一起删：它们引用的是 memories_fts，
+                    # 重建表后需要重新创建（下方 CREATE TRIGGER IF NOT EXISTS 会补上）。
+                    for trg in ("memories_ai", "memories_ad", "memories_au"):
+                        await self._conn.execute(f"DROP TRIGGER IF EXISTS {trg}")
+                    await self._conn.execute("DROP TABLE IF EXISTS memories_fts")
+                    await self._conn.commit()
+            except Exception as e:
+                logger.warning("[Quill Memory] FTS 分词器迁移失败，沿用原表: %s", e)
+
+            await self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(summary, content, tokenize='trigram');")
             # Create triggers to sync FTS
             await self._conn.execute('''
             CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
@@ -137,10 +164,6 @@ class MemoryStore:
     async def _invalidate_cache(self, session_id: str):
         if session_id in self._cache:
             del self._cache[session_id]
-
-    async def clear_cache(self):
-        """P2-6: 清空所有 LRU 缓存。在配置变更或手动清理时调用。"""
-        self._cache.clear()
 
     async def update_core_memory(self, session_id: str, new_traits: str, crucial_facts: str):
         await self._invalidate_cache(session_id)
@@ -250,6 +273,68 @@ class MemoryStore:
             
         return valid_rows, matrix
 
+    async def _fts_scores(self, session_id: str, query_text: str) -> dict:
+        """取本会话内 FTS 命中行的 BM25 分数 {rowid: score}。
+
+        两条路径，因为 trigram 分词器无法命中 <3 字的查询：
+          1. FTS 快路径 —— ≥3 字的片段走 MATCH，按 bm25 排序取前 50；
+          2. LIKE 兜底 —— 1-2 字的短词（「猫」「生日」，中文记忆检索里最高频的
+             形态）在 trigram 下结构上不可能命中，改用带 session 限定的 LIKE 扫描。
+
+        两种手段都**必须限定 session_id**：此前 MATCH 不带 session 过滤，
+        等于从全库任意取 50 条，本会话的命中可能被别的会话挤掉、甚至完全召不回。
+        """
+        scores: dict = {}
+
+        # ── 路径 1：FTS 快路径 ──
+        safe_query = escape_trigram(query_text)
+        if safe_query:
+            try:
+                # 注意：bm25() 只接受表名、不接受别名（bm25(f) 会报 no such column），
+                # 排序用 别名.rank 即可（bm25 与 rank 同源）。
+                rows = await self._exec_fetchall(
+                    "SELECT f.rowid, f.rank FROM memories_fts f "
+                    "JOIN memories m ON m.id = f.rowid "
+                    "WHERE memories_fts MATCH ? AND m.session_id = ? "
+                    "ORDER BY f.rank LIMIT 50",
+                    (safe_query, session_id),
+                )
+                for row in rows:
+                    # rank 为负值（越小越相关），取负号让「越大越相关」，
+                    # 与下方 LIKE 路径的分数量纲保持同一个方向。
+                    scores[row[0]] = -row[1]
+            except Exception as e:
+                logger.debug("[Quill Memory] FTS 检索失败，回落 LIKE: %s", e)
+
+        # ── 路径 2：短词 LIKE 兜底 ──
+        # 即便 FTS 已有命中，短词仍可能带来额外结果（混合查询「生日的猫」），
+        # 因此两条路径是叠加关系而非互斥。
+        #
+        # 分数量纲说明：下游的 RRF 融合**只取名次、不取数值**，所以这里真正
+        # 决定的是「两种命中谁排前面」。此处让短词命中整体排在 BM25 命中之前，
+        # 并按词长加权（2 字比 1 字更具体）——理由是中文短查询里，用户输入被
+        # 原样子串命中是确定性信号，而 BM25 在长片段上属于相关性估计。
+        # BM25 命中并不会因此被排除：它们仍各自获得 fts 名次参与 RRF，
+        # 且向量通道独立为它们贡献名次。
+        shorts = short_tokens(query_text)
+        if shorts:
+            for tok in shorts[:5]:
+                try:
+                    rows = await self._exec_fetchall(
+                        "SELECT id FROM memories "
+                        "WHERE session_id = ? AND (summary LIKE ? OR chat_summary LIKE ?) "
+                        "LIMIT 50",
+                        (session_id, f"%{tok}%", f"%{tok}%"),
+                    )
+                except Exception as e:
+                    logger.debug("[Quill Memory] LIKE 兜底检索失败: %s", e)
+                    break
+                weight = 1000.0 + len(tok) * 10.0
+                for row in rows:
+                    scores[row[0]] = max(scores.get(row[0], 0.0), weight) + 1.0
+
+        return scores
+
     async def search(self, session_id: str, query_vector: list[float], top_k: int = 3, query_text: str = "") -> list[dict]:
         if not session_id or not query_vector:
             return []
@@ -257,41 +342,51 @@ class MemoryStore:
         # 1. FTS5 BM25 search
         fts_scores = {}
         if query_text:
-            try:
-                # Basic tokenization for FTS
-                safe_query = query_text.replace('"', '').replace("'", "")
-                fts_rows = await self._exec_fetchall(
-                    "SELECT rowid, bm25(memories_fts) FROM memories_fts WHERE memories_fts MATCH ? LIMIT 50",
-                    (safe_query,)
-                )
-                for row in fts_rows:
-                    fts_scores[row[0]] = -row[1] # BM25 returns negative scores in SQLite
-            except Exception:
-                pass
+            fts_scores = await self._fts_scores(session_id, query_text)
                 
-        # 2. Vector Search (cached)
+        # 2. Vector Search (cached) —— 可能不可用（维度不匹配 / 无向量 / 空矩阵）。
+        #    此时**不能整体返回空**：FTS 已经算出了关键词命中，向量通道失败
+        #    不应把关键词结果一起丢掉。改为降级为「纯关键词检索」。
         import numpy as np
-        rows, matrix = await self._get_cached_vectors(session_id)
-        if not rows:
-            return []
+        vec_ok = True
+        try:
+            rows, matrix = await self._get_cached_vectors(session_id)
+        except Exception as e:
+            logger.warning("[Quill Memory] 向量矩阵构建失败，降级为纯关键词检索: %s", e)
+            rows, matrix, vec_ok = None, None, False
 
-        query = np.array(query_vector, dtype=np.float32)
-        # P1-4: 维度校验 — 查询向量维度与存储向量不匹配时跳过（Embedding 切换后）
-        if query.shape[0] != matrix.shape[1]:
-            logger.warning("[Quill Memory] 查询向量维度 %d 与存储向量 %d 不匹配，跳过搜索", query.shape[0], matrix.shape[1])
-            return []
+        if vec_ok and not rows:
+            # 没有任何向量行 —— 但关键词可能仍命中（例如向量尚未生成完）。
+            # 同样走关键词降级，而不是直接放弃。
+            vec_ok = False
 
-        eps = np.finfo(np.float32).eps
-        query_norm_val = np.linalg.norm(query)
-        if query_norm_val < eps:
-            return []
-        query_norm = query / query_norm_val
-        
-        matrix_norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-        valid_mask = (matrix_norms.ravel() >= eps)
-        if not np.any(valid_mask):
-            return []
-            
+        if vec_ok:
+            query = np.array(query_vector, dtype=np.float32)
+            # P1-4: 维度校验 — 查询向量维度与存储向量不匹配时降级（Embedding 切换后）
+            if query.shape[0] != matrix.shape[1]:
+                logger.warning(
+                    "[Quill Memory] 查询向量维度 %d 与存储向量 %d 不匹配，降级为纯关键词检索",
+                    query.shape[0], matrix.shape[1],
+                )
+                vec_ok = False
+            else:
+                query_norm_val = np.linalg.norm(query)
+                if query_norm_val < np.finfo(np.float32).eps:
+                    vec_ok = False
+                else:
+                    query_norm = query / query_norm_val
+                    matrix_norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+                    valid_mask = (matrix_norms.ravel() >= np.finfo(np.float32).eps)
+                    if not np.any(valid_mask):
+                        vec_ok = False
+
+        if not vec_ok:
+            # ── 关键词降级路径 ──
+            # 用 FTS 命中的 rowid 反查记忆行；没有命中就是真的没找到。
+            if not fts_scores:
+                return []
+            return await self._keyword_only_search(session_id, fts_scores, top_k)
+
         matrix_normalized = matrix[valid_mask] / matrix_norms[valid_mask]
         similarities = matrix_normalized @ query_norm
         
@@ -353,6 +448,48 @@ class MemoryStore:
         # Ignore core memories in top-k since they are injected automatically
         non_core = [r for r in results if not r["is_core"]]
         non_core.sort(key=lambda x: x["rrf_score"], reverse=True)
+        return non_core[:top_k]
+
+    async def _keyword_only_search(
+        self, session_id: str, fts_scores: dict, top_k: int
+    ) -> list[dict]:
+        """向量通道不可用时的纯关键词检索。
+
+        FTS 结果此前只在「向量成功」的分支里被消费，向量一旦失败（维度不匹配、
+        矩阵为空、embedding 出错）就整体返回 []，关键词命中随之丢失。
+        这里把它们独立取回，保证「至少还能按关键词召回」。
+        """
+        ids = [int(i) for i in fts_scores.keys()]
+        if not ids:
+            return []
+        results = []
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = await self._exec_fetchall(
+                "SELECT id, summary, chat_summary, timestamp, strength, "
+                "useful_count, is_core FROM memories "
+                f"WHERE session_id = ? AND id IN ({placeholders})",
+                (session_id, *chunk),
+            )
+            for r in rows:
+                results.append({
+                    "id": r[0],
+                    "summary": r[1],
+                    "chat_summary": r[2],
+                    "timestamp": r[3],
+                    "strength": r[4],
+                    "useful_count": r[5],
+                    "age_days": 0.0,
+                    "is_core": r[6],
+                    # 无向量分：仅关键词分参与排序
+                    "vec_score": 0.0,
+                    "fts_score": fts_scores.get(r[0], 0.0),
+                    "degraded": True,
+                })
+        results.sort(key=lambda x: x["fts_score"], reverse=True)
+        # 核心记忆由 get_core_memories 无条件注入，不占 Top-K
+        non_core = [r for r in results if not r["is_core"]]
         return non_core[:top_k]
 
     async def mark_memories_used(self, memory_ids: list[int], score_add: float = 1.5):
@@ -524,21 +661,48 @@ class MemoryStore:
             return 0
 
     async def get_recent_chat_logs(self, session_id: str, limit: int = 8) -> list[dict]:
-        """获取最近聊天记录（正序返回，供上下文恢复用）"""
+        """获取最近聊天记录（正序返回，供上下文恢复用）
+
+        返回值额外带 `id`。反思清理必须按**本次实际读到的 id 批次**删除，
+        不能凭「保留最新 N 条」重算——读与设计之间是 LLM/embedding 的等待窗口，
+        期间会话可能重新活跃并写入新日志，按重算删会把未参与本次摘要的日志
+        一起抹掉（见 main.py 反思循环）。
+        """
         if not session_id:
             return []
         try:
             rows = await self._exec_fetchall(
-                "SELECT role, content FROM chat_logs "
+                "SELECT id, role, content FROM chat_logs "
                 "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
                 (session_id, limit)
             )
-            result = [{"role": r[0], "content": r[1]} for r in rows]
+            result = [{"id": r[0], "role": r[1], "content": r[2]} for r in rows]
             result.reverse()
             return result
         except Exception as e:
-            logger.warning(f"[Quill Memory] 获取聊天日志失败: {e}")
+            logger.warning(f"[Quill Memory] 获取聊天日志失败: %s", e)
             return []
+
+    async def delete_chat_logs_by_ids(self, session_id: str, log_ids: list[int]) -> int:
+        """按**确定的 id 批次**删除日志，只删本次实际参与处理的那些。
+
+        与「保留最新 N 条、其余全删」的区别：后者会连带抹掉未进入本次摘要的
+        更早日志，以及摘要生成期间新写入的日志。返回实际删除行数。
+        """
+        ids = [int(i) for i in (log_ids or []) if i is not None]
+        if not ids or not session_id:
+            return 0
+        # SQLite 参数上限约 999，分批避免极端批次触发 "too many SQL variables"
+        deleted = 0
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            cur = await self._exec_write(
+                f"DELETE FROM chat_logs WHERE session_id = ? AND id IN ({placeholders})",
+                (session_id, *chunk)
+            )
+            deleted += cur.rowcount if cur and cur.rowcount > 0 else 0
+        return deleted
 
     async def log_message(self, session_id: str, role: str, content: str):
         """记录一条原始对话"""

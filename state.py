@@ -29,6 +29,11 @@ class UserState:
     last_refusal_time: str = ""
     quill_rounds: int = 0
     stream_mode: str = "auto"
+    # 状态栏的会话级覆盖：auto=跟随面板全局开关，on/off=强制。
+    # 面板负责默认值，聊天端负责临时切换，两边语义都是「遵循设置」，只是粒度不同。
+    # 与 stream_mode 同属运行时态（重启可重算），但值本身会被持久化，
+    # 这样用户 /statusbar off 之后重启仍然有效。
+    status_bar_mode: str = "auto"
     session_vars: dict = field(default_factory=dict)
     persona_id: str = ""
     first_message_injected: bool = False
@@ -53,6 +58,20 @@ class StateManager:
         self._max_users = max_users
         self._autoflush_task: asyncio.Task | None = None
         self._flush_fail_count = 0
+        # 写盘串行化锁 + 快照世代号。
+        #
+        # 背景（修复旧快照覆盖新快照）：原实现在 _lock 内取快照后**立即释放锁**，
+        # 再把 os.replace 交给 to_thread。两个写盘任务可以并发飞行：
+        #   旧快照开始 → 新快照完成替换 → 旧快照完成替换
+        # 最终磁盘退回旧状态，而 _dirty 早已是 False，不会自愈。
+        # os.replace 只保证「文件完整」，不保证「写入顺序」。
+        #
+        # 修法：写盘全程持有 _write_lock 序列化；快照带单调递增世代号，
+        # 只有**最新**一代才允许落盘——并发请求在拿到写锁时若发现自己已过时，
+        # 直接丢弃（此时磁盘上已是更新的内容，无事可做）。
+        self._write_lock = asyncio.Lock()
+        self._write_gen = 0
+        self._flushed_gen = -1
         self.state_file = os.path.join(data_dir, "quill_state.json")
         os.makedirs(data_dir, exist_ok=True)
         self._load_from_disk()
@@ -89,20 +108,33 @@ class StateManager:
         logger.info("[Quill State] LRU 淘汰: %d 个最旧会话", to_remove)
 
     async def _persist(self) -> None:
-        """立即落盘：锁内序列化快照，锁外写盘（F6 修复：减少持锁时间）
+        """落盘：序列化取快照 → 串行写盘 → 成功才清脏。
 
-        S2-1 修复：写盘成功后才清脏，失败时恢复 dirty 供 autoflush 重试。
+        两次修复叠加：
+        - F6：锁内只做「序列化 + 清脏」，耗时的 to_thread 写盘在锁外，
+          避免阻塞状态读写；
+        - 旧快照覆盖新快照：写盘改为**全程持有 _write_lock**。快照带世代号，
+          拿到写锁时若发现自己已被更新的快照超越，直接返回（磁盘已是更新的
+          内容，重复落盘反而会把旧值写回去）。
         """
         async with self._lock:
             snapshot = self._serialize()
             self._dirty = False
-        try:
-            await asyncio.to_thread(self._atomic_write, snapshot)
-        except Exception:
-            # 写盘失败：恢复脏标记，让 autoflush 下轮重试
-            async with self._lock:
-                self._dirty = True
-            raise
+            self._write_gen += 1
+            gen = self._write_gen
+
+        async with self._write_lock:
+            # 排队期间可能已有更新的快照完成落盘，本快照已过时 → 丢弃。
+            if gen <= self._flushed_gen:
+                return
+            try:
+                await asyncio.to_thread(self._atomic_write, snapshot)
+                self._flushed_gen = gen
+            except Exception:
+                # 写盘失败：恢复脏标记，让 autoflush 下轮重试
+                async with self._lock:
+                    self._dirty = True
+                raise
 
     def _serialize(self) -> str:
         return json.dumps(
@@ -173,32 +205,48 @@ class StateManager:
                         continue
                     snapshot = self._serialize()
                     self._dirty = False
-                # S1-2 修复：内层捕获写盘异常，恢复 dirty 供下轮重试，避免循环死亡
-                try:
-                    await asyncio.to_thread(self._atomic_write, snapshot)
-                    # 成功后重置失败计数
+                    self._write_gen += 1
+                    gen = self._write_gen
+                # 与 _persist 同一套串行化 + 世代号逻辑：两者都能起写盘，
+                # 必须共用 _write_lock，否则「持久化的即时写」与「autoflush 的
+                # 周期写」之间仍能出现旧快照后完成、覆盖新快照。
+                async with self._write_lock:
+                    if gen <= self._flushed_gen:
+                        continue
+                    try:
+                        await asyncio.to_thread(self._atomic_write, snapshot)
+                        self._flushed_gen = gen
+                    except Exception as e:
+                        self._flush_fail_count += 1
+                        next_delay = min(
+                            interval * (2 ** self._flush_fail_count), self._FLUSH_BACKOFF_MAX
+                        )
+                        logger.error(
+                            f"[Quill State] 自动落盘失败 (连续 {self._flush_fail_count} 次)，"
+                            f"{next_delay:.0f}s 后重试: {e}"
+                        )
+                        async with self._lock:
+                            self._dirty = True  # 恢复脏标记以便重试
+                        continue
+                    # 走到这里说明本轮写盘成功
                     if self._flush_fail_count:
                         logger.info(
                             "[Quill State] 自动落盘在失败 %d 次后恢复", self._flush_fail_count
                         )
                         self._flush_fail_count = 0
                     logger.debug("[Quill State] 自动落盘")
-                except Exception as e:
-                    self._flush_fail_count += 1
-                    next_delay = min(
-                        interval * (2 ** self._flush_fail_count), self._FLUSH_BACKOFF_MAX
-                    )
-                    logger.error(
-                        f"[Quill State] 自动落盘失败 (连续 {self._flush_fail_count} 次)，"
-                        f"{next_delay:.0f}s 后重试: {e}"
-                    )
-                    async with self._lock:
-                        self._dirty = True  # 恢复脏标记以便重试
         except asyncio.CancelledError:
             pass
 
     async def stop_autoflush(self) -> None:
-        """Cancel the background autoflush task."""
+        """停掉 autoflush，并**等待可能在途的写盘真正结束**。
+
+        只 cancel() 协程是不够的：`await asyncio.to_thread(...)` 一旦把
+        `os.replace` 交给线程，取消协程**不会**中止那个线程。恢复备份前若不等它，
+        就可能出现「解压覆盖了状态文件 → 残留线程又把旧快照 replace 回去」，
+        恢复结果被静默回滚。这里额外拿一次 _write_lock，能拿到说明在途写盘
+        已结束（写盘全程持锁）。
+        """
         if self._autoflush_task is not None:
             self._autoflush_task.cancel()
             try:
@@ -206,6 +254,9 @@ class StateManager:
             except asyncio.CancelledError:
                 pass
             self._autoflush_task = None
+        # 排空在途写盘：_write_lock 被写盘全程持有，拿到即代表无飞行中的写。
+        async with self._write_lock:
+            pass
 
     async def shutdown(self) -> None:
         """Convenience: stop autoflush then persist all."""
@@ -327,6 +378,26 @@ class StateManager:
                 if m in stats:
                     stats[m] += 1
             return stats
+
+    # ── 状态栏会话级覆盖 ────────────────────────────────────────
+
+    async def set_status_bar_mode(self, user_id: str, mode: str) -> None:
+        """设置会话级状态栏覆盖：auto（跟随全局）/ on（强制开）/ off（强制关）。"""
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None:
+                st = UserState(user_id=user_id)
+                self._states[user_id] = st
+            st.status_bar_mode = mode
+            self._mark_dirty()
+
+    async def get_status_bar_mode(self, user_id: str) -> str:
+        """读会话级覆盖值；未设置返回 auto。"""
+        async with self._lock:
+            st = self._states.get(user_id)
+            if st is None:
+                return "auto"
+            return st.status_bar_mode or "auto"
 
     # session_vars 总大小上限（JSON 序列化后），防止无界增长
     _SESSION_VARS_MAX_BYTES = 65536

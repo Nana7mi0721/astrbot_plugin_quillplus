@@ -1,0 +1,207 @@
+/* ── 13. 弹层 ───────────────────────────────────────────────────────── */
+/* 遮罩：HIG 用「调暗以示聚焦」表达模态 */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
+  display: none;
+  align-items: flex-start;
+  justify-content: center;
+  padding: max(48px, 6vh) var(--sp-5) var(--sp-5);
+  background: rgba(0, 0, 0, .38);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+.scrim.is-open { display: flex; }
+/* 警告框保持视口居中（不随 macOS sheet 语义靠上） */
+#alertScrim {
+  z-index: var(--z-scrim-alert);
+  align-items: center;
+  padding: var(--sp-5);
+}
+#textScrim { z-index: var(--z-scrim-text); }
+#cropScrim { z-index: var(--z-scrim-crop); }
+
+/* 模态：macOS sheet 语义 —— 自顶部（标题栏下方）向下垂落 + 淡入，出场更快 */
+.modal {
+  width: 100%;
+  max-width: 620px;
+  height: min(calc(100vh - 80px), calc(var(--modal-body-h) + 112px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+  transform-origin: top center;
+  transform: translateY(-12px) scale(.98);
+  opacity: 0;
+  transition: transform var(--dur-enter) var(--ease-enter), opacity var(--dur-micro) var(--ease-standard);
+}
+.scrim.is-open .modal { transform: translateY(0) scale(1); opacity: 1; }
+.scrim.is-closing .modal { transform: translateY(-8px) scale(.99); opacity: 0; transition-duration: var(--dur-exit); }
+.modal--sm { max-width: 420px; }
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: .5px solid var(--separator);
+}
+.modal-head h2 { flex: 1; font-size: 17px; }
+.modal-body {
+  flex: 1;
+  min-height: var(--modal-body-h);
+  overflow-y: auto;
+  padding: var(--sp-5);
+}
+.modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-top: .5px solid var(--separator);
+  background: var(--bg-secondary);
+}
+/* 危险操作：标题与按钮用系统红，并配有输入确认词 */
+.danger-box {
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--red-fill);
+  color: var(--red-text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 警告框（HIG：≤3 按钮、取消固定用词、破坏性操作红色） */
+.alert {
+  width: 100%;
+  max-width: 300px;
+  padding: var(--sp-5) var(--sp-4) var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--material-bg-thick);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+  box-shadow: var(--shadow-3);
+  text-align: center;
+}
+.alert-title { font-size: 16px; font-weight: 600; margin-bottom: 3px; }
+.alert-msg { font-size: 13px; line-height: 1.55; color: var(--label-2); }
+.alert-body { margin: var(--sp-3) 0 0; text-align: left; }
+.alert-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); }
+.alert-actions .btn { flex: 1; }
+
+/* 提示横幅（取代原先常暗色 toast）
+   HIG：不要仅为告知信息就打断用户；错误常驻待用户关闭，成功短暂停留。 */
+.toaster {
+  position: fixed;
+  top: var(--sp-3);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  width: min(440px, calc(100vw - 24px));
+  pointer-events: none;
+}
+.banner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 10px var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--material-bg-thick);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+  box-shadow: var(--shadow-2);
+  font-size: 13.5px;
+  pointer-events: auto;
+  transform: translateY(-14px) scale(.98);
+  opacity: 0;
+  transition: transform var(--dur-enter) var(--ease-enter), opacity var(--dur-micro) var(--ease-standard);
+  overflow: hidden;
+}
+.banner.is-in { transform: translateY(0) scale(1); opacity: 1; }
+.banner.is-out { transform: translateY(-8px); opacity: 0; transition-duration: var(--dur-exit); }
+.banner .banner-icon { width: 17px; height: 17px; flex: none; }
+.banner--success .banner-icon { color: var(--green); }
+.banner--error .banner-icon { color: var(--red); }
+.banner--warning .banner-icon { color: var(--orange); }
+.banner--info .banner-icon { color: var(--accent); }
+.banner-msg { flex: 1; min-width: 0; word-break: break-word; }
+.banner-action {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--accent-text);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--r-xs);
+}
+.banner-action:hover { background: var(--accent-tint); }
+/* 剩余时间条：让自动消失可预期（HIG：避免无从预判的超时） */
+.banner-progress {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px;
+  background: currentColor;
+  opacity: .25;
+  transform-origin: left;
+}
+.banner--success .banner-progress { color: var(--green); }
+.banner--error .banner-progress { color: var(--red); }
+.banner--warning .banner-progress { color: var(--orange); }
+.banner--info .banner-progress { color: var(--accent); }
+
+/* ── 14. 悬浮操作条 / 回到顶部 ──────────────────────────────────────── */
+/* FAB 与配置页粘性底栏合并为唯一操作条：仅在存在未保存更改时出现 */
+.actionbar {
+  position: fixed;
+  left: 50%;
+  bottom: var(--sp-5);
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  border-radius: var(--r-pill);
+  background: var(--material-bg-thick);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+  box-shadow: var(--shadow-2);
+  transform: translate(-50%, calc(100% + 40px));
+  opacity: 0;
+  pointer-events: none;
+  transition: transform var(--dur-enter) var(--ease-enter), opacity var(--dur-micro) var(--ease-standard);
+}
+.actionbar.is-visible { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
+.actionbar-text { font-size: 13px; font-weight: 500; color: var(--label-2); white-space: nowrap; }
+.actionbar-text .dot { display: inline-block; margin-right: 5px; vertical-align: 1px; }
+
+.to-top {
+  position: fixed;
+  right: var(--sp-5);
+  bottom: var(--sp-5);
+  z-index: 65;
+  width: 36px; height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: var(--material-bg-thick);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+  box-shadow: var(--shadow-2);
+  color: var(--label-2);
+  cursor: pointer;
+  transform: scale(.8) translateY(8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform var(--dur-enter) var(--ease-enter), opacity var(--dur-micro) var(--ease-standard);
+}
+.to-top.is-visible { transform: scale(1) translateY(0); opacity: 1; pointer-events: auto; }
+.to-top:hover { color: var(--label); }

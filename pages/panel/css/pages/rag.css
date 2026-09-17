@@ -1,0 +1,81 @@
+/* ── 18. 文档知识库 ─────────────────────────────────────────────────── */
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: var(--sp-8) var(--sp-4);
+  border: 1.5px dashed var(--separator);
+  border-radius: var(--r-lg);
+  background: var(--fill-quaternary);
+  text-align: center;
+  color: var(--label-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--dur-micro) var(--ease-standard),
+              background var(--dur-micro) var(--ease-standard),
+              transform var(--dur-micro) var(--ease-standard);
+}
+.dropzone:hover, .dropzone.is-over { border-color: var(--accent); background: var(--accent-tint); }
+.dropzone.is-over { transform: scale(1.005); }
+.dropzone .icon { color: var(--label-3); }
+
+.doc-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 10px 0;
+  position: relative;
+}
+.doc-row + .doc-row::before {
+  content: "";
+  position: absolute; top: 0; left: 0; right: 0;
+  height: .5px; background: var(--separator); transform: scaleY(.5);
+}
+.doc-name { font-size: 13.5px; font-weight: 500; word-break: break-all; }
+.doc-meta { margin-top: 1px; font-size: 12px; color: var(--label-3); }
+
+.result-card {
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-secondary);
+}
+.result-card + .result-card { margin-top: var(--sp-2); }
+.result-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.result-rank {
+  width: 22px; height: 22px;
+  flex: none;
+  display: grid; place-items: center;
+  border-radius: var(--r-xs);
+  background: var(--accent-fill);
+  color: var(--accent-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.result-source { font-size: 13px; font-weight: 600; }
+.result-score { margin-left: auto; font-size: 12px; color: var(--label-3); font-variant-numeric: tabular-nums; }
+.result-body {
+  margin-top: var(--sp-2);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--label-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 检索布局：主输入区 + 侧参数区 */
+.search-layout { display: flex; gap: var(--sp-4); align-items: flex-start; }
+.search-layout .search-main { flex: 2.4; min-width: 0; }
+.search-layout .search-side { flex: 1; min-width: 168px; }
+
+/* 统计小格 */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--sp-3); }
+.stat-cell { text-align: center; }
+.stat-cell-value {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+.stat-cell-label { margin-top: 1px; font-size: 12px; color: var(--label-3); }
