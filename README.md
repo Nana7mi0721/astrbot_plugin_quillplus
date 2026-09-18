@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.2.4-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.2.5-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -330,9 +330,10 @@ QuillPlus 遵循持续迭代的开发路线，当前（v5.2）已完成以下里
 - ✅ **v5.0** — 重构首发版：平行宇宙双轴隔离、JSON 原子化状态机、全链路异步化、Character Card V2 全量支持
 - ✅ **v5.1** — 全自动自迭代记忆：闲时反思守护进程、核心记忆更新、混合检索 (FTS5+Vector+RRF)、LRU 会话缓存
 - ✅ **v5.2/v5.2.1** — 面板功能补全：对话日志查看器、全量备份导出/恢复、WR 批量操作、移动端底部导航、MD3 全面重构、四轮代码审查修复
+- ✅ **v5.2.5** — 上架合规：logger 全部改为 `from astrbot.api import logger`（19 个模块，审查意见只列了 7 个文件）；修复独立审计的 8 项正确性缺陷；5 个漏网写类指令补管理员校验
 - ✅ **v5.2.4** — 状态栏降级链重构为分级注册表（逐级命中率可见、单级异常不再掀翻整链）；修复三个「面板能改但运行期不生效」缺陷（裸 `[LOVE_DATA]` 在多轮工具调用时泄漏、`rag.enable_memory`/`top_k` 不热生效、`worldbook.enabled` 无消费者）；清理已弃用配置键与死代码；配置页文字/指令帮助/文档全面对齐实现
 - ✅ **v5.2.4（对话隔离）** — 切换角色卡自动隔离对话历史（每张卡绑定独立 AstrBot 对话，切回仍见原历史）；`/quill reset` 改为**保留动态记忆**、只清当前角色卡的对话上下文与日志（重开剧情而非抹掉记忆）
-- ✅ **v5.2.4（上架合规）** — logger 全部改为 `from astrbot.api import logger`（19 个模块，禁用内置 logging）；修复独立审计的 8 项正确性缺陷（反思误删未总结日志、状态旧快照覆盖新快照、向量失败谎报成功、检索失败计入成功率等）；5 个漏网写类指令补管理员校验
+- ✅ **v5.2.4（审计八项）** — 独立审计的 8 项正确性缺陷：反思误删未参与总结的日志（并可能清空核心记忆）、状态旧快照覆盖新快照、向量失败谎报上传成功、RAG 重建缺生命周期保护、配置保存失败未回滚 Retriever、记忆向量失败时不返回关键词结果、素材库回退丢弃 FTS 命中、检索失败被计入成功率
 - ✅ **v5.2.3** — 面板按 Apple HIG 全面重写：系统色/字阶/材质/弹簧动效、图标符号表、事件委托重构；接入 HarmonyOS Sans；修复 3 个沙箱 iframe 专属缺陷（配置页锁死、脚本中断、偏好不持久）
 - ✅ **v5.2.3（桌面化修订）** — 面板重建为 macOS 桌面应用形态：边栏优先架构、控件高度令牌体系、弹层顶部垂落、右键菜单、方向键导航、双击编辑、自绘下拉 listbox、分类固定调色板；移除移动端；修复 11 项既有缺陷（含分类筛选与 Alt+数字快捷键长期失效）
 

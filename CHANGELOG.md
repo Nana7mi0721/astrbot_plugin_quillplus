@@ -1,5 +1,50 @@
 # Changelog
 
+## v5.2.5 — 上架合规（logger 统一到 astrbot.api）
+
+v5.2.4 提交被 AstrBot 插件市场 LLM Guard **Rejected**，原因是硬性违规：
+「logger 必须且只能从 `astrbot.api` 导入，严禁使用 Python 内置 logging 模块」。
+本轮修掉该违规，并顺带解决一个会导致插件列表显示「加载失败」的残留目录问题。
+
+> 版本号说明：v5.2.4 已在市场侧留下 Rejected 记录，按 5.2.5 重新提交。
+> 下面 v5.2.4 的条目保留为历史记录（该版本的代码更改确实存在，只是未通过审查）。
+
+### 1. logger 统一到 `astrbot.api`（上架硬性违规，已修复）
+
+- 审查列出了 7 个文件，**实际全仓 19 个模块**都在用内置 logging
+  （审查意见未逐一枚举）。两种形态：
+  - 9 个文件是 `try: from astrbot.api import logger / except ImportError:
+    import logging` —— 这个回退本身就是违规点，且让「插件内跑」与
+    「自测跑」走两套不同日志实现；
+  - 10 个文件直接 `import logging` + `logging.getLogger(__name__)`。
+- **修复**：19 处全部改为 `from astrbot.api import logger`；另清掉
+  `activation.py` 自测里残留的 `logging.basicConfig`。
+- **保留自测可用性**：改完后 `python kb.py` 这类直接跑会因找不到 astrbot
+  而失败。新增 `_astrbot_bootstrap.py`——只在 astrbot 确实导入不到时才把
+  AstrBot 的 `backend/app` 加入 `sys.path`，**不做** mock、**不做** 日志降级，
+  带不到就让错误照原样抛出。6 个带 `__main__` 自测入口的文件接入它。
+- **验证**：全仓 `import logging` 计数 **0**；14 个顶层模块 + 6 个
+  `quill_rag` 子模块全部可导入，logger 类型为 `_PluginContextLogger`；
+  线上日志已带 `[astrbot_plugin_quillplus] [INFO] [模块:行号]` 前缀
+  （含审查未列到的 `quill_rag.retrieval`、`quill_rag.llm_summarizer`）；
+  独立自测 kb / activation(15) / encryption(12) / worldbook(28) /
+  prompt_builder / state 全绿（无需手动设 PYTHONPATH）。
+
+### 2. 插件列表出现「加载失败」的残留备份目录（已解决）
+
+- **现象**：AstrBot 插件页「加载失败插件 (1)」挂着
+  `_quill_repair_backup_20260916_140133`，报
+  `No module named 'data.plugins._quill_repair_backup_20260916_140133.config'`。
+- **根因**：`data/plugins/` 下留着一份 2026-09-16 的旧代码备份（895K）。
+  它有 `__init__.py` + `main.py`，AstrBot 按目录扫描把它**当成插件加载**；
+  但该备份不完整（无 `config.py` / `kb.py` / `commands.py`，`main.py`
+  只有 1898 行，当前为 2978 行），导入必然失败。
+  **与插件代码无关，是旧备份放错了位置。**
+- **处理**：移出 `data/plugins/` 到仓库 `.backup/`（已 gitignore），
+  **未删除**——它仍是历史代码。修复后插件页「加载失败」计数为 **0**。
+- **备注**：备份目录若必须放在插件目录下，应去掉 `__init__.py` 或放到
+  更深的子目录，否则会被 AstrBot 当作插件扫描。
+
 ## v5.2.4 — 状态栏降级链重构 + 三个根因缺陷修复 + 配置/文档对齐
 
 本轮做三件事：把状态栏的六级降级链重构成可统计、可测试的注册表；修掉三个
@@ -165,27 +210,10 @@
   `/char import` 的用例刻意喂坏 JSON，使「被拦截」与「门失效」两种回执可区分，
   且无论哪种都不会真的写入角色卡库、不留测试残留。
 
-### 9. logger 统一到 `astrbot.api`（上架硬性违规，已修复）
+### 9. logger 统一到 `astrbot.api`（已上移至 v5.2.5 第 1 节）
 
-AstrBot 插件市场 LLM Guard 审查以「违反 logger 规范」Rejected 了 v5.2.4：
-**logger 必须且只能从 `astrbot.api` 导入，严禁使用 Python 内置 logging。**
-
-- **范围比审查意见列的更广**：审查列出了 7 个文件，实际全仓 **19 个模块**
-  都在用内置 logging（审查者未逐一枚举）。两种形态：
-  - 9 个文件是 `try: from astrbot.api import logger / except ImportError:
-    import logging` —— 这个回退正是违规点，且它让「插件内跑」与
-    「自测跑」走两条不同日志实现，本身就是隐患；
-  - 10 个文件直接 `import logging` + `logging.getLogger(__name__)`。
-- **修复**：19 处全部改为 `from astrbot.api import logger`，共 19 处导入。
-  另清掉 `activation.py` 自测里残留的 `logging.basicConfig`。
-- **保留自测可用性**：改完后 `python kb.py` 这类直接跑会因找不到 astrbot
-  而失败。新增 `_astrbot_bootstrap.py`——只在 `astrbot` 确实导入不到时才把
-  AstrBot 的 `backend/app` 加入 `sys.path`，**不做** mock、**不做** 日志降级，
-  带不到就让错误照原样抛出。6 个带 `__main__` 自测入口的文件接入它。
-- **验证**：14 个顶层模块 + 6 个 `quill_rag` 子模块全部可导入，logger 类型为
-  `_PluginContextLogger`；线上日志已带 `[astrbot_plugin_quillplus] [INFO]
-  [模块:行号]` 前缀（含此前未列全的 `quill_rag.retrieval`、
-  `quill_rag.llm_summarizer`）；全仓 `import logging` 计数为 **0**。
+> 本条原写在 v5.2.4 下，但它是为通过审查而做的修改，随版本号升到 5.2.5，
+> 故移至顶部 v5.2.5 的第 1 节。此处保留指引，避免重复维护两份内容。
 
 ### 10. 独立审计的 8 项正确性缺陷（全部已修复）
 
@@ -302,6 +330,9 @@ AstrBot 插件市场 LLM Guard 审查以「违反 logger 规范」Rejected 了 v
 - 部署目录与仓库改动文件 md5 全部一致；插件重载成功，实盘冒烟正常，
   后端日志 **0 条 Traceback**，且插件日志均带
   `[astrbot_plugin_quillplus] [INFO] [模块:行号]` 前缀
+- v5.2.5 复验：`metadata.yaml` 版本 5.2.5，AstrBot 插件页读到的版本为
+  **5.2.5**；插件页「加载失败」计数由 1 降为 **0**
+  （残留备份目录已移出 `data/plugins/`）
 - 本轮新增的针对性验证：
   - ② 状态落盘：40 轮随机交错（写盘耗时抖动 + 并发/串行混合）全部收敛到最新态
   - ⑥ 记忆降级：维度不匹配时实测由「0 条」变为「按关键词召回」
