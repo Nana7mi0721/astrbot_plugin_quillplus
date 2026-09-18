@@ -10,13 +10,12 @@ Each handler returns {"status": "ok", "data": ...} or {"status": "error", "messa
 """
 
 import asyncio
-import logging
 import os
 import tempfile
 import uuid
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 _PLUGIN_VERSION_CACHE: str | None = None

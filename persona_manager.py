@@ -20,11 +20,7 @@ from collections import defaultdict
 from io import BytesIO
 from typing import Any, Optional
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 class QuillPersonaManager:

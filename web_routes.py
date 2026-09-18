@@ -46,7 +46,6 @@ _ALLOWED_CONFIG_KEYS: set = {
 
 import asyncio
 import json
-import logging
 import os
 import tempfile
 from functools import wraps
@@ -68,7 +67,7 @@ from astrbot.api.web import (
 # 字节流响应（file_response 仅支持文件路径，不适用内存字节）
 from starlette.responses import Response
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 from ._backup_util import (
     build_backup_zip,

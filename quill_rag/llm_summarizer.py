@@ -4,9 +4,8 @@
 from __future__ import annotations
 
 import json
-import logging
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 DEFAULT_SYSTEM_PROMPT = """你是一个记忆整理助手。请将以下对话精简为一条不超过50字的核心事件摘要。
 摘要应包含：关键人物、事件、情感变化。不要使用标点符号以外的特殊字符。

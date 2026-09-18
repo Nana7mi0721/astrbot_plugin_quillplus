@@ -33,11 +33,7 @@ from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.star.register import register_command
 from astrbot.core.star.filter.command import GreedyStr
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 from .config import QuillConfig
 from ._paths import resolve_data_layout

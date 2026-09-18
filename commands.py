@@ -16,11 +16,7 @@ from astrbot.core.platform.message_type import MessageType
 
 from ._route_core import error_text
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 def _get_target_id(event: AstrMessageEvent) -> str:

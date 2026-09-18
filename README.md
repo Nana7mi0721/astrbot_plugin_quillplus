@@ -260,6 +260,22 @@ Web 依赖（fastapi、quart）通常由 AstrBot 自带，缺失时手动安装�
 
 ---
 
+## 开发约定
+
+**日志一律使用 `from astrbot.api import logger`**，禁止 `import logging` /
+`logging.getLogger()`。这是 AstrBot 插件市场的硬性上架规则（LLM Guard 审查项），
+违反会直接 Rejected。全仓库应当满足：
+
+```bash
+grep -rn "import logging" --include=*.py .   # 期望输出为空
+```
+
+带 `__main__` 自测入口的模块（`kb.py`、`state.py`、`activation.py` 等）
+若要在插件外直接 `python <file>` 运行，用 `_astrbot_bootstrap.ensure_astrbot_importable()`
+把 AstrBot 加入导入路径即可——不要为了跑自测而回退到内置 logging。
+
+---
+
 ## 架构
 
 ```
@@ -276,6 +292,8 @@ astrbot_plugin_quillplus/
 ├── state.py                 # 用户状态管理（session_vars 持久化）
 ├── activation.py            # 激活检测
 ├── commands.py              # 指令业务逻辑
+├── _fts_util.py             # FTS5 转义/短词工具（kb 与 memory_store 共用）
+├── _astrbot_bootstrap.py    # 独立运行自测时的 AstrBot 导入路径引导（不含日志降级）
 ├── quill_rag/               # RAG + 记忆共享模块
 │   ├── embedding.py         # Embedding 封装
 │   ├── vector_store.py      # FAISS 向量存储 (Doc RAG)
@@ -314,6 +332,7 @@ QuillPlus 遵循持续迭代的开发路线，当前（v5.2）已完成以下里
 - ✅ **v5.2/v5.2.1** — 面板功能补全：对话日志查看器、全量备份导出/恢复、WR 批量操作、移动端底部导航、MD3 全面重构、四轮代码审查修复
 - ✅ **v5.2.4** — 状态栏降级链重构为分级注册表（逐级命中率可见、单级异常不再掀翻整链）；修复三个「面板能改但运行期不生效」缺陷（裸 `[LOVE_DATA]` 在多轮工具调用时泄漏、`rag.enable_memory`/`top_k` 不热生效、`worldbook.enabled` 无消费者）；清理已弃用配置键与死代码；配置页文字/指令帮助/文档全面对齐实现
 - ✅ **v5.2.4（对话隔离）** — 切换角色卡自动隔离对话历史（每张卡绑定独立 AstrBot 对话，切回仍见原历史）；`/quill reset` 改为**保留动态记忆**、只清当前角色卡的对话上下文与日志（重开剧情而非抹掉记忆）
+- ✅ **v5.2.4（上架合规）** — logger 全部改为 `from astrbot.api import logger`（19 个模块，禁用内置 logging）；修复独立审计的 8 项正确性缺陷（反思误删未总结日志、状态旧快照覆盖新快照、向量失败谎报成功、检索失败计入成功率等）；5 个漏网写类指令补管理员校验
 - ✅ **v5.2.3** — 面板按 Apple HIG 全面重写：系统色/字阶/材质/弹簧动效、图标符号表、事件委托重构；接入 HarmonyOS Sans；修复 3 个沙箱 iframe 专属缺陷（配置页锁死、脚本中断、偏好不持久）
 - ✅ **v5.2.3（桌面化修订）** — 面板重建为 macOS 桌面应用形态：边栏优先架构、控件高度令牌体系、弹层顶部垂落、右键菜单、方向键导航、双击编辑、自绘下拉 listbox、分类固定调色板；移除移动端；修复 11 项既有缺陷（含分类筛选与 Alt+数字快捷键长期失效）
 

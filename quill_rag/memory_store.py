@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import logging
 import sqlite3
 import asyncio
 import aiosqlite
@@ -17,7 +16,7 @@ try:
 except ImportError:  # 直接运行本文件时无父包
     from _fts_util import escape_trigram, short_tokens
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 class MemoryStore:

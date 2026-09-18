@@ -165,7 +165,29 @@
   `/char import` 的用例刻意喂坏 JSON，使「被拦截」与「门失效」两种回执可区分，
   且无论哪种都不会真的写入角色卡库、不留测试残留。
 
-### 9. 一轮独立审计的 8 项正确性缺陷（全部已修复）
+### 9. logger 统一到 `astrbot.api`（上架硬性违规，已修复）
+
+AstrBot 插件市场 LLM Guard 审查以「违反 logger 规范」Rejected 了 v5.2.4：
+**logger 必须且只能从 `astrbot.api` 导入，严禁使用 Python 内置 logging。**
+
+- **范围比审查意见列的更广**：审查列出了 7 个文件，实际全仓 **19 个模块**
+  都在用内置 logging（审查者未逐一枚举）。两种形态：
+  - 9 个文件是 `try: from astrbot.api import logger / except ImportError:
+    import logging` —— 这个回退正是违规点，且它让「插件内跑」与
+    「自测跑」走两条不同日志实现，本身就是隐患；
+  - 10 个文件直接 `import logging` + `logging.getLogger(__name__)`。
+- **修复**：19 处全部改为 `from astrbot.api import logger`，共 19 处导入。
+  另清掉 `activation.py` 自测里残留的 `logging.basicConfig`。
+- **保留自测可用性**：改完后 `python kb.py` 这类直接跑会因找不到 astrbot
+  而失败。新增 `_astrbot_bootstrap.py`——只在 `astrbot` 确实导入不到时才把
+  AstrBot 的 `backend/app` 加入 `sys.path`，**不做** mock、**不做** 日志降级，
+  带不到就让错误照原样抛出。6 个带 `__main__` 自测入口的文件接入它。
+- **验证**：14 个顶层模块 + 6 个 `quill_rag` 子模块全部可导入，logger 类型为
+  `_PluginContextLogger`；线上日志已带 `[astrbot_plugin_quillplus] [INFO]
+  [模块:行号]` 前缀（含此前未列全的 `quill_rag.retrieval`、
+  `quill_rag.llm_summarizer`）；全仓 `import logging` 计数为 **0**。
+
+### 10. 独立审计的 8 项正确性缺陷（全部已修复）
 
 来源：`.build/union alpha.txt`。逐条核验后确认 **8 项全部真实存在**，
 按危害排序修复。其中 ① 的实际危害高于原文档定级，⑤ 含本轮之前引入的回归。
@@ -248,7 +270,7 @@
 子类化以保留现有调用方的 list 语义）携带 `_rag_ok` / `_rag_error`；
 上层按 `rag_ok()` 记录，空结果仍算成功。
 
-### 10. 文档
+### 11. 文档
 
 - `docs/STATUS_BAR.md`：新增「九之五 降级链重构为分级注册表」与
   「七之五 裸 `[LOVE_DATA]` 泄漏」两节；行号随重构更新。
@@ -266,13 +288,20 @@
 - `test_status_bar_parsers.py` **279 passed**（新增 t25 锁定注册表与闸门语义、t26 锁定发送前兜底钩子及其两档强度）
 - `test_config_projection.py` **18 passed** / `test_memory_fts.py` **20 passed**
 - `prompt_builder.py` **31 passed** / `kb.py` **ALL TESTS PASSED**
-- 全仓 `compileall` 通过（含 `quill_rag/`）
-- harness `--tier2 --tier3 --allow-flip`：**PASS 49 / FAIL 0 / SKIP 1**
+- logger 合规改造后复测：14 个顶层模块 + 6 个 `quill_rag` 子模块全部可导入；
+  独立自测 `kb` / `activation`(15) / `encryption`(12) / `worldbook`(28) /
+  `prompt_builder` / `state` 全绿（均无需手动设 PYTHONPATH）
+- 全仓 `compileall` 通过（含 `quill_rag/`）；全仓 `import logging` 计数 **0**
+- harness `--tier2 --tier3 --allow-flip --timeout 180`：**PASS 49 / FAIL 0 / SKIP 1**
   （与改动前基线一致；新增的 7 条 tier3 权限用例全 PASS）
+  > 注：用 `--timeout 120` 跑时 `gated_status_bar_parse` 会因 LLM 单次调用偏慢
+  > （实测 64s，偶发更久）而超时 FAIL；改 180s 后稳定通过。是超时设置问题，
+  > 不是代码问题。
 - 配置 md5 回到基线 `403fee103fe2c8c82d7166a98c538854`；
-  `status_bar_mode` 分布 `{auto: 77}`，无非 auto 残留
-- 部署目录与仓库 7 个改动文件 md5 全部一致；插件重载成功，实盘冒烟正常，
-  后端日志 **0 条 Traceback**
+  `status_bar_mode` 分布 `{auto: 82}`，无非 auto 残留
+- 部署目录与仓库改动文件 md5 全部一致；插件重载成功，实盘冒烟正常，
+  后端日志 **0 条 Traceback**，且插件日志均带
+  `[astrbot_plugin_quillplus] [INFO] [模块:行号]` 前缀
 - 本轮新增的针对性验证：
   - ② 状态落盘：40 轮随机交错（写盘耗时抖动 + 并发/串行混合）全部收敛到最新态
   - ⑥ 记忆降级：维度不匹配时实测由「0 条」变为「按关键词召回」

@@ -3,14 +3,13 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import asyncio
 import aiosqlite
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 class FaissVectorStore:

@@ -41,9 +41,14 @@ def _save_json_atomic(path: str, data: dict):
 
 try:
     from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+except ModuleNotFoundError:  # 直接运行本文件做自测：先把 AstrBot 加入可导入路径
+    # 包内加载走相对导入；`python <file>` 时无父包，退回顶层导入
+    try:
+        from ._astrbot_bootstrap import ensure_astrbot_importable
+    except ImportError:
+        from _astrbot_bootstrap import ensure_astrbot_importable
+    ensure_astrbot_importable()
+    from astrbot.api import logger
 
 # ── Name validation ──────────────────────────────────────────────────────────
 

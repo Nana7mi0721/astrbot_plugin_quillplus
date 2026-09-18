@@ -24,14 +24,13 @@ AstrBot or aiosqlite installed.
 from __future__ import annotations
 
 import io
-import logging
 import os
 import shutil
 import sqlite3
 import tempfile
 import zipfile
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 # SQLite main database files always start with this 16-byte magic.
 SQLITE_MAGIC = b"SQLite format 3\x00"

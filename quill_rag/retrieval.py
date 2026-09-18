@@ -4,9 +4,8 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 # 检索结果的失败标记键。之所以用「挂在 list 上的属性」而不是改成返回
 # 结构化对象：search_documents / search_memories 的调用方（含面板路由）

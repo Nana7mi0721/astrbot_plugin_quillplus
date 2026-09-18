@@ -37,11 +37,10 @@ is unavailable.
 
 from __future__ import annotations
 
-import logging
 import os
 import shutil
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 PLUGIN_NAME = "astrbot_plugin_quillplus"
 
