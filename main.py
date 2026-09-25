@@ -1060,7 +1060,10 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
         * 先切角色卡专属对话（必须早于框架 ``_get_session_conv()``，
           下一事件才切换就要晚一轮生效），实现见
-          quill/services/character.py；
+          quill/services/character.py；**F2（M3.0，有意行为变更）**：
+          新建独立对话 / 切换到不同对话成功后重置 ``quill_rounds``，
+          消除换卡后首轮跳 Layer 1 常驻（BASELINE §8.2 F2；同卡快路径
+          与首次接管当前对话不重置，重置失败只 warning）；
         * 拦截字面 ``/reinject`` / ``/重新注入``（按 **sender_id** 非
           target_id 重置 quill_rounds 并回执，不继续流式决策）；
         * 按 ``state.stream_mode`` off/on/auto 设置 ``enable_streaming``
@@ -1342,7 +1345,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         M2.2 第二轮下沉薄转发：实现已整体搬至
         quill/services/character.py（``ensure_persona_conversation``，
         完整设计理由——为什么必须挂在 on_waiting_llm_request、快路径、
-        死对话重建、首次接管、全量 try 放行——见彼处 docstring）。
+        死对话重建、首次接管、全量 try 放行——见彼处 docstring；M3.0 F2
+        的 quill_rounds 重置挂点同样住彼处，语义与容错风格见
+        ``_reset_quill_rounds_safe``）。
 
         本方法保留以维持旧访问面（H1 委托链、/quill reset 的文档引用）
         与搬移前 ``self._ensure_persona_conversation`` 的动态分发路径
@@ -1606,7 +1611,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         * **状态栏段不受 ``_quill_activated`` gate 限制**（BASELINE §2.1
           不对称点，快照钉住）——开启时 ``_quill_status_handled`` 已置位
           则只剥残留（不二次渲染），否则六级链提取渲染 + 无栏兜底；
-          关闭时整套剥离；随后注入报告追加（``_quill_report_added``
+          关闭时整套剥离；
+        * **F1 回声置空（M3.0，有意行为变更）**：状态栏段之后、注入报告
+          段之前，completion 与框架已发记录
+          （``_send_message_to_user_current_session_plain_texts``）做双向
+          归一比对（报告行抹除 + 状态栏变体剥离后正文全等），命中则置空
+          completion 让 respond 阶段走空链——消除 SMT 回声重复回复
+          （BASELINE §8.2 F1；宁漏勿误，判定异常/列表异常一律放行原路径）；
+          随后注入报告追加（``_quill_report_added``
           去重，H2 工具路径与本路径共用）；
         * gate 后：未激活 return；助手回复落 chat_logs（
           ``rag_enable_chat_logging`` 开关 + ``_quill_assistant_logged``

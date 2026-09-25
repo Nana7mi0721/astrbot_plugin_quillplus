@@ -13,6 +13,11 @@
 （on_llm_request，全插件最大函数、22 步注入编排本体，BASELINE §4）。
 至此六钩子全部迁毕。
 
+M3.0 真机实测修复（BASELINE §8.2，**有意行为变更**里程碑）：H4 新增
+F1 回声置空段（``_normalized_reply_body`` + ``handle_llm_response``
+2.5 段，消除 SMT 回声重复回复）；F2 的 quill_rounds 重置挂点住
+quill/services/character.py（H1 委托链上）。
+
 降级语义分层：顶层 try/except 留在 main.py 注册桩内（与原 H6 的
 "顶层吞掉放行"同层，不因委托而改变降级位置）；本模块实现体内**不再**
 重复包裹——桩内已保证任何异常都不会外抛中断发送。
@@ -38,6 +43,28 @@ from ..encryption import decrypt_output
 from ..quill.services import memory as _memory_mod
 from ..quill.services import prompt as _prompt_mod
 from ..quill.services import response as _response_mod
+
+# F1（M3.0，BASELINE §8.2 F1）：框架 send_message_to_user 把已发送纯文本
+# 记入本 extra 键（message_tools.py:349-361，值经 strip()），respond.stage
+# 以它与最终 result 做精确匹配去重（respond/stage.py:189-207）。
+_SMT_SENT_TEXTS_KEY = "_send_message_to_user_current_session_plain_texts"
+
+
+def _normalized_reply_body(plugin, text: str) -> str:
+    """F1 回声比对的**双向归一**：注入报告行抹除 + 状态栏变体剥离后取正文。
+
+    completion 侧与已发记录侧走同一函数，保证比对对称。两个变换都是
+    确定性的（报告行是行锚正则、剥离器是既有状态栏变体正则组），不含
+    任何模糊/相似度匹配——正文不完全相等即不判回声（宁漏勿误）。
+
+    经 ``plugin._scrub_inject_report`` / ``plugin._strip_status_artifacts``
+    动态分发而非直接 import：与 H4 其余段落对 main.py 辅助方法的访问
+    路径一致（前者在 main.py、后者转发 quill/services/statusbar/strip.py）。
+    """
+    body = plugin._scrub_inject_report(text or "")
+    return plugin._strip_status_artifacts(
+        body, plugin.props.love_fields
+    ).strip()
 
 
 async def handle_decorating_result(plugin, event: AstrMessageEvent) -> None:
@@ -309,7 +336,8 @@ async def handle_llm_response(
     try/except **不在本函数内**——降级层位在注册桩，与 H2/H6 同形态：
     任何异常吞掉 + error 日志放行，resp 保持已改到一半的状态。）
 
-    段序（搬移前后一致，不得重排——顺序即行为）：
+    段序（搬移前后一致，不得重排——顺序即行为；M3.0 在段 2 与段 3 之间
+    新增 F1 回声置空段，为**有意行为变更**，BASELINE §8.2 F1 / PLAN §M3.0）：
 
     1. 前置清洗：``[B:...]`` Base64 解密安全网（agent loop 续写尾部文本
        的混淆层的逆变换，``decrypt_output``）；用户中断系统标记擦除；
@@ -324,6 +352,36 @@ async def handle_llm_response(
          （handled=False）且有 persona 时追加兜底栏
          （``plugin._build_default_love_data``）；
        - 关闭 → 整套 ``plugin._strip_status_artifacts`` 擦除一切痕迹；
+    2.5. **F1：SMT 回声置空**（M3.0 新增，位于状态栏段之后、注入报告
+       段之前）。现象与根因（BASELINE §8.2 F1）：AstrBot 4.28.x 的
+       ``send_message_to_user`` 直接发送并把**已发送纯文本**记入
+       ``_send_message_to_user_current_session_plain_texts``（框架
+       message_tools.py:349-361，值经 strip()）；respond.stage 以
+       ``result.get_plain_text().strip()`` 与已发列表做**精确成员匹配**
+       去重（respond/stage.py:189-207）。羽笔流程打破匹配：H2 把状态栏
+       **渲染后**随工具文本发出（列表里是渲染版），本钩子把 completion
+       回声里的原始标记**剥离**（completion 变体）——两者不等 → 框架
+       去重失效 → 用户收到两条（实测：工具直发后 25s respond 再发剥离版）。
+
+       处置：对 completion 与已发列表做**双向归一**比对（双方各经
+       ``_normalized_reply_body``：``plugin._scrub_inject_report`` 抹除
+       注入报告行 + ``plugin._strip_status_artifacts`` 剥离状态栏变体，
+       比较正文），判定为已发内容的回声则**置空** ``resp.completion_text``
+       ——H4 对 resp 的实际操作对象历来只有 completion_text（经
+       LLMResponse 的 property 语义与 result_chain 互转），置空后框架侧
+       不再产出可发文本：runner 对空 completion 不 yield llm_result
+       （result_chain 为 None 时），result_chain 存在时链上只剩空 Plain、
+       respond.stage 的 ``_is_empty_message_chain`` 走空链早退——从根上
+       消除第二条消息，而非依赖框架那份注定失配的去重。
+
+       宁漏勿误（只拦高置信回声，禁止模糊匹配）：已发 extra 缺失/非
+       list/空列表/剥离后正文为空/归一后不等 → 一律放行原路径；"模型
+       直接纯文本输出（未走工具）"场景下 extra 无记录，判定天然不触发，
+       行为与修复前完全一致；比对自身异常只 debug 记日志放行，不影响
+       本钩子其余段落。归一中抹除注入报告行的理由：报告行是 H2 追加在
+       **已发侧**的插件产物、模型不会回声它，不抹则开启
+       show_inject_report 时回声必然漏判；两侧对称抹除，仍是正文全等
+       比对，无新增误杀面。
     3. 注入报告追加（``show_inject_report`` 开 + ``_quill_report_added``
        未置位 + 正文非空）——H2 工具路径与本路径都会跑到本函数，标记
        防两行报告；
@@ -397,6 +455,46 @@ async def handle_llm_response(
         resp.completion_text = plugin._strip_status_artifacts(
             content, plugin.props.love_fields
         )
+
+    # ── F1（M3.0，BASELINE §8.2 F1）：SMT 回声置空 ────────────────────
+    # 框架 respond.stage 对"工具直发文本的回声"只做精确匹配去重
+    # （result.get_plain_text().strip() 与已发列表逐条比对）。羽笔流程
+    # 打破匹配：H2 发出的是状态栏**渲染后**文本，而本钩子剥离的是
+    # completion 回声里的**原始标记**变体——两个变体不等 → 框架去重失效
+    # → 用户收到两条（实测间隔 25s）。
+    #
+    # 处置：在状态栏段产出之后做**双向归一**比对（双方各经
+    # _normalized_reply_body：注入报告行抹除 + `_strip_status_artifacts`
+    # 剥离状态栏变体），判定为已发内容的回声则**置空** completion——
+    # 框架侧不再产出可发文本（runner 对空 completion 不 yield
+    # llm_result；result_chain 存在时 respond.stage 的
+    # `_is_empty_message_chain` 走空链早退），从根上消除第二条消息。
+    #
+    # 宁漏勿误（只拦高置信回声）：已发列表缺失/非 list/无记录/正文为空/
+    # 归一后不等 → 一律放行原路径。位置在状态栏段之后、注入报告段之前：
+    # 置空后报告段对空文本天然跳过，gate 后的落库/拒绝扫描同样短路。
+    # 本会话工具未发过消息（模型直接纯文本输出，extra 无记录）时判定
+    # 天然不触发，行为与本段加入前完全一致。
+    try:
+        sent_texts = event.get_extra(_SMT_SENT_TEXTS_KEY)
+        if isinstance(sent_texts, list) and sent_texts:
+            echo_body = _normalized_reply_body(
+                plugin, resp.completion_text or ""
+            )
+            if echo_body:
+                for sent_text in sent_texts:
+                    if not isinstance(sent_text, str):
+                        continue
+                    if _normalized_reply_body(plugin, sent_text) == echo_body:
+                        resp.completion_text = ""
+                        logger.info(
+                            "[Quill] completion 为已发工具消息的回声"
+                            "（状态栏渲染/剥离变体归一后命中），已置空避免重复回复"
+                        )
+                        break
+    except Exception as e:
+        # 宁漏勿误：判定自身失败只放行原路径，不吞掉整个 H4
+        logger.debug(f"[Quill] 回声判定异常，放行原路径: {e}", exc_info=True)
 
     # 注入报告（仅开关开启时）。工具路径已在 on_llm_tool_respond 里
     # 追加过，用标记去重——两条路径都会跑到本函数，否则会出现两行报告。

@@ -812,6 +812,112 @@ async def test_h1_persona_get_conversation_raise_treated_as_missing():
     assert conv_mgr.switch_calls == [(UMO, "c-new-1")]
 
 
+# ── F2：换卡不重置 quill_rounds（M3.0，BASELINE §8.2 F2）────────────
+#
+# 现象与根因（BASELINE §8.2 F2）：quill_rounds 键为 UMO（聊天会话级），
+# 换角色卡（新建隔离对话）后计数延续（实测跨三张卡累到第 9 轮）→ 新卡
+# 首轮即 skip_constants，而新对话无历史可承载被跳过的 Layer 1 常驻
+# （WR/WB 常驻内容缺失）。
+#
+# 修复设计（PLAN §M3.0）：ensure_persona_conversation 在**新建独立对话**
+# 成功后与**切换到不同对话**成功后调用
+# ``state_manager.reset_quill_rounds(target_id)``；同卡快路径（已绑定且
+# 已在目标对话）与首次启用接管当前对话（不新建）**不**重置；重置失败只
+# 记 warning、不阻断对话隔离主流程（quill/services/character.py）。
+
+
+async def test_f2_new_card_conversation_resets_quill_rounds_once():
+    """换新卡 → 新建独立对话成功后 reset_quill_rounds(UMO) 恰好**一次**
+    （新建后必然紧随切换，去重旗标防止同一轮双重重置）。"""
+    state = _StateH1(stream_mode="on", persona_id="p-new",
+                     conv_map={"p-old": "c-old"})
+    conv_mgr = _ConvMgr(curr_cid="c-old", conversations={"c-old": object()})
+    host = _mk_h1_host(state=state, conv_mgr=conv_mgr)
+    ev = _EvH1(text="普通消息", platform_id="aiocqhttp")
+
+    await _run_h1(host, ev)
+
+    assert conv_mgr.new_calls == [(UMO, "aiocqhttp")]
+    assert conv_mgr.switch_calls == [(UMO, "c-new-1")]
+    assert state.reset_rounds_calls == [UMO]      # 恰好一次
+    assert ev.extras.get("enable_streaming") is True
+
+
+async def test_f2_switch_to_different_conversation_resets_quill_rounds():
+    """切回旧卡（目标对话存在且与当前不同）→ switch 成功后 reset 一次。"""
+    state = _StateH1(stream_mode="on", persona_id="p1",
+                     conv_map={"p1": "c-p1", "p2": "c-p2"})
+    conv_mgr = _ConvMgr(curr_cid="c-p2", conversations={"c-p1": object(),
+                                                        "c-p2": object()})
+    host = _mk_h1_host(state=state, conv_mgr=conv_mgr)
+    ev = _EvH1(text="普通消息")
+
+    await _run_h1(host, ev)
+
+    assert conv_mgr.get_conv_calls == ["c-p1"]    # 先校验存在性
+    assert conv_mgr.switch_calls == [(UMO, "c-p1")]
+    assert state.reset_rounds_calls == [UMO]
+    assert ev.extras.get("enable_streaming") is True
+
+
+async def test_f2_fast_path_does_not_reset_quill_rounds():
+    """同卡快路径（已绑定且已在目标对话）：不新建、不切换、**不重置**
+    ——连续激活的轮次计数不能被清掉。"""
+    state = _StateH1(stream_mode="on", persona_id="p1",
+                     conv_map={"p1": "c-curr"})
+    conv_mgr = _ConvMgr(curr_cid="c-curr")
+    host = _mk_h1_host(state=state, conv_mgr=conv_mgr)
+    ev = _EvH1(text="普通消息")
+
+    await _run_h1(host, ev)
+
+    assert conv_mgr.get_conv_calls == []
+    assert conv_mgr.switch_calls == []
+    assert state.set_conv_calls == []
+    assert state.reset_rounds_calls == []
+    assert ev.extras.get("enable_streaming") is True
+
+
+async def test_f2_first_enable_takeover_does_not_reset_quill_rounds():
+    """首次启用隔离（映射空 → 接管当前对话，不新建）：**不**重置
+    ——历史对话延续，轮次语义与接管前保持一致。"""
+    state = _StateH1(stream_mode="on", persona_id="p1", conv_map={})
+    conv_mgr = _ConvMgr(curr_cid="c-curr")
+    host = _mk_h1_host(state=state, conv_mgr=conv_mgr)
+    ev = _EvH1(text="普通消息")
+
+    await _run_h1(host, ev)
+
+    assert conv_mgr.new_calls == []               # 接管而非新建
+    assert conv_mgr.switch_calls == []            # 本来就在该对话
+    assert state.reset_rounds_calls == []
+    assert ev.extras.get("enable_streaming") is True
+
+
+async def test_f2_reset_failure_does_not_break_isolation_flow():
+    """reset_quill_rounds 抛异常：只记 warning，不阻断主流程——新建/
+    切换/登记照常完成，H1 后续流式分支照常执行（该函数既有容错风格）。"""
+    state = _StateH1(stream_mode="on", persona_id="p-new",
+                     conv_map={"p-old": "c-old"})
+
+    async def _boom(user_id):
+        state.reset_rounds_calls.append(user_id)
+        raise RuntimeError("injected reset failure")
+
+    state.reset_quill_rounds = _boom              # 实例属性遮蔽，注入失败
+    conv_mgr = _ConvMgr(curr_cid="c-old", conversations={"c-old": object()})
+    host = _mk_h1_host(state=state, conv_mgr=conv_mgr)
+    ev = _EvH1(text="普通消息", platform_id="aiocqhttp")
+
+    await _run_h1(host, ev)                       # 不应抛
+
+    assert state.reset_rounds_calls == [UMO]      # 重置被尝试过
+    assert conv_mgr.new_calls == [(UMO, "aiocqhttp")]
+    assert conv_mgr.switch_calls == [(UMO, "c-new-1")]
+    assert state.set_conv_calls == [(UMO, "p-new", "c-new-1")]
+    assert ev.extras.get("enable_streaming") is True
+
+
 # ════════════════════════════════════════════════════════════════════
 # H2（on_using_llm_tool）行为快照（M2.2 第三轮）
 #
@@ -1747,6 +1853,184 @@ async def test_h4_top_level_exception_degrades(monkeypatch):
     # 前置清洗（解密/中断标记）对该文本均为 no-op → 异常点 resp 未被改动
     assert resp.completion_text == "尚未被清空的响应正文"
     assert any("on_llm_response 后处理遭遇未捕获异常" in e for e in rec.errors)
+
+
+# ═══ F1：SMT 回声置空（M3.0，BASELINE §8.2 F1）═══════════════════════
+#
+# 现象与根因（BASELINE §8.2 F1）：AstrBot 4.28.x 的 send_message_to_user
+# 直接发送消息并把**已发送纯文本**记入
+# ``_send_message_to_user_current_session_plain_texts``（message_tools.py
+# :349-361，值经 strip()）；respond.stage 以 ``result.get_plain_text()
+# .strip()`` 与已发列表做**精确成员匹配**去重（respond/stage.py:189-207）。
+# 羽笔流程打破匹配：H2 把状态栏**渲染后**随工具文本发出（列表里是渲染
+# 版），H4 把 completion 回声里的原始标记**剥离**（completion 变体）——
+# 两者不等 → 框架去重失效 → 用户收到两条（实测间隔 25s）。
+#
+# 修复设计（PLAN §M3.0）：H4 在状态栏段之后、注入报告段之前，把本轮
+# completion 与已发列表做**双向归一**比对（双方各经注入报告行抹除 +
+# ``_strip_status_artifacts`` 剥离状态栏变体后比较正文），判定为回声则
+# **置空** completion——框架侧不再产出可发文本（runner 对空 completion
+# 不 yield llm_result；result_chain 存在时 respond.stage 的
+# ``_is_empty_message_chain`` 走空链早退），从根上消除第二条消息。
+# 宁漏勿误：已发列表缺失/非 list/正文为空/归一后不等 → 一律放行原路径；
+# 判定自身异常也只放行，不影响 H4 其余段落。
+
+# 框架已发记录的 extra 键（message_tools.py:352 逐字）
+_SMT_SENT_KEY = "_send_message_to_user_current_session_plain_texts"
+
+# H2 工具路径实际发出的形态：正文 + 渲染后的状态栏（无原始标记）
+_SENT_RENDERED = "剧情正文。\n\n" + RENDERED
+# 模型回声形态：同正文 + 原始 [LOVE_DATA] 标记（模型照契约输出自己的
+# 原始参数，不会带上 H2 渲染后的栏）
+_ECHO_RAW = "剧情正文。\n" + DIRTY_LOVE
+
+
+async def test_f1_echo_of_sent_tool_text_is_cleared():
+    """工具已发渲染版 + completion 回声（原始标记变体）→ 判定回声 →
+    completion 置空（respond.stage 不再发第二条）；下游 chat_logs / 防双写
+    / 拒绝扫描对空文本天然短路。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={
+        "_quill_activated": True,
+        "_quill_status_handled": True,
+        _SMT_SENT_KEY: [_SENT_RENDERED],
+    })
+    resp = _RespH4(_ECHO_RAW)
+
+    await _run_h4(host, ev, resp)
+    for coro in host._spawned:                    # 后台协程显式执行
+        await coro
+
+    assert resp.completion_text == ""
+    assert host.rag_retriever.log_calls == []     # 空文本不落库
+    assert "_quill_assistant_logged" not in ev.extras
+    assert state.refusal_calls == []              # 空文本不扫拒绝
+
+
+async def test_f1_echo_matches_sent_text_with_inject_report_line():
+    """已发文本带注入报告行（H2 追加、模型不会回声插件后加的行）→
+    归一抹除报告行后命中 → 置空（报告行抹除是确定性行锚正则，非模糊匹配）。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={
+        "_quill_activated": True,
+        "_quill_status_handled": True,
+        _SMT_SENT_KEY: [_SENT_RENDERED + "\n\n〔注入〕世界书×2"],
+    })
+    resp = _RespH4(_ECHO_RAW)
+
+    await _run_h4(host, ev, resp)
+
+    assert resp.completion_text == ""
+
+
+async def test_f1_new_reply_not_cleared():
+    """已发列表非空 + completion 是**不同内容**的新回复 → 归一后正文不等
+    → 不置空（防误杀）：残留标记照常剥离，正文原样保留。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={
+        "_quill_activated": True,
+        "_quill_status_handled": True,
+        _SMT_SENT_KEY: [_SENT_RENDERED],
+    })
+    resp = _RespH4("全新的后续剧情，与已发内容不同。\n" + DIRTY_LOVE)
+
+    await _run_h4(host, ev, resp)
+    for coro in host._spawned:                    # 后台协程显式执行
+        await coro
+
+    assert resp.completion_text == "全新的后续剧情，与已发内容不同。"
+
+
+async def test_f1_no_sent_texts_pure_text_flow_unchanged():
+    """模型直接纯文本输出（未走工具，已发列表 extra 缺失）→ 判定不触发，
+    剥离/渲染行为与现状完全一致（六级链照常提取渲染，不置空）。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={"_quill_activated": True})   # 无 _SMT_SENT_KEY
+    resp = _RespH4("剧情开头\n" + DIRTY_LOVE)
+
+    await _run_h4(host, ev, resp)
+    for coro in host._spawned:                    # 后台协程显式执行
+        await coro
+
+    assert "[LOVE_DATA]" not in resp.completion_text
+    assert "───── 状态栏 ─────" in resp.completion_text
+    assert "好感度：88/100（爱意）" in resp.completion_text
+    assert "剧情开头" in resp.completion_text
+    assert state.update_vars_calls                  # 持久化照常
+
+
+async def test_f1_empty_sent_list_pure_text_flow_unchanged():
+    """已发列表为空列表（extra 键存在但工具未发过消息）→ 同上，判定不
+    触发，行为与现状完全一致。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={"_quill_activated": True, _SMT_SENT_KEY: []})
+    resp = _RespH4("剧情开头\n" + DIRTY_LOVE)
+
+    await _run_h4(host, ev, resp)
+    for coro in host._spawned:                    # 后台协程显式执行
+        await coro
+
+    assert "───── 状态栏 ─────" in resp.completion_text
+    assert "剧情开头" in resp.completion_text
+
+
+async def test_f1_sent_list_type_anomaly_passes_through():
+    """已发列表类型异常（非 list）：判定跳过、放行原路径——剥离照常、
+    不置空、不中断。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={
+        "_quill_activated": True,
+        "_quill_status_handled": True,
+        _SMT_SENT_KEY: "not-a-list",
+    })
+    resp = _RespH4("剧情正文。\n" + DIRTY_LOVE)
+
+    await _run_h4(host, ev, resp)
+    for coro in host._spawned:                    # 后台协程显式执行
+        await coro
+
+    assert resp.completion_text == "剧情正文。"    # 剥离后原样放行
+
+
+async def test_f1_echo_check_exception_passes_through(monkeypatch):
+    """回声判定自身异常：只放行原路径（剥离结果保留、不置空），不影响
+    H4 其余段落、不触发顶层降级。"""
+    calls: list = []
+
+    def _boom(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError("injected echo-check failure")
+
+    monkeypatch.setattr(M.QuillPlugin, "_scrub_inject_report", _boom)
+    rec = _LoggerRecH4()
+    monkeypatch.setattr(M, "logger", rec)
+    monkeypatch.setattr(_hooks, "logger", rec)
+
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={
+        "_quill_activated": True,
+        "_quill_status_handled": True,
+        _SMT_SENT_KEY: [_SENT_RENDERED],
+    })
+    resp = _RespH4("剧情正文。\n" + DIRTY_LOVE)
+
+    await _run_h4(host, ev, resp)                 # 不应抛
+    for coro in host._spawned:                    # 后台协程显式执行
+        await coro
+
+    assert calls, "异常注入未命中实际调用路径（假绿）"
+    # 判定失败 → 放行剥离后的原路径文本（不置空）
+    assert resp.completion_text == "剧情正文。"
+    # 未触发顶层降级（H4 其余段落未被打断）
+    assert not any("on_llm_response 后处理遭遇未捕获异常" in e
+                   for e in rec.errors)
 
 
 # ═══ H5：on_llm_tool_respond（第五轮）═══════════════════════════════
