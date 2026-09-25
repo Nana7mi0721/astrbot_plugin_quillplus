@@ -266,7 +266,13 @@
 
 ## 9. 验收记录（M2/M3/M6 完成后追加）
 
-- **2026-09-25 19:04 部署 v5.3/m2-structure（M0+M1+M2.1+M2.3）至真机**：`D:/Program/AstrBot/AstrBotData/data/plugins/astrbot_plugin_quillplus/`，旧版备份于 `_plugin_backup/astrbot_plugin_quillplus_5.2.5_preM2_20260925_190257`。导入冒烟通过（MRO 四层、mixin 方法、props 委托在位）。
+- **2026-09-25 19:04 部署 v5.3/m2-structure（M0+M1+M2.1+M2.3 @ aea4733）至真机**：`D:/Program/AstrBot/AstrBotData/data/plugins/astrbot_plugin_quillplus/`，v5.2.5 旧版备份于 `_plugin_backup/astrbot_plugin_quillplus_5.2.5_preM2_20260925_190257`（回滚=拷回）。导入冒烟通过。
+- **2026-09-25 M2.2 六钩子薄化完成**（958722e→9d3117d 六轮，每轮独立提交+快照先写先跑）：
+  - H6→strip.py、H1→character.py、H2→response.py、H5→memory.py、H3→prompt.py（services 落位）；H4 实现整体留 interfaces（框架胶水，下沉决策记录 docstring）
+  - 注册桩全部保持框架契约（BASELINE §1.2）；降级层位/无顶层 try 等怪癖逐项钉住；legacy 源码窗口断言（t25/t26）以行为契约 docstring 方式保绿，legacy 文件零改动
+  - main.py 2978（v5.2.5）→ **1753 行**；interfaces/astrbot_hooks.py 869 行；快照套件 163 passed（双模式）
+  - **M2 验收面"main.py <150 行"评估**：该目标制定于发现框架注册契约（§1.2）之前。当前 main.py 剩余内容 = 注册桩×6 + 指令桩×7 + `__init__` 组件接线 + `save_plugin_configs` + H3 经 plugin.* 调用的辅助方法（激活检测/RAG 编排/SMT 改写还原等）+ re-export 兼容层。进一步压行需把 init 接线与配置保存也服务化——超出 M2.2 范围且行为风险/收益比不佳。**处置：M2 验收按修订口径执行（钩子/指令全桩化 + 业务逻辑零残留于钩子层 + 快照全绿 + 架构守卫通过 = 达标）；main.py 进一步瘦身转为 M6 前的可选清理项，随真机观察期评估。**
+  - 待真机复测（M2.2 后重新部署）：PLAN §M2.2.4 20 轮聊天 + 注入报告 + 状态栏。
 - **19:16-19:32 真机首测（M2.1 状态栏 + M2.3 配置投影验收）**：
   - 状态栏 L2（`statusbar.parsers:419` LOVE_DATA inline）与 L4（`:491` raw key:value）均从搬移后新模块执行 ✓；无裸标记泄漏 ✓；H4 剥离兜底正常 ✓
   - `/quill statusbar` 无参四行报告 / `on` / `off` 会话级切换 ✓（与 legacy t22 基线一致）
