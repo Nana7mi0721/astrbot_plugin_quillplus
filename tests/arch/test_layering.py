@@ -24,7 +24,11 @@ import os
 from dataclasses import dataclass, field
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_PLUGIN_DIR = os.path.dirname(_HERE)
+# M2.1 修正：本文件位于 tests/arch/ 下，插件根在**上两级**。原实现只上跳
+# 一级落到 tests/，_QUILL_DIR 指向 tests/quill，守卫永远扫不到真正的
+# quill/ 包而恒被 skip（M1 期间 quill/ 尚不存在，两种路径同样 skip，
+# bug 不可见；quill/ 落地后即暴露）。
+_PLUGIN_DIR = os.path.dirname(os.path.dirname(_HERE))
 _QUILL_DIR = os.path.join(_PLUGIN_DIR, "quill")
 
 _HAS_QUILL = os.path.isdir(_QUILL_DIR)
