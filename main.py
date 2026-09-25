@@ -52,6 +52,9 @@ from .quill.core import logbridge
 # M2.2 剥离器下沉：实现住 quill/services/statusbar/strip.py，
 # QuillPlugin 类体内保留同名薄转发（见「状态栏解析共享方法」段）。
 from .quill.services.statusbar import strip as _strip_mod
+# M2.2 第二轮：角色卡→对话隔离下沉 quill/services/character.py
+# （_ensure_persona_conversation 保留同名薄转发，见彼处）。
+from .quill.services import character as _character_mod
 from .quill.services.statusbar import (
     LOVE_DATA_TAG,
     STATUS_END_TAG,
@@ -1064,45 +1067,28 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
     @filter.on_waiting_llm_request(priority=100)
     async def on_waiting_llm_request(self, event: AstrMessageEvent):
-        """在流式决策前切换角色卡专属对话并控制流式模式。"""
-        # 必须最先执行：本事件早于 AstrBot 的 _get_session_conv()，
-        # 在这里切换对话才能对本轮生效（详见 _ensure_persona_conversation）。
-        await self._ensure_persona_conversation(event)
+        """在流式决策前切换角色卡专属对话并控制流式模式。
 
-        try:
-            user_input = event.message_str or ""
-            target_id = self._get_target_id(event)
-        except Exception:
-            return
+        注册桩（M2.2 第二轮）：装饰器/签名/priority 不变（框架以
+        ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
+        ``interfaces.astrbot_hooks.handle_waiting_llm_request``（完整
+        设计理由见彼处 docstring；行为快照见 tests/test_hook_snapshots.py
+        H1 节）。行为契约：
 
-        # 拦截 /reinject 和 /重新注入（个人行为，仍用 sender_id）
-        if user_input.strip() in ("/reinject", "/重新注入"):
-            sender_id = str(event.get_sender_id())
-            await self.state_manager.reset_quill_rounds(sender_id)
-            logger.info("[Quill] /reinject 已重置 quill_rounds")
-            from astrbot.core.message.message_event_result import MessageEventResult
-            event.set_result(MessageEventResult().message(
-                "已重置注入状态。下次触发 Quill 时将重新注入全部常驻素材。"
-            ))
-            return
+        * 先切角色卡专属对话（必须早于框架 ``_get_session_conv()``，
+          下一事件才切换就要晚一轮生效），实现见
+          quill/services/character.py；
+        * 拦截字面 ``/reinject`` / ``/重新注入``（按 **sender_id** 非
+          target_id 重置 quill_rounds 并回执，不继续流式决策）；
+        * 按 ``state.stream_mode`` off/on/auto 设置 ``enable_streaming``
+          extra（auto 且激活词/【】括号时关流式）。
 
-        # 读取对话维度流式偏好
-        state = await self.state_manager.get_state(target_id)
-
-        if state.stream_mode == "off":
-            event.set_extra("enable_streaming", False)
-            return
-        if state.stream_mode == "on":
-            event.set_extra("enable_streaming", True)
-            return
-
-        # auto 模式：激活时关闭流式
-        activated = self.activation_detector.should_activate(user_input)
-        has_bracket = self.activation_detector.check_brackets(user_input)
-
-        if activated or has_bracket:
-            event.set_extra("enable_streaming", False)
-            logger.info("[Quill] 已关闭流式输出")
+        降级怪癖（BASELINE §2 H1 行，与 H6 相反，刻意保留）：**无钩子级
+        顶层 try**——``state_manager.get_state`` 抛出会**上抛框架**；仅
+        "取 message_str/_get_target_id"的内层小块 except: return 静默。
+        桩体因此不做任何 try 包裹。
+        """
+        await _quill_hooks.handle_waiting_llm_request(self, event)
 
     # ── 状态栏解析共享方法 ──────────────────────────────────────
 
@@ -1370,76 +1356,19 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     async def _ensure_persona_conversation(self, event: AstrMessageEvent) -> None:
         """把当前角色卡切到它自己的 AstrBot 对话上，实现对话历史隔离。
 
-        背景：AstrBot 的 conversation 只按 UMO 切分，**不按角色卡切分**。
-        插件的 memories / chat_logs 早已按 `UMO::persona` 隔离，唯独
-        AstrBot 侧那段对话历史（即 `req.contexts`）没有隔离，导致切换角色卡后
-        新角色仍能读到上一个角色的对话。
+        M2.2 第二轮下沉薄转发：实现已整体搬至
+        quill/services/character.py（``ensure_persona_conversation``，
+        完整设计理由——为什么必须挂在 on_waiting_llm_request、快路径、
+        死对话重建、首次接管、全量 try 放行——见彼处 docstring）。
 
-        这里给每张角色卡绑定一个独立 conversation：
-          * 切到某张卡 → 切到它上次用的对话（切回来仍能看到那段历史）；
-          * 该卡首次使用 → 新建一个空对话。
-
-        时序上必须挂在 `on_waiting_llm_request`：该事件在 AstrBot
-        `_get_session_conv()` **之前**触发（internal.py:225 vs 239），
-        因此这里的切换**对本轮立即生效**；若放到 on_llm_request 则要下一轮才生效。
-
-        一切异常都只记日志并放行：拿不到 conversation_manager 或接口变动时，
-        插件退回「不分对话」的原有行为，绝不让隔离逻辑打断正常聊天。
+        本方法保留以维持旧访问面（H1 委托链、/quill reset 的文档引用）
+        与搬移前 ``self._ensure_persona_conversation`` 的动态分发路径
+        逐字等价；宿主状态（context / state_manager / _get_target_id）
+        以显式参数注入服务层，quill/ 侧零 astrbot 依赖。
         """
-        conv_mgr = getattr(self.context, "conversation_manager", None)
-        if conv_mgr is None:
-            return
-        try:
-            umo = self._get_target_id(event)
-            persona_id = await self.state_manager.get_persona_id(umo)
-            key = persona_id or ""  # 未绑卡时归入空串一档，同样独立
-            mapping = await self.state_manager.get_persona_conv_map(umo)
-            curr_cid = await conv_mgr.get_curr_conversation_id(umo)
-            target_cid = mapping.get(key)
-
-            if target_cid and target_cid == curr_cid:
-                return  # 快路径：已在正确对话，零额外查询
-
-            if target_cid:
-                # 对话可能已被 Dashboard 删除；switch 不校验存在性（conversation_mgr.py:126），
-                # 不校验会导致每轮都切到一个不存在的 cid 而不断新建/泄漏。
-                try:
-                    conv = await conv_mgr.get_conversation(umo, target_cid)
-                except Exception:
-                    conv = None
-                if conv is None:
-                    logger.info(
-                        f"[Quill] 角色卡 {key or '(未绑定)'} 的原对话 {target_cid[:8]} 已不存在，将重建"
-                    )
-                    await self.state_manager.forget_persona_conv(umo, key)
-                    target_cid = None
-
-            if target_cid is None:
-                if not mapping and curr_cid:
-                    # 首次启用隔离：当前角色卡接管现有对话，历史不断
-                    target_cid = curr_cid
-                    logger.info(
-                        f"[Quill] 角色卡 {key or '(未绑定)'} 接管当前对话 "
-                        f"{curr_cid[:8]}（首次启用对话隔离）"
-                    )
-                else:
-                    target_cid = await conv_mgr.new_conversation(
-                        umo, event.get_platform_id()
-                    )
-                    logger.info(
-                        f"[Quill] 已为角色卡 {key or '(未绑定)'} 新建独立对话 "
-                        f"{str(target_cid)[:8]}（对话历史将相互隔离）"
-                    )
-                await self.state_manager.set_persona_conv(umo, key, target_cid)
-
-            if curr_cid != target_cid:
-                await conv_mgr.switch_conversation(umo, target_cid)
-                logger.info(
-                    f"[Quill] 对话已切换 → {str(target_cid)[:8]} "
-                    f"(角色卡: {key or '(未绑定)'})"
-                )
-        except Exception as e:
-            logger.warning(f"[Quill] 角色卡对话隔离失败，本轮沿用当前对话: {e}")
+        await _character_mod.ensure_persona_conversation(
+            self.context, self.state_manager, event, self._get_target_id,
+        )
 
     @filter.on_using_llm_tool(priority=200)
     async def on_using_llm_tool(

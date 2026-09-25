@@ -7,12 +7,17 @@
 ``__module__`` 必须与插件注册路径（``data.plugins.<目录>.main``）精确
 相等才会被框架绑定与分发——因此**注册桩**（装饰器 + 签名 + priority）
 留在 main.py 类体，桩体一行委托到本模块的实现函数；业务逻辑逐字下沉
-于此。M2.2 第一轮仅 H6（on_decorating_result），其余五钩子随后续轮次
-按同一形态迁入。
+于此。M2.2 第一轮 H6（on_decorating_result）、第二轮 H1
+（on_waiting_llm_request），其余四钩子随后续轮次按同一形态迁入。
 
 降级语义分层：顶层 try/except 留在 main.py 注册桩内（与原 H6 的
 "顶层吞掉放行"同层，不因委托而改变降级位置）；本模块实现体内**不再**
 重复包裹——桩内已保证任何异常都不会外抛中断发送。
+
+**例外——H1（第二轮起）**：原 H1 本就**无钩子级顶层 try**（BASELINE §2
+H1 行的降级怪癖：`state_manager.get_state` 抛出会上抛框架）。其注册桩
+因此**不做**任何 try 包裹，本模块的 ``handle_waiting_llm_request`` 也
+只保留原有的"内层取值 except: return"小块——降级位置原样保真。
 """
 
 from __future__ import annotations
@@ -93,3 +98,59 @@ async def handle_decorating_result(plugin, event: AstrMessageEvent) -> None:
             f"[Quill] 发送前擦除 {cleaned} 段状态栏残留"
             f"（{'原始标记' if enabled else '全套剥离'}）"
         )
+
+
+async def handle_waiting_llm_request(plugin, event: AstrMessageEvent) -> None:
+    """LLM 请求等待期：切换角色卡专属对话并控制流式模式（H1）。
+
+    （业务逻辑自 main.py 逐字搬移，M2.2 第二轮；``self`` → ``plugin``。
+    行为快照见 tests/test_hook_snapshots.py H1 节，行为契约与降级怪癖
+    见 main.py 注册桩 docstring 与 BASELINE §2 H1 行。）
+
+    与 H6 的关键差异（降级怪癖，刻意保真）：本函数**没有**钩子级顶层
+    try——``plugin.state_manager.get_state`` 抛出会原样上抛框架；唯一
+    的异常处理是"取 message_str/_get_target_id"的内层小块
+    ``except: return``。角色卡对话隔离步骤（
+    ``plugin._ensure_persona_conversation``）自带全量 try/except，隔离
+    失败只记日志放行，不影响后续流式决策——经 plugin 的薄转发调用
+    （转发最终落在 quill/services/character.py），与原
+    ``self._ensure_persona_conversation`` 动态分发路径逐字等价。
+    """
+    # 必须最先执行：本事件早于 AstrBot 的 _get_session_conv()，
+    # 在这里切换对话才能对本轮生效（详见 quill/services/character.py）。
+    await plugin._ensure_persona_conversation(event)
+
+    try:
+        user_input = event.message_str or ""
+        target_id = plugin._get_target_id(event)
+    except Exception:
+        return
+
+    # 拦截 /reinject 和 /重新注入（个人行为，仍用 sender_id）
+    if user_input.strip() in ("/reinject", "/重新注入"):
+        sender_id = str(event.get_sender_id())
+        await plugin.state_manager.reset_quill_rounds(sender_id)
+        logger.info("[Quill] /reinject 已重置 quill_rounds")
+        from astrbot.core.message.message_event_result import MessageEventResult
+        event.set_result(MessageEventResult().message(
+            "已重置注入状态。下次触发 Quill 时将重新注入全部常驻素材。"
+        ))
+        return
+
+    # 读取对话维度流式偏好
+    state = await plugin.state_manager.get_state(target_id)
+
+    if state.stream_mode == "off":
+        event.set_extra("enable_streaming", False)
+        return
+    if state.stream_mode == "on":
+        event.set_extra("enable_streaming", True)
+        return
+
+    # auto 模式：激活时关闭流式
+    activated = plugin.activation_detector.should_activate(user_input)
+    has_bracket = plugin.activation_detector.check_brackets(user_input)
+
+    if activated or has_bracket:
+        event.set_extra("enable_streaming", False)
+        logger.info("[Quill] 已关闭流式输出")
