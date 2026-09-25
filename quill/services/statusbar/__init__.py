@@ -29,6 +29,15 @@ from .parsers import (
     StatusbarParsersMixin,
 )
 from .render import StatusbarRenderMixin
+from .strip import (
+    _STRIP_LEGACY_STATUS_RE,
+    _STRIP_LOVE_DATA_RE,
+    _STRIP_PATTERNS,
+    _strip_bare_fields_re,
+    _strip_field_re_cache,
+    _strip_raw_markers,
+    _strip_status_artifacts,
+)
 
 # 注意：_SB_LEVELS 是 StatusbarParsersMixin 的类属性（不再是模块级名字），
 # 经 `StatusbarParsersMixin._SB_LEVELS` 或 QuillPlugin 实例访问。
@@ -45,6 +54,9 @@ __all__ = [
     "_PLOT_PATH_RE",
     "_STATUS_BLOCK_RE",
     "_STATUS_RE",
+    "_STRIP_LEGACY_STATUS_RE",
+    "_STRIP_LOVE_DATA_RE",
+    "_STRIP_PATTERNS",
     "_StatusLevelContext",
     "_StatusLevelResult",
     "_annotate_changes",
@@ -52,4 +64,8 @@ __all__ = [
     "_extract_numeric",
     "_format_delta",
     "_normalize_status_value",
+    "_strip_bare_fields_re",
+    "_strip_field_re_cache",
+    "_strip_raw_markers",
+    "_strip_status_artifacts",
 ]

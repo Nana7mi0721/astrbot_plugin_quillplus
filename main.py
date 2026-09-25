@@ -49,6 +49,9 @@ from .web_routes import QuillRoutes
 from .encryption import decrypt_output
 from .persona_manager import QuillPersonaManager
 from .quill.core import logbridge
+# M2.2 剥离器下沉：实现住 quill/services/statusbar/strip.py，
+# QuillPlugin 类体内保留同名薄转发（见「状态栏解析共享方法」段）。
+from .quill.services.statusbar import strip as _strip_mod
 from .quill.services.statusbar import (
     LOVE_DATA_TAG,
     STATUS_END_TAG,
@@ -57,7 +60,8 @@ from .quill.services.statusbar import (
     StatusbarRenderMixin,
     # ── 搬移期 re-export（M2.0 约定）：状态栏解析侧常量/纯函数已搬至
     # quill/services/statusbar/parsers.py，这里保留旧模块级名字，
-    # 供剥离器（本文件）与 tests/legacy、probe 脚本的旧 import 面使用。
+    # 供 tests/legacy、probe 脚本的旧 import 面使用。
+    # （剥离器已于 M2.2 下沉 strip.py，不再从本文件取这些名字。）
     _DEFAULT_LOVE_FIELDS_RAW,
     _LOVE_DATA_RE,
     _PLOT_PATH_RE,
@@ -71,6 +75,9 @@ from .quill.services.statusbar import (
     _format_delta,
     _normalize_status_value,
 )
+# M2.2 钩子薄化：实现函数住 interfaces/astrbot_hooks.py（BASELINE §1.2
+# 架构修订——注册桩必须留在本类体，桩体一行委托）。
+from .interfaces import astrbot_hooks as _quill_hooks
 
 
 # ── 指令参数切分 ───────────────────────────────────────────────────
@@ -1099,100 +1106,37 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
     # ── 状态栏解析共享方法 ──────────────────────────────────────
 
+    # M2.2 剥离器下沉：实现（剥离正则常量 + 纯函数）已原位搬至
+    # quill/services/statusbar/strip.py，正则/文本处理一字未改，仅由
+    # 类属性/classmethod 转为模块级常量/函数（原实现本就零 self 依赖）。
+    # 此处保留同名类属性/类方法薄转发（M2.0 搬移期约定）：
+    #   - tests/legacy（t7/t8/t15/t26）与 probe 脚本经
+    #     QuillPlugin.<name> 的旧访问面不变；
+    #   - 钩子/服务侧经 self._strip_* 的动态分发路径与搬移前一致。
+    # 下面的类属性与 strip 模块常量是**同一对象**的别名（缓存 dict 亦然）：
+    # 任何一侧清缓存/改表都作用于同一份状态，与搬移前单一代码路径等价。
+    # 实现与完整设计理由（两档强度为何分设、为何不擦裸字段行）见 strip.py。
+
     # 聚合所有状态栏变体的剥离正则（disabled 模式 + dedup 清理用）
-    # 前 4 条与字段名无关（靠标签/标记识别），字段名只出现在 _strip_bare_fields 里，
-    # 由 _strip_status_artifacts 按 love_fields 动态构建后拼在后面。
-    _STRIP_PATTERNS: list = [
-        (re.compile(r'\*\*状态栏\*\*[\s\S]*?```[\s\S]*?```'), ''),
-        (re.compile(re.escape(LOVE_DATA_TAG) + r'\s*.+'), ''),
-        (re.compile(re.escape(STATUS_TAG) + r'[\s\S]*?' + re.escape(STATUS_END_TAG)), ''),
-        (re.compile(
-            r'[>|]{2,}\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*[|<]{2,}\s*.+?\s*[|<]{2,}\s*(?:Select|请选择|选择)\s*[>|]{2,}',
-            re.DOTALL | re.IGNORECASE
-        ), ''),
-        (re.compile(r'\[状态栏\][\s\S]*?\[/状态栏\]'), ''),
-        (re.compile(r'状态栏[：:][\s\S]*?(?=\n\n|\Z)'), ''),
-    ]
-
-    # 字段名 → 正则的缓存。键是字段元组，值同 _build_raw_status_re。
-    # 原因：字段名来自面板配置（每次保存都会重建 love_fields 列表），而
-    # 剥离是每条消息都要跑的热路径，不能每次重新 compile。
-    _strip_field_re_cache: dict = {}
-
-    # 「只擦原始标记」用的两条 —— 供发送前兜底钩子在**状态栏开启**时使用。
-    # 刻意不放在 _STRIP_PATTERNS 里：那套是「关闭状态栏」用的完整剥离，
-    # 含匹配 `**状态栏**...``` ``` 的模式，用在开启时会把正常渲染的栏删掉。
-    # 也刻意**不含**裸字段行模式——理由见 _strip_raw_markers 的说明。
-    _STRIP_LOVE_DATA_RE = re.compile(re.escape(LOVE_DATA_TAG) + r'\s*.+')
-    _STRIP_LEGACY_STATUS_RE = re.compile(re.escape(STATUS_TAG) + r'[\s\S]*?' + re.escape(STATUS_END_TAG))
+    _STRIP_PATTERNS = _strip_mod._STRIP_PATTERNS
+    _strip_field_re_cache = _strip_mod._strip_field_re_cache
+    _STRIP_LOVE_DATA_RE = _strip_mod._STRIP_LOVE_DATA_RE
+    _STRIP_LEGACY_STATUS_RE = _strip_mod._STRIP_LEGACY_STATUS_RE
 
     @classmethod
     def _strip_bare_fields_re(cls, fields: list) -> re.Pattern:
-        """按字段名取（或建）剥离用正则——值不设长度上限，见 _build_raw_status_re。"""
-        key = tuple(fields) if fields else ()
-        cached = cls._strip_field_re_cache.get(key)
-        if cached is None:
-            cached = _build_raw_status_re(list(fields), max_value_len=None)
-            # 配置字段数有限，缓存不会无界增长；仍设上限兜底异常调用方
-            if len(cls._strip_field_re_cache) > 32:
-                cls._strip_field_re_cache.clear()
-            cls._strip_field_re_cache[key] = cached
-        return cached
+        """转发 strip 模块（字段缓存语义见彼处）。"""
+        return _strip_mod._strip_bare_fields_re(fields)
 
     @classmethod
     def _strip_status_artifacts(cls, text: str, fields: list | None = None) -> str:
-        """移除文本中所有状态栏相关痕迹（禁用模式 + dedup 清理）。
-
-        fields 传入当前生效的字段表（调用方传 self.props.love_fields）。此前这里用
-        硬编码的 8 个字段名，而解析侧 L4 用动态字段——用户改字段名后（插件自己
-        的协议文本就建议改成「催眠度/信赖度」），关闭状态栏时裸字段行擦不掉，
-        会原样漏到屏幕上。现改为与解析侧共用同一字段来源。
-        fields=None 时退回默认字段表，保证旧调用点仍可用。
-        """
-        if not text:
-            return text
-        for pattern, replacement in QuillPlugin._STRIP_PATTERNS:
-            text = pattern.sub(replacement, text)
-        # 字段名相关的裸字段行：与解析侧同源，保证「能解析就必能擦除」
-        bare_re = QuillPlugin._strip_bare_fields_re(
-            fields or _DEFAULT_LOVE_FIELDS_RAW
-        )
-        text = bare_re.sub('', text)
-        return text.strip()
+        """转发 strip 模块（完整剥离：关闭状态栏 / dedup 清理用）。"""
+        return _strip_mod._strip_status_artifacts(text, fields)
 
     @classmethod
     def _strip_raw_markers(cls, text: str, fields: list | None = None) -> str:
-        """只擦**原始标记**，保留已渲染的状态栏 —— 发送前兜底专用。
-
-        与 `_strip_status_artifacts` 的区别就是「要不要连渲染产物一起擦」：
-
-        `_strip_status_artifacts` 是给「状态栏已关闭」用的，那时
-        `**状态栏**...\\`\\`\\`...\\`\\`\\`` 属于该被清掉的痕迹，所以它第一条模式
-        就把它整段匹配掉。而在状态栏**开启**时，同样的文本正是 L1/L2 的
-        **正常产出**——拿整套剥离器去擦会把状态栏从回复里删掉。
-
-        **这里只擦两种绝无歧义的原始标记**：`[LOVE_DATA]` 行与
-        `[STATUS]...[/STATUS]` 块。它们无论如何都不该出现在最终消息里
-        （渲染后的形态是模板产出，不含这两个标记本身）。
-
-        **刻意不擦裸字段行**——因为「裸字段行」与「渲染后的状态栏内容」
-        在文本上**完全同形**（渲染出来本来就是 `好感度：88` 这样的行）。
-        想区分只能去认模板外壳，而模板是用户可自定义的
-        （`format_template` / `format_template_plain` 都能改），
-        任何白名单都会在自定义模板下失效并误删正文——
-        这个坑实测踩过：用 `[[CUSTOMTPL]]` 这种自定义模板时，
-        按「行首裸字段」擦会把栏里内容整段掏空，只剩一个空壳。
-
-        权衡的依据：实测抓到的**全部**泄漏样本都是模型直接输出的
-        `[LOVE_DATA]` 行（模型照契约走，会带标记）。裸字段块那种偏离契约的
-        输出，常规路径上的 `on_using_llm_tool` 已在处理；为了兜住它而
-        引入「可能误删用户自定义模板内容」的风险不划算。
-        """
-        if not text:
-            return text
-        text = cls._STRIP_LOVE_DATA_RE.sub('', text)
-        text = cls._STRIP_LEGACY_STATUS_RE.sub('', text)
-        return text.strip()
+        """转发 strip 模块（只擦原始标记：发送前兜底专用）。"""
+        return _strip_mod._strip_raw_markers(text, fields)
 
     # _lenient_parse_status 已搬至 quill/services/statusbar/parsers.py
     # （StatusbarParsersMixin，M2.1）。
@@ -2244,76 +2188,27 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 logger.warning(f"[Quill Memory] 记忆存储调度失败: {e}")
 
     # ================================================================
-    # 最后一道防线：发送前擦除残留状态栏
+    # 最后一道防线：发送前擦除残留状态栏（M2.2 薄化：注册桩 + 委托）
     # ================================================================
 
     @filter.on_decorating_result(priority=100)
     async def on_decorating_result(self, event: AstrMessageEvent):
         """消息**发送前**的最后一次清洗——擦掉漏网的状态栏残留。
 
-        为什么需要这一道（这不是重复劳动，覆盖的是别的钩子够不到的情况）：
+        注册桩（M2.2）：装饰器/签名/priority 不变（框架以 ``__module__``
+        精确匹配绑定，BASELINE §1.2），实现委托
+        ``interfaces.astrbot_hooks.handle_decorating_result``（完整设计
+        理由见彼处 docstring）。行为契约：
 
-        `on_using_llm_tool` 只能改写**工具参数**（`send_message_to_user` 的
-        messages）。但 agent loop 每一轮迭代都会**先** `yield` 该轮的
-        `llm_resp.result_chain`（`tool_loop_agent_runner.py:917`），**然后**才走
-        `_handle_function_tools`（同文件 `:982`）触发工具钩子。也就是说：
-        模型在**不调用工具**的那一轮直接输出的文本，会先于任何工具钩子被推送，
-        插件根本没机会处理它。
-
-        实测（`docs/probe_no_leak.py`）：一轮里模型被纠正后连发了 18 次
-        `send_message_to_user`，其中 17 次都被正常处理，唯独夹在中间那次
-        「直接输出一行裸 `[LOVE_DATA]`」的迭代绕过了全部钩子，直达用户。
-
-        这一钩子在 `result_decorate` 阶段、**真正发送之前**触发
-        （`core/pipeline/result_decorate/stage.py:158`），拿到的是最终
-        MessageChain，因此能兜住任何来源的残留。
-
-        **两档强度，取决于本轮状态栏是否启用**（这一点是踩过坑才分清的）：
-
-        * 启用时——只擦**原始标记**（`[LOVE_DATA]`、`[STATUS]`、裸字段行）。
-          **绝不能**用整套 `_strip_status_artifacts`：它第一条模式就匹配
-          `**状态栏**...\\`\\`\\`...\\`\\`\\``，那是 L1/L2 **正常渲染**的产物，
-          整段擦掉等于把状态栏从回复里删掉（第一版就是这么把 A/C 两项测挂的）。
-        * 关闭时——用整套剥离器。此时渲染过的状态栏**本就不该出现**
-          （历史上下文那侧也在同步清理），擦掉正是期望行为。
-
-        另外**不做**「补栏」：此刻正文已定型，补栏会与前面已发出的分段重复；
-        发送前只做减法。
+        * 无 ``_quill_activated`` gate，始终执行；**只减法不补栏**；
+        * 两档强度——状态栏开启只擦原始标记（``_strip_raw_markers``），
+          绝不能用整套剥离器（会把 L1/L2 正常渲染的栏整段删掉）；
+          关闭时整套剥离（``_strip_status_artifacts``）；
+        * 顶层降级留在桩内（与原 H6 同层）：任何异常吞掉放行——发送前
+          钩子绝不能抛，抛了会中断整条回复的发送。
         """
         try:
-            # 会话级覆盖 > 面板全局：关闭方向必须清，开启方向只清原始标记
-            enabled = await self._effective_status_bar_enabled(
-                self._get_target_id(event)
-            )
-
-            result = event.get_result()
-            if result is None:
-                return
-            chain = getattr(result, "chain", None)
-            if not chain:
-                return
-
-            from astrbot.core.message.components import Plain
-
-            cleaned = 0
-            for comp in chain:
-                if not isinstance(comp, Plain):
-                    continue
-                text = getattr(comp, "text", "") or ""
-                if not text:
-                    continue
-                if enabled:
-                    stripped = self._strip_raw_markers(text, self.props.love_fields)
-                else:
-                    stripped = self._strip_status_artifacts(text, self.props.love_fields)
-                if stripped != text:
-                    comp.text = stripped
-                    cleaned += 1
-            if cleaned:
-                logger.info(
-                    f"[Quill] 发送前擦除 {cleaned} 段状态栏残留"
-                    f"（{'原始标记' if enabled else '全套剥离'}）"
-                )
+            await _quill_hooks.handle_decorating_result(self, event)
         except Exception:
             # 发送前钩子绝不能抛：抛了会中断整条回复的发送
             logger.warning("[Quill] 发送前清理异常，已放行", exc_info=True)
