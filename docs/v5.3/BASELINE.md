@@ -38,6 +38,16 @@
 - `PluginMultiDict`（L20）：`get(key, default, type)/getlist/keys/values/items`
 - `PluginRequestProxy`（L254 起，模块级单例 `request` L322）：同步侧 `@property`，`async def body/json/form/files`（L306-316）；`bind_request_context()`（L326-339）contextvars 绑定
 - 分发链路：`dashboard/api/plugins.py:190-229 _call_plugin_extension`，路由参数语法 `<path:name>` 与 `<name>`（L157-160）；`register_web_api` 定义于 `core/star/context.py:705-727`
+
+### 1.2 框架契约补充：钩子/指令注册机制（M2.2 阻塞性发现，真机 4.28.1 源码实证）
+
+- 插件导入路径 = `data.plugins.<目录名>.main`（`star_manager.py:1114`，`module_str="main"` L302）；star_map 键 = 该路径（`star_manager.py:1369`）。
+- **钩子/指令以函数 `__module__` 精确匹配**两处：
+  1. 装饰器即时注册（`register/star_handler.py:47-60`，`handler_module_path=handler.__module__`）；
+  2. 加载时实例绑定 `get_handlers_by_module_name(metadata.module_path)`（`star_handler.py:191-199` 为 `==` 精确比较；`star_manager.py:1258-1268` functools.partial 绑定）；
+  3. 分发时 `star_map.get(handler.handler_module_path)`，查不到**静默跳过**（`process_stage/method/star_request.py:40-47`）。
+- **结论：钩子/指令函数定义搬进任何子模块都会使 `__module__` 不等于插件注册路径 → 六钩子/七指令全部静默失效。** PLAN §2.1"钩子住 interfaces/"不可行，修订为：**注册桩（装饰器+签名+priority）留在 main.py 类体，桩体一行委托 interfaces/astrbot_hooks.py 的实现函数；业务逻辑下沉 quill/services/**。
+- 该发现与 PLAN §0.1 重构版教训同源："接口数量不是正确性的来源，与真实框架的握手验证才是"。
 - **M1 stub 纪律：request 的 json/form/files/body 必须建模为 `async def`（可带 `default` kwarg），method/path/query 等为属性。**（重构版翻车教训：stub 把它们建成同步属性，三道测试防线全部漏过。）
 
 ---

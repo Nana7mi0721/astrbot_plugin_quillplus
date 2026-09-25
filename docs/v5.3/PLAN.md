@@ -229,7 +229,13 @@ main.py 里的内容按"域"归组（角色卡域、世界书域、记忆域、R
 3. 魔法字符串（`[LOVE_DATA]`、`[STATUS]` 等）收敛为 `tokens.py` 常量，收敛时用 M1 的 fixture 全量回归证明无字符串遗漏。
 4. 验收：1461 行状态栏 fixture 全量通过 + 真机 probe（`docs/probe_no_leak.py`）确认无裸 `[LOVE_DATA]` 泄漏。
 
-#### M2.2 钩子薄化（main.py 钩子层 → `interfaces/astrbot_hooks.py`）
+#### M2.2 钩子薄化（main.py 钩子层 → interfaces/astrbot_hooks.py）
+
+> **架构修订（2026-09-25，BASELINE §1.2）**：真机 4.28.1 源码实证，钩子/指令函数的 `__module__`
+> 必须与插件注册路径 `data.plugins.<目录>.main` **精确相等**才能被绑定与分发（否则静默跳过）。
+> 因此"钩子定义搬进 interfaces/"不可行。修订后形态：**注册桩留在 main.py 类体**（装饰器+签名+
+> priority 不变，桩体一行委托），**实现函数住 interfaces/astrbot_hooks.py**，业务逻辑下沉 quill/services/。
+> main.py 行数目标由 <150 行相应放宽（注册桩 + init + 接线约 200-300 行，M2 验收时按实际复核）。
 
 1. 6 个钩子逐个搬移，每个钩子独立 PR：先在 pytest 中为该钩子建行为快照（输入：构造的 event/req 对象 + 桩 service；断言：对 req 的修改结果与旧实现一致），再搬移，再跑快照证明等价。
 2. 钩子只做四件事：取参、调用服务、还参、顶层降级 try/except。业务逻辑全部下沉到服务层。
@@ -255,6 +261,12 @@ M2 整体验收：架构守护测试转正通过（quill/ 零 astrbot import、c
 ### M3 正确性修复（1-2 周）
 
 目的：修实打实的正确性/安全/性能问题。顺序刻意安排在 M2 之后：先拆干净再修，避免在大文件上修 bug 引入二次回归。每项修复独立 PR + 回归测试。
+
+#### M3.0 真机实测修复（2026-09-25 首测发现，BASELINE §8.2，用户决策排入 M3）
+
+- **F1 SMT 回声重复回复**：H4（on_llm_response）对照框架 `_send_message_to_user_current_session_plain_texts` 已发记录，识别 completion 为工具消息回声（状态栏渲染/剥离变体归一后比对）时置空 result，让 respond.stage 去重/空链跳过。带真机复测。
+- **F2 换卡不重置 quill_rounds**：`_ensure_persona_conversation` 新建/切换对话时 `reset_quill_rounds`，消除"新卡首轮跳 Layer 1 常驻"。
+- F3（模型合规性）记录不修。
 
 #### M3.1 统一上传通道 & 路径安全（D3 + F2）
 
