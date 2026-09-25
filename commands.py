@@ -953,9 +953,9 @@ async def quill_debug(plugin, event: AstrMessageEvent):
     lines.append(f"  Session: {session_id}")
     lines.append(f"  Persona: {persona_id or '默认'}")
 
-    # 状态栏配置
-    lines.append(f"  状态栏: {'启用' if plugin.status_bar_enabled else '关闭'}")
-    lines.append(f"  字段: {', '.join(plugin.love_fields)}")
+    # 状态栏配置（M2.3：配置读取统一走 plugin.props 实时访问器）
+    lines.append(f"  状态栏: {'启用' if plugin.props.status_bar_enabled else '关闭'}")
+    lines.append(f"  字段: {', '.join(plugin.props.love_fields)}")
 
     # 写作素材库
     if plugin.wr_manager:
@@ -1586,7 +1586,7 @@ async def statusbar_dispatch(plugin, event: AstrMessageEvent, arg: str):
 
     if arg not in _SB_MODE_MAP:
         mode = await plugin.state_manager.get_status_bar_mode(target_id)
-        global_on = bool(getattr(plugin, "status_bar_enabled", False))
+        global_on = bool(plugin.props.status_bar_enabled)
         effective = global_on if mode == "auto" else (mode == "on")
         source = "跟随面板" if mode == "auto" else "会话覆盖"
         event.set_result(MessageEventResult().message(

@@ -158,11 +158,13 @@ async def test_legacy_fts_self_test_fully_green() -> None:
 
 
 # ── legacy.test_config_projection（4 用例）────────────────────
+# M2.3 起该脚本断言经主代理批准整体重写（投影消解 → 访问器覆盖守卫），
+# 函数名同步更新；接口（_PASSED/_FAILED/_FAILURES/main）不变。
 
 cp = _load("test_config_projection")
 
-_ALL_CP_CASES = ["t1_save_block_self_consistent", "t2_config_fields_covered",
-                 "t3_alias_targets_registered", "t4_projection_rolls_back"]
+_ALL_CP_CASES = ["t1_accessor_coverage", "t2_projection_eliminated",
+                 "t3_mixin_delegate_surface", "t4_save_rollback_semantics"]
 
 for _name in _ALL_CP_CASES:
     def _make_cp(func_name: str):
@@ -173,12 +175,12 @@ for _name in _ALL_CP_CASES:
         return _run
     _fn = _make_cp(_name)
     _fn.__name__ = f"test_legacy_cp_{_name}"
-    _fn.__doc__ = f"legacy/test_config_projection.py::{_name}（断言零改动）"
+    _fn.__doc__ = f"legacy/test_config_projection.py::{_name}（M2.3 重写后的访问器覆盖守卫）"
     globals()[_fn.__name__] = _fn
 
 
 def test_legacy_cp_self_test_fully_green() -> None:
-    """legacy 配置投影自测的最终判定。"""
+    """legacy 配置访问器守卫自测的最终判定。"""
     cp._PASSED = cp._FAILED = 0
     cp._FAILURES.clear()
     assert cp.main() == 0, f"legacy config-projection 存在失败项: {cp._FAILURES}"

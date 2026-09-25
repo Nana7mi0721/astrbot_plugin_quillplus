@@ -24,7 +24,6 @@ import copy
 import json
 import os
 import re
-from typing import List
 
 from astrbot.api.star import Context, Star, register
 from astrbot.api.event import filter, AstrMessageEvent
@@ -41,7 +40,10 @@ from .activation import ActivationDetector
 from .state import StateManager
 from .kb import WritingResourceManager
 from .worldbook import WorldbookManager
-from .prompt_builder import PromptBuilder
+from .props import QuillConfigProperties
+# PromptBuilder 本体已由 props.py 直接构造（M2.3）；此处保留 re-export 是
+# M2.0 搬移期约定——tests/legacy 与 probe 脚本经 main 模块取旧导入面。
+from .prompt_builder import PromptBuilder  # noqa: F401  (legacy/probe 导入面)
 from . import commands as _cmds
 from .web_routes import QuillRoutes
 from .encryption import decrypt_output
@@ -250,6 +252,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         super().__init__(context)
         self._raw_config = config  # AstrBotConfig 实例（支持 save_config）
         self.config = QuillConfig(config)
+        # M2.3 配置投影消解（D2）：不再把 config 字段复制成实例属性。
+        # props 持本插件引用，19 个原投影属性一律经 self.props.<attr>
+        # 实时读 self.config（见 props.py；save_plugin_configs 重建
+        # config 后自动生效，无需手工同步）。
+        self.props = QuillConfigProperties(self)
         self.plugin_dir = os.path.dirname(__file__)
         # F5 修复：保留后台 task 引用，防止被 GC 中断
         self._bg_tasks: set = set()
@@ -282,9 +289,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         self.state_manager = StateManager(data_dir=data_dir)
 
         # --- Writing Resource (deferred to initialize()) ---
+        # WR 注入参数（wr_max_entries 等）经 self.props 实时读，见 props.py
         self.wr_manager = None
-        self.wr_max_entries = self.config.wr_max_entries
-        self.wr_fallback_top_count = self.config.wr_fallback_top
 
         # --- Worldbook ---
         wb_dir = self.paths["worldbooks_dir"]
@@ -296,33 +302,15 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             self.wb_manager = None
             logger.warning(f"[Quill] 世界书加载失败: {e}")
 
-        self.wb_max_entries = self.config.worldbook_max_dynamic
-
         # --- Persona Manager (独立 JSON 角色卡) ---
         self.persona_manager = QuillPersonaManager(
             self.paths["personas_dir"], avatar_dir=self.paths["avatars_dir"]
         )
 
-        # --- Prompt builder ---
-        self.prompt_builder = PromptBuilder(self.config)
-
-        # --- Refusal patterns ---
-        self.refusal_enabled = self.config.refusal_enabled
-        self.refusal_patterns: List[str] = self.config.refusal_patterns
-
-        # --- Status bar ---
-        self.status_bar_enabled = self.config.status_bar_enabled
-        self.status_bar_format_template = self.config.status_bar_format
-        self.status_bar_format_plain = self.config.status_bar_format_plain
-        self.status_bar_plain_platforms: List[str] = self.config.status_bar_plain_platforms
-        self.love_fields: List[str] = self.config.status_bar_fields
-        self.status_bar_plot_paths: list[str] = getattr(self.config, "status_bar_plot_paths", ["继续当前话题", "转换场景", "结束互动"])
-        self.status_bar_default_placeholder: str = getattr(self.config, "status_bar_default_placeholder", "未设置")
-        self.status_bar_show_delta: bool = getattr(self.config, "status_bar_show_delta", True)
-
-        # --- Debug ---
-        self.debug = self.config.debug_enabled
-        self.show_inject_report: bool = getattr(self.config, "show_inject_report", False)
+        # --- Prompt builder / refusal / status bar / debug ---
+        # v5.2.5 在此逐属性复制 config（prompt_builder 也在此构造）；
+        # M2.3 起统一走 self.props（prompt_builder 为按 config 代缓存的
+        # 访问器），运行期读法见各消费点。该段实例属性赋值已删除。
 
         # --- RAG 组件（延迟到 initialize() 初始化）---
         self.rag_embedding = None
@@ -333,6 +321,46 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         self.rag_retriever = None
 
         logger.info(f"[Quill] 插件构造完成 | {self.config}")
+
+    # ================================================================
+    # 配置属性访问器（mixin 兼容面，M2.3）
+    # ================================================================
+    # quill/services/statusbar/ 的两个 Mixin（M2.1 搬移，方法体零改动纪律）
+    # 仍以 `self.love_fields` / `self.status_bar_*` 读配置——这些方法组合进
+    # 本类后 self 就是插件实例。此处用 __getattr__ 兜底把该批旧名字实时
+    # 转发到 self.props.<attr>（后者实时读 self.config），不再是「__init__
+    # 复制 + 保存时手工同步」的实例属性快照。main.py / commands.py 自身
+    # 代码一律走 self.props.*。
+    #
+    # 为什么用 __getattr__ 兜底而不是 @property：property 是数据描述符，
+    # 会挡掉实例属性赋值——tests/legacy/test_status_bar_parsers.py 的轻量
+    # 宿主（object.__new__(QuillPlugin) 后直接 setattr，见 t24/t25/t26）
+    # 与既有外部脚本都会因此失效。__getattr__ 只在**常规
+    # 属性查找失败**时触发：实例字典里已有的同名属性照常生效（与 v5.2.5
+    # 的可写实例属性行为完全一致），默认路径实时读 props，不留第二真源。
+    # 运行期自身代码没有任何对这些名字的赋值点
+    # （tests/legacy/test_config_projection.py 看守）。
+    _MIXIN_CONFIG_ATTRS = frozenset({
+        "love_fields",
+        "status_bar_enabled",
+        "status_bar_format_template",
+        "status_bar_format_plain",
+        "status_bar_plain_platforms",
+        "status_bar_plot_paths",
+        "status_bar_default_placeholder",
+        "status_bar_show_delta",
+    })
+
+    def __getattr__(self, name: str):
+        # 只兜底状态栏 Mixin 消费的配置属性名。注意 self.props 自身缺失也
+        # 会走到这里，必须查实例字典而不是属性访问，避免无限递归。
+        if name in QuillPlugin._MIXIN_CONFIG_ATTRS:
+            props = self.__dict__.get("props")
+            if props is not None:
+                return getattr(props, name)
+        raise AttributeError(
+            f"{type(self).__name__} object has no attribute {name!r}"
+        )
 
     # ================================================================
     # Lifecycle
@@ -506,7 +534,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     f"[Quill] 写作素材库已加载: {stats['total_entries']} 条 "
                     f"(启用 {stats['enabled_entries']} 条)"
                 )
-                logger.info(f"[Quill] 最大注入: {self.wr_max_entries} 条")
+                logger.info(f"[Quill] 最大注入: {self.props.wr_max_entries} 条")
             except Exception as e:
                 self.wr_manager = None
                 logger.warning(f"[Quill] 写作素材库初始化失败: {e}")
@@ -885,6 +913,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         The Web panel sends all edited fields in one request. Saving them one
         by one exposed transient config states and could start overlapping RAG
         rebuilds when the embedding provider changed.
+
+        M2.3（投影消解）后的职责只剩四件事：写 raw dict → 重建 QuillConfig →
+        Retriever 热更新三字段 → 落盘；失败时回滚 raw dict + config 引用 +
+        Retriever 三字段。运行期配置的生效不再依赖本方法做任何属性同步：
+        self.props.* 实时读 self.config，引用一换即全部生效。
         """
         if self._raw_config is None:
             return False, "插件配置不可用"
@@ -915,27 +948,18 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 )
                 for group, key, _ in normalized
             }
-            # 下面这一串是把配置值摊平到插件实例属性上的「内存投影」。
-            # 一旦后面的落盘失败需要回滚，这些属性也必须跟着回滚，否则
-            # _raw_config 回到旧值、实例属性却停在新值，运行期读到的是
-            # 「磁盘上没有、内存里生效」的配置，重启后才露出差异。
-            # 快照必须建在 try 之外：回滚分支在 try 内部任何一步（包括第一行）
-            # 抛异常时都会用到它，建在内部会有未赋值的风险。
-            _PROJECTED_ATTRS = (
-                "wr_max_entries", "wr_fallback_top_count", "wb_max_entries",
-                "status_bar_enabled", "status_bar_format_template",
-                "status_bar_format_plain", "status_bar_plain_platforms", "love_fields",
-                "refusal_enabled", "refusal_patterns", "debug", "prompt_builder",
-                "rag_enable_chat_logging", "rag_chat_log_retention_days",
-                "worldbook_always_activate",
-                "status_bar_plot_paths", "status_bar_default_placeholder",
-                "status_bar_show_delta",
-                "show_inject_report",
-            )
-            _MISSING = object()
-            projected_previous = {
-                name: getattr(self, name, _MISSING) for name in _PROJECTED_ATTRS
-            }
+            # M2.3 投影消解：这里不再有任何「把 config 摊平到实例属性」的
+            # 同步代码——运行期一律经 self.props.<attr> 实时读 self.config，
+            # 重建 config 对象即天然生效；保存失败也只需恢复旧 config 引用。
+            # 旧 config 引用快照必须建在内层 try 之外：回滚分支在 try 内部
+            # 任何一步（包括第一行）抛异常时都会用到它，建在内部会有
+            # 未赋值的风险（v5.2.5 的 _retriever_prev 正是犯了这个错，
+            # 见下）。
+            previous_config = self.config
+            # Retriever 热更新旧值同样先置 None：旧实现把它放在内层 try 内
+            # 赋值、except 里引用——若 try 早期（如 QuillConfig 构造）失败，
+            # 回滚分支自身会 NameError 并掩盖原始异常。这里一并修正。
+            _retriever_prev = None
             try:
                 for group, key, value in normalized:
                     if (
@@ -947,32 +971,6 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
                 self.config = QuillConfig(self._raw_config)
                 self._refresh_routes_refs()
-                self.wr_max_entries = self.config.wr_max_entries
-                self.wr_fallback_top_count = self.config.wr_fallback_top
-                self.wb_max_entries = self.config.worldbook_max_dynamic
-                self.status_bar_enabled = self.config.status_bar_enabled
-                self.status_bar_format_template = self.config.status_bar_format
-                self.status_bar_format_plain = self.config.status_bar_format_plain
-                self.status_bar_plain_platforms = self.config.status_bar_plain_platforms
-                self.love_fields = self.config.status_bar_fields
-                self.refusal_enabled = self.config.refusal_enabled
-                self.refusal_patterns = self.config.refusal_patterns
-                self.debug = self.config.debug_enabled
-                self.show_inject_report = getattr(
-                    self.config, "show_inject_report", False
-                )
-                self.prompt_builder = PromptBuilder(self.config)
-
-                self.rag_enable_chat_logging = self.config.rag_enable_chat_logging
-                self.rag_chat_log_retention_days = self.config.rag_chat_log_retention_days
-                self.worldbook_always_activate = self.config.worldbook_always_activate
-                self.status_bar_plot_paths = self.config.status_bar_plot_paths
-                self.status_bar_default_placeholder = getattr(
-                    self.config, "status_bar_default_placeholder", "未设置"
-                )
-                self.status_bar_show_delta = getattr(
-                    self.config, "status_bar_show_delta", True
-                )
 
                 # ── RAG 运行期参数热更新（无需重载插件）──
                 # 这几个值被 QuillRetriever 持有为**普通属性**，构造后不再变化。
@@ -984,9 +982,6 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 # memory_store / vector_store（SQLite + FAISS 句柄），代价与风险
                 # 都远高于改两个属性，而这两个属性本来就不依赖连接。真正需要
                 # 重建的是 embedding/reranker 换 provider，那条路径已单独处理。
-                # 先存下 retriever 的旧值，供保存失败时回滚（见下方 except）。
-                # 这几个属性是热更新的，不属于 _PROJECTED_ATTRS，所以要单独记。
-                _retriever_prev = None
                 if self.rag_retriever is not None:
                     _retriever_prev = (
                         self.rag_retriever.top_k,
@@ -1026,19 +1021,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                         self._raw_config[group][key] = old_value
                     else:
                         self._raw_config[group].pop(key, None)
-                self.config = QuillConfig(self._raw_config)
+                # 恢复旧 config **引用**（而非重建）：QuillConfig 是 raw dict
+                # 的解析快照，raw 回滚后旧对象的解析结果与磁盘内容重新一致；
+                # props 逐属性实时读 self.config，引用一换即全部复原，
+                # prompt_builder 的按 config 代缓存也随之自动回到旧代实例。
+                self.config = previous_config
                 self._refresh_routes_refs()
-                # 同步回滚上面那批内存投影属性：只回滚 _raw_config 会让
-                # 内存投影停在「保存失败的那个新值」上，而磁盘还是旧值。
-                for name, old in projected_previous.items():
-                    if old is _MISSING:
-                        # 原先就没有这个属性，回滚时一并移除，避免留下残留
-                        self.__dict__.pop(name, None)
-                    else:
-                        setattr(self, name, old)
-                # 回滚 Retriever 的热更新字段。这些属性不在 _PROJECTED_ATTRS 里，
-                # 上面的循环覆盖不到：不还原就会出现「面板提示保存失败，但记忆
-                # 开关/检索条数已按新值运行」的不一致状态。
+                # 回滚 Retriever 的热更新字段：不还原就会出现「面板提示保存
+                # 失败，但记忆开关/检索条数已按新值运行」的不一致状态。
                 if _retriever_prev is not None and self.rag_retriever is not None:
                     self.rag_retriever.top_k = _retriever_prev[0]
                     self.rag_retriever.enable_memory = _retriever_prev[1]
@@ -1153,7 +1143,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     def _strip_status_artifacts(cls, text: str, fields: list | None = None) -> str:
         """移除文本中所有状态栏相关痕迹（禁用模式 + dedup 清理）。
 
-        fields 传入当前生效的字段表（调用方传 self.love_fields）。此前这里用
+        fields 传入当前生效的字段表（调用方传 self.props.love_fields）。此前这里用
         硬编码的 8 个字段名，而解析侧 L4 用动态字段——用户改字段名后（插件自己
         的协议文本就建议改成「催眠度/信赖度」），关闭状态栏时裸字段行擦不掉，
         会原样漏到屏幕上。现改为与解析侧共用同一字段来源。
@@ -1214,7 +1204,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     def _prompt_builder_for_request(self, status_bar_enabled: bool):
         """按本轮的最终开关，取一个 PromptBuilder（浅拷贝，必要时覆盖开关）。
 
-        为什么不直接改 self.prompt_builder.status_bar_enabled：它是共享实例，
+        为什么不直接改 self.props.prompt_builder.status_bar_enabled：它是共享实例，
         并发请求会互相踩（A 会话设 on 会污染 B 会话）。浅拷贝只复制属性引用，
         PromptBuilder 不持有连接/任务，拷贝成本可忽略，且绝不落回共享实例。
 
@@ -1223,9 +1213,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         三处读取该开关，加参数就得把签名一路改到底；拷贝一次把这四个读取点
         一次性对齐，改动面最小。
         """
-        if status_bar_enabled == self.prompt_builder.status_bar_enabled:
-            return self.prompt_builder
-        pb = copy.copy(self.prompt_builder)
+        if status_bar_enabled == self.props.prompt_builder.status_bar_enabled:
+            return self.props.prompt_builder
+        pb = copy.copy(self.props.prompt_builder)
         pb.status_bar_enabled = status_bar_enabled
         return pb
 
@@ -1272,7 +1262,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         追加在状态栏代码块**之外**：报告行若落进 ``` 内会被 _parse_status_block
         当成字段读走并写进 session_vars，进而注入 system prompt 污染模型输入。
         """
-        if not self.show_inject_report or not text:
+        if not self.props.show_inject_report or not text:
             return text
         line = self._format_inject_report(self._get_inject_report(target_id))
         if not line:
@@ -1335,11 +1325,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         风险控制:
         - 超时 3s，失败则放弃（不影响主流程）
         - JSON 解析失败则放弃
-        - 字段名白名单校验（仅保留 self.love_fields 中的）
+        - 字段名白名单校验（仅保留 self.props.love_fields 中的）
         - 启发式判断：文本中必须包含 ≥2 个字段关键词才触发
         """
         # 启发式：检查文本是否疑似包含状态信息
-        keyword_hits = sum(1 for f in self.love_fields if f in text)
+        keyword_hits = sum(1 for f in self.props.love_fields if f in text)
         if keyword_hits < 2:
             return None
 
@@ -1356,7 +1346,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         if not provider:
             return None
 
-        fields_json = json.dumps(self.love_fields, ensure_ascii=False)
+        fields_json = json.dumps(self.props.love_fields, ensure_ascii=False)
         prompt = (
             "从以下角色扮演文本中提取角色状态字段，输出严格 JSON。\n"
             f"已知字段：{fields_json}\n"
@@ -1385,7 +1375,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 return None
             # 字段名白名单校验
             result = {}
-            for f in self.love_fields:
+            for f in self.props.love_fields:
                 val = data.get(f)
                 if val and isinstance(val, str) and val.strip():
                     result[f] = val.strip()
@@ -1581,13 +1571,13 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                                     event.set_extra("_quill_status_handled", True)
                             else:
                                 msg["text"] = self._strip_status_artifacts(
-                                    msg["text"], self.love_fields
+                                    msg["text"], self.props.love_fields
                                 )
                         else:
                             # P2-3 修复：首条之后的 plain 消息也清理残留的状态栏标记，
                             # 避免 LLM 多段输出时后续段落的 [LOVE_DATA]/状态栏代码块被原样发给用户
                             msg["text"] = self._strip_status_artifacts(
-                                msg["text"], self.love_fields
+                                msg["text"], self.props.love_fields
                             )
                         # 注入报告追加到最后一条 plain 消息上（仅一次）
                         if not report_done and idx == len(messages) - 1:
@@ -1603,14 +1593,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
             # S3-2: Agent 模式下 LLM 输出可能经由 tool_args.messages 传递，
             # completion_text 为空时拒绝内容藏于此，需在此补充扫描。
-            if self.refusal_enabled and isinstance(messages, list):
+            if self.props.refusal_enabled and isinstance(messages, list):
                 target_id = self._get_target_id(event)
                 for msg in messages:
                     if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
                         scan_text = msg.get("text") or ""
                         if not scan_text:
                             continue
-                        for pattern in self.refusal_patterns:
+                        for pattern in self.props.refusal_patterns:
                             if pattern in scan_text:
                                 await self.state_manager.mark_refusal(target_id)
                                 logger.info(f"[Quill] (tool_args) 检测到拒绝模式 '{pattern}' (target={target_id})")
@@ -1827,7 +1817,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 for c in req.contexts:
                     if isinstance(c, dict) and isinstance(c.get("content"), str):
                         clean = self._strip_status_artifacts(
-                            c["content"], self.love_fields
+                            c["content"], self.props.love_fields
                         )
                         _scrubbed.append({**c, "content": clean} if clean != c["content"] else c)
                     else:
@@ -1908,7 +1898,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             # 无角色卡时跳过：避免 LLM 在无人设约束时进入 Agent 死循环
             await self._rewrite_smt_tool_description(req, persona_id)
 
-            if wr_activated and self.wr_manager and self.debug:
+            if wr_activated and self.wr_manager and self.props.debug:
                 try:
                     debug_match = await self.wr_manager.match(context_text, top_k=10, log_match=False)
                     for e in debug_match:
@@ -1928,9 +1918,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 "persona_id": persona_id,
                 "persona_data": persona_data,
                 "user_id": target_id,
-                "wr_max_entries": self.wr_max_entries,
-                "wr_fallback_top_count": self.wr_fallback_top_count,
-                "wb_max_entries": self.wb_max_entries,
+                "wr_max_entries": self.props.wr_max_entries,
+                "wr_fallback_top_count": self.props.wr_fallback_top_count,
+                "wb_max_entries": self.props.wb_max_entries,
                 "wb_sensitivity": self.config.worldbook_sensitivity,
                 "wb_max_token": self.config.worldbook_max_token,
                 "skip_constants": skip_constants,
@@ -1980,7 +1970,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
             self._remember_inject_report(target_id, inject_stats)
 
-            req.system_prompt = self.prompt_builder.inject_prompt(
+            req.system_prompt = self.props.prompt_builder.inject_prompt(
                 req.system_prompt or "", stable_prompt, dynamic_prompt,
                 injection_position=self.config.worldbook_injection_pos
             )
@@ -2074,7 +2064,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     # 工具钩子已处理完毕 — 仅剥离 resp.completion_text 中的
                     # 原始状态栏残留（LLM 可能同时在 content 字段也输出了）
                     content = resp.completion_text or ""
-                    stripped = self._strip_status_artifacts(content, self.love_fields)
+                    stripped = self._strip_status_artifacts(content, self.props.love_fields)
                     if stripped != content:
                         resp.completion_text = stripped
                         logger.info("[Quill] 已剥离 resp.completion_text 中的状态栏残留")
@@ -2098,12 +2088,12 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 # 禁用模式：彻底擦除所有状态栏痕迹
                 content = resp.completion_text or ""
                 resp.completion_text = self._strip_status_artifacts(
-                    content, self.love_fields
+                    content, self.props.love_fields
                 )
 
             # 注入报告（仅开关开启时）。工具路径已在 on_llm_tool_respond 里
             # 追加过，用标记去重——两条路径都会跑到本函数，否则会出现两行报告。
-            if (self.show_inject_report and not event.get_extra("_quill_report_added")
+            if (self.props.show_inject_report and not event.get_extra("_quill_report_added")
                     and (resp.completion_text or "").strip()):
                 resp.completion_text = self._append_inject_report(
                     resp.completion_text, target_id
@@ -2129,14 +2119,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 ))
                 event.set_extra("_quill_assistant_logged", True)
 
-            if not self.refusal_enabled:
+            if not self.props.refusal_enabled:
                 return
 
             scan_text = resp.completion_text or ""
             if not scan_text:
                 return
 
-            for pattern in self.refusal_patterns:
+            for pattern in self.props.refusal_patterns:
                 if pattern in scan_text:
                     await self.state_manager.mark_refusal(target_id)
                     logger.info(f"[Quill] 检测到拒绝模式 '{pattern}' (target={target_id})")
@@ -2313,9 +2303,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 if not text:
                     continue
                 if enabled:
-                    stripped = self._strip_raw_markers(text, self.love_fields)
+                    stripped = self._strip_raw_markers(text, self.props.love_fields)
                 else:
-                    stripped = self._strip_status_artifacts(text, self.love_fields)
+                    stripped = self._strip_status_artifacts(text, self.props.love_fields)
                 if stripped != text:
                     comp.text = stripped
                     cleaned += 1

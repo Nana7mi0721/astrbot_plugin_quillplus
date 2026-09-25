@@ -697,7 +697,9 @@ def t22_statusbar_dispatch() -> None:
     class _Plugin:
         def __init__(self):
             self.state_manager = _State()
-            self.status_bar_enabled = False
+            # M2.3：commands 读 plugin.props.status_bar_enabled（配置访问器层），
+            # 宿主桩同步建模该接口（与下方 config.admin_users 同理）。
+            self.props = types.SimpleNamespace(status_bar_enabled=False)
             # _check_group_permission 读 plugin.config.admin_users（私聊分支
             # 其实用不到，但属性必须存在，否则直接 AttributeError）
             self.config = types.SimpleNamespace(admin_users=[])
@@ -1346,6 +1348,12 @@ def t26_send_hook_safety_net() -> None:
 
     def _mk_host(enabled: bool, mode: str = "auto"):
         h = object.__new__(M.QuillPlugin)
+        # M2.3：main.py 自身代码（本钩子）经 self.props.<attr> 读配置；
+        # Mixin 侧仍裸读 self.<attr>（实例字典遮蔽）——两条读路径都要建模。
+        h.props = types.SimpleNamespace(
+            love_fields=list(M._DEFAULT_LOVE_FIELDS_RAW),
+            status_bar_enabled=enabled,
+        )
         h.love_fields = list(M._DEFAULT_LOVE_FIELDS_RAW)
         h.status_bar_default_placeholder = "未设置"
         h.status_bar_enabled = enabled          # 面板全局
