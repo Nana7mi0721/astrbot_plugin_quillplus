@@ -240,12 +240,27 @@
 
 ### 8.1 开放问题（实施中需拍板，随答案更新本节）
 
+- [x] **v5.2.5 基线点 git tag**：已打在 M1 结束点 `a60ed3e`（tag `v5.2.5+testbase`，含测试保护网），2026-09-25。
 - [ ] **persona_import 扩展名白名单归一方向**（§6.2 组2 不一致）：倾向 base64 侧集合（更宽，含 .webp）——确认后同步 BASELINE §6.2 并在 M3.1 实施时消歧。
 - [ ] **backup_restore 无大小上限**：M3.1 统一上传通道是否为 restore 加上限（会改变行为）→ 倾向维持现状（restore 是管理员操作且已有 zip 校验），BASELINE 记录即可。
-- [ ] **v5.2.5 基线点 git tag**：M1 完成后在 `v5.2.5+testbase` tag 前确认基线锚点应打在 main（465da1a）还是 M1 结束点（PLAN M1.5）。
+
+### 8.2 真机实测发现（2026-09-25 19:04-19:32 部署后首测，经真机日志 + 框架源码确证）
+
+均为 **v5.2.5 预存行为**（M2 前后 H2/H4/SMT 流程与 state 逻辑逐字相同），非重构回归；但用户可感知，纳入 M3 修复清单优先处理：
+
+- [ ] **F1 SMT 回声重复回复**：AstrBot 4.28.x 的 `send_message_to_user` 为直接发送（`message_tools.py:349` context.send_message），并把已发文本记入 `_send_message_to_user_current_session_plain_texts`；respond.stage 以**精确文本匹配**去重回声（`respond/stage.py:189-207`）。羽笔流程天然打破匹配：H2 把状态栏**渲染后**随工具文本发送，H4 把 completion 回声里的状态栏**剥离**——两个变体不等 → 去重失效 → 用户收到两条（实测：19:31:22 工具直发带渲染状态栏 + 19:31:47 respond 再发剥离版，间隔 25s）。修复方向：H4 检测 completion 为已发送文本的回声（对照 extra 记录 + 状态栏变体归一）时置空 result，让 respond.stage 走空链跳过。
+- [ ] **F2 quill_rounds 不随换卡重置**：`_get_target_id` 返回 UMO（聊天会话级，main.py `_get_target_id`），计数跨角色卡连续（实测三张卡连计到第 9 轮）；换卡建新隔离对话后第一轮即 `skip_constants=True`，而新对话无历史可承载被跳过的 Layer 1 常驻 → 新卡首轮缺失 WR/WB 常驻内容。修复方向：`_ensure_persona_conversation` 新建/切换对话时 `reset_quill_rounds`（记忆会话键 `UMO::persona` 已隔离，仅注入计数键需要跟上）。
+- [ ] **F3（记录，暂不修）**：SMT 强制描述下模型仍可能纯文本直出（实测 Layla 两轮），属模型合规性，框架侧行为，与插件无关。
 
 ---
 
 ## 9. 验收记录（M2/M3/M6 完成后追加）
 
-（待追加：各里程碑验收结果、真机回归结论、行为变更记录。）
+- **2026-09-25 19:04 部署 v5.3/m2-structure（M0+M1+M2.1+M2.3）至真机**：`D:/Program/AstrBot/AstrBotData/data/plugins/astrbot_plugin_quillplus/`，旧版备份于 `_plugin_backup/astrbot_plugin_quillplus_5.2.5_preM2_20260925_190257`。导入冒烟通过（MRO 四层、mixin 方法、props 委托在位）。
+- **19:16-19:32 真机首测（M2.1 状态栏 + M2.3 配置投影验收）**：
+  - 状态栏 L2（`statusbar.parsers:419` LOVE_DATA inline）与 L4（`:491` raw key:value）均从搬移后新模块执行 ✓；无裸标记泄漏 ✓；H4 剥离兜底正常 ✓
+  - `/quill statusbar` 无参四行报告 / `on` / `off` 会话级切换 ✓（与 legacy t22 基线一致）
+  - 换卡（3 张）→ 独立对话隔离 + 开场白注入 + SMT 重写 + 连续激活跳 Layer1 + 记忆检索/自动摘要 全链路 ✓
+  - 面板配置保存 ×3（含 status_bar.llm_provider_id / performance.max_output_length / worldbook.injection_position）全部成功、injection_position 变更即时反映到 prompt ✓
+  - 全程插件日志零 ERROR、零 Prompt 装配降级 ✓
+  - 发现 F1/F2/F3（见 §8.2），均为预存行为，转入 M3 修复清单。
