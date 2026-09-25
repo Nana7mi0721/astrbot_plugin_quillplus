@@ -1,0 +1,20 @@
+# -*- coding: utf-8 -*-
+# Copyright (C) 2025 Nana7mi0721
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""CI 依赖（GitHub Actions / 本地无真机环境）。
+
+与 requirements.txt（真机运行依赖）分离：
+  - faiss-cpu/numpy/aiosqlite：quill_rag 存储层直接 import（numpy/aiosqlite），
+    faiss 仅在 vector_store 的函数内延迟 import——仍列入，保证
+    tests/legacy/test_memory_fts.py 的迁移用例环境完整；
+  - pyyaml：activation.py 顶层 import yaml；
+  - Pillow：persona_manager 延迟 import（角色卡图片解析）；
+  - pytest/pytest-asyncio：asyncio_mode=auto。
+"""
+faiss-cpu
+numpy
+aiosqlite
+pyyaml
+Pillow
+pytest
+pytest-asyncio

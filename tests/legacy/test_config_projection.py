@@ -28,7 +28,10 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_PLUGIN_DIR = os.path.dirname(_HERE)
+# 兼容两处位置：仓库根 tests/（M1 之前）与 tests/legacy/（M1 起）
+_PLUGIN_DIR = os.path.dirname(_HERE) if os.path.exists(
+    os.path.join(os.path.dirname(_HERE), "main.py")
+) else os.path.dirname(os.path.dirname(_HERE))
 _MAIN_PY = os.path.join(_PLUGIN_DIR, "main.py")
 _CONFIG_PY = os.path.join(_PLUGIN_DIR, "config.py")
 
