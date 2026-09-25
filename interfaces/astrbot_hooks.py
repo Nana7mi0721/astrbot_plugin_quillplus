@@ -8,8 +8,8 @@
 相等才会被框架绑定与分发——因此**注册桩**（装饰器 + 签名 + priority）
 留在 main.py 类体，桩体一行委托到本模块的实现函数；业务逻辑逐字下沉
 于此。M2.2 第一轮 H6（on_decorating_result）、第二轮 H1
-（on_waiting_llm_request）、第三轮 H2（on_using_llm_tool），其余三钩子
-随后续轮次按同一形态迁入。
+（on_waiting_llm_request）、第三轮 H2（on_using_llm_tool）、第四轮 H4
+（on_llm_response），其余两钩子随后续轮次按同一形态迁入。
 
 降级语义分层：顶层 try/except 留在 main.py 注册桩内（与原 H6 的
 "顶层吞掉放行"同层，不因委托而改变降级位置）；本模块实现体内**不再**
@@ -27,8 +27,10 @@ import json
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
+from astrbot.api.provider import LLMResponse
 from astrbot.core.agent.tool import FunctionTool
 
+from ..encryption import decrypt_output
 from ..quill.services import response as _response_mod
 
 
@@ -288,3 +290,145 @@ async def handle_using_llm_tool(
                         logger.info(f"[Quill] (tool_args) 检测到拒绝模式 '{pattern}' (target={target_id})")
                         break
                 break  # 只扫首条 plain 文本
+
+
+async def handle_llm_response(
+    plugin, event: AstrMessageEvent, resp: LLMResponse
+) -> None:
+    """LLM 响应拦截：前置清洗、状态栏提取渲染、注入报告、落日志与拒绝扫描（H4）。
+
+    （业务逻辑自 main.py 逐字搬移，M2.2 第四轮；``self`` → ``plugin``。
+    行为快照见 tests/test_hook_snapshots.py H4 节，行为契约与顶层降级
+    语义见 main.py 注册桩 docstring 与 BASELINE §2 H4 行。顶层
+    try/except **不在本函数内**——降级层位在注册桩，与 H2/H6 同形态：
+    任何异常吞掉 + error 日志放行，resp 保持已改到一半的状态。）
+
+    段序（搬移前后一致，不得重排——顺序即行为）：
+
+    1. 前置清洗：``[B:...]`` Base64 解密安全网（agent loop 续写尾部文本
+       的混淆层的逆变换，``decrypt_output``）；用户中断系统标记擦除；
+    2. **状态栏段不受 ``_quill_activated`` gate 限制**（BASELINE §2.1
+       不对称点：本段在 gate 检查之前执行，未激活也始终处理——刻意
+       怪癖，快照钉住，勿"顺手"收紧）：
+       - 开启 + ``_quill_status_handled`` 已置位（H2 工具钩子已处理）→
+         只剥离 completion_text 中的残留标记，**不**二次渲染（F1 重复
+         回复链路的一环——M3.0 有独立设计，本轮只做等价搬移不修）；
+       - 开启 + 未置位 → 六级链提取渲染（``plugin._handle_status_bar``，
+         M2.1 Mixin，MRO 动态分发）+ session_vars 统一持久化；无栏
+         （handled=False）且有 persona 时追加兜底栏
+         （``plugin._build_default_love_data``）；
+       - 关闭 → 整套 ``plugin._strip_status_artifacts`` 擦除一切痕迹；
+    3. 注入报告追加（``show_inject_report`` 开 + ``_quill_report_added``
+       未置位 + 正文非空）——H2 工具路径与本路径都会跑到本函数，标记
+       防两行报告；
+    4. gate：未激活 return（步骤 2/3 在此之前，照跑）；
+    5. 助手回复落 chat_logs（直接文本流路径——H5 只覆盖工具调用路径；
+       ``rag_enable_chat_logging`` 开关 + retriever/memory_store 存在性
+       前置判断 + ``_quill_assistant_logged`` 防双写标记**原样保留**；
+       ``plugin._spawn`` 后台任务不阻塞响应）；
+    6. 拒绝模式扫描：``refusal_enabled`` 开且正文命中任一模式 →
+       ``mark_refusal`` 一次即 break。
+
+    下沉决策（本轮评估记录）：**无新增下沉**。状态栏六级链/剥离器/兜底
+    栏/会话开关解析均已在 M2.1 住 quill/services/statusbar/（经
+    ``plugin._*`` 动态分发，与搬移前 ``self._*`` 同一路径）；其余各段——
+    前置清洗、分支派发、chat_logs 落库判断、拒绝扫描——是 resp /
+    event extra / config / retriever 上的框架对象胶水与控制流：拆成
+    服务函数需要把 event extra 读写、防双写标记置位与短路求值时序一并
+    拆出调用点（或改传参形态），强搬会把「逐字搬移」变成「重写」，违背
+    本轮"不增加行为风险"的准绳（同 H2 轮对 JSON 回写/拒绝扫描的裁定）。
+    """
+    # [B:...] Base64 解码——安全网
+    text = resp.completion_text or ""
+    if text:
+        decrypted = decrypt_output(text)
+        if decrypted != text:
+            resp.completion_text = decrypted
+            logger.info(f"[Quill] 解密 [B:...]: {len(text)} -> {len(decrypted)}")
+
+    content = resp.completion_text or ""
+    sys_msg = "[SYSTEM: User actively interrupted the response generation. Partial output before interruption is preserved.]"
+    if sys_msg in content:
+        content = content.replace(sys_msg, "").strip()
+        resp.completion_text = content
+
+    # 状态栏处理
+    target_id = plugin._get_target_id(event)
+
+    # 会话级最终开关（与请求侧同一个解析函数，保证前后一致）
+    _sb_effective = await plugin._effective_status_bar_enabled(target_id)
+    _bar_tpl = plugin._status_bar_template_for(plugin._resolve_platform_name(event))
+
+    if _sb_effective:
+
+        if event.get_extra("_quill_status_handled"):
+            # 工具钩子已处理完毕 — 仅剥离 resp.completion_text 中的
+            # 原始状态栏残留（LLM 可能同时在 content 字段也输出了）
+            content = resp.completion_text or ""
+            stripped = plugin._strip_status_artifacts(content, plugin.props.love_fields)
+            if stripped != content:
+                resp.completion_text = stripped
+                logger.info("[Quill] 已剥离 resp.completion_text 中的状态栏残留")
+        else:
+            # 工具钩子未命中 — 在此处作为最终安全网处理
+            content = resp.completion_text or ""
+            new_text, _, handled = await plugin._handle_status_bar(
+                content, target_id, _bar_tpl
+            )
+            if not handled:
+                persona_id = await plugin.state_manager.get_persona_id(target_id)
+                if persona_id:
+                    default_bar = await plugin._build_default_love_data(
+                        target_id, _bar_tpl
+                    )
+                    new_text = (new_text or "") + "\n" + default_bar
+                    logger.info("[Quill] 状态栏兜底注入")
+            resp.completion_text = new_text
+
+    else:
+        # 禁用模式：彻底擦除所有状态栏痕迹
+        content = resp.completion_text or ""
+        resp.completion_text = plugin._strip_status_artifacts(
+            content, plugin.props.love_fields
+        )
+
+    # 注入报告（仅开关开启时）。工具路径已在 on_llm_tool_respond 里
+    # 追加过，用标记去重——两条路径都会跑到本函数，否则会出现两行报告。
+    if (plugin.props.show_inject_report and not event.get_extra("_quill_report_added")
+            and (resp.completion_text or "").strip()):
+        resp.completion_text = plugin._append_inject_report(
+            resp.completion_text, target_id
+        )
+        event.set_extra("_quill_report_added", True)
+
+    if not event.get_extra("_quill_activated"):
+        return
+
+    # ── 助手回复落日志（直接文本流路径）──
+    # on_llm_tool_respond 仅覆盖 send_message_to_user 工具调用路径；
+    # 模型直接输出文本时 completion_text 在此落日志，否则 chat_logs
+    # 只有用户侧，断点续传与反思调度都缺半边对话。
+    # _quill_assistant_logged 标记防止两条路径双写。
+    if (not event.get_extra("_quill_assistant_logged")
+            and (resp.completion_text or "").strip()
+            and getattr(plugin.config, 'rag_enable_chat_logging', True)
+            and plugin.rag_retriever and plugin.rag_retriever.memory_store):
+        resp_pid = await plugin.state_manager.get_persona_id(target_id)
+        plugin._spawn(plugin.rag_retriever.log_chat_message(
+            plugin._get_memory_session_id(target_id, resp_pid),
+            "assistant", (resp.completion_text or "").strip()
+        ))
+        event.set_extra("_quill_assistant_logged", True)
+
+    if not plugin.props.refusal_enabled:
+        return
+
+    scan_text = resp.completion_text or ""
+    if not scan_text:
+        return
+
+    for pattern in plugin.props.refusal_patterns:
+        if pattern in scan_text:
+            await plugin.state_manager.mark_refusal(target_id)
+            logger.info(f"[Quill] 检测到拒绝模式 '{pattern}' (target={target_id})")
+            break

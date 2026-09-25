@@ -46,7 +46,10 @@ from .props import QuillConfigProperties
 from .prompt_builder import PromptBuilder  # noqa: F401  (legacy/probe 导入面)
 from . import commands as _cmds
 from .web_routes import QuillRoutes
-from .encryption import decrypt_output
+# M2.2 第四轮：H4 的 [B:...] 解密消费方已随钩子实现迁至
+# interfaces/astrbot_hooks.py（实现侧自行 import）；此处保留旧导入面
+# （M2.0 搬移期约定，同 strip_markdown 的 re-export 处理）。
+from .encryption import decrypt_output  # noqa: F401  (legacy/probe 导入面)
 from .persona_manager import QuillPersonaManager
 from .quill.core import logbridge
 # M2.2 剥离器下沉：实现住 quill/services/statusbar/strip.py，
@@ -1790,109 +1793,29 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
     @filter.on_llm_response(priority=10)
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
-        """LLM 响应拦截：Base64 解密、拒绝检测、状态栏提取与剧情分支解析。
+        """LLM 响应拦截：前置清洗、状态栏提取渲染、注入报告、落日志与拒绝扫描。
 
-        核心职责：
-        - Base64 解密输出（若启用）
-        - 反拒绝模式检测与降级处理
-        - 状态栏提取（多级正则降级）
-        - 剧情走向 (Plot Paths) 解析
+        注册桩（M2.2 第四轮）：装饰器/签名/priority 不变（框架以
+        ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
+        ``interfaces.astrbot_hooks.handle_llm_response``（完整设计理由、
+        段序与下沉决策见彼处 docstring；行为快照见
+        tests/test_hook_snapshots.py H4 节）。行为契约：
+
+        * 前置清洗：``[B:...]`` Base64 解密安全网、用户中断标记擦除；
+        * **状态栏段不受 ``_quill_activated`` gate 限制**（BASELINE §2.1
+          不对称点，快照钉住）——开启时 ``_quill_status_handled`` 已置位
+          则只剥残留（不二次渲染），否则六级链提取渲染 + 无栏兜底；
+          关闭时整套剥离；随后注入报告追加（``_quill_report_added``
+          去重，H2 工具路径与本路径共用）；
+        * gate 后：未激活 return；助手回复落 chat_logs（
+          ``rag_enable_chat_logging`` 开关 + ``_quill_assistant_logged``
+          防双写标记原样保留）；拒绝模式扫描命中 ``mark_refusal``。
+
+        顶层降级留在桩内（与原 H4 同层）：任何异常吞掉 + error 日志放行，
+        resp 保持已改到一半的状态（降级语义 = 放行当前响应）。
         """
         try:
-            # [B:...] Base64 解码——安全网
-            text = resp.completion_text or ""
-            if text:
-                decrypted = decrypt_output(text)
-                if decrypted != text:
-                    resp.completion_text = decrypted
-                    logger.info(f"[Quill] 解密 [B:...]: {len(text)} -> {len(decrypted)}")
-
-            content = resp.completion_text or ""
-            sys_msg = "[SYSTEM: User actively interrupted the response generation. Partial output before interruption is preserved.]"
-            if sys_msg in content:
-                content = content.replace(sys_msg, "").strip()
-                resp.completion_text = content
-
-            # 状态栏处理
-            target_id = self._get_target_id(event)
-
-            # 会话级最终开关（与请求侧同一个解析函数，保证前后一致）
-            _sb_effective = await self._effective_status_bar_enabled(target_id)
-            _bar_tpl = self._status_bar_template_for(self._resolve_platform_name(event))
-
-            if _sb_effective:
-
-                if event.get_extra("_quill_status_handled"):
-                    # 工具钩子已处理完毕 — 仅剥离 resp.completion_text 中的
-                    # 原始状态栏残留（LLM 可能同时在 content 字段也输出了）
-                    content = resp.completion_text or ""
-                    stripped = self._strip_status_artifacts(content, self.props.love_fields)
-                    if stripped != content:
-                        resp.completion_text = stripped
-                        logger.info("[Quill] 已剥离 resp.completion_text 中的状态栏残留")
-                else:
-                    # 工具钩子未命中 — 在此处作为最终安全网处理
-                    content = resp.completion_text or ""
-                    new_text, _, handled = await self._handle_status_bar(
-                        content, target_id, _bar_tpl
-                    )
-                    if not handled:
-                        persona_id = await self.state_manager.get_persona_id(target_id)
-                        if persona_id:
-                            default_bar = await self._build_default_love_data(
-                                target_id, _bar_tpl
-                            )
-                            new_text = (new_text or "") + "\n" + default_bar
-                            logger.info("[Quill] 状态栏兜底注入")
-                    resp.completion_text = new_text
-
-            else:
-                # 禁用模式：彻底擦除所有状态栏痕迹
-                content = resp.completion_text or ""
-                resp.completion_text = self._strip_status_artifacts(
-                    content, self.props.love_fields
-                )
-
-            # 注入报告（仅开关开启时）。工具路径已在 on_llm_tool_respond 里
-            # 追加过，用标记去重——两条路径都会跑到本函数，否则会出现两行报告。
-            if (self.props.show_inject_report and not event.get_extra("_quill_report_added")
-                    and (resp.completion_text or "").strip()):
-                resp.completion_text = self._append_inject_report(
-                    resp.completion_text, target_id
-                )
-                event.set_extra("_quill_report_added", True)
-
-            if not event.get_extra("_quill_activated"):
-                return
-
-            # ── 助手回复落日志（直接文本流路径）──
-            # on_llm_tool_respond 仅覆盖 send_message_to_user 工具调用路径；
-            # 模型直接输出文本时 completion_text 在此落日志，否则 chat_logs
-            # 只有用户侧，断点续传与反思调度都缺半边对话。
-            # _quill_assistant_logged 标记防止两条路径双写。
-            if (not event.get_extra("_quill_assistant_logged")
-                    and (resp.completion_text or "").strip()
-                    and getattr(self.config, 'rag_enable_chat_logging', True)
-                    and self.rag_retriever and self.rag_retriever.memory_store):
-                resp_pid = await self.state_manager.get_persona_id(target_id)
-                self._spawn(self.rag_retriever.log_chat_message(
-                    self._get_memory_session_id(target_id, resp_pid),
-                    "assistant", (resp.completion_text or "").strip()
-                ))
-                event.set_extra("_quill_assistant_logged", True)
-
-            if not self.props.refusal_enabled:
-                return
-
-            scan_text = resp.completion_text or ""
-            if not scan_text:
-                return
-
-            for pattern in self.props.refusal_patterns:
-                if pattern in scan_text:
-                    await self.state_manager.mark_refusal(target_id)
-                    logger.info(f"[Quill] 检测到拒绝模式 '{pattern}' (target={target_id})")
-                    break
+            await _quill_hooks.handle_llm_response(self, event, resp)
         except Exception as e:
             logger.error(f"[Quill] on_llm_response 后处理遭遇未捕获异常，已降级放行: {e}", exc_info=True)
 

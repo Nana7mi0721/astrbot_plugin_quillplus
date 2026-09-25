@@ -16,11 +16,17 @@ M2.2 的"先立保护网再走钢丝"：对钩子现行为建立快照，然后�
   对话隔离（含其内部 try/except 吞掉语义）、H1 **无顶层 try** 的降级怪癖
   （BASELINE §2 H1 行：`state_manager.get_state` 抛出会上抛框架，与 H6
   不同，不得补 try）；下沉 quill/services/character.py。
-- 第三轮（本轮）：H2（on_using_llm_tool）——三重闸门原样放行、telegram/tg
-  Markdown 剥离（未知平台不剥离）、状态栏开/关两档、注入报告追加到最后
-  一条 plain、JSON 字符串解析-修改-回写（失败即放行）、拒绝模式补充扫描
-  （只扫首条 plain）、顶层异常 error 降级放行；telegram 剥离下沉
+- 第三轮（commit 96e0d99）：H2（on_using_llm_tool）——三重闸门原样放行、
+  telegram/tg Markdown 剥离（未知平台不剥离）、状态栏开/关两档、注入报告
+  追加到最后一条 plain、JSON 字符串解析-修改-回写（失败即放行）、拒绝模式
+  补充扫描（只扫首条 plain）、顶层异常 error 降级放行；telegram 剥离下沉
   quill/services/response.py。
+- 第四轮（本轮）：H4（on_llm_response）——前置清洗（[B:...] 解密安全网、
+  中断标记擦除）、**状态栏段不受 `_quill_activated` gate 限制**（§2.1 不对
+  称点，钉住）、开启提取渲染 + session_vars 持久化、无栏兜底（有 persona
+  才补）、关闭整套剥离、已处理标记下只剥残留不二次渲染、注入报告去重追
+  加、gate 后 chat_logs 落库（开关 + `_quill_assistant_logged` 防双写）、
+  拒绝扫描、顶层异常 error 降级放行（resp 不清空）。本轮无新增下沉。
 
 宿主建模
 --------
@@ -1228,3 +1234,507 @@ async def test_h2_top_level_exception_degrades(monkeypatch):
     assert calls, "异常注入未命中实际调用路径（假绿）"
     assert tool_args["messages"][0]["text"] == DIRTY_LOVE   # 原样放行
     assert any("on_using_llm_tool 拦截异常" in e for e in rec.errors)
+
+
+# ════════════════════════════════════════════════════════════════════
+# H4（on_llm_response）行为快照（M2.2 第四轮）
+#
+# 行为要点（BASELINE §2 H4 行 + §2.1 不对称点）：
+#   ① 前置清洗：[B:...] Base64 解密安全网（解密失败保留标记原样）；
+#      用户中断系统标记擦除（replace + strip）；
+#   ② **状态栏段不受 `_quill_activated` gate 限制**（BASELINE §2.1：
+#      状态栏处理在 gate 之前执行，始终处理——刻意怪癖，钉住）：
+#      - 开启 + `_quill_status_handled` 已置位（H2 工具钩子已处理）→
+#        只剥 completion_text 中的残留标记，**不**二次渲染（"已剥离"
+#        日志路径；F1 重复回复链路一环，M3.0 独立设计，此处不修）；
+#      - 开启 + 未置位 → 六级链提取渲染（`_handle_status_bar`）+
+#        session_vars 统一持久化；无栏（handled=False）且有 persona 时
+#        追加兜底栏（`_build_default_love_data`），无 persona 不补；
+#      - 关闭 → 整套 `_strip_status_artifacts`；
+#   ③ 注入报告追加（show_inject_report + `_quill_report_added` 去重，
+#      H2 工具路径与本路径都会跑，标记防两行报告）；
+#   ④ gate：未激活 return（②③在 gate 之前照跑，④之后的段落全部跳过）；
+#   ⑤ 助手回复落 chat_logs（直接文本流路径；`rag_enable_chat_logging`
+#      开关 + retriever/memory_store 存在性判断；`_quill_assistant_logged`
+#      标记防 H4/H5 双写；`_spawn` 后台任务）；
+#   ⑥ 拒绝模式扫描（refusal_enabled 开 → 命中 mark_refusal 一次即 break）。
+#   降级语义（BASELINE §2 H4 行）：单一顶层 try/except → error 日志
+#   （「后处理遭遇未捕获异常，已降级放行」）+ 放行，**resp 保持已改到
+#   一半的状态**——该层位在注册桩内保留（与 H2/H6 同形态），interfaces
+#   实现内不重复。
+#
+# 注入点约定（同 H6/H1/H2）：用例一律经注册桩
+# ``QuillPlugin.on_llm_response(host, event, resp)`` 进入——搬移前逻辑在
+# main.py 方法体内，搬移后桩一行委托 interfaces，入口不变，两个世界命中
+# 同一用例。异常注入 patch QuillPlugin._handle_status_bar（H4 前后都以
+# self/plugin._handle_status_bar 动态分发，同一 patch 点）；error 日志
+# 断言 patch main 模块 logger（顶层降级日志搬移前后都在 main.py——先在
+# 钩子体、后在注册桩，同一 patch 点）。唯一例外：`_quill_status_handled`
+# 残留剥离分支的 info 日志（"已剥离"）随实现搬到 interfaces——该用例同时
+# patch main 与 interfaces 两个模块的 logger（搬移前前者命中、搬移后后者
+# 命中，共用同一留痕替身），两个世界断言不变。
+# ════════════════════════════════════════════════════════════════════
+
+from astrbot_plugin_quillplus.interfaces import astrbot_hooks as _hooks
+from astrbot_plugin_quillplus.encryption import b64_wrap
+
+# 与 main.py H4 体 内联常量逐字相同的样本（快照 fixture，非共享常量）
+_INTERRUPT_MSG = (
+    "[SYSTEM: User actively interrupted the response generation. "
+    "Partial output before interruption is preserved.]"
+)
+
+
+class _RespH4:
+    """LLMResponse 桩：H4 只读写 completion_text（stub 模式下
+    astrbot.api.provider.LLMResponse 为 object，无法实例化）。"""
+
+    def __init__(self, text=""):
+        self.completion_text = text
+
+
+class _EvH4:
+    """H4 事件桩：unified_msg_origin 为字符串属性（真机 property 形状，
+    _get_target_id 取 UMO）；extras 精确建模 get_extra/set_extra。
+
+    platform_meta 为 None 时走 get_platform_name() 回退路径
+    （aiocqhttp → 命中真机默认 plain_platforms → 纯文本模板）。
+    """
+
+    def __init__(self, umo=UMO, platform="aiocqhttp", extras=None):
+        self.unified_msg_origin = umo
+        self.extras: dict = dict(extras or {})
+        self._platform = platform
+        self.platform_meta = None
+
+    def get_extra(self, key, default=None):
+        return self.extras.get(key, default)
+
+    def set_extra(self, key, value):
+        self.extras[key] = value
+
+    def get_sender_id(self):
+        return "10000"
+
+    def get_platform_name(self):
+        return self._platform
+
+
+class _StateH4:
+    """state_manager 桩：状态栏模式/会话变量/persona/拒绝标记，全留痕。"""
+
+    def __init__(self, mode="auto", persona_id="p1", session_vars=None):
+        self._mode = mode
+        self._persona_id = persona_id
+        self._vars = dict(session_vars or {})
+        self.get_mode_calls: list = []
+        self.get_vars_calls: list = []
+        self.update_vars_calls: list = []
+        self.persona_calls: list = []
+        self.refusal_calls: list = []
+
+    async def get_status_bar_mode(self, tid):
+        self.get_mode_calls.append(tid)
+        return self._mode
+
+    async def get_session_vars(self, tid):
+        self.get_vars_calls.append(tid)
+        return dict(self._vars)
+
+    async def update_session_vars(self, tid, updates):
+        self.update_vars_calls.append((tid, dict(updates)))
+        self._vars.update(updates)
+
+    async def get_persona_id(self, tid):
+        self.persona_calls.append(tid)
+        return self._persona_id
+
+    async def mark_refusal(self, tid):
+        self.refusal_calls.append(tid)
+
+
+class _RagH4:
+    """rag_retriever 桩：memory_store 只需真值（H4 只判存在），落日志留痕。"""
+
+    def __init__(self):
+        self.memory_store = object()
+        self.log_calls: list = []
+
+    async def log_chat_message(self, session_id, role, text):
+        self.log_calls.append((session_id, role, text))
+
+
+def _mk_h4_host(enabled=True, mode="auto", refusal=True,
+                patterns=("我不能", "我无法"), show_report=False,
+                reports=None, chat_logging=True, rag=True, state=None):
+    """轻量 QuillPlugin 宿主（t26 手法）：只挂 H4 触碰的协作对象。
+
+    - props（SimpleNamespace）：H4 自身经 self.props 读 love_fields /
+      refusal_* / show_inject_report；
+    - Mixin 读路径（statusbar parsers/render 裸读 self.<attr>）：关键项
+      同时 setattr 实例属性（与 _mk_h2_host 双建模一致）；
+    - status_bar_plain_platforms 用真机默认（aiocqhttp → 纯文本模板）；
+    - show_delta 关；config.status_bar_llm_extract=False（L6 默认关闭）；
+    - config.rag_enable_chat_logging 可配（H4 直接读 self.config）；
+    - health_tracker 用真实 HealthTracker（六级链写入点）；
+    - _spawn 捕获后台协程不调度（用例内显式 await 执行，确定性断言）；
+    - reports 非空时预置 `_inject_reports` 缓存（注入报告数据源）。
+    """
+    h = object.__new__(M.QuillPlugin)
+    h.props = types.SimpleNamespace(
+        love_fields=list(M._DEFAULT_LOVE_FIELDS_RAW),
+        status_bar_enabled=enabled,
+        refusal_enabled=refusal,
+        refusal_patterns=list(patterns),
+        show_inject_report=show_report,
+    )
+    h.love_fields = list(M._DEFAULT_LOVE_FIELDS_RAW)
+    h.status_bar_enabled = enabled
+    h.status_bar_default_placeholder = "未设置"
+    h.status_bar_show_delta = False
+    h.status_bar_format_template = "**状态栏**\n```\n{content}\n```"
+    h.status_bar_format_plain = "───── 状态栏 ─────\n{content}\n────────────────"
+    h.status_bar_plain_platforms = ["aiocqhttp", "qq_official"]
+    h.status_bar_plot_paths = ["继续当前话题", "换个话题"]
+    h.config = types.SimpleNamespace(
+        status_bar_llm_extract=False,
+        rag_enable_chat_logging=chat_logging,
+    )
+    h.health_tracker = M.HealthTracker()
+    h.state_manager = state if state is not None else _StateH4()
+    h.rag_retriever = _RagH4() if rag else None
+    h._spawned: list = []
+    h._spawn = h._spawned.append      # 捕获协程，用例内手动 await 执行
+    if reports is not None:
+        h._inject_reports = {UMO: dict(reports)}
+    return h
+
+
+async def _run_h4(host, event, resp):
+    """经注册桩调用（搬移前后都是 QuillPlugin.on_llm_response）。"""
+    await M.QuillPlugin.on_llm_response(host, event, resp)
+
+
+class _LoggerRecH4:
+    """logger 替身：error/info 分级留痕（顶层降级与"已剥离"日志断言）。"""
+
+    def __init__(self):
+        self.errors: list = []
+        self.infos: list = []
+
+    def error(self, msg, *a, **k):
+        self.errors.append(str(msg))
+
+    def warning(self, msg, *a, **k):
+        pass
+
+    def info(self, msg, *a, **k):
+        self.infos.append(str(msg))
+
+    def debug(self, msg, *a, **k):
+        pass
+
+
+# ── H4：状态栏段不受 gate 限制（§2.1 不对称点，钉住）────────────────
+
+
+async def test_h4_status_bar_zone_runs_without_activation_gate():
+    """`_quill_activated` 缺失（未激活）：状态栏段与注入报告段**照常执行**
+    （二者都在 gate 之前），gate 之后的段落全部跳过——不落 chat_logs、
+    不置防双写标记、不扫拒绝。钉住这个怪癖。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state, show_report=True,
+                       reports={"wb": 2})
+    ev = _EvH4()                       # extras 无 _quill_activated
+    resp = _RespH4("正文\n" + DIRTY_LOVE)
+
+    await _run_h4(host, ev, resp)
+
+    # gate 之前①：[LOVE_DATA] 已提取渲染（纯文本模板）
+    assert "[LOVE_DATA]" not in resp.completion_text
+    assert "───── 状态栏 ─────" in resp.completion_text
+    assert "好感度：88/100（爱意）" in resp.completion_text
+    assert "正文" in resp.completion_text
+    # gate 之前②：注入报告照常追加 + 置位
+    assert "〔注入〕世界书×2" in resp.completion_text
+    assert ev.extras.get("_quill_report_added") is True
+    # gate：未激活 → 记忆/日志/拒绝段全部未跑
+    assert host.rag_retriever.log_calls == []
+    assert "_quill_assistant_logged" not in ev.extras
+    assert state.refusal_calls == []
+
+
+# ── H4：状态栏开启（提取渲染 + 持久化 / 兜底栏）─────────────────────
+
+
+async def test_h4_sb_on_renders_and_persists_session_vars():
+    """状态栏开启（工具钩子未处理）：[LOVE_DATA] 走六级链提取渲染，
+    取值经 `_handle_status_bar` 统一持久化进 session_vars。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4()
+    resp = _RespH4("剧情开头\n" + DIRTY_LOVE)
+
+    await _run_h4(host, ev, resp)
+
+    assert "[LOVE_DATA]" not in resp.completion_text
+    assert "───── 状态栏 ─────" in resp.completion_text
+    assert "好感度：88/100（爱意）" in resp.completion_text
+    assert "剧情开头" in resp.completion_text
+    assert state.update_vars_calls
+    tid, updates = state.update_vars_calls[0]
+    assert tid == UMO
+    assert updates.get("好感度") == "88/100（爱意）"
+    assert updates.get("关系阶段") == "亲密恋人"
+
+
+async def test_h4_sb_on_missing_bar_fallback_default_appended():
+    """状态栏开启但 LLM 未输出状态栏（handled=False）且有 persona：
+    兜底栏追加在正文之后（\\n 连接）——历史值缺省用占位符 + 剧情走向
+    选项块；兜底路径不写 session_vars（updates 空 + 未 handled）。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4()
+    resp = _RespH4("只有剧情正文，没有状态栏")
+
+    await _run_h4(host, ev, resp)
+
+    assert resp.completion_text.startswith("只有剧情正文，没有状态栏\n")
+    assert "───── 状态栏 ─────" in resp.completion_text
+    assert "好感度：未设置" in resp.completion_text
+    assert ">>> 剧情走向 <<<" in resp.completion_text
+    assert state.update_vars_calls == []
+
+
+async def test_h4_sb_on_no_persona_skips_fallback():
+    """handled=False 但无 persona（get_persona_id 空）：不补兜底栏，
+    正文原样——`if persona_id:` 分支快照。"""
+    state = _StateH4(persona_id="")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4()
+    resp = _RespH4("只有剧情正文")
+
+    await _run_h4(host, ev, resp)
+
+    assert resp.completion_text == "只有剧情正文"
+
+
+# ── H4：状态栏关闭 / 已处理标记下的残留剥离 ─────────────────────────
+
+
+async def test_h4_sb_off_strips_all_artifacts():
+    """状态栏关闭：completion_text 走整套 `_strip_status_artifacts`——
+    渲染栏、裸字段、原始标记全部擦除，正文保留，且不新增模板栏。"""
+    host = _mk_h4_host(enabled=False)
+    ev = _EvH4()
+    resp = _RespH4("前文\n" + RENDERED + "\n" + DIRTY_LOVE + "\n后文")
+
+    await _run_h4(host, ev, resp)
+
+    assert "[LOVE_DATA]" not in resp.completion_text
+    assert "好感度" not in resp.completion_text
+    assert "关系阶段" not in resp.completion_text
+    assert "剧情走向" not in resp.completion_text
+    assert "───── 状态栏 ─────" not in resp.completion_text
+    assert "前文" in resp.completion_text and "后文" in resp.completion_text
+
+
+async def test_h4_sb_handled_only_strips_residual_no_rerender(monkeypatch):
+    """状态栏开启 + `_quill_status_handled` 已置位（H2 工具钩子已处理）：
+    只剥离 completion_text 中的残留标记（"已剥离"日志路径），**不走**
+    六级链、不二次渲染。"""
+    calls: list = []
+
+    async def _spy(*args, **kwargs):
+        calls.append(args)
+        return "若本桩被调用则此文本会进入结果（不应发生）", {}, False
+
+    monkeypatch.setattr(M.QuillPlugin, "_handle_status_bar", _spy)
+    rec = _LoggerRecH4()
+    # "已剥离" info 日志：搬移前在 main.py，搬移后在 interfaces——
+    # 两个模块的 logger 同 patch 一个替身，两世界断言不变
+    monkeypatch.setattr(M, "logger", rec)
+    monkeypatch.setattr(_hooks, "logger", rec)
+
+    host = _mk_h4_host(enabled=True)
+    ev = _EvH4(extras={"_quill_status_handled": True})
+    resp = _RespH4("剧情前段\n" + DIRTY_LOVE + "\n剧情后段")
+
+    await _run_h4(host, ev, resp)
+
+    assert calls == []                 # 六级链未触达（不二次渲染）
+    assert "[LOVE_DATA]" not in resp.completion_text
+    assert "剧情前段" in resp.completion_text
+    assert "剧情后段" in resp.completion_text
+    assert "───── 状态栏 ─────" not in resp.completion_text
+    assert any("已剥离" in m for m in rec.infos)
+
+
+# ── H4：注入报告（去重标记）─────────────────────────────────────────
+
+
+async def test_h4_inject_report_appended_once_with_marker():
+    """show_inject_report 开：报告行追加到 completion_text（rstrip 后
+    \\n\\n 连接）并 set `_quill_report_added`；标记已置位 / 正文为空时
+    不追加（H2 工具路径已追加过的去重语义）。"""
+    host = _mk_h4_host(enabled=False, chat_logging=False, show_report=True,
+                       reports={"wb": 2})
+    ev = _EvH4(extras={"_quill_activated": True})
+    resp = _RespH4("第一轮回复")
+
+    await _run_h4(host, ev, resp)
+
+    assert resp.completion_text == "第一轮回复\n\n〔注入〕世界书×2"
+    assert ev.extras.get("_quill_report_added") is True
+
+    # 标记已置位：不再追加
+    ev2 = _EvH4(extras={"_quill_activated": True, "_quill_report_added": True})
+    resp2 = _RespH4("第二条回复")
+    await _run_h4(host, ev2, resp2)
+    assert resp2.completion_text == "第二条回复"
+
+    # 正文为空：不追加、不置位
+    ev3 = _EvH4()
+    resp3 = _RespH4("")
+    await _run_h4(host, ev3, resp3)
+    assert resp3.completion_text == ""
+    assert "_quill_report_added" not in ev3.extras
+
+
+# ── H4：gate 后——助手回复落 chat_logs（防双写）─────────────────────
+
+
+async def test_h4_activated_assistant_reply_logged_with_marker():
+    """激活 + rag_enable_chat_logging 开：completion_text（strip 后）按
+    assistant 角色落 chat_logs（后台任务），session id 为
+    target_id::persona_id，并 set `_quill_assistant_logged` 防双写标记。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=False, state=state)
+    ev = _EvH4(extras={"_quill_activated": True})
+    resp = _RespH4("直接文本流回复\n")
+
+    await _run_h4(host, ev, resp)
+    for coro in host._spawned:         # _spawn 捕获的后台协程，显式执行
+        await coro
+
+    assert host.rag_retriever.log_calls == [
+        (UMO + "::p1", "assistant", "直接文本流回复")
+    ]
+    assert ev.extras.get("_quill_assistant_logged") is True
+
+
+async def test_h4_chat_logging_off_skips_log():
+    """rag_enable_chat_logging 关：不落库、不置标记（开关判断在标记与
+    retriever 判断之前，短路快照）。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=False, state=state, chat_logging=False)
+    ev = _EvH4(extras={"_quill_activated": True})
+    resp = _RespH4("直接文本流回复")
+
+    await _run_h4(host, ev, resp)
+
+    assert host.rag_retriever.log_calls == []
+    assert "_quill_assistant_logged" not in ev.extras
+
+
+async def test_h4_assistant_logged_marker_prevents_double_write():
+    """`_quill_assistant_logged` 已置位（H5 工具路径已落库）：直接文本流
+    路径不再落库——防双写标记语义（记忆/日志段原样保留的怪癖）。"""
+    host = _mk_h4_host(enabled=False)
+    ev = _EvH4(extras={"_quill_activated": True,
+                       "_quill_assistant_logged": True})
+    resp = _RespH4("已被工具路径落库的回复")
+
+    await _run_h4(host, ev, resp)
+    for coro in host._spawned:
+        await coro
+
+    assert host.rag_retriever.log_calls == []
+
+
+# ── H4：拒绝模式扫描 ────────────────────────────────────────────────
+
+
+async def test_h4_refusal_pattern_hit_marks_once():
+    """激活 + refusal_enabled 开：completion_text 命中任一模式 →
+    mark_refusal(target_id) 一次即 break。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=False, state=state, chat_logging=False)
+    ev = _EvH4(extras={"_quill_activated": True})
+    resp = _RespH4("抱歉，我不能继续这个话题")
+
+    await _run_h4(host, ev, resp)
+
+    assert state.refusal_calls == [UMO]
+
+
+async def test_h4_refusal_disabled_skips_scan():
+    """refusal_enabled 关：扫描整体跳过（即使正文含模式，不标记）。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=False, state=state, chat_logging=False,
+                       refusal=False)
+    ev = _EvH4(extras={"_quill_activated": True})
+    resp = _RespH4("我不能继续")
+
+    await _run_h4(host, ev, resp)
+
+    assert state.refusal_calls == []
+
+
+# ── H4：前置清洗（解密安全网 / 中断标记擦除）────────────────────────
+
+
+async def test_h4_base64_decrypt_safety_net():
+    """[B:...] Base64 解密安全网：completion_text 中的标记被解码为原文
+    （encrypt_output 的逆变换），后续剥离路径不再改动。"""
+    host = _mk_h4_host(enabled=False)
+    ev = _EvH4()
+    resp = _RespH4(b64_wrap("机密尾部文本"))
+
+    await _run_h4(host, ev, resp)
+
+    assert resp.completion_text == "机密尾部文本"
+
+
+async def test_h4_interrupt_system_marker_removed():
+    """用户中断系统标记：被 replace 擦除并 strip（中断前的部分输出保留）。"""
+    host = _mk_h4_host(enabled=False)
+    ev = _EvH4()
+    resp = _RespH4("前半段" + _INTERRUPT_MSG + "后半段")
+
+    await _run_h4(host, ev, resp)
+
+    assert resp.completion_text == "前半段后半段"
+
+
+# ── H4：顶层异常 → error 日志 + 放行（降级语义）─────────────────────
+
+
+async def test_h4_top_level_exception_degrades(monkeypatch):
+    """状态栏链中途抛异常 → 顶层 except 吞掉 + error 日志（「后处理遭遇
+    未捕获异常，已降级放行」）→ resp 保持已改到一半的状态放行（不清空、
+    不中断框架响应流程）。
+
+    patch 点 QuillPlugin._handle_status_bar（搬移前后 H4 都经
+    self/plugin._handle_status_bar 动态分发）；calls 非空防注入假绿。
+    """
+    calls: list = []
+
+    async def _boom(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError("injected status-bar failure")
+
+    monkeypatch.setattr(M.QuillPlugin, "_handle_status_bar", _boom)
+    rec = _LoggerRecH4()
+    monkeypatch.setattr(M, "logger", rec)
+
+    host = _mk_h4_host(enabled=True)
+    ev = _EvH4()
+    resp = _RespH4("尚未被清空的响应正文")
+
+    await _run_h4(host, ev, resp)   # 不应抛
+
+    assert calls, "异常注入未命中实际调用路径（假绿）"
+    # 前置清洗（解密/中断标记）对该文本均为 no-op → 异常点 resp 未被改动
+    assert resp.completion_text == "尚未被清空的响应正文"
+    assert any("on_llm_response 后处理遭遇未捕获异常" in e for e in rec.errors)
