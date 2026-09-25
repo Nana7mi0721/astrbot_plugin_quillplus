@@ -8,7 +8,8 @@
 相等才会被框架绑定与分发——因此**注册桩**（装饰器 + 签名 + priority）
 留在 main.py 类体，桩体一行委托到本模块的实现函数；业务逻辑逐字下沉
 于此。M2.2 第一轮 H6（on_decorating_result）、第二轮 H1
-（on_waiting_llm_request），其余四钩子随后续轮次按同一形态迁入。
+（on_waiting_llm_request）、第三轮 H2（on_using_llm_tool），其余三钩子
+随后续轮次按同一形态迁入。
 
 降级语义分层：顶层 try/except 留在 main.py 注册桩内（与原 H6 的
 "顶层吞掉放行"同层，不因委托而改变降级位置）；本模块实现体内**不再**
@@ -22,8 +23,13 @@ H1 行的降级怪癖：`state_manager.get_state` 抛出会上抛框架）。其
 
 from __future__ import annotations
 
+import json
+
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
+from astrbot.core.agent.tool import FunctionTool
+
+from ..quill.services import response as _response_mod
 
 
 async def handle_decorating_result(plugin, event: AstrMessageEvent) -> None:
@@ -154,3 +160,131 @@ async def handle_waiting_llm_request(plugin, event: AstrMessageEvent) -> None:
     if activated or has_bracket:
         event.set_extra("enable_streaming", False)
         logger.info("[Quill] 已关闭流式输出")
+
+
+async def handle_using_llm_tool(
+    plugin, event: AstrMessageEvent, tool: FunctionTool, tool_args: dict | None
+) -> None:
+    """工具调用前拦截：改写 send_message_to_user 的工具参数（H2）。
+
+    （业务逻辑自 main.py 逐字搬移，M2.2 第三轮；``self`` → ``plugin``。
+    行为快照见 tests/test_hook_snapshots.py H2 节，行为契约与顶层降级
+    语义见 main.py 注册桩 docstring 与 BASELINE §2 H2 行。顶层
+    try/except **不在本函数内**——降级层位在注册桩，与 H6 同形态。）
+
+    处理链（三重闸门通过后）：
+
+    1. 平台探测：``platform_meta.name`` 优先，``get_platform_name()``
+       回退（内联双 try）。与 StatusbarRenderMixin._resolve_platform_name
+       近似但**不等价**（无 strip、空名不短路继续求值）——历史实现，
+       刻意逐字保留，不借搬移"顺手统一"；
+    2. messages 为 JSON 字符串时先解析（失败 → 立即 return，后续一切
+       不跑、tool_args 原样）；
+    3. telegram/tg 平台剥离 plain 段 Markdown（逐字下沉
+       quill/services/response.py，调用点一行）；
+    4. 状态栏（全平台）：开启时首条 plain 走六级链
+       （``plugin._handle_status_bar``，M2.1 Mixin，MRO 动态分发），
+       handled 后 set ``_quill_status_handled``，后续 plain 只清残留；
+       关闭时整套 ``_strip_status_artifacts``；注入报告追加到最后一条
+       plain（``_append_inject_report``）；
+    5. JSON 回写（was_string 时序列化回去）；
+    6. 拒绝模式补充扫描（S3-2：completion_text 为空时拒绝内容藏于
+       tool_args.messages，只扫首条 plain，命中 mark_refusal）。
+
+    下沉决策（本轮评估记录）：telegram 剥离（``strip_markdown`` 正则组与
+    逐段套用循环）在原 main.py 即为零 self 依赖的模块级纯函数/自由段，
+    已下沉 quill/services/response.py；**JSON 解析-回写与拒绝扫描留在本
+    函数**——前者与控制流交织（解析失败的早退 return 卡在解析与回写
+    之间），后者在守卫内重算 target_id（提取成服务函数需要改变求值
+    时序或传参形态），两段强搬都会把「逐字搬移」变成「重写」，违背本轮
+    "不增加行为风险"的准绳。
+    """
+    if tool.name != "send_message_to_user":
+        return
+    if not event.get_extra("_quill_activated"):
+        return
+    if not tool_args:
+        return
+
+    platform = ""
+    try:
+        pm = getattr(event, "platform_meta", None)
+        if pm is not None:
+            platform = (getattr(pm, "name", "") or "").lower()
+    except Exception:
+        logger.debug("[Quill] platform_meta.name 获取失败", exc_info=True)
+    if not platform:
+        try:
+            platform = (event.get_platform_name() or "").lower()
+        except Exception:
+            logger.debug("[Quill] get_platform_name() 获取失败", exc_info=True)
+
+    # 记录原始类型以便正确回写
+    messages_raw = tool_args.get("messages", [])
+    was_string = isinstance(messages_raw, str)
+    if was_string:
+        try:
+            messages = json.loads(messages_raw)
+        except (json.JSONDecodeError, TypeError):
+            return
+    else:
+        messages = messages_raw
+
+    # 仅对特定平台执行 Markdown 清理（未知平台不剥离，避免破坏原生 Markdown 渲染）
+    _response_mod.strip_markdown_in_plain_messages(messages, platform)
+
+    # 状态栏处理（全平台执行）
+    # 本轮最终开关 = 会话级覆盖 > 面板全局（见 _effective_status_bar_enabled）
+    target_id = plugin._get_target_id(event)
+    _sb_on = await plugin._effective_status_bar_enabled(target_id)
+    _bar_tpl = plugin._status_bar_template_for(platform)
+    if isinstance(messages, list):
+        report_done = False
+        for idx, msg in enumerate(messages):
+            if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
+                # 首条 plain 消息：执行状态栏提取；后续消息：仅清理残留状态栏标记
+                if idx == 0 or not event.get_extra("_quill_status_handled"):
+                    if _sb_on:
+                        new_text, _, handled = await plugin._handle_status_bar(
+                            msg["text"], target_id, _bar_tpl
+                        )
+                        msg["text"] = new_text
+                        if handled:
+                            event.set_extra("_quill_status_handled", True)
+                    else:
+                        msg["text"] = plugin._strip_status_artifacts(
+                            msg["text"], plugin.props.love_fields
+                        )
+                else:
+                    # P2-3 修复：首条之后的 plain 消息也清理残留的状态栏标记，
+                    # 避免 LLM 多段输出时后续段落的 [LOVE_DATA]/状态栏代码块被原样发给用户
+                    msg["text"] = plugin._strip_status_artifacts(
+                        msg["text"], plugin.props.love_fields
+                    )
+                # 注入报告追加到最后一条 plain 消息上（仅一次）
+                if not report_done and idx == len(messages) - 1:
+                    before = msg["text"]
+                    msg["text"] = plugin._append_inject_report(msg["text"], target_id)
+                    if msg["text"] != before:
+                        event.set_extra("_quill_report_added", True)
+                    report_done = True
+
+    # JSON 回写：如果原始类型是字符串，序列化回去
+    if was_string:
+        tool_args["messages"] = json.dumps(messages, ensure_ascii=False)
+
+    # S3-2: Agent 模式下 LLM 输出可能经由 tool_args.messages 传递，
+    # completion_text 为空时拒绝内容藏于此，需在此补充扫描。
+    if plugin.props.refusal_enabled and isinstance(messages, list):
+        target_id = plugin._get_target_id(event)
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
+                scan_text = msg.get("text") or ""
+                if not scan_text:
+                    continue
+                for pattern in plugin.props.refusal_patterns:
+                    if pattern in scan_text:
+                        await plugin.state_manager.mark_refusal(target_id)
+                        logger.info(f"[Quill] (tool_args) 检测到拒绝模式 '{pattern}' (target={target_id})")
+                        break
+                break  # 只扫首条 plain 文本

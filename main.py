@@ -55,6 +55,12 @@ from .quill.services.statusbar import strip as _strip_mod
 # M2.2 第二轮：角色卡→对话隔离下沉 quill/services/character.py
 # （_ensure_persona_conversation 保留同名薄转发，见彼处）。
 from .quill.services import character as _character_mod
+# M2.2 第三轮：H2 的 telegram Markdown 剥离下沉 quill/services/response.py
+# （_MD_PATTERNS/strip_markdown 在原 main.py 即为零状态模块级纯函数，唯一
+# 消费方是 H2 on_using_llm_tool；此处 re-export 维持 main 模块旧导入面，
+# M2.0 搬移期约定）。实现与完整设计理由（Telegram 无 parse_mode 为何要擦）
+# 见 response.py。
+from .quill.services.response import _MD_PATTERNS, strip_markdown  # noqa: F401
 from .quill.services.statusbar import (
     LOVE_DATA_TAG,
     STATUS_END_TAG,
@@ -103,36 +109,6 @@ def _split2(text: str) -> tuple[str, str]:
         return parts[0], ""
     return parts[0], parts[1]
 
-
-# ── Markdown stripper ──────────────────────────────────────────────
-# Telegram 适配器没有设置 parse_mode，Markdown 语法会被原文显示。
-# 在 send_message_to_user 执行前用正则擦除标记，让用户看到干净文本。
-
-_MD_PATTERNS = [
-    # Inline code (most specific first)
-    (re.compile(r'`([^`\n]+)`'), r'\1'),
-    # Bold-italic ***text***
-    (re.compile(r'\*\*\*(.+?)\*\*\*'), r'\1'),
-    (re.compile(r'___(.+?)___'), r'\1'),
-    # Bold **text**
-    (re.compile(r'\*\*(.+?)\*\*'), r'\1'),
-    # Italic *text* (not adjacent to another *, protects **kwargs)
-    (re.compile(r'(?<!\*)\*(?!\*)([^*]+)(?<!\*)\*(?!\*)'), r'\1'),
-    # Strikethrough ~~text~~
-    (re.compile(r'~~(.+?)~~'), r'\1'),
-    # Images ![alt](url)
-    (re.compile(r'!\[([^\]]*)\]\([^)]+\)'), r'\1'),
-    # Links [text](url)
-    (re.compile(r'\[([^\]]+)\]\([^)]+\)'), r'\1'),
-    # Reference-style links [text][ref]
-    (re.compile(r'\[([^\]]+)\]\[[^\]]*\]'), r'\1'),
-    # Heading markers at line start
-    (re.compile(r'^#{1,6}\s+', re.MULTILINE), ''),
-    # Blockquotes at line start
-    (re.compile(r'^>\s?', re.MULTILINE), ''),
-    # Horizontal rules
-    (re.compile(r'^[-*_]{3,}[ \t]*$', re.MULTILINE), ''),
-]
 
 # P1-8: 核心记忆自然语言注入前缀匹配
 # 支持: @记住：内容 | 记住：内容 | 核心记忆：内容 | @remember: content
@@ -213,15 +189,8 @@ class HealthTracker:
 
 # _StatusLevelResult / _StatusLevelContext 数据类已搬至
 # quill/services/statusbar/parsers.py（M2.1），经顶部 import 保持旧名可用。
-
-
-def strip_markdown(text: str) -> str:
-    """Remove common Markdown formatting, leaving clean plain text."""
-    if not text:
-        return text
-    for pattern, replacement in _MD_PATTERNS:
-        text = pattern.sub(replacement, text)
-    return text
+# strip_markdown/_MD_PATTERNS 已下沉 quill/services/response.py（M2.2 第三轮），
+# 经顶部 import 保持旧名可用。
 
 
 @register(
@@ -1375,110 +1344,30 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         self, event: AstrMessageEvent, tool: FunctionTool,
         tool_args: dict | None
     ):
-        """工具调用前拦截 — 在 Telegram 平台剥离 Markdown 标记，全平台格式化/擦除状态栏。"""
-        # S2-3 修复：顶层 try/except，异常时降级放行，与 on_llm_request/response 保持一致
+        """工具调用前拦截 — 在 Telegram 平台剥离 Markdown 标记，全平台格式化/擦除状态栏。
+
+        注册桩（M2.2 第三轮）：装饰器/签名/priority 不变（框架以
+        ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
+        ``interfaces.astrbot_hooks.handle_using_llm_tool``（完整设计理由与
+        下沉决策见彼处 docstring；行为快照见 tests/test_hook_snapshots.py
+        H2 节）。行为契约：
+
+        * 三重闸门原样放行（不修改 tool_args）：非 send_message_to_user
+          工具 → 未激活（``_quill_activated``）→ 空 tool_args；
+        * telegram/tg 平台剥离 plain 段 Markdown（下沉
+          quill/services/response.py；未知平台不剥离）；
+        * 状态栏（全平台）：开启时首条 plain 走六级链提取渲染
+          （handled 后 set ``_quill_status_handled``，后续只清残留），关闭时
+          整套 ``_strip_status_artifacts``；注入报告追加到最后一条 plain；
+        * messages 为 JSON 字符串时解析-修改-回写（解析失败原样放行）；
+        * 拒绝模式补充扫描（S3-2，只扫首条 plain）。
+
+        顶层降级留在桩内（与原 H2 同层，S2-3 语义）：任何异常吞掉 +
+        error 日志放行——工具参数钩子抛出会打断 agent loop，降级语义 =
+        不修改 tool_args。
+        """
         try:
-            if tool.name != "send_message_to_user":
-                return
-            if not event.get_extra("_quill_activated"):
-                return
-            if not tool_args:
-                return
-
-            platform = ""
-            try:
-                pm = getattr(event, "platform_meta", None)
-                if pm is not None:
-                    platform = (getattr(pm, "name", "") or "").lower()
-            except Exception:
-                logger.debug("[Quill] platform_meta.name 获取失败", exc_info=True)
-            if not platform:
-                try:
-                    platform = (event.get_platform_name() or "").lower()
-                except Exception:
-                    logger.debug("[Quill] get_platform_name() 获取失败", exc_info=True)
-
-            # 记录原始类型以便正确回写
-            messages_raw = tool_args.get("messages", [])
-            was_string = isinstance(messages_raw, str)
-            if was_string:
-                try:
-                    messages = json.loads(messages_raw)
-                except (json.JSONDecodeError, TypeError):
-                    return
-            else:
-                messages = messages_raw
-
-            # 仅对特定平台执行 Markdown 清理（未知平台不剥离，避免破坏原生 Markdown 渲染）
-            needs_strip = platform in ("telegram", "tg")
-            if needs_strip:
-                logger.info(f"[Quill] >>> send_message_to_user 调用 (platform={platform or '?'}), 清理 Markdown...")
-                modified = 0
-                for msg in messages if isinstance(messages, list) else []:
-                    if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
-                        original = msg["text"]
-                        cleaned = strip_markdown(original)
-                        if cleaned != original:
-                            msg["text"] = cleaned
-                            modified += 1
-                if modified:
-                    logger.info(f"[Quill] 已清理 {modified} 条消息中的 Markdown 标记")
-
-            # 状态栏处理（全平台执行）
-            # 本轮最终开关 = 会话级覆盖 > 面板全局（见 _effective_status_bar_enabled）
-            target_id = self._get_target_id(event)
-            _sb_on = await self._effective_status_bar_enabled(target_id)
-            _bar_tpl = self._status_bar_template_for(platform)
-            if isinstance(messages, list):
-                report_done = False
-                for idx, msg in enumerate(messages):
-                    if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
-                        # 首条 plain 消息：执行状态栏提取；后续消息：仅清理残留状态栏标记
-                        if idx == 0 or not event.get_extra("_quill_status_handled"):
-                            if _sb_on:
-                                new_text, _, handled = await self._handle_status_bar(
-                                    msg["text"], target_id, _bar_tpl
-                                )
-                                msg["text"] = new_text
-                                if handled:
-                                    event.set_extra("_quill_status_handled", True)
-                            else:
-                                msg["text"] = self._strip_status_artifacts(
-                                    msg["text"], self.props.love_fields
-                                )
-                        else:
-                            # P2-3 修复：首条之后的 plain 消息也清理残留的状态栏标记，
-                            # 避免 LLM 多段输出时后续段落的 [LOVE_DATA]/状态栏代码块被原样发给用户
-                            msg["text"] = self._strip_status_artifacts(
-                                msg["text"], self.props.love_fields
-                            )
-                        # 注入报告追加到最后一条 plain 消息上（仅一次）
-                        if not report_done and idx == len(messages) - 1:
-                            before = msg["text"]
-                            msg["text"] = self._append_inject_report(msg["text"], target_id)
-                            if msg["text"] != before:
-                                event.set_extra("_quill_report_added", True)
-                            report_done = True
-
-            # JSON 回写：如果原始类型是字符串，序列化回去
-            if was_string:
-                tool_args["messages"] = json.dumps(messages, ensure_ascii=False)
-
-            # S3-2: Agent 模式下 LLM 输出可能经由 tool_args.messages 传递，
-            # completion_text 为空时拒绝内容藏于此，需在此补充扫描。
-            if self.props.refusal_enabled and isinstance(messages, list):
-                target_id = self._get_target_id(event)
-                for msg in messages:
-                    if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
-                        scan_text = msg.get("text") or ""
-                        if not scan_text:
-                            continue
-                        for pattern in self.props.refusal_patterns:
-                            if pattern in scan_text:
-                                await self.state_manager.mark_refusal(target_id)
-                                logger.info(f"[Quill] (tool_args) 检测到拒绝模式 '{pattern}' (target={target_id})")
-                                break
-                        break  # 只扫首条 plain 文本
+            await _quill_hooks.handle_using_llm_tool(self, event, tool, tool_args)
         except Exception as e:
             logger.error(f"[Quill] on_using_llm_tool 拦截异常，已降级放行: {e}", exc_info=True)
 

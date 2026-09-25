@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Copyright (C) 2025 Nana7mi0721
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""H6/H1 行为快照测试（v5.3.0 M2.2 钩子薄化）。
+"""H6/H1/H2 行为快照测试（v5.3.0 M2.2 钩子薄化）。
 
 作用
 ----
@@ -11,11 +11,16 @@ M2.2 的"先立保护网再走钢丝"：对钩子现行为建立快照，然后�
 
 - 第一轮（commit 958722e）：H6（on_decorating_result）——剥离器两档强度、
   顶层降级、只减法不补栏；下沉 quill/services/statusbar/strip.py。
-- 第二轮（本轮）：H1（on_waiting_llm_request）——/reinject 字面拦截、
-  stream_mode 三态、内层取值异常静默、`_ensure_persona_conversation`
+- 第二轮（commit ad44d14）：H1（on_waiting_llm_request）——/reinject 字面
+  拦截、stream_mode 三态、内层取值异常静默、`_ensure_persona_conversation`
   对话隔离（含其内部 try/except 吞掉语义）、H1 **无顶层 try** 的降级怪癖
   （BASELINE §2 H1 行：`state_manager.get_state` 抛出会上抛框架，与 H6
   不同，不得补 try）；下沉 quill/services/character.py。
+- 第三轮（本轮）：H2（on_using_llm_tool）——三重闸门原样放行、telegram/tg
+  Markdown 剥离（未知平台不剥离）、状态栏开/关两档、注入报告追加到最后
+  一条 plain、JSON 字符串解析-修改-回写（失败即放行）、拒绝模式补充扫描
+  （只扫首条 plain）、顶层异常 error 降级放行；telegram 剥离下沉
+  quill/services/response.py。
 
 宿主建模
 --------
@@ -40,6 +45,7 @@ M2.2 的"先立保护网再走钢丝"：对钩子现行为建立快照，然后�
 
 from __future__ import annotations
 
+import json
 import types
 
 import pytest
@@ -789,3 +795,436 @@ async def test_h1_persona_get_conversation_raise_treated_as_missing():
     assert state.forget_conv_calls == [(UMO, "p1")]
     assert conv_mgr.new_calls == [(UMO, "aiocqhttp")]
     assert conv_mgr.switch_calls == [(UMO, "c-new-1")]
+
+
+# ════════════════════════════════════════════════════════════════════
+# H2（on_using_llm_tool）行为快照（M2.2 第三轮）
+#
+# 行为要点（BASELINE §2 H2 行）：
+#   ① 三重闸门：非 send_message_to_user 工具 / `_quill_activated` 未置位 /
+#      空 tool_args → 原样放行（不修改 tool_args）；
+#   ② telegram/tg 平台剥离 plain 段 Markdown（未知平台不剥离，避免破坏
+#      原生 Markdown 渲染）；
+#   ③ 状态栏：开启时首条 plain 走六级链提取渲染（handled 后 set
+#      `_quill_status_handled`，后续消息只清残留**不**二次渲染）；
+#      关闭时整套 `_strip_status_artifacts`；
+#   ④ 注入报告追加到最后一条 plain（仅一次，show_inject_report 开），
+#      追加在剥离之后且带 rstrip；
+#   ⑤ tool_args.messages 为 JSON 字符串时先解析、末尾 ensure_ascii=False
+#      序列化回写（解析失败 → 立即放行，后续一切不跑）；
+#   ⑥ 拒绝模式补充扫描（只扫首条 plain 文本，命中 mark_refusal 一次，
+#      只扫不改）。
+#   降级语义（BASELINE §2 H2 行）：单一顶层 try/except → error 日志
+#   （「拦截异常，已降级放行」）+ 放行（不修改 tool_args）——该层位在
+#   注册桩内保留（与 H6 同形态），interfaces 实现内不重复。
+#
+# 注入点约定（同 H6/H1）：用例一律经注册桩
+# ``QuillPlugin.on_using_llm_tool(host, event, tool, tool_args)`` 进入——
+# 搬移前逻辑在 main.py 方法体内，搬移后桩一行委托 interfaces，入口不变，
+# 两个世界命中同一用例。顶层异常注入 patch QuillPlugin._handle_status_bar
+# （H2 前后都以 self/plugin._handle_status_bar 动态分发，同一 patch 点）；
+# error 日志断言 patch main 模块 logger（顶层降级日志的所在模块，搬移
+# 前后在 main.py 内——先在钩子体、后在注册桩，同一 patch 点）。
+# ════════════════════════════════════════════════════════════════════
+
+
+class _ToolH2:
+    """FunctionTool 桩：H2 只读 .name。"""
+
+    def __init__(self, name="send_message_to_user"):
+        self.name = name
+
+
+class _EvH2:
+    """H2 事件桩：unified_msg_origin 为字符串属性（真机 property 形状，
+    _get_target_id 取 UMO）；extras 精确建模 get_extra/set_extra。
+
+    platform_name → platform_meta.name（钩子探测的第一优先路径）；
+    platform_meta 为 None 时走 get_platform_name() 回退路径。
+    """
+
+    def __init__(self, umo=UMO, platform="aiocqhttp", activated=True,
+                 platform_name=None, extras=None):
+        self.unified_msg_origin = umo
+        self.extras: dict = dict(extras or {})
+        if activated:
+            self.extras["_quill_activated"] = True
+        self._platform = platform
+        self.platform_meta = (
+            types.SimpleNamespace(name=platform_name) if platform_name else None
+        )
+
+    def get_extra(self, key, default=None):
+        return self.extras.get(key, default)
+
+    def set_extra(self, key, value):
+        self.extras[key] = value
+
+    def get_platform_name(self):
+        return self._platform
+
+
+class _StateH2:
+    """state_manager 桩：状态栏模式/会话变量/拒绝标记，全部调用留痕。"""
+
+    def __init__(self, mode="auto", session_vars=None):
+        self._mode = mode
+        self._vars = dict(session_vars or {})
+        self.get_mode_calls: list = []
+        self.get_vars_calls: list = []
+        self.update_vars_calls: list = []
+        self.refusal_calls: list = []
+
+    async def get_status_bar_mode(self, tid):
+        self.get_mode_calls.append(tid)
+        return self._mode
+
+    async def get_session_vars(self, tid):
+        self.get_vars_calls.append(tid)
+        return dict(self._vars)
+
+    async def update_session_vars(self, tid, updates):
+        self.update_vars_calls.append((tid, dict(updates)))
+        self._vars.update(updates)
+
+    async def mark_refusal(self, tid):
+        self.refusal_calls.append(tid)
+
+
+def _mk_h2_host(enabled=True, mode="auto", refusal=True,
+                patterns=("我不能", "我无法"), show_report=False,
+                reports=None):
+    """轻量 QuillPlugin 宿主（t26 手法）：只挂 H2 触碰的协作对象。
+
+    - props（SimpleNamespace）：H2 自身经 self.props 读 love_fields /
+      refusal_* / show_inject_report / status_bar_enabled；
+    - Mixin 读路径（statusbar parsers/render 裸读 self.<attr>）：关键项
+      同时 setattr 实例属性（实例字典遮蔽，与 t26/_mk_host 双建模一致）；
+    - status_bar_plain_platforms 用真机默认（含 aiocqhttp → 纯文本模板）；
+    - show_delta 关（去掉变化标注噪声，渲染断言更稳）；
+    - config.status_bar_llm_extract=False（L6 默认关闭）；
+    - health_tracker 用真实 HealthTracker（六级链逐级写入点）；
+    - reports 非空时预置 `_inject_reports` 缓存（注入报告数据源）。
+    """
+    h = object.__new__(M.QuillPlugin)
+    h.props = types.SimpleNamespace(
+        love_fields=list(M._DEFAULT_LOVE_FIELDS_RAW),
+        status_bar_enabled=enabled,
+        refusal_enabled=refusal,
+        refusal_patterns=list(patterns),
+        show_inject_report=show_report,
+    )
+    h.love_fields = list(M._DEFAULT_LOVE_FIELDS_RAW)
+    h.status_bar_enabled = enabled
+    h.status_bar_default_placeholder = "未设置"
+    h.status_bar_show_delta = False
+    h.status_bar_format_template = "**状态栏**\n```\n{content}\n```"
+    h.status_bar_format_plain = "───── 状态栏 ─────\n{content}\n────────────────"
+    h.status_bar_plain_platforms = ["aiocqhttp", "qq_official"]
+    h.config = types.SimpleNamespace(status_bar_llm_extract=False)
+    h.health_tracker = M.HealthTracker()
+    h.state_manager = _StateH2(mode)
+    if reports is not None:
+        h._inject_reports = {UMO: dict(reports)}
+    return h
+
+
+def _plain(text):
+    """tool_args.messages 的 plain 段构造（H2 逐 dict 处理，非 Plain 组件）。"""
+    return {"type": "plain", "text": text}
+
+
+async def _run_h2(host, event, tool, tool_args):
+    """经注册桩调用（搬移前后都是 QuillPlugin.on_using_llm_tool）。"""
+    await M.QuillPlugin.on_using_llm_tool(host, event, tool, tool_args)
+
+
+# ── H2：三重闸门（原样放行，tool_args 不动）─────────────────────────
+
+
+async def test_h2_non_smt_tool_passthrough():
+    """非 send_message_to_user 工具：第一重闸门直接放行，tool_args 原样，
+    且不触达任何状态查询（闸门顺序快照：非 SMT 判定在最前）。"""
+    host = _mk_h2_host()
+    ev = _EvH2()
+    tool_args = {"messages": [_plain(DIRTY_LOVE)]}
+
+    await _run_h2(host, ev, _ToolH2(name="search_web"), tool_args)
+
+    assert tool_args["messages"][0]["text"] == DIRTY_LOVE   # 未被处理
+    assert host.state_manager.get_mode_calls == []          # 后续一切未跑
+
+
+@pytest.mark.parametrize("extras", [{}, {"_quill_activated": False}],
+                         ids=["missing", "explicit_false"])
+async def test_h2_not_activated_passthrough(extras):
+    """`_quill_activated` 缺失/False：第二重闸门放行，tool_args 原样。"""
+    host = _mk_h2_host()
+    ev = _EvH2(activated=False, extras=extras)
+    tool_args = {"messages": [_plain(DIRTY_LOVE)]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    assert tool_args["messages"][0]["text"] == DIRTY_LOVE
+    assert host.state_manager.get_mode_calls == []
+
+
+async def test_h2_empty_tool_args_passthrough():
+    """tool_args None/空 dict：第三重闸门放行（空 dict 也不补 messages 键）。"""
+    host = _mk_h2_host()
+    ev = _EvH2()
+
+    await _run_h2(host, ev, _ToolH2(), None)          # 不应抛
+
+    empty: dict = {}
+    await _run_h2(host, ev, _ToolH2(), empty)
+
+    assert empty == {}
+    assert host.state_manager.get_mode_calls == []
+
+
+# ── H2：状态栏两档（开启提取渲染 / 关闭整套剥离）────────────────────
+
+
+async def test_h2_sb_on_first_plain_rendered_followups_stripped():
+    """状态栏开启：首条 plain 的 [LOVE_DATA] 走六级链提取并渲染
+    （aiocqhttp 命中真机默认 plain_platforms → 纯文本模板），handled 后
+    set `_quill_status_handled`、取值经 `_persist_status_vars` 落
+    session_vars；后续 plain 只清残留标记，**不**二次渲染（P2-3 语义）。"""
+    host = _mk_h2_host(enabled=True)
+    ev = _EvH2()
+    tool_args = {"messages": [
+        _plain("开头正文\n" + DIRTY_LOVE),
+        _plain("后续段落\n" + DIRTY_LOVE),   # 残留：应被清，不应再次渲染
+    ]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    msgs = tool_args["messages"]
+    first, second = msgs[0]["text"], msgs[1]["text"]
+    # 首条：标记被渲染（纯文本模板），原始标记不再存在
+    assert "[LOVE_DATA]" not in first
+    assert "───── 状态栏 ─────" in first
+    assert "好感度：88/100（爱意）" in first
+    assert "开头正文" in first
+    # handled → extra 置位；取值落库（键与值进入 session_vars 更新）
+    assert ev.extras.get("_quill_status_handled") is True
+    assert host.state_manager.update_vars_calls
+    tid, updates = host.state_manager.update_vars_calls[0]
+    assert tid == UMO
+    assert updates.get("好感度") == "88/100（爱意）"
+    # 后续：残留标记被清，但没有第二个模板栏（只减法）
+    assert "[LOVE_DATA]" not in second
+    assert "后续段落" in second
+    assert "───── 状态栏 ─────" not in second
+
+
+async def test_h2_sb_off_strips_artifacts():
+    """状态栏关闭：plain 段走 _strip_status_artifacts（渲染产物也清），
+    不走提取链（无 `_quill_status_handled` 置位、无 session_vars 落库）。"""
+    host = _mk_h2_host(enabled=False)
+    ev = _EvH2()
+    tool_args = {"messages": [_plain("正文\n" + RENDERED), _plain(BARE_FIELDS)]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    msgs = tool_args["messages"]
+    assert msgs[0]["text"].strip() == "正文"       # 渲染栏整段被清
+    assert msgs[1]["text"] == "正文。"             # 裸字段行被剥（t26 同款样本）
+    assert ev.extras.get("_quill_status_handled") is None
+    assert host.state_manager.update_vars_calls == []
+
+
+# ── H2：注入报告追加到最后一条 plain ────────────────────────────────
+
+
+async def test_h2_inject_report_appended_to_last_plain():
+    """show_inject_report 开：报告行追加到最后一条 plain（且仅一次），
+    set `_quill_report_added`；追加前 rstrip（尾部空白被清理）。"""
+    host = _mk_h2_host(enabled=False, show_report=True, reports={"wb": 2})
+    ev = _EvH2()
+    tool_args = {"messages": [_plain("第一条"), _plain("最后一条  ")]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    msgs = tool_args["messages"]
+    assert msgs[0]["text"] == "第一条"
+    assert msgs[1]["text"] == "最后一条\n\n〔注入〕世界书×2"
+    assert ev.extras.get("_quill_report_added") is True
+
+
+async def test_h2_inject_report_off_or_no_cache_stays_silent():
+    """show_inject_report 关 / 报告缓存为空：正文零改动（报告行不出现）。"""
+    host = _mk_h2_host(enabled=False, show_report=False, reports={"wb": 2})
+    ev = _EvH2()
+    tool_args = {"messages": [_plain("第一条"), _plain("最后一条")]}
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+    assert tool_args["messages"][1]["text"] == "最后一条"
+    assert "_quill_report_added" not in ev.extras
+
+    host2 = _mk_h2_host(enabled=False, show_report=True)   # 无缓存 → 报告沉默
+    ev2 = _EvH2()
+    tool_args2 = {"messages": [_plain("最后一条")]}
+    await _run_h2(host2, ev2, _ToolH2(), tool_args2)
+    assert tool_args2["messages"][0]["text"] == "最后一条"
+
+
+async def test_h2_inject_report_skipped_when_last_msg_not_plain():
+    """最后一条不是 plain（如图片段）：报告无处可附，整轮静默（历史行为）。"""
+    host = _mk_h2_host(enabled=False, show_report=True, reports={"wb": 2})
+    ev = _EvH2()
+    tool_args = {"messages": [_plain("正文"), {"type": "image", "url": "x"}]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    assert tool_args["messages"][0]["text"] == "正文"
+    assert "_quill_report_added" not in ev.extras
+
+
+# ── H2：JSON 字符串解析-修改-回写 ───────────────────────────────────
+
+
+async def test_h2_json_string_parse_modify_writeback():
+    """tool_args.messages 为 JSON 字符串：解析 → 处理 → ensure_ascii=False
+    序列化回写（中文原样、不退化为 \\u 转义）。"""
+    host = _mk_h2_host(enabled=True)
+    ev = _EvH2()
+    tool_args = {"messages": json.dumps(
+        [_plain(DIRTY_LOVE), _plain("后续\n" + DIRTY_LOVE)], ensure_ascii=False)}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    assert isinstance(tool_args["messages"], str)
+    assert "───── 状态栏 ─────" in tool_args["messages"]   # ensure_ascii=False
+    msgs = json.loads(tool_args["messages"])
+    assert "[LOVE_DATA]" not in msgs[0]["text"]
+    assert "───── 状态栏 ─────" in msgs[0]["text"]
+    assert "[LOVE_DATA]" not in msgs[1]["text"]
+    assert "后续" in msgs[1]["text"]
+
+
+async def test_h2_json_string_parse_failure_passthrough():
+    """JSON 解析失败：立即放行——tool_args 原样，状态栏链/落库/报告/扫描
+    全都不跑（早退 return 的位置快照）。"""
+    host = _mk_h2_host(enabled=True)
+    ev = _EvH2()
+    tool_args = {"messages": "{这不是JSON"}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    assert tool_args["messages"] == "{这不是JSON"
+    assert host.state_manager.get_mode_calls == []
+    assert host.state_manager.refusal_calls == []
+
+
+# ── H2：telegram/tg 平台 Markdown 剥离 ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "expect_stripped"),
+    [("Telegram", True), ("tg", True), ("aiocqhttp", False)],
+    ids=["telegram", "tg", "other_platform_keeps_md"],
+)
+async def test_h2_telegram_markdown_strip_by_platform(platform_name, expect_stripped):
+    """telegram/tg 平台剥离 plain 段 Markdown；其他平台原样保留
+    （未知平台不剥离，避免破坏原生 Markdown 渲染）。"""
+    host = _mk_h2_host(enabled=False)   # 关状态栏，隔离 Markdown 剥离行为
+    ev = _EvH2(platform_name=platform_name)
+    md_text = "**剧情**与`代码`"
+    tool_args = {"messages": [_plain(md_text)]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    text = tool_args["messages"][0]["text"]
+    if expect_stripped:
+        assert text == "剧情与代码"
+    else:
+        assert text == md_text
+
+
+# ── H2：拒绝模式补充扫描（S3-2）─────────────────────────────────────
+
+
+async def test_h2_refusal_scan_hit_marks_once():
+    """拒绝模式命中（tool_args 通道补充扫描）：mark_refusal(target_id)
+    恰一次；扫描只读不改（文本保持原样）。"""
+    host = _mk_h2_host(enabled=False)
+    ev = _EvH2()
+    tool_args = {"messages": [_plain("我不能继续了"), _plain("第二段")]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    assert host.state_manager.refusal_calls == [UMO]
+    assert tool_args["messages"][0]["text"] == "我不能继续了"
+
+
+async def test_h2_refusal_scan_only_first_plain():
+    """只扫首条 plain 文本：拒绝模式仅出现在后续 plain → 不命中（历史怪癖）。"""
+    host = _mk_h2_host(enabled=False)
+    ev = _EvH2()
+    tool_args = {"messages": [_plain("正常内容"), _plain("我无法照做")]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    assert host.state_manager.refusal_calls == []
+
+
+async def test_h2_refusal_scan_disabled():
+    """refusal_enabled=False：扫描整体跳过（即使首条 plain 命中模式）。"""
+    host = _mk_h2_host(enabled=False, refusal=False)
+    ev = _EvH2()
+    tool_args = {"messages": [_plain("我不能继续了")]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    assert host.state_manager.refusal_calls == []
+
+
+# ── H2：顶层异常 → error 日志 + 原样放行（降级语义）─────────────────
+
+
+class _LoggerRec:
+    """main 模块 logger 替身：记录 error 调用（顶层降级日志断言）。"""
+
+    def __init__(self):
+        self.errors: list = []
+
+    def error(self, msg, *a, **k):
+        self.errors.append(str(msg))
+
+    def warning(self, msg, *a, **k):
+        pass
+
+    def info(self, msg, *a, **k):
+        pass
+
+    def debug(self, msg, *a, **k):
+        pass
+
+
+async def test_h2_top_level_exception_degrades(monkeypatch):
+    """状态栏链中途抛异常 → 顶层 except 吞掉 + error 日志（「拦截异常，
+    已降级放行」）→ tool_args 原样放行（不中断 agent loop）。
+
+    patch 点 QuillPlugin._handle_status_bar（搬移前后 H2 都经
+    self/plugin._handle_status_bar 动态分发）；calls 非空防注入假绿。
+    """
+    calls: list = []
+
+    async def _boom(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError("injected status-bar failure")
+
+    monkeypatch.setattr(M.QuillPlugin, "_handle_status_bar", _boom)
+    rec = _LoggerRec()
+    monkeypatch.setattr(M, "logger", rec)
+
+    host = _mk_h2_host(enabled=True)
+    ev = _EvH2()
+    tool_args = {"messages": [_plain(DIRTY_LOVE)]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)   # 不应抛
+
+    assert calls, "异常注入未命中实际调用路径（假绿）"
+    assert tool_args["messages"][0]["text"] == DIRTY_LOVE   # 原样放行
+    assert any("on_using_llm_tool 拦截异常" in e for e in rec.errors)
