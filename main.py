@@ -232,6 +232,12 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     RECENT_LOG_LIMIT = _memory_mod.RECENT_LOG_LIMIT
     MIN_LOGS_FOR_SUMMARY = _memory_mod.MIN_LOGS_FOR_SUMMARY
 
+    # M2.2 第六轮：核心记忆自然语言前缀正则的定义留在本模块（H3 支撑面，
+    # 消费方已迁 interfaces），经类属性 re-export 供
+    # interfaces.astrbot_hooks.handle_llm_request 以 plugin._CORE_MEMORY_NL_RE
+    # 访问（H5 REFLECTION_* 同款先例；模块级旧名照常可用）
+    _CORE_MEMORY_NL_RE = _CORE_MEMORY_NL_RE
+
     def __init__(self, context: Context, config: dict | None = None):
         # quill/ 包日志桥：最早处把宿主 logger 注入，包内方法体的 logger
         # 引用经 logbridge 代理转发到这个对象（quill/ 内禁止 import astrbot）。
@@ -1533,251 +1539,41 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """LLM 请求拦截：触发平行宇宙隔离，执行状态栏降级解析与多维 Prompt 组装注入。
 
+        注册桩（M2.2 第六轮）：装饰器/签名/priority 不变（框架以
+        ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
+        ``interfaces.astrbot_hooks.handle_llm_request``（22 步注入编排
+        本体，BASELINE §4——顺序即行为；完整设计理由、段序与下沉决策见
+        彼处 docstring；行为快照见 tests/test_hook_snapshots.py H3 节）。
         核心职责：
+
         - 平行宇宙双轴隔离 (target_id::persona_id)：按群+角色切分独立状态
         - 激活检测：决定本次请求是否进入 RP 模式
         - Context Restoration：req.contexts 为空时从 chat_logs 捞取最近 N 条垫入
         - First Message 智能抑制：避免重启后突兀复读开场白
         - 4 层 Prompt 装配：系统/角色/世界书/WR/RAG 多源注入
         - 状态栏降级解析：5 级兜底（STATUS 块→LOVE_DATA→legacy→RAW→lenient）
+
+        顶层降级留在桩内（与原 H3 同层，BASELINE §2 H3 行）：预初始化
+        （P1-3，防 except 块引用未定义变量掩盖原始异常）+ 任何异常吞掉 +
+        error 日志（「致命错误，Prompt 装配失败，降级放行」+
+        ``_sanitize_extra`` 脱敏摘要——只记 persona_id/长度字段/
+        skip_constants，不泄 user_input/context_text 原文）+ 放行。
+
+        搬移注记（降级日志保真度）：委托后降级日志中的 emergency/
+        extra_summary 字段恒为预初始化值（原实现记录失败时刻的中间值）；
+        异常消息与堆栈不受影响，行为语义（不注入、闸门不置位、放行）
+        逐字保真——快照 test_h3_top_level_exception_degrades 钉住。
+
+        行为契约（legacy t25 源码窗口断言引用的标记原文，实际置位发生在
+        interfaces 实现内步 21，此处逐字保留以锁定闸门语义——置位点在
+        22 步全部注入成功之后，全插件仅此一处）：
+        ``event.set_extra("_quill_activated", True)``。
         """
         try:
             # P1-3 修复：提前初始化，避免 except 块引用未定义变量掩盖原始异常
             emergency = False
             extra_info = {}
-            self._restore_smt_tool(req)
-
-            user_input = req.prompt or ""
-            target_id = self._get_target_id(event)
-
-            # ── 上下文恢复（重启/滑动窗口切断后无缝续传）──
-            mem_session_id = self._get_memory_session_id(
-                target_id,
-                await self.state_manager.get_persona_id(target_id)
-            )
-            # 防御性类型守卫：AstrBot 框架契约保证 contexts 为 list，但防止异常值导致崩溃
-            if not isinstance(req.contexts, list):
-                req.contexts = []
-            # 抹掉历史里的注入报告行：它只该出现在用户看到的那条消息里，
-            # 回显进上下文会被模型模仿（下一轮自己写一行），且对本轮推理无价值。
-            req.contexts = [
-                ({**c, "content": self._scrub_inject_report(c.get("content", ""))}
-                 if isinstance(c, dict) and isinstance(c.get("content"), str) else c)
-                for c in req.contexts
-            ]
-            contexts_is_fresh = not req.contexts or len(req.contexts) <= 1
-            if contexts_is_fresh \
-                    and getattr(self.config, 'rag_enable_chat_logging', True) \
-                    and self.rag_retriever and self.rag_retriever.memory_store:
-                recent_logs = await self.rag_retriever.memory_store.get_recent_chat_logs(mem_session_id, limit=8)
-                if recent_logs:
-                    req.contexts = recent_logs + req.contexts
-                    logger.info(f"[Quill Context] 恢复 {len(recent_logs)} 条上下文（Session: {mem_session_id}）")
-
-            # 关闭状态栏时，抹掉回灌上下文里已渲染的历史状态栏。
-            # 不清掉就是一边用 tail message 明令「禁止输出好感度、关系阶段、心情」，
-            # 一边在历史里给模型看几轮「好感度：85」的示范，属于自己和自己拉锯：
-            # 模型倾向于模仿历史（可见性由读侧剥离兜住，但说服力被白白消耗）。
-            # 必须放在上下文恢复之后：恢复来的 chat_logs 同样带着状态栏。
-            # 开启方向不处理——历史里本来就没有栏，tail message 会教它写。
-            # 用会话级最终开关判断：/quill statusbar off 之后同样要清历史示范。
-            _sb_effective = await self._effective_status_bar_enabled(target_id)
-            if not _sb_effective and req.contexts:
-                _scrubbed = []
-                for c in req.contexts:
-                    if isinstance(c, dict) and isinstance(c.get("content"), str):
-                        clean = self._strip_status_artifacts(
-                            c["content"], self.props.love_fields
-                        )
-                        _scrubbed.append({**c, "content": clean} if clean != c["content"] else c)
-                    else:
-                        _scrubbed.append(c)
-                req.contexts = _scrubbed
-
-            persona_id, persona_data = await self._inject_persona_and_first_message(req, event, target_id)
-
-            # 记录用户消息（仅已绑定角色卡且非指令时）
-            if persona_id and user_input and not user_input.strip().startswith("/") \
-                    and getattr(self.config, 'rag_enable_chat_logging', True) \
-                    and self.rag_retriever:
-                self._spawn(self.rag_retriever.log_chat_message(
-                    mem_session_id, "user", user_input
-                ))
-
-            # P1-8: 自然语言核心记忆注入 — 检测 @记住 / 核心记忆 / @remember 前缀
-            # 审查修复：切片统一以 stripped 文本为基准（此前 strip 后匹配、原文切片，
-            # 带前导空白时 prompt 残留尾部字符）；剥离后为空则保留原文（避免空 prompt
-            # 仍发给 LLM）；群聊写入需通过 admin 权限校验（与 /memory core 对齐）。
-            _core_nl = None
-            if persona_id and user_input and self.rag_retriever and self.rag_retriever.memory_store:
-                _stripped = user_input.strip()
-                _core_match = _CORE_MEMORY_NL_RE.match(_stripped)
-                if _core_match:
-                    _perm_err = _cmds._check_group_permission(self, event)
-                    if _perm_err:
-                        logger.info("[Quill] 核心记忆自然语言注入被权限拦截（群聊非 admin）")
-                    else:
-                        _core_nl = _core_match.group(1).strip()
-                        _rest = _stripped[_core_match.end():].strip()
-                        if _rest:
-                            req.prompt = _rest
-                        logger.info(f"[Quill] 检测到核心记忆自然语言注入: {_core_nl[:80]}...")
-            # 异步写入核心记忆（不阻塞请求流程）
-            if _core_nl:
-                self._spawn(self.rag_memory_store.update_core_memory(
-                    mem_session_id, _core_nl, _core_nl
-                ))
-
-            # 存储最近 6 轮对话，供 /memory learn 自动总结
-            if hasattr(req, 'contexts') and isinstance(req.contexts, list):
-                # P3-5 修复：深拷贝切片，避免后续 req.contexts 被修改（如上下文恢复）后引用失效
-                recent_msgs = [dict(c) for c in req.contexts[-12:] if c.get("role") in ("user", "assistant")]
-                event.set_extra("_quill_recent_msgs", recent_msgs)
-
-            # Build multi-turn context for WR matching
-            context_text = user_input
-            if req.contexts and isinstance(req.contexts, list):
-                recent = req.contexts[-4:]
-                parts = [user_input]
-                for msg in recent:
-                    role = msg.get("role", "")
-                    content = msg.get("content", "")
-                    if role in ("user", "assistant") and isinstance(content, str):
-                        parts.append(content)
-                context_text = "\n".join(parts)
-
-            activated, wr_activated = await self._check_activation(user_input, context_text, persona_data)
-            has_bracket = self.activation_detector.check_brackets(user_input)
-
-            # 全局常驻模式：跳过激活检测
-            always_activate = getattr(self.config, "worldbook_always_activate", False)
-            if always_activate:
-                activated = True
-                wr_activated = False
-
-            if not (activated or has_bracket or wr_activated):
-                await self.state_manager.reset_quill_rounds(target_id)
-                return
-
-            quill_rounds = await self.state_manager.increment_quill_rounds(target_id)
-            skip_constants = quill_rounds > 1
-            if skip_constants:
-                logger.info(f"[Quill] 连续第 {quill_rounds} 轮激活，跳过 Layer 1 常驻")
-
-            # 改写 send_message_to_user 描述（含状态栏强制要求）
-            # 无角色卡时跳过：避免 LLM 在无人设约束时进入 Agent 死循环
-            await self._rewrite_smt_tool_description(req, persona_id)
-
-            if wr_activated and self.wr_manager and self.props.debug:
-                try:
-                    debug_match = await self.wr_manager.match(context_text, top_k=10, log_match=False)
-                    for e in debug_match:
-                        logger.info(
-                            f"[Quill] WR 匹配: {e.get('entry_id','')} "
-                            f"(score={e.get('match_score',0)}, "
-                            f"kw={e.get('keywords',[])})"
-                        )
-                except Exception:
-                    logger.debug("[Quill] 调试 WR 匹配失败", exc_info=True)
-
-            emergency = await self.state_manager.should_inject_emergency(target_id)
-
-            extra_info = {
-                "user_input": user_input,
-                "context_text": context_text,
-                "persona_id": persona_id,
-                "persona_data": persona_data,
-                "user_id": target_id,
-                "wr_max_entries": self.props.wr_max_entries,
-                "wr_fallback_top_count": self.props.wr_fallback_top_count,
-                "wb_max_entries": self.props.wb_max_entries,
-                "wb_sensitivity": self.config.worldbook_sensitivity,
-                "wb_max_token": self.config.worldbook_max_token,
-                "skip_constants": skip_constants,
-                "session_vars": await self.state_manager.get_session_vars(target_id),
-            }
-
-            # 注入报告统计（本轮各来源命中条数）。始终采集——即使 debug 关闭，
-            # 本轮最终开关：会话级覆盖 > 面板全局。上面（历史 contexts 清理）与
-            # 下面（system prompt 契约、tail message）必须用同一个值，否则会出现
-            # 「system prompt 说别输出、tail 说必须输出」的自相矛盾。
-            _pb = self._prompt_builder_for_request(_sb_effective)
-
-            # /quill debug 也要能查上一轮，见 _last_inject_report。
-            inject_stats: dict = {}
-            # 世界书总开关（默认 True）。此前 `worldbook.enabled` 只在 config.py
-            # 解析与 __repr__ 里出现，运行期**没有任何消费者**——面板上关掉它
-            # 世界书照样注入，属「改了不生效」的死开关。这里把它接到唯一的
-            # 注入点上：关掉就传 None，让 PromptBuilder 跳过全部世界书逻辑
-            # （常驻+关键词匹配）。传 None 而不是加新参数，是因为
-            # `build_system_prompt` 各处判断的都是 `if wb_manager`，
-            # 置空即可整段跳过，且不改变函数签名（prompt_builder 自检里
-            # 就有 `build_system_prompt(None, None, {})` 的用法）。
-            # 按角色卡绑定的 wb_mode 仍在其上层生效：两者是「总闸 × 分闸」。
-            _wb_for_request = self.wb_manager if getattr(
-                self.config, "worldbook_enabled", True
-            ) else None
-            stable_prompt, dynamic_prompt = await _pb.build_system_prompt(
-                self.wr_manager, _wb_for_request, extra_info, emergency=emergency,
-                stats=inject_stats,
-            )
-
-            # ── RAG 检索（Doc RAG + 动态记忆）──
-            dynamic_prompt = await self._run_rag_retrieval(
-                event, req, user_input, persona_data, dynamic_prompt, inject_stats
-            )
-
-            # 触发日志注入（show_trigger_log 开启时）
-            if (self.config.worldbook_show_log and _wb_for_request
-                    and hasattr(_wb_for_request, 'get_trigger_log')):
-                # get_trigger_log 是同步方法（加锁读一次列表），不能 await
-                trigger_log = _wb_for_request.get_trigger_log()
-                if trigger_log:
-                    log_lines = ["[触发日志]"]
-                    for t in trigger_log[:10]:
-                        log_lines.append(f"  {t['worldbook']}/{t['title']} ← {','.join(t['matched_keys'])}")
-                    dynamic_prompt += "\n\n" + "\n".join(log_lines)
-
-            self._remember_inject_report(target_id, inject_stats)
-
-            req.system_prompt = self.props.prompt_builder.inject_prompt(
-                req.system_prompt or "", stable_prompt, dynamic_prompt,
-                injection_position=self.config.worldbook_injection_pos
-            )
-
-            if persona_id:
-                if _sb_effective:
-                    # 契约文本由 PromptBuilder 单一来源生成（格式行/示例/选项块），
-                    # 此处不再手抄示例——此前四处各写一份，字段名或顺序一变就漂移。
-                    tail = "\n\n[System] " + _pb.build_status_reminder()
-                else:
-                    tail = (
-                        "\n\n[System] 禁止输出任何格式的状态栏、[LOVE_DATA]、"
-                        "[STATUS]、好感度数值、关系阶段、心情标签、穿着描述、"
-                        "位置信息、剧情走向选项等内容。请仅输出纯剧情正文。"
-                    )
-                if req.prompt and tail not in req.prompt:
-                    req.prompt += tail
-                elif not req.prompt:
-                    req.prompt = tail
-
-            event.set_extra("_quill_activated", True)
-
-            await self.state_manager.update_activity(target_id)
-            await self.state_manager.clear_refusal(target_id)
-
-            trigger = "激活词" if activated else ("括号" if has_bracket else "WR关键词")
-            _es = event.get_extra("enable_streaming")
-            if _es is True:
-                streaming_status = "强制流式"
-            elif _es is False:
-                streaming_status = "已关"
-            else:
-                streaming_status = "默认"
-            logger.info(
-                f"[Quill] 触发:{trigger} | 流式:{streaming_status} | "
-                f"prompt_len={len(req.system_prompt)} | emergency={emergency}"
-            )
+            await _quill_hooks.handle_llm_request(self, event, req)
         except Exception as e:
             # 记录脱敏摘要，避免泄露 user_input、context_text 等敏感字段
             def _sanitize_extra(info: dict) -> dict:

@@ -2249,3 +2249,1132 @@ async def test_h5_exception_between_gates_propagates_no_top_try():
     # 异常点在三个 gate（含 memorized 置位）之后、内层 try 之前
     assert ev.extras.get("_quill_memorized") is True
     assert state.increment_calls == []
+# ═══ H3：on_llm_request（第六轮，全插件最大钩子）══════════════════════
+#
+# H3 是 22 步注入编排（BASELINE §4，顺序即行为）的实现本体。本轮快照按
+# 步骤逐面钉住：
+#   步 1  SMT 还原（无条件、最先）+ 步 13 改写（仅激活路径、无卡跳过）
+#   步 2  垫回（contexts 空/≤1 且开关开 → get_recent_chat_logs 前插 8 条；
+#         开关关/已有上下文/retriever 缺失 → 不动）+ 注入报告行抹除
+#   步 3  状态栏关闭时清洗历史已渲染状态栏（开启方向不动）
+#   步 4  角色卡注入 + [%None] 切断原生人格 + 开场白首插
+#   步 5  用户消息落 chat_logs（gate 之前——未激活也落）
+#   步 6  核心记忆自然语言（@记住）改写 + 后台写库 + 群聊权限拦截
+#   步 7  最近 12 条存 _quill_recent_msgs extra
+#   步 8  多轮 context_text 拼接
+#   步 9-12  激活 gate（未激活 → reset_quill_rounds + 不注入 +
+#         `_quill_activated` 不置位）、worldbook_always_activate 强制、
+#         quill_rounds>1 → skip_constants、WR 关键词激活（匹配异常内部吞）
+#   步 14-19  emergency/extra_info → build_system_prompt（总闸×分闸）→
+#         RAG（doc→mem→core 无条件→format 调用序列）→ 触发日志 →
+#         注入报告缓存 → inject_prompt（injection_position 透传）
+#   步 20  tail message（开：契约提醒 / 关：禁止文案；幂等；空 prompt）
+#   步 21  set_extra("_quill_activated", True)（全部注入成功之后——顺序断言）
+#   步 22  update_activity / clear_refusal
+#   降级语义（BASELINE §2 H3 行）：顶层 try/except → error 日志
+#   （「致命错误，Prompt 装配失败，降级放行」+ _sanitize_extra 脱敏摘要）
+#   吞掉放行——该层位在注册桩内保留（预初始化 + _sanitize_extra 随桩）。
+#
+# 注入点约定（同 H6/H1/H2/H4/H5）：用例一律经注册桩
+# ``QuillPlugin.on_llm_request(host, event, req)`` 进入——搬移前逻辑在
+# main.py 方法体内，搬移后桩一行委托 interfaces，入口不变，两个世界命中
+# 同一用例。既有协作方法（_restore_smt_tool/_check_activation/
+# _run_rag_retrieval/_prompt_builder_for_request 等未搬移，仍住 main.py
+# 类上，经 plugin/self 动态分发）直接用真实现 + 桩协作对象；搬移体内的
+# 方法打点（_rewrite_smt_tool_description/_remember_inject_report/
+# _restore_smt_tool）patch QuillPlugin 类属性。error 日志断言 patch main
+# 模块 logger（顶层降级日志搬移前后都在 main.py 注册桩）。
+# ════════════════════════════════════════════════════════════════════
+
+from astrbot.core.platform.message_type import MessageType
+
+_SMT_ORIG_DESC = "原始的 send_message_to_user 描述。"
+
+
+class _EvH3(_EvH4):
+    """H3 事件桩：复用 _EvH4 的 UMO/extras 建模，补共享顺序留痕（set_extra
+    打点——步 21 的 `_quill_activated` 时序断言用）与 get_message_type
+    （核心记忆自然语言块的群聊权限校验消费）。"""
+
+    def __init__(self, umo=UMO, extras=None, order=None, message_type="friend"):
+        super().__init__(umo=umo, extras=extras)
+        self._order = order if order is not None else []
+        self._mtype = message_type
+
+    def set_extra(self, key, value):
+        self.extras[key] = value
+        self._order.append(("set_extra", key))
+
+    def get_message_type(self):
+        return MessageType.FRIEND_MESSAGE if self._mtype == "friend" \
+            else MessageType.GROUP_MESSAGE
+
+
+class _StateH3:
+    """state_manager 桩：H3 触碰的全部状态面（persona/轮次/emergency/
+    会话变量/活动/拒绝），全留痕并打进共享顺序表。"""
+
+    def __init__(self, persona_id="p1", mode="auto", rounds=0, emergency=False,
+                 session_vars=None, first_message_injected=False, order=None):
+        self._persona_id = persona_id
+        self._mode = mode
+        self._rounds = rounds
+        self._emergency = emergency
+        self._vars = dict(session_vars or {"好感度": "88"})
+        self._fm_injected = first_message_injected
+        self._order = order if order is not None else []
+        self.persona_calls: list = []
+        self.reset_rounds_calls: list = []
+        self.increment_calls: list = []
+        self.activity_calls: list = []
+        self.refusal_calls: list = []
+        self.mark_fm_calls: list = []
+        self.get_state_calls: list = []
+
+    async def get_persona_id(self, tid):
+        self.persona_calls.append(tid)
+        self._order.append("get_persona_id")
+        return self._persona_id
+
+    async def get_status_bar_mode(self, tid):
+        self._order.append("get_status_bar_mode")
+        return self._mode
+
+    async def get_session_vars(self, tid):
+        self._order.append("get_session_vars")
+        return dict(self._vars)
+
+    async def should_inject_emergency(self, tid):
+        self._order.append("should_inject_emergency")
+        return self._emergency
+
+    async def reset_quill_rounds(self, uid):
+        self.reset_rounds_calls.append(uid)
+
+    async def increment_quill_rounds(self, tid):
+        self._order.append("increment_rounds")
+        self.increment_calls.append(tid)
+        self._rounds += 1
+        return self._rounds
+
+    async def update_activity(self, tid):
+        self._order.append("update_activity")
+        self.activity_calls.append(tid)
+
+    async def clear_refusal(self, tid):
+        self._order.append("clear_refusal")
+        self.refusal_calls.append(tid)
+
+    async def get_state(self, tid):
+        self.get_state_calls.append(tid)
+        return types.SimpleNamespace(first_message_injected=self._fm_injected)
+
+    async def mark_first_message_injected(self, tid):
+        self.mark_fm_calls.append(tid)
+
+
+class _DetectorH3:
+    """激活检测器桩：should_activate / check_brackets 双打点（步 9 的
+    _check_activation 内一次 + 步 9 后直读一次，共两次 check_brackets）。"""
+
+    def __init__(self, activated=False, bracket=False, order=None):
+        self._activated = activated
+        self._bracket = bracket
+        self._order = order if order is not None else []
+
+    def should_activate(self, text):
+        self._order.append("should_activate")
+        return self._activated
+
+    def check_brackets(self, text):
+        self._order.append("check_brackets")
+        return self._bracket
+
+
+class _WRH3:
+    """WR 管理器桩：match 异步留痕（可注入异常——步 9 的内部吞语义）。"""
+
+    def __init__(self, matched=None, error=None, order=None):
+        self._matched = list(matched if matched is not None else
+                             [{"entry_id": "e1", "category": "场景",
+                               "match_score": 0.9, "keywords": ["雨"]}])
+        self._error = error
+        self._order = order if order is not None else []
+        self.match_calls: list = []
+
+    async def match(self, context_text, top_k=3, log_match=False):
+        self.match_calls.append((context_text, top_k, log_match))
+        if self._error is not None:
+            raise self._error
+        return list(self._matched)
+
+
+class _MemStoreH3:
+    """memory_store 桩：get_recent_chat_logs 留痕（垫回数据源）。"""
+
+    def __init__(self, recent=None, order=None):
+        self._recent = list(recent if recent is not None else
+                            [{"role": "user", "content": f"历史消息{i}"}
+                             for i in range(8)])
+        self._order = order if order is not None else []
+        self.recent_calls: list = []
+
+    async def get_recent_chat_logs(self, session_id, limit=8):
+        self._order.append("recent_logs")
+        self.recent_calls.append((session_id, limit))
+        return [dict(c) for c in self._recent[:limit]]
+
+
+class _RagH3:
+    """rag_retriever 桩：embedding/memory_store 存在性 + doc/mem/core/
+    format 调用序列留痕（步 17 顺序断言）+ 落日志留痕。"""
+
+    def __init__(self, order=None, recent=None, docs=2, mems=1, cores=1,
+                 memory_store="default"):
+        self.embedding = object()
+        self.enable_memory = True
+        self._order = order if order is not None else []
+        self._docs_n, self._mems_n, self._cores_n = docs, mems, cores
+        self.log_calls: list = []
+        self.doc_calls: list = []
+        self.mem_calls: list = []
+        self.core_calls: list = []
+        self.format_calls: list = []
+        if memory_store == "default":
+            self.memory_store = _MemStoreH3(recent=recent, order=self._order)
+        else:
+            self.memory_store = memory_store      # None 建模缺失
+
+    async def log_chat_message(self, session_id, role, text):
+        self.log_calls.append((session_id, role, text))
+
+    async def search_documents(self, user_input, allowed_sources=None):
+        self._order.append("search_documents")
+        self.doc_calls.append((user_input, allowed_sources))
+        return [{"source": "魔女手册", "text": f"段{i}"}
+                for i in range(self._docs_n)]
+
+    async def search_memories(self, session_id, user_input):
+        self._order.append("search_memories")
+        self.mem_calls.append((session_id, user_input))
+        return [{"source": "记忆", "text": f"记{i}"}
+                for i in range(self._mems_n)]
+
+    async def get_core_memories(self, session_id):
+        self._order.append("get_core_memories")
+        self.core_calls.append(session_id)
+        return [{"text": f"核心{i}"} for i in range(self._cores_n)]
+
+    def format_for_prompt(self, docs, mems, cores):
+        self._order.append("format_for_prompt")
+        self.format_calls.append((len(docs), len(mems), len(cores)))
+        return "RAG-CONTEXT"
+
+
+class _PersonaMgrH3:
+    """persona_manager 桩：get_persona 留痕（返回预设角色卡 dict/None）。"""
+
+    def __init__(self, persona=None, order=None):
+        self._persona = persona
+        self._order = order if order is not None else []
+        self.calls: list = []
+
+    async def get_persona(self, pid):
+        self._order.append("get_persona")
+        self.calls.append(pid)
+        return self._persona
+
+
+class _WbH3:
+    """世界书管理器桩：get_trigger_log 为同步方法（与线上一致，步 18）。"""
+
+    def __init__(self, log=None):
+        self._log = list(log or [])
+
+    def get_trigger_log(self):
+        return list(self._log)
+
+
+class _CoreMemStoreH3:
+    """rag_memory_store 桩：update_core_memory 留痕（核心记忆后台写库）。"""
+
+    def __init__(self, order=None):
+        self._order = order if order is not None else []
+        self.update_calls: list = []
+
+    async def update_core_memory(self, session_id, content, content2):
+        self._order.append("update_core_memory")
+        self.update_calls.append((session_id, content, content2))
+
+
+# PromptBuilder 桩。_prompt_builder_for_request 会 copy.copy 出浅拷贝实例，
+# 方法调用可能落在拷贝上——记录进模块级共享表 _PB3_REC 才能在用例侧观测
+# 「实际使用的是哪个实例」（浅拷贝断言的核心）。
+_PB3_REC: dict = {}
+
+
+class _PBH3:
+    """PromptBuilder 桩：H3 编排的装配末端（步 15/16/19/20）。
+
+    inject_prompt 按真实现默认序（stable → original → dynamic）拼接，使
+    req.system_prompt 断言可读。
+    """
+
+    def __init__(self, sb_enabled=False, order=None):
+        self.status_bar_enabled = sb_enabled
+        self._order = order if order is not None else []
+
+    async def build_system_prompt(self, wr_manager, wb_manager, extra_info=None,
+                                  emergency=False, stats=None):
+        self._order.append("build_system_prompt")
+        _PB3_REC["build"] = {
+            "self": self, "wr": wr_manager, "wb": wb_manager,
+            "extra": dict(extra_info or {}), "emergency": emergency,
+            "stats": stats,
+        }
+        return "STABLE_PROMPT", "DYNAMIC_PROMPT"
+
+    def build_status_reminder(self):
+        self._order.append("build_status_reminder")
+        _PB3_REC["reminder_self"] = self
+        return "TAIL-REMINDER-MARKER"
+
+    def inject_prompt(self, original_prompt, stable_prompt, dynamic_prompt="",
+                      injection_position="system_end"):
+        self._order.append("inject_prompt")
+        _PB3_REC["inject"] = {
+            "self": self, "original": original_prompt, "stable": stable_prompt,
+            "dynamic": dynamic_prompt, "injection_position": injection_position,
+        }
+        parts = [p for p in (stable_prompt, original_prompt, dynamic_prompt) if p]
+        return "\n\n".join(parts)
+
+
+def _persona_h3(**overrides):
+    """默认角色卡（master 用）：rag_mode=custom 走 doc 检索路径。"""
+    base = {
+        "name": "Layla",
+        "core_prompts": {},
+        "quill_extensions": {"rag_mode": "custom",
+                             "bound_rag_docs": ["魔女手册"]},
+    }
+    base.update(overrides)
+    return base
+
+
+class _ToolsH3:
+    """func_tool 桩：含 send_message_to_user 工具（SMT 还原/改写断言面）。"""
+
+    def __init__(self, desc=_SMT_ORIG_DESC):
+        self._smt = types.SimpleNamespace(description=desc)
+
+    def empty(self):
+        return False
+
+    def get_tool(self, name):
+        return self._smt if name == "send_message_to_user" else None
+
+
+class _ReqH3:
+    """ProviderRequest 桩（真机形状：contexts list / prompt str /
+    conversation 对象 / system_prompt / func_tool）。"""
+
+    def __init__(self, prompt="你好，今天天气怎么样", contexts=None,
+                 system_prompt="", func_tool=None, conversation=None):
+        self.prompt = prompt
+        self.contexts = list(contexts) if contexts is not None else []
+        self.system_prompt = system_prompt
+        self.func_tool = func_tool
+        self.conversation = conversation
+
+
+def _mk_h3_host(*, order=None, state=None, persona_id="p1", mode="auto",
+                sb_panel=True, activated=True, bracket=False,
+                chat_logging=True, always_activate=False,
+                worldbook_enabled=True, show_log=False, wr_manager=None,
+                wb_manager=None, rounds=0, emergency=False, session_vars=None,
+                persona="default", rag="full", pb=None,
+                injection_pos="system_end", detector=None):
+    """轻量 QuillPlugin 宿主（t26 手法）：只挂 H3 触碰的协作对象。
+
+    默认值对齐 master 快通路（激活路径 + 状态栏开 + doc 检索 custom 模式）；
+    - persona="default"：_persona_h3() 默认卡；None → persona_manager 桩
+      返回 None（无卡路径）；其余值原样作为角色卡 dict；
+    - rag="full"：retriever 就绪；"no_store"：memory_store=None；
+      "no_retriever"：rag_retriever=None；
+    - _get_target_id/_get_memory_session_id/_check_activation/_run_rag_retrieval/
+      _inject_persona_and_first_message/_prompt_builder_for_request/
+      _restore_smt_tool/_rewrite_smt_tool_description/_remember_inject_report/
+      _scrub_inject_report 均用 QuillPlugin 类上真实现（与线上动态分发路径
+      一致）；
+    - _spawn 捕获协程不调度（_SpawnToken），用例内 _drain_spawned 执行。
+    """
+    h = object.__new__(M.QuillPlugin)
+    order = order if order is not None else []
+    h.props = types.SimpleNamespace(
+        love_fields=list(M._DEFAULT_LOVE_FIELDS_RAW),
+        status_bar_enabled=sb_panel,
+        wr_max_entries=12,
+        wr_fallback_top_count=3,
+        wb_max_entries=5,
+        debug=False,
+        prompt_builder=pb if pb is not None else _PBH3(sb_enabled=sb_panel,
+                                                       order=order),
+    )
+    # Mixin 裸读 self.<attr> 的双建模路径（_effective_status_bar_enabled）
+    h.love_fields = list(M._DEFAULT_LOVE_FIELDS_RAW)
+    h.status_bar_enabled = sb_panel
+    h.status_bar_default_placeholder = "未设置"
+    h.config = types.SimpleNamespace(
+        rag_enable_chat_logging=chat_logging,
+        worldbook_always_activate=always_activate,
+        worldbook_enabled=worldbook_enabled,
+        worldbook_show_log=show_log,
+        worldbook_injection_pos=injection_pos,
+        worldbook_sensitivity=60,
+        worldbook_max_token=2000,
+    )
+    h.state_manager = state if state is not None else _StateH3(
+        persona_id=persona_id, mode=mode, rounds=rounds, emergency=emergency,
+        session_vars=session_vars, order=order)
+    h.activation_detector = detector if detector is not None else _DetectorH3(
+        activated=activated, bracket=bracket, order=order)
+    h.wr_manager = wr_manager
+    h.wb_manager = wb_manager
+    if persona == "default":
+        persona = _persona_h3()
+    h.persona_manager = _PersonaMgrH3(persona=persona, order=order)
+    if rag == "full":
+        h.rag_retriever = _RagH3(order=order)
+    elif rag == "no_store":
+        h.rag_retriever = _RagH3(order=order, memory_store=None)
+    else:
+        h.rag_retriever = None
+    h.rag_memory_store = _CoreMemStoreH3(order=order)
+    h.health_tracker = M.HealthTracker()
+    h._spawned: list = []
+
+    def _capture_spawn(coro):
+        token = _SpawnToken(coro)
+        h._spawned.append(token)
+        return token
+
+    h._spawn = _capture_spawn
+    return h
+
+
+async def _run_h3(host, event, req):
+    """经注册桩调用（搬移前后都是 QuillPlugin.on_llm_request）。"""
+    await M.QuillPlugin.on_llm_request(host, event, req)
+
+
+# H3 master 全序（与 BASELINE §4 的 22 步一一对应；重复出现的打点为
+# 真实现内的多次调用：get_persona_id ×3、check_brackets ×2）
+_H3_MASTER_ORDER = [
+    "restore_smt",                        # 步 1（patch 打点）
+    "get_persona_id",                     # 步 2 前置：mem_session_id
+    "recent_logs",                        # 步 2 垫回
+    "get_status_bar_mode",                # 步 3 前置：_sb_effective
+    "get_persona_id",                     # 步 4 _inject_persona_and_first_message
+    "get_persona",                        # 步 4
+    ("set_extra", "_quill_recent_msgs"),  # 步 7
+    "should_activate",                    # 步 9 _check_activation
+    "check_brackets",
+    "check_brackets",                     # 步 9 后直读
+    "increment_rounds",                   # 步 12
+    "rewrite_smt",                        # 步 13（patch 打点）
+    "should_inject_emergency",            # 步 14
+    "get_session_vars",                   # 步 14
+    "build_system_prompt",                # 步 16（世界书+WR 注入点）
+    "get_persona_id",                     # 步 17 _run_rag_retrieval 内部
+    "search_documents",                   # 步 17（doc 检索）
+    "search_memories",                    # 步 17（memory 检索）
+    "get_core_memories",                  # 步 17（核心记忆无条件）
+    "format_for_prompt",                  # 步 17
+    "remember_report",                    # 步 17 后（patch 打点）
+    "inject_prompt",                      # 步 19
+    "build_status_reminder",              # 步 20（tail 契约提醒）
+    ("set_extra", "_quill_activated"),    # 步 21（注入全部成功之后）
+    "update_activity",                    # 步 22
+    "clear_refusal",                      # 步 22
+]
+
+
+async def test_h3_master_full_sequence_happy_path(monkeypatch):
+    """master 快通路：激活路径 + 状态栏开 + custom doc 检索——22 步全序
+    断言（BASELINE §4 顺序即行为）+ 终态断言。
+
+    `_quill_activated` 的时序单独断言：严格晚于全部注入步（format_for_prompt
+    / inject_prompt / build_status_reminder）、严格早于 update_activity。
+    """
+    order: list = []
+    state = _StateH3(persona_id="p1", mode="auto", order=order)
+    wb_sentinel = _WbH3()
+    host = _mk_h3_host(order=order, state=state, sb_panel=True,
+                       activated=True, wb_manager=wb_sentinel)
+    ev = _EvH3(order=order)
+    req = _ReqH3(func_tool=_ToolsH3(),
+                 conversation=types.SimpleNamespace(persona_id="orig-persona"))
+
+    # 打点搬移体内方法调用（patch QuillPlugin 类属性——搬移前后都是
+    # self/plugin 动态分发，同一 patch 点；其余打点由桩协作对象承担）
+    orig_restore = M.QuillPlugin._restore_smt_tool
+    orig_rewrite = M.QuillPlugin._rewrite_smt_tool_description
+    orig_remember = M.QuillPlugin._remember_inject_report
+
+    def _restore_spy(hst, r):
+        order.append("restore_smt")
+        return orig_restore(hst, r)
+
+    async def _rewrite_spy(hst, r, pid=""):
+        order.append("rewrite_smt")
+        return await orig_rewrite(hst, r, pid)
+
+    def _remember_spy(hst, tid, stats):
+        order.append("remember_report")
+        return orig_remember(hst, tid, stats)
+
+    monkeypatch.setattr(M.QuillPlugin, "_restore_smt_tool", _restore_spy)
+    monkeypatch.setattr(M.QuillPlugin, "_rewrite_smt_tool_description",
+                        _rewrite_spy)
+    monkeypatch.setattr(M.QuillPlugin, "_remember_inject_report", _remember_spy)
+
+    await _run_h3(host, ev, req)
+    await _drain_spawned(host)
+
+    assert order == _H3_MASTER_ORDER, f"22 步顺序漂移:\n{order}"
+
+    # 步 21 时序（显式断言，防后续在注入前置位闸门）
+    i_activated = order.index(("set_extra", "_quill_activated"))
+    assert i_activated > order.index("format_for_prompt")
+    assert i_activated > order.index("inject_prompt")
+    assert i_activated > order.index("build_status_reminder")
+    assert i_activated < order.index("update_activity")
+
+    # 步 2：垫回 8 条 + 会话键 target_id::persona_id
+    assert host.rag_retriever.memory_store.recent_calls == [(UMO + "::p1", 8)]
+    assert len(req.contexts) == 8
+    assert req.contexts[0] == {"role": "user", "content": "历史消息0"}
+    # 步 4：切断原生人格
+    assert req.conversation.persona_id == "[%None]"
+    # 步 7：最近 12 条 extra（8 条垫回全保留）
+    assert ev.extras.get("_quill_recent_msgs") == [
+        {"role": "user", "content": f"历史消息{i}"} for i in range(8)]
+    # 步 12/14：extra_info 形状（skip_constants/映射自 props+config）；
+    # emergency 是 build_system_prompt 的独立 kwargs（不在 extra_info 内）
+    build = _PB3_REC["build"]
+    assert build["extra"]["skip_constants"] is False
+    assert build["emergency"] is False
+    assert build["extra"]["persona_id"] == "p1"
+    assert build["extra"]["user_id"] == UMO
+    assert build["extra"]["session_vars"] == {"好感度": "88"}
+    assert build["extra"]["wr_max_entries"] == 12
+    assert build["extra"]["wr_fallback_top_count"] == 3
+    assert build["extra"]["wb_max_entries"] == 5
+    assert build["extra"]["wb_sensitivity"] == 60
+    assert build["extra"]["wb_max_token"] == 2000
+    # 步 13：SMT 改写（原描述存 req 对象属性，防并发覆盖；改写文本不含
+    # marker——marker 是「系统强制描述」的识别键，只用于还原判定）
+    tool = req.func_tool.get_tool("send_message_to_user")
+    assert "THIS IS THE ONLY TOOL" in tool.description
+    assert getattr(req, M.QuillPlugin._QUILL_ORIG_DESC_KEY) == _SMT_ORIG_DESC
+    # 步 16：世界书总闸开 → 真实 wb_manager 传入；WR 侧 None
+    assert build["wr"] is None
+    assert build["wb"] is wb_sentinel
+    # 步 17：RAG 调用序列参数
+    rag = host.rag_retriever
+    assert rag.doc_calls == [("你好，今天天气怎么样", ["魔女手册"])]
+    assert rag.mem_calls == [(UMO + "::p1", "你好，今天天气怎么样")]
+    assert rag.core_calls == [UMO + "::p1"]
+    assert rag.format_calls == [(2, 1, 1)]
+    # 注入报告缓存（步 17 stats 回填 + 步 17 后缓存合并标准键）
+    assert host._get_inject_report(UMO) == {
+        "wb": 0, "mem": 1, "wr": 0, "doc": 2, "core_mem": 1,
+        "doc_sources": ["魔女手册"],
+    }
+    # 步 19：inject_prompt 透传（original 为原 system_prompt，此处空）
+    inject = _PB3_REC["inject"]
+    assert inject["stable"] == "STABLE_PROMPT"
+    assert inject["dynamic"] == "DYNAMIC_PROMPT\n\nRAG-CONTEXT"
+    assert inject["injection_position"] == "system_end"
+    assert req.system_prompt == "STABLE_PROMPT\n\nDYNAMIC_PROMPT\n\nRAG-CONTEXT"
+    # 步 20：tail 契约提醒追加
+    assert req.prompt.endswith("\n\n[System] TAIL-REMINDER-MARKER")
+    # 步 22
+    assert state.activity_calls == [UMO]
+    assert state.refusal_calls == [UMO]
+    # 步 5：用户消息落 chat_logs（后台任务，drain 后可见）
+    assert rag.log_calls == [(UMO + "::p1", "user", "你好，今天天气怎么样")]
+
+
+async def test_h3_smt_restore_first_and_actually_restores(monkeypatch):
+    """步 1：SMT 还原**先于一切**（打点序首）且真实生效——上一轮改写的
+    描述（含 marker）从 req 对象属性恢复原状并删属性。
+
+    用未激活路径（gate 后 return）隔离还原效果：还原之后、改写之前没有任何
+    别的步骤会再碰工具描述，终态即还原结果。"""
+    order: list = []
+    orig_restore = M.QuillPlugin._restore_smt_tool
+
+    def _restore_spy(hst, r):
+        order.append("restore_smt")
+        return orig_restore(hst, r)
+
+    monkeypatch.setattr(M.QuillPlugin, "_restore_smt_tool", _restore_spy)
+
+    host = _mk_h3_host(order=order, activated=False)
+    ev = _EvH3(order=order)
+    tool = _ToolsH3(desc=M.QuillPlugin._QUILL_SMT_DESC_MARKER + "（改写版）")
+    req = _ReqH3(func_tool=tool)
+    setattr(req, M.QuillPlugin._QUILL_ORIG_DESC_KEY, _SMT_ORIG_DESC)
+
+    await _run_h3(host, ev, req)
+
+    assert order[0] == "restore_smt", "SMT 还原必须先于一切"
+    # 还原真实生效（防打点假绿）
+    smt = req.func_tool.get_tool("send_message_to_user")
+    assert smt.description == _SMT_ORIG_DESC
+    assert not hasattr(req, M.QuillPlugin._QUILL_ORIG_DESC_KEY)
+
+
+async def test_h3_smt_rewrite_skipped_without_persona():
+    """步 13 无卡守卫：persona_id 空 → SMT 不改写（防 Agent 死循环）、
+    tail message 不追加（`if persona_id:` 整段跳过）。"""
+    order: list = []
+    state = _StateH3(persona_id="", mode="auto", order=order)
+    host = _mk_h3_host(order=order, state=state, persona_id="")
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="普通消息", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+
+    tool = req.func_tool.get_tool("send_message_to_user")
+    assert tool.description == _SMT_ORIG_DESC          # 未改写
+    assert not hasattr(req, M.QuillPlugin._QUILL_ORIG_DESC_KEY)
+    assert req.prompt == "普通消息"                     # tail 未追加
+
+
+async def test_h3_context_restoration_prepends_recent_logs():
+    """步 2：contexts 空 + 开关开（默认）+ retriever/store 就绪 →
+    get_recent_chat_logs(mem_session_id, limit=8) 结果**前插**。"""
+    host = _mk_h3_host()
+    ev = _EvH3()
+    req = _ReqH3(contexts=[])
+
+    await _run_h3(host, ev, req)
+
+    assert host.rag_retriever.memory_store.recent_calls == [(UMO + "::p1", 8)]
+    assert [c["content"] for c in req.contexts] == [f"历史消息{i}" for i in range(8)]
+
+
+async def test_h3_context_restoration_single_context_counts_as_fresh():
+    """步 2 边界：contexts 恰 1 条也算 fresh（`<= 1`）→ 照样垫回（8+1）。"""
+    host = _mk_h3_host()
+    ev = _EvH3()
+    req = _ReqH3(contexts=[{"role": "user", "content": "仅存的一条"}])
+
+    await _run_h3(host, ev, req)
+
+    assert len(req.contexts) == 9
+    assert req.contexts[-1] == {"role": "user", "content": "仅存的一条"}
+
+
+@pytest.mark.parametrize("kwargs,ctx", [
+    ({"rag": "full", "chat_logging": False},
+     [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]),
+    ({"rag": "no_store"},
+     [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]),
+    ({"rag": "no_retriever"},
+     [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]),
+], ids=["logging_off", "no_store", "no_retriever"])
+async def test_h3_context_restoration_gates(kwargs, ctx):
+    """步 2 闸门：开关关 / memory_store 缺失 / retriever 缺失 → 不读日志、
+    req.contexts 原样（已有上下文的分支由 direct 断言覆盖）。"""
+    host = _mk_h3_host(**kwargs)
+    ev = _EvH3()
+    req = _ReqH3(contexts=[dict(c) for c in ctx])
+
+    await _run_h3(host, ev, req)
+
+    if host.rag_retriever is not None and host.rag_retriever.memory_store:
+        assert host.rag_retriever.memory_store.recent_calls == []
+    assert req.contexts == ctx
+
+
+async def test_h3_context_restoration_skipped_when_has_contexts():
+    """步 2 闸门（已有上下文）：≥2 条 → 视为非 fresh，不读日志、原样。"""
+    host = _mk_h3_host()
+    ev = _EvH3()
+    ctx = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+    req = _ReqH3(contexts=[dict(c) for c in ctx])
+
+    await _run_h3(host, ev, req)
+
+    assert host.rag_retriever.memory_store.recent_calls == []
+    assert req.contexts == ctx
+
+
+async def test_h3_inject_report_scrubbed_from_history():
+    """步 2 前置：历史 contexts 中的〔注入〕报告行被抹除（防模型模仿回显）；
+    非 dict 项与非 str content 原样保留。"""
+    host = _mk_h3_host(chat_logging=False)
+    ev = _EvH3()
+    raw = {"role": "user", "content": 123}
+    req = _ReqH3(contexts=[
+        {"role": "assistant",
+         "content": "第一轮回复\n\n〔注入〕世界书×2\n\n\n\n第二轮"},
+        raw,
+        "裸字符串项",
+    ])
+
+    await _run_h3(host, ev, req)
+
+    assert req.contexts[0]["content"] == "第一轮回复\n\n第二轮"
+    assert req.contexts[1] is raw
+    assert req.contexts[2] == "裸字符串项"
+
+
+async def test_h3_status_bar_off_scrubs_history_artifacts():
+    """步 3：状态栏关闭 → 历史 contexts 中已渲染栏被整套剥离（恢复来的
+    chat_logs 同样携带状态栏，必须在垫回之后清）；开启方向历史不动。"""
+    bar_ctx = [{"role": "assistant", "content": "前文\n" + RENDERED}]
+
+    # 关闭（面板 off + 会话 auto）→ 清洗
+    host = _mk_h3_host(sb_panel=False, chat_logging=False)
+    ev = _EvH3()
+    req = _ReqH3(contexts=[dict(c) for c in bar_ctx])
+    await _run_h3(host, ev, req)
+    assert "状态栏" not in req.contexts[0]["content"]
+    assert "好感度" not in req.contexts[0]["content"]
+    assert req.contexts[0]["content"].startswith("前文")
+
+    # 开启 → 原样保留（渲染产物是合法历史）
+    host_on = _mk_h3_host(sb_panel=True, chat_logging=False)
+    ev_on = _EvH3()
+    req_on = _ReqH3(contexts=[dict(c) for c in bar_ctx])
+    await _run_h3(host_on, ev_on, req_on)
+    assert req_on.contexts[0]["content"] == "前文\n" + RENDERED
+
+
+async def test_h3_not_activated_resets_rounds_and_returns_untouched():
+    """步 11 gate：未激活（无激活词/无括号/WR 未匹配）→ reset_quill_rounds
+    + return——不注入（system_prompt/prompt 不变）、SMT 不改写、`_quill_
+    activated` 不置位、increment 不跑。**步 5 的用户消息落库照常发生**
+    （在 gate 之前——断点续传语义）。"""
+    order: list = []
+    state = _StateH3(persona_id="p1", mode="auto", order=order)
+    host = _mk_h3_host(order=order, state=state, activated=False)
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="普通闲聊", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+    await _drain_spawned(host)
+
+    assert state.reset_rounds_calls == [UMO]
+    assert state.increment_calls == []
+    assert "_quill_activated" not in ev.extras
+    assert req.system_prompt == ""
+    assert req.prompt == "普通闲聊"
+    tool = req.func_tool.get_tool("send_message_to_user")
+    assert tool.description == _SMT_ORIG_DESC
+    assert "build_system_prompt" not in order
+    assert "increment_rounds" not in order
+    # gate 之前的落库照常
+    assert host.rag_retriever.log_calls == [(UMO + "::p1", "user", "普通闲聊")]
+
+
+async def test_h3_worldbook_always_activate_forces_activation():
+    """步 10：worldbook_always_activate=True 强制 activated=True 且
+    wr_activated=False——即使 WR 管理器与 debug 全开也不触发 WR 调试匹配，
+    gate 照常通过（不 reset）。"""
+    order: list = []
+    wr = _WRH3(order=order)
+    state = _StateH3(persona_id="p1", mode="auto", order=order)
+    host = _mk_h3_host(order=order, state=state, activated=False,
+                       always_activate=True, wr_manager=wr)
+    host.props.debug = True
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="普通闲聊", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+
+    assert state.reset_rounds_calls == []
+    assert state.increment_calls == [UMO]
+    assert ev.extras.get("_quill_activated") is True
+    # wr_activated 被强制 False → WR 调试匹配（步 13 后的 debug 块）不触发
+    assert wr.match_calls == []
+    assert "build_system_prompt" in order
+
+
+async def test_h3_wr_keyword_activation():
+    """步 9 WR 关键词路径：激活词/括号未命中 → wr_manager.match(context_text,
+    top_k=3) 命中 → wr_activated=True 进激活路径；context_text 含多轮拼接
+    （末 4 条 + 本轮）。"""
+    order: list = []
+    wr = _WRH3(order=order)
+    state = _StateH3(persona_id="p1", mode="auto", order=order)
+    host = _mk_h3_host(order=order, state=state, activated=False,
+                       wr_manager=wr,
+                       persona=_persona_h3(quill_extensions={
+                           "wr_mode": "auto", "rag_mode": "disabled"}))
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="外面下雨了", contexts=[
+        {"role": "user", "content": "前一条"},
+        {"role": "assistant", "content": "前一条回复"},
+        {"role": "user", "content": "再前一条"},
+        {"role": "assistant", "content": "再前一条回复"},
+        {"role": "user", "content": "更早（截出窗口）"},
+    ], func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+
+    assert state.reset_rounds_calls == []
+    assert state.increment_calls == [UMO]
+    # _check_activation 的匹配：top_k=3（无绑定分类）、context_text = 末 4 条 + 本轮
+    assert len(wr.match_calls) == 1
+    ctx_text, top_k, log_match = wr.match_calls[0]
+    assert top_k == 3 and log_match is False
+    # 步 8 多轮拼接：末 4 条（「前一条」被截出窗口）+ 本轮在首
+    assert ctx_text.split("\n") == [
+        "外面下雨了", "前一条回复", "再前一条", "再前一条回复", "更早（截出窗口）"]
+
+
+async def test_h3_wr_match_failure_swallowed_gate_return():
+    """步 9 怪癖（BASELINE §4 步 9：WR 匹配异常内部吞）：match 抛异常 →
+    _check_activation 内 warning 吞掉 → wr_activated=False → gate →
+    reset_quill_rounds + return（不上抛、不降级日志）。"""
+    order: list = []
+    wr = _WRH3(error=RuntimeError("WR 索引损坏"), order=order)
+    state = _StateH3(persona_id="p1", mode="auto", order=order)
+    host = _mk_h3_host(order=order, state=state, activated=False,
+                       wr_manager=wr,
+                       persona=_persona_h3(quill_extensions={
+                           "wr_mode": "auto", "rag_mode": "disabled"}))
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="外面下雨了")
+
+    await _run_h3(host, ev, req)   # 不应抛
+
+    assert state.reset_rounds_calls == [UMO]
+    assert state.increment_calls == []
+    assert "_quill_activated" not in ev.extras
+
+
+async def test_h3_skip_constants_flag_after_first_round():
+    """步 12：quill_rounds>1 → skip_constants 置位进 extra_info（跳过
+    Layer 1 常驻的信号）；计数走 increment 返回值。"""
+    order: list = []
+    state = _StateH3(persona_id="p1", mode="auto", rounds=1, order=order)
+    host = _mk_h3_host(order=order, state=state)
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="继续", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+
+    assert state.increment_calls == [UMO]
+    assert _PB3_REC["build"]["extra"]["skip_constants"] is True
+
+
+def _pb_copy_host(mode):
+    """浅拷贝断言用宿主：面板关 + 会话级 mode（on=强制开）。"""
+    order: list = []
+    pb = _PBH3(sb_enabled=False, order=order)
+    state = _StateH3(persona_id="p1", mode=mode, order=order)
+    host = _mk_h3_host(order=order, state=state, sb_panel=False, pb=pb)
+    return host, pb, _EvH3(order=order)
+
+
+async def test_h3_prompt_builder_shallow_copy_on_session_override():
+    """步 15：`_prompt_builder_for_request` 浅拷贝——会话级覆盖（on）与
+    面板全局（False）不一致时，build_system_prompt / build_status_reminder
+    用**拷贝实例**（开关翻正），共享实例的开关**绝不落回**（并发防污染）。"""
+    host, pb, ev = _pb_copy_host("on")
+    req = _ReqH3(prompt="继续", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+
+    build = _PB3_REC["build"]
+    used = build["self"]
+    assert used is not pb                      # 用的是浅拷贝
+    assert used.status_bar_enabled is True     # 拷贝上的开关已对齐会话覆盖
+    assert pb.status_bar_enabled is False      # 共享实例未被污染
+    assert _PB3_REC["reminder_self"] is used   # tail 与装配用同一拷贝
+
+
+async def test_h3_prompt_builder_same_object_when_aligned():
+    """步 15 对齐分支：开关一致（面板开 + auto 跟随）→ 直接用共享实例
+    （不拷贝）。"""
+    order: list = []
+    pb = _PBH3(sb_enabled=True, order=order)
+    host = _mk_h3_host(order=order, sb_panel=True, pb=pb)
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="继续", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+
+    assert _PB3_REC["build"]["self"] is pb
+
+
+async def test_h3_rag_disabled_mode_skips_doc_but_memory_core_run():
+    """步 17：rag_mode=disabled → 跳过 doc 检索；memory 检索与**核心记忆
+    无条件注入**照常；stats 相应为 0（注入报告可分辨「没命中」与「没生效」）。"""
+    host = _mk_h3_host(
+        persona=_persona_h3(quill_extensions={"rag_mode": "disabled"}))
+    ev = _EvH3()
+    req = _ReqH3(prompt="继续", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+
+    rag = host.rag_retriever
+    assert rag.doc_calls == []
+    assert len(rag.mem_calls) == 1
+    assert len(rag.core_calls) == 1
+    assert rag.format_calls == [(0, 1, 1)]
+    report = host._get_inject_report(UMO)
+    assert report["doc"] == 0 and report["doc_sources"] == []
+    assert report["mem"] == 1 and report["core_mem"] == 1
+
+
+async def test_h3_rag_retriever_missing_degrades_gracefully():
+    """步 17 缺 retriever：`_run_rag_retrieval` 提前 return（warning），
+    编排继续——build_system_prompt 照跑、inject_prompt 的 dynamic 无 RAG
+    上下文；垫回与落库一并跳过（同一存在性判断面）。"""
+    order: list = []
+    host = _mk_h3_host(order=order, rag="no_retriever")
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="继续", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+
+    assert "build_system_prompt" in order
+    assert _PB3_REC["inject"]["dynamic"] == "DYNAMIC_PROMPT"
+    assert req.system_prompt == "STABLE_PROMPT\n\nDYNAMIC_PROMPT"
+    assert ev.extras.get("_quill_activated") is True
+
+
+async def test_h3_trigger_log_appended_when_enabled():
+    """步 18：worldbook_show_log 开 + wb 有 get_trigger_log → 触发日志块
+    追加进 dynamic_prompt（同步方法，不 await）。"""
+    order: list = []
+    wb = _WbH3(log=[{"worldbook": "witchi", "title": "暴雨",
+                     "matched_keys": ["雨", "雷"]}])
+    host = _mk_h3_host(order=order, show_log=True, wb_manager=wb)
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="外面下雨了", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+
+    dynamic = _PB3_REC["inject"]["dynamic"]
+    assert dynamic.startswith("DYNAMIC_PROMPT\n\nRAG-CONTEXT\n\n[触发日志]")
+    assert "witchi/暴雨 ← 雨,雷" in dynamic
+
+
+async def test_h3_worldbook_dead_switch_forces_none_manager():
+    """步 16 死开关接线：worldbook_enabled=False → wb_manager 传 None
+    （PromptBuilder 跳过全部世界书逻辑——「改了不生效」死开关的唯一消费点）；
+    injection_position 原样透传 inject_prompt。"""
+    order: list = []
+    wb = _WbH3(log=[{"worldbook": "witchi", "title": "暴雨",
+                     "matched_keys": ["雨"]}])
+    host = _mk_h3_host(order=order, worldbook_enabled=False, wb_manager=wb,
+                       injection_pos="user_prefix")
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="外面下雨了", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+
+    assert _PB3_REC["build"]["wb"] is None
+    assert _PB3_REC["inject"]["injection_position"] == "user_prefix"
+    # 总闸关 → 触发日志块同样跳过（_wb_for_request 为 None）
+    assert "[触发日志]" not in _PB3_REC["inject"]["dynamic"]
+
+
+async def test_h3_tail_message_variants_and_idempotence():
+    """步 20：开启 → 契约提醒 tail；关闭 → 禁止状态栏文案 tail；空 prompt
+    → 整体成为 prompt；已含 tail → 不重复；无 persona → 整段跳过。"""
+    # 开启
+    host = _mk_h3_host(sb_panel=True)
+    ev = _EvH3()
+    req = _ReqH3(prompt="剧情正文", func_tool=_ToolsH3())
+    await _run_h3(host, ev, req)
+    assert req.prompt == "剧情正文\n\n[System] TAIL-REMINDER-MARKER"
+
+    # 已含 tail → 不重复追加
+    host2 = _mk_h3_host(sb_panel=True)
+    ev2 = _EvH3()
+    req2 = _ReqH3(prompt="剧情正文\n\n[System] TAIL-REMINDER-MARKER",
+                  func_tool=_ToolsH3())
+    await _run_h3(host2, ev2, req2)
+    assert req2.prompt == "剧情正文\n\n[System] TAIL-REMINDER-MARKER"
+
+    # 空 prompt → tail 即全部
+    host3 = _mk_h3_host(sb_panel=True)
+    ev3 = _EvH3()
+    req3 = _ReqH3(prompt="", func_tool=_ToolsH3())
+    await _run_h3(host3, ev3, req3)
+    assert req3.prompt == "\n\n[System] TAIL-REMINDER-MARKER"
+
+    # 关闭 → 禁止文案
+    host4 = _mk_h3_host(sb_panel=False, chat_logging=False)
+    ev4 = _EvH3()
+    req4 = _ReqH3(prompt="剧情正文", func_tool=_ToolsH3())
+    await _run_h3(host4, ev4, req4)
+    assert "禁止输出任何格式的状态栏" in req4.prompt
+    assert "[LOVE_DATA]" in req4.prompt
+
+
+async def test_h3_user_message_logging_gates():
+    """步 5：用户消息落 chat_logs 的三重闸门（persona 绑定 / 非斜杠指令 /
+    rag_enable_chat_logging）——各自缺一即不落。
+
+    注意 persona_id 来自 state_manager（会话绑定的卡 id），不是
+    persona_manager 的返回值——persona_manager 查不到卡只影响 persona_data，
+    不影响落库闸门（未绑会话用 persona_id="" 建模）。"""
+    # 斜杠指令不落
+    host = _mk_h3_host()
+    ev = _EvH3()
+    req = _ReqH3(prompt="/help", func_tool=_ToolsH3())
+    await _run_h3(host, ev, req)
+    await _drain_spawned(host)
+    assert host.rag_retriever.log_calls == []
+
+    # persona 未绑定（state 会话无卡）不落，session 键退化为 target_id
+    order: list = []
+    state = _StateH3(persona_id="", mode="auto", order=order)
+    host2 = _mk_h3_host(order=order, state=state, persona_id="")
+    ev2 = _EvH3(order=order)
+    req2 = _ReqH3(prompt="你好", func_tool=_ToolsH3())
+    await _run_h3(host2, ev2, req2)
+    await _drain_spawned(host2)
+    assert host2.rag_retriever.log_calls == []
+
+    # 开关关不落
+    host3 = _mk_h3_host(chat_logging=False)
+    ev3 = _EvH3()
+    req3 = _ReqH3(prompt="你好", func_tool=_ToolsH3())
+    await _run_h3(host3, ev3, req3)
+    await _drain_spawned(host3)
+    assert host3.rag_retriever.log_calls == []
+
+    # persona_manager 查不到卡（persona_data=None）不影响落库闸门
+    host4 = _mk_h3_host(persona=None)
+    ev4 = _EvH3()
+    req4 = _ReqH3(prompt="你好", func_tool=_ToolsH3())
+    await _run_h3(host4, ev4, req4)
+    await _drain_spawned(host4)
+    assert host4.rag_retriever.log_calls == [(UMO + "::p1", "user", "你好")]
+
+
+async def test_h3_core_memory_nl_rewrites_prompt_and_stores():
+    """步 6：`@记住：` 前缀 → 捕获组为核心记忆内容 + 后台写库（session 键
+    = target_id::persona_id）。prompt 改写为匹配**之后**的剩余文本——
+    单行输入剩余为空 → prompt 保持原文（不 rewrite 出空 prompt）；多行
+    输入第二行起成为新 prompt。落库内容始终按原文 user_input。"""
+    # 多行：改写生效
+    host = _mk_h3_host()
+    ev = _EvH3()
+    req = _ReqH3(prompt="@记住：她喜欢茉莉花茶\n今天天气如何",
+                 func_tool=_ToolsH3())
+    await _run_h3(host, ev, req)
+    await _drain_spawned(host)
+    assert req.prompt == "今天天气如何\n\n[System] TAIL-REMINDER-MARKER"
+    assert host.rag_memory_store.update_calls == [
+        (UMO + "::p1", "她喜欢茉莉花茶", "她喜欢茉莉花茶")]
+    # 落库按**原文**（改写前读取的 user_input）
+    assert host.rag_retriever.log_calls == [
+        (UMO + "::p1", "user", "@记住：她喜欢茉莉花茶\n今天天气如何")]
+
+    # 单行：剩余为空 → prompt 不改写（避免空 prompt 发给 LLM），写库照常
+    host2 = _mk_h3_host()
+    ev2 = _EvH3()
+    req2 = _ReqH3(prompt="@记住：她喜欢茉莉花茶", func_tool=_ToolsH3())
+    await _run_h3(host2, ev2, req2)
+    await _drain_spawned(host2)
+    assert req2.prompt == "@记住：她喜欢茉莉花茶\n\n[System] TAIL-REMINDER-MARKER"
+    assert host2.rag_memory_store.update_calls == [
+        (UMO + "::p1", "她喜欢茉莉花茶", "她喜欢茉莉花茶")]
+
+
+async def test_h3_core_memory_nl_permission_denied_group():
+    """步 6 权限面：群聊 + admin_users 未配置（fail-close）→ 不改写
+    prompt、不写核心记忆（自然语言注入被拦截；tail 仍照常追加）。"""
+    host = _mk_h3_host()
+    ev = _EvH3(message_type="group")
+    req = _ReqH3(prompt="记住：她喜欢茉莉花茶", func_tool=_ToolsH3())
+
+    await _run_h3(host, ev, req)
+    await _drain_spawned(host)
+
+    assert req.prompt == "记住：她喜欢茉莉花茶\n\n[System] TAIL-REMINDER-MARKER"
+    assert host.rag_memory_store.update_calls == []
+
+
+class _LoggerRecH3:
+    """logger 替身：error 分级留痕（顶层降级日志断言）。"""
+
+    def __init__(self):
+        self.errors: list = []
+
+    def error(self, msg, *a, **k):
+        self.errors.append(str(msg))
+
+    def warning(self, msg, *a, **k):
+        pass
+
+    def info(self, msg, *a, **k):
+        pass
+
+    def debug(self, msg, *a, **k):
+        pass
+
+
+@pytest.mark.parametrize("inject_at", ["restore", "check_activation"],
+                         ids=["first_step", "mid_flow"])
+async def test_h3_top_level_exception_degrades(monkeypatch, inject_at):
+    """降级语义（BASELINE §2 H3 行）：任意步异常 → 顶层 except 吞掉 +
+    error 日志（「致命错误，Prompt 装配失败，降级放行」+ `extra_summary=`
+    脱敏摘要——persona_id/长度字段/skip_constants，**不含** user_input/
+    context_text 原文）→ 放行（不注入、`_quill_activated` 不置位、
+    gate 前异常不 reset）。
+
+    patch 点 QuillPlugin 类属性（搬移前后 H3 都经 self/plugin 动态分发，
+    同一 patch 点命中）；calls 非空防注入假绿。脱敏摘要只断言键存在——
+    emergency/extra_info 的**中间值**随搬移后的降级层位固定为预初始化值，
+    不是快照面（报告见 main.py 注册桩 docstring）。
+    """
+    calls: list = []
+    order: list = []
+
+    if inject_at == "restore":
+        def _boom(hst, r):
+            calls.append(True)
+            raise RuntimeError("injected restore failure")
+
+        monkeypatch.setattr(M.QuillPlugin, "_restore_smt_tool", _boom)
+    else:
+        async def _boom(hst, *a, **k):
+            calls.append(True)
+            raise RuntimeError("injected activation failure")
+
+        monkeypatch.setattr(M.QuillPlugin, "_check_activation", _boom)
+
+    rec = _LoggerRecH3()
+    monkeypatch.setattr(M, "logger", rec)
+
+    state = _StateH3(persona_id="p1", mode="auto", order=order)
+    host = _mk_h3_host(order=order, state=state)
+    ev = _EvH3(order=order)
+    req = _ReqH3(prompt="你好", func_tool=_ToolsH3(),
+                 contexts=[{"role": "user", "content": "旧消息"}])
+
+    await _run_h3(host, ev, req)   # 不应抛（抛了会打断框架请求流程）
+
+    assert calls, "异常注入未命中实际调用路径（假绿）"
+    assert any("致命错误，Prompt 装配失败，降级放行" in e for e in rec.errors)
+    assert any("injected " in e for e in rec.errors)       # 原始异常消息保留
+    assert any("extra_summary=" in e for e in rec.errors)
+    assert any("user_input_len" in e for e in rec.errors)  # 只有长度，无原文
+    assert not any("你好" in e.split("extra_summary=")[-1]
+                   for e in rec.errors if "extra_summary=" in e)
+    assert "_quill_activated" not in ev.extras
+    assert state.reset_rounds_calls == []                  # gate 前异常不 reset

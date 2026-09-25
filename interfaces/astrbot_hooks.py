@@ -9,8 +9,9 @@
 留在 main.py 类体，桩体一行委托到本模块的实现函数；业务逻辑逐字下沉
 于此。M2.2 第一轮 H6（on_decorating_result）、第二轮 H1
 （on_waiting_llm_request）、第三轮 H2（on_using_llm_tool）、第四轮 H4
-（on_llm_response）、第五轮 H5（on_llm_tool_respond）；余下 H3
-（on_llm_request，最大钩子）随后续轮次按同一形态迁入。
+（on_llm_response）、第五轮 H5（on_llm_tool_respond）、第六轮 H3
+（on_llm_request，全插件最大函数、22 步注入编排本体，BASELINE §4）。
+至此六钩子全部迁毕。
 
 降级语义分层：顶层 try/except 留在 main.py 注册桩内（与原 H6 的
 "顶层吞掉放行"同层，不因委托而改变降级位置）；本模块实现体内**不再**
@@ -29,11 +30,13 @@ import json
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.provider import LLMResponse
+from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.agent.tool import FunctionTool
 
+from ..commands import _check_group_permission
 from ..encryption import decrypt_output
 from ..quill.services import memory as _memory_mod
+from ..quill.services import prompt as _prompt_mod
 from ..quill.services import response as _response_mod
 
 
@@ -554,3 +557,313 @@ async def handle_llm_tool_respond(
 
         except Exception as e:
             logger.warning(f"[Quill Memory] 记忆存储调度失败: {e}")
+
+async def handle_llm_request(
+    plugin, event: AstrMessageEvent, req: ProviderRequest
+) -> None:
+    """LLM 请求拦截：22 步注入编排本体（H3，BASELINE §4，顺序即行为）。
+
+    （业务逻辑自 main.py 逐字搬移，M2.2 第六轮；``self`` → ``plugin``。
+    行为快照见 tests/test_hook_snapshots.py H3 节，行为契约与顶层降级
+    语义见 main.py 注册桩 docstring 与 BASELINE §2 H3 行。顶层
+    try/except **不在本函数内**——降级层位在注册桩：``emergency``/
+    ``extra_info`` 预初始化与 ``_sanitize_extra`` 脱敏摘要是降级语义的
+    组成部分，随桩留在 main.py，任何异常由桩吞掉 + error 日志放行。）
+
+    核心职责（原 H3 docstring 逐字保留）：
+    - 平行宇宙双轴隔离 (target_id::persona_id)：按群+角色切分独立状态
+    - 激活检测：决定本次请求是否进入 RP 模式
+    - Context Restoration：req.contexts 为空时从 chat_logs 捞取最近 N 条垫入
+    - First Message 智能抑制：避免重启后突兀复读开场白
+    - 4 层 Prompt 装配：系统/角色/世界书/WR/RAG 多源注入
+    - 状态栏降级解析：5 级兜底（STATUS 块→LOVE_DATA→legacy→RAW→lenient）
+
+    22 步编排（BASELINE §4 一一对应，搬移前后顺序逐字一致，不得重排）：
+
+    1.  ``_restore_smt_tool``（无条件、最先——SMT 请求级还原，§4.1）；
+    2.  Context Restoration 垫回：类型守卫 + 注入报告行抹除 →
+        contexts 空/≤1 且 ``rag_enable_chat_logging``（默认 True）且
+        retriever.memory_store 存在 → ``get_recent_chat_logs`` 前插 8 条；
+    3.  状态栏关闭时清洗历史 contexts 已渲染状态栏（``_sb_effective``
+        在此求值，供步 15/20 复用——跨步存活值，不下沉的原因之一）；
+    4.  ``_inject_persona_and_first_message``（[%None] 切断原生人格 +
+        开场白首插）；
+    5.  用户消息落 chat_logs（仅绑卡、非 ``/`` 指令——**在激活 gate 之前**，
+        未激活也落，断点续传语义）；
+    6.  自然语言核心记忆（``@记住：`` 前缀，``plugin._CORE_MEMORY_NL_RE``
+        ——模块级正则经类属性 re-export 访问，H5 REFLECTION_* 先例）；
+        改写 req.prompt + 群聊经 ``_check_group_permission`` 权限拦截 +
+        后台写库；
+    7.  最近 12 条存 ``_quill_recent_msgs`` extra；
+    8.  拼多轮 context_text（末 4 条——纯函数段，本轮下沉
+        quill/services/prompt.py ``build_context_text``，见下沉决策）；
+    9.  ``_check_activation``（激活词/【】括号/WR 关键词；WR 匹配异常内部吞）；
+    10. ``worldbook_always_activate`` 强制 ``activated=True, wr_activated=False``；
+    11. **未激活 → reset_quill_rounds + return**（gate 本体，编排控制流）；
+    12. ``increment_quill_rounds``；quill_rounds>1 → ``skip_constants``；
+    13. ``_rewrite_smt_tool_description``（仅激活路径；无角色卡跳过）；
+    14. emergency 检查 + extra_info（含 session_vars）；
+    15. ``_prompt_builder_for_request(_sb_effective)``（浅拷贝对齐状态栏开关）；
+    16. ``build_system_prompt``——世界书+WR 注入点（``worldbook_enabled``
+        死开关的唯一消费点：关→传 None 整段跳过）；
+    17. ``_run_rag_retrieval``——RAG 注入点（doc 检索→memory 检索→核心
+        记忆无条件注入→format_for_prompt 追加 dynamic）；
+    18. 世界书触发日志注入（worldbook_show_log，同步 get_trigger_log）；
+    19. ``inject_prompt`` 合并（injection_position 透传）；
+    20. tail message 追加 req.prompt（开：``build_status_reminder`` 契约
+        提醒；关：禁止状态栏文案；幂等）；
+    21. **``event.set_extra("_quill_activated", True)``**（闸门唯一点位，
+        全部注入成功之后——快照 master 用例钉住其相对时序）；
+    22. ``update_activity`` / ``clear_refusal``。
+
+    下沉决策（本轮评估记录，宁可少下沉不可重排顺序）：
+
+    * **步 8 context_text 拼接** → quill/services/prompt.py
+      ``build_context_text``：22 步中唯一零 async、零插件实例状态、零控制
+      流交织的纯函数段，显式参数即完整依赖面，调用点原位一行替换（块内
+      对 req.contexts 的 isinstance 守卫随迁，求值时序不变）。
+    * **步 2-3 垫回/历史清洗块不下沉**：块内求值的 ``mem_session_id``（供
+      步 5/6 使用）与 ``_sb_effective``（供步 15/20 使用）是跨步存活值，
+      下沉需以返回值/出参形态交还编排层，传参形态与求值时序都要改；且
+      块内三个动态分发点（``_scrub_inject_report`` /
+      ``_effective_status_bar_enabled`` / ``_strip_status_artifacts``）使
+      服务函数要么收 plugin（伪解耦的代码搬家）要么改传参——强搬=重写。
+    * **步 9-12 gate 块不下沉**：步 11 是早退 return（编排控制流本体），
+      下沉需要哨兵返回值改变控制流形状；顺序即行为的核心段。
+    * **步 6 核心记忆块不下沉**：权限校验经根包 commands 模块函数
+      （``_check_group_permission``，本模块顶部直接 import——同
+      ``..encryption`` 先例；quill/services 依赖根包会反转分层，故整块
+      留此）；步 1/4/9/13/17 的既有方法仍住 main.py 类上（经 plugin
+      动态分发，与搬移前 self.* 同一路径）。
+    * **步 20 tail 块不下沉**：req.prompt 的幂等拼接 + 空 prompt 分支是
+      req 对象胶水；契约文本已由 PromptBuilder 单一来源生成（步 20 无
+      重复逻辑可收敛）。
+
+    其余各段（extra_info 组装、触发日志、终态日志等）是 event/req/config
+    上的框架对象胶水，同 H2/H4 轮裁定，留在本编排函数内。
+    """
+    plugin._restore_smt_tool(req)
+
+    user_input = req.prompt or ""
+    target_id = plugin._get_target_id(event)
+
+    # ── 上下文恢复（重启/滑动窗口切断后无缝续传）──
+    mem_session_id = plugin._get_memory_session_id(
+        target_id,
+        await plugin.state_manager.get_persona_id(target_id)
+    )
+    # 防御性类型守卫：AstrBot 框架契约保证 contexts 为 list，但防止异常值导致崩溃
+    if not isinstance(req.contexts, list):
+        req.contexts = []
+    # 抹掉历史里的注入报告行：它只该出现在用户看到的那条消息里，
+    # 回显进上下文会被模型模仿（下一轮自己写一行），且对本轮推理无价值。
+    req.contexts = [
+        ({**c, "content": plugin._scrub_inject_report(c.get("content", ""))}
+         if isinstance(c, dict) and isinstance(c.get("content"), str) else c)
+        for c in req.contexts
+    ]
+    contexts_is_fresh = not req.contexts or len(req.contexts) <= 1
+    if contexts_is_fresh \
+            and getattr(plugin.config, 'rag_enable_chat_logging', True) \
+            and plugin.rag_retriever and plugin.rag_retriever.memory_store:
+        recent_logs = await plugin.rag_retriever.memory_store.get_recent_chat_logs(mem_session_id, limit=8)
+        if recent_logs:
+            req.contexts = recent_logs + req.contexts
+            logger.info(f"[Quill Context] 恢复 {len(recent_logs)} 条上下文（Session: {mem_session_id}）")
+
+    # 关闭状态栏时，抹掉回灌上下文里已渲染的历史状态栏。
+    # 不清掉就是一边用 tail message 明令「禁止输出好感度、关系阶段、心情」，
+    # 一边在历史里给模型看几轮「好感度：85」的示范，属于自己和自己拉锯：
+    # 模型倾向于模仿历史（可见性由读侧剥离兜住，但说服力被白白消耗）。
+    # 必须放在上下文恢复之后：恢复来的 chat_logs 同样带着状态栏。
+    # 开启方向不处理——历史里本来就没有栏，tail message 会教它写。
+    # 用会话级最终开关判断：/quill statusbar off 之后同样要清历史示范。
+    _sb_effective = await plugin._effective_status_bar_enabled(target_id)
+    if not _sb_effective and req.contexts:
+        _scrubbed = []
+        for c in req.contexts:
+            if isinstance(c, dict) and isinstance(c.get("content"), str):
+                clean = plugin._strip_status_artifacts(
+                    c["content"], plugin.props.love_fields
+                )
+                _scrubbed.append({**c, "content": clean} if clean != c["content"] else c)
+            else:
+                _scrubbed.append(c)
+        req.contexts = _scrubbed
+
+    persona_id, persona_data = await plugin._inject_persona_and_first_message(req, event, target_id)
+
+    # 记录用户消息（仅已绑定角色卡且非指令时）
+    if persona_id and user_input and not user_input.strip().startswith("/") \
+            and getattr(plugin.config, 'rag_enable_chat_logging', True) \
+            and plugin.rag_retriever:
+        plugin._spawn(plugin.rag_retriever.log_chat_message(
+            mem_session_id, "user", user_input
+        ))
+
+    # P1-8: 自然语言核心记忆注入 — 检测 @记住 / 核心记忆 / @remember 前缀
+    # 审查修复：切片统一以 stripped 文本为基准（此前 strip 后匹配、原文切片，
+    # 带前导空白时 prompt 残留尾部字符）；剥离后为空则保留原文（避免空 prompt
+    # 仍发给 LLM）；群聊写入需通过 admin 权限校验（与 /memory core 对齐）。
+    _core_nl = None
+    if persona_id and user_input and plugin.rag_retriever and plugin.rag_retriever.memory_store:
+        _stripped = user_input.strip()
+        _core_match = plugin._CORE_MEMORY_NL_RE.match(_stripped)
+        if _core_match:
+            _perm_err = _check_group_permission(plugin, event)
+            if _perm_err:
+                logger.info("[Quill] 核心记忆自然语言注入被权限拦截（群聊非 admin）")
+            else:
+                _core_nl = _core_match.group(1).strip()
+                _rest = _stripped[_core_match.end():].strip()
+                if _rest:
+                    req.prompt = _rest
+                logger.info(f"[Quill] 检测到核心记忆自然语言注入: {_core_nl[:80]}...")
+    # 异步写入核心记忆（不阻塞请求流程）
+    if _core_nl:
+        plugin._spawn(plugin.rag_memory_store.update_core_memory(
+            mem_session_id, _core_nl, _core_nl
+        ))
+
+    # 存储最近 6 轮对话，供 /memory learn 自动总结
+    if hasattr(req, 'contexts') and isinstance(req.contexts, list):
+        # P3-5 修复：深拷贝切片，避免后续 req.contexts 被修改（如上下文恢复）后引用失效
+        recent_msgs = [dict(c) for c in req.contexts[-12:] if c.get("role") in ("user", "assistant")]
+        event.set_extra("_quill_recent_msgs", recent_msgs)
+
+    # Build multi-turn context for WR matching
+    # （M2.2 第六轮下沉：纯函数段迁 quill/services/prompt.py，见下沉决策）
+    context_text = _prompt_mod.build_context_text(user_input, req.contexts)
+
+    activated, wr_activated = await plugin._check_activation(user_input, context_text, persona_data)
+    has_bracket = plugin.activation_detector.check_brackets(user_input)
+
+    # 全局常驻模式：跳过激活检测
+    always_activate = getattr(plugin.config, "worldbook_always_activate", False)
+    if always_activate:
+        activated = True
+        wr_activated = False
+
+    if not (activated or has_bracket or wr_activated):
+        await plugin.state_manager.reset_quill_rounds(target_id)
+        return
+
+    quill_rounds = await plugin.state_manager.increment_quill_rounds(target_id)
+    skip_constants = quill_rounds > 1
+    if skip_constants:
+        logger.info(f"[Quill] 连续第 {quill_rounds} 轮激活，跳过 Layer 1 常驻")
+
+    # 改写 send_message_to_user 描述（含状态栏强制要求）
+    # 无角色卡时跳过：避免 LLM 在无人设约束时进入 Agent 死循环
+    await plugin._rewrite_smt_tool_description(req, persona_id)
+
+    if wr_activated and plugin.wr_manager and plugin.props.debug:
+        try:
+            debug_match = await plugin.wr_manager.match(context_text, top_k=10, log_match=False)
+            for e in debug_match:
+                logger.info(
+                    f"[Quill] WR 匹配: {e.get('entry_id','')} "
+                    f"(score={e.get('match_score',0)}, "
+                    f"kw={e.get('keywords',[])})"
+                )
+        except Exception:
+            logger.debug("[Quill] 调试 WR 匹配失败", exc_info=True)
+
+    emergency = await plugin.state_manager.should_inject_emergency(target_id)
+
+    extra_info = {
+        "user_input": user_input,
+        "context_text": context_text,
+        "persona_id": persona_id,
+        "persona_data": persona_data,
+        "user_id": target_id,
+        "wr_max_entries": plugin.props.wr_max_entries,
+        "wr_fallback_top_count": plugin.props.wr_fallback_top_count,
+        "wb_max_entries": plugin.props.wb_max_entries,
+        "wb_sensitivity": plugin.config.worldbook_sensitivity,
+        "wb_max_token": plugin.config.worldbook_max_token,
+        "skip_constants": skip_constants,
+        "session_vars": await plugin.state_manager.get_session_vars(target_id),
+    }
+
+    # 注入报告统计（本轮各来源命中条数）。始终采集——即使 debug 关闭，
+    # 本轮最终开关：会话级覆盖 > 面板全局。上面（历史 contexts 清理）与
+    # 下面（system prompt 契约、tail message）必须用同一个值，否则会出现
+    # 「system prompt 说别输出、tail 说必须输出」的自相矛盾。
+    _pb = plugin._prompt_builder_for_request(_sb_effective)
+
+    # /quill debug 也要能查上一轮，见 _last_inject_report。
+    inject_stats: dict = {}
+    # 世界书总开关（默认 True）。此前 `worldbook.enabled` 只在 config.py
+    # 解析与 __repr__ 里出现，运行期**没有任何消费者**——面板上关掉它
+    # 世界书照样注入，属「改了不生效」的死开关。这里把它接到唯一的
+    # 注入点上：关掉就传 None，让 PromptBuilder 跳过全部世界书逻辑
+    # （常驻+关键词匹配）。传 None 而不是加新参数，是因为
+    # `build_system_prompt` 各处判断的都是 `if wb_manager`，
+    # 置空即可整段跳过，且不改变函数签名（prompt_builder 自检里
+    # 就有 `build_system_prompt(None, None, {})` 的用法）。
+    # 按角色卡绑定的 wb_mode 仍在其上层生效：两者是「总闸 × 分闸」。
+    _wb_for_request = plugin.wb_manager if getattr(
+        plugin.config, "worldbook_enabled", True
+    ) else None
+    stable_prompt, dynamic_prompt = await _pb.build_system_prompt(
+        plugin.wr_manager, _wb_for_request, extra_info, emergency=emergency,
+        stats=inject_stats,
+    )
+
+    # ── RAG 检索（Doc RAG + 动态记忆）──
+    dynamic_prompt = await plugin._run_rag_retrieval(
+        event, req, user_input, persona_data, dynamic_prompt, inject_stats
+    )
+
+    # 触发日志注入（show_trigger_log 开启时）
+    if (plugin.config.worldbook_show_log and _wb_for_request
+            and hasattr(_wb_for_request, 'get_trigger_log')):
+        # get_trigger_log 是同步方法（加锁读一次列表），不能 await
+        trigger_log = _wb_for_request.get_trigger_log()
+        if trigger_log:
+            log_lines = ["[触发日志]"]
+            for t in trigger_log[:10]:
+                log_lines.append(f"  {t['worldbook']}/{t['title']} ← {','.join(t['matched_keys'])}")
+            dynamic_prompt += "\n\n" + "\n".join(log_lines)
+
+    plugin._remember_inject_report(target_id, inject_stats)
+
+    req.system_prompt = plugin.props.prompt_builder.inject_prompt(
+        req.system_prompt or "", stable_prompt, dynamic_prompt,
+        injection_position=plugin.config.worldbook_injection_pos
+    )
+
+    if persona_id:
+        if _sb_effective:
+            # 契约文本由 PromptBuilder 单一来源生成（格式行/示例/选项块），
+            # 此处不再手抄示例——此前四处各写一份，字段名或顺序一变就漂移。
+            tail = "\n\n[System] " + _pb.build_status_reminder()
+        else:
+            tail = (
+                "\n\n[System] 禁止输出任何格式的状态栏、[LOVE_DATA]、"
+                "[STATUS]、好感度数值、关系阶段、心情标签、穿着描述、"
+                "位置信息、剧情走向选项等内容。请仅输出纯剧情正文。"
+            )
+        if req.prompt and tail not in req.prompt:
+            req.prompt += tail
+        elif not req.prompt:
+            req.prompt = tail
+
+    event.set_extra("_quill_activated", True)
+
+    await plugin.state_manager.update_activity(target_id)
+    await plugin.state_manager.clear_refusal(target_id)
+
+    trigger = "激活词" if activated else ("括号" if has_bracket else "WR关键词")
+    _es = event.get_extra("enable_streaming")
+    if _es is True:
+        streaming_status = "强制流式"
+    elif _es is False:
+        streaming_status = "已关"
+    else:
+        streaming_status = "默认"
+    logger.info(
+        f"[Quill] 触发:{trigger} | 流式:{streaming_status} | "
+        f"prompt_len={len(req.system_prompt)} | emergency={emergency}"
+    )
