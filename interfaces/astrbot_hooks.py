@@ -9,16 +9,18 @@
 留在 main.py 类体，桩体一行委托到本模块的实现函数；业务逻辑逐字下沉
 于此。M2.2 第一轮 H6（on_decorating_result）、第二轮 H1
 （on_waiting_llm_request）、第三轮 H2（on_using_llm_tool）、第四轮 H4
-（on_llm_response），其余两钩子随后续轮次按同一形态迁入。
+（on_llm_response）、第五轮 H5（on_llm_tool_respond）；余下 H3
+（on_llm_request，最大钩子）随后续轮次按同一形态迁入。
 
 降级语义分层：顶层 try/except 留在 main.py 注册桩内（与原 H6 的
 "顶层吞掉放行"同层，不因委托而改变降级位置）；本模块实现体内**不再**
 重复包裹——桩内已保证任何异常都不会外抛中断发送。
 
-**例外——H1（第二轮起）**：原 H1 本就**无钩子级顶层 try**（BASELINE §2
-H1 行的降级怪癖：`state_manager.get_state` 抛出会上抛框架）。其注册桩
-因此**不做**任何 try 包裹，本模块的 ``handle_waiting_llm_request`` 也
-只保留原有的"内层取值 except: return"小块——降级位置原样保真。
+**例外——无顶层 try 的钩子（H1 / H5，BASELINE §2 各行降级怪癖）**：原
+H1 与 H5 都**没有**钩子级顶层 try（gate 间异常会上抛框架）。两者的注册
+桩因此**不做**任何 try 包裹，本模块对应实现也只保留原有的内层小块异常
+处理（H1：取值 ``except: return``；H5：记忆存储调度/反思调度两个内层
+块的 warning 吞掉）——降级位置原样保真，防后续"顺手"补 try。
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from astrbot.api.provider import LLMResponse
 from astrbot.core.agent.tool import FunctionTool
 
 from ..encryption import decrypt_output
+from ..quill.services import memory as _memory_mod
 from ..quill.services import response as _response_mod
 
 
@@ -432,3 +435,122 @@ async def handle_llm_response(
             await plugin.state_manager.mark_refusal(target_id)
             logger.info(f"[Quill] 检测到拒绝模式 '{pattern}' (target={target_id})")
             break
+
+
+async def handle_llm_tool_respond(
+    plugin, event: AstrMessageEvent, tool: FunctionTool,
+    tool_args: dict | None, tool_result
+) -> None:
+    """工具调用后拦截：Agent Loop 终止信号、动态记忆存储与多轮反思调度（H5）。
+
+    （业务逻辑自 main.py 逐字搬移，M2.2 第五轮；``self`` → ``plugin``。
+    行为快照见 tests/test_hook_snapshots.py H5 节，行为契约与降级怪癖见
+    main.py 注册桩 docstring 与 BASELINE §2 H5 行。）
+
+    **降级怪癖（全插件唯一，与 H1 同款"无 try 保留"形态，刻意保真）**：
+    本函数与原 H5 一样**没有钩子级顶层 try**——三个早退 gate 之间、
+    ``logger.info``、``_quill_memorized`` 置位与记忆块存在性 gate 求值的
+    异常都会**原样上抛框架**；main.py 注册桩因此同样不做 try 包裹（快照
+    用例 test_h5_exception_between_gates_propagates_no_top_try 钉住，防
+    后续误补）。唯一的异常处理是两个内层块各自的 warning 吞掉：
+
+    * 记忆存储调度（「记忆存储调度失败」）——覆盖 persona 读取、落库
+      调度与整个反思调度；
+    * 反思调度（「反思调度失败」）——随下沉整块迁入
+      quill/services/memory.py（``schedule_reflection``）。
+
+    处理链（顺序即行为，不得重排）：
+
+    1. gate1 非 send_message_to_user 工具 → return；gate2
+       ``_quill_activated`` 未置位 → return；gate3 ``_quill_memorized``
+       去重已置位 → return（**不**把 ``_quill_activated`` 置 False——
+       历史 bug，下方注释逐字保留，BASELINE §2.1）；
+    2. ``_quill_memorized`` 置位（先于记忆块存在性 gate——去重不依赖
+       记忆功能开关）；
+    3. 记忆块（retriever + enable_memory + memory_store 全真值）：
+       从 tool_args.messages 提取 AI 回复（JSON 字符串先解析，失败降级
+       空文本；plain 段每段补 \\n 拼接），落 chat_logs（
+       ``rag_enable_chat_logging`` 开关 + ``_quill_assistant_logged``
+       防双写——与 H4 直接文本流路径互斥，BASELINE §4 写入侧）；
+    4. N 轮反思调度：轮次判断 + 摘要/修剪/清理调度序列。
+
+    下沉决策（本轮评估记录）：反思调度的"轮次判断 + 摘要/修剪/清理调度
+    序列"依赖面规整（state_manager 轮次计数、retriever 的
+    memory_store/summarize_contexts、``_spawn`` 后台任务、config 保留
+    天数），以显式参数**成块下沉** quill/services/memory.py——内层
+    warning 吞掉语义、阈值常量（随迁为模块常量，main.py 类属性
+    re-export）、调用顺序逐字保真；``plugin.state_manager`` 等参数求值
+    随之移到调用点（仍在外层记忆块 try 内），与原"内层 try 内求值
+    self.state_manager"的差异仅在宿主属性缺失这种运行期不可达路径上。
+    落库段（messages 提取 + event extra 防双写标记 + ``_spawn`` 调度）
+    是框架对象胶水，与 H4 轮对落库段的裁定一致，留在本函数。
+    """
+    if tool.name != "send_message_to_user":
+        return
+
+    if not event.get_extra("_quill_activated"):
+        return
+
+    logger.info("[Quill] send_message_to_user 已调用")
+
+    # 记忆/反思只做一次 —— 但**不能用总闸门来兼职**。
+    #
+    # 这里此前写的是 `event.set_extra("_quill_activated", False)`，而
+    # `_quill_activated` 是本轮的**总闸门**，被 on_using_llm_tool(1771) 与
+    # on_llm_response(2341) 读取。清掉它等于宣布「本轮插件下班」：此后
+    # 所有工具调用都不再经过插件，状态栏不处理、残留不剥离。
+    # 而模型在 agent 模式下会**多次**调用 send_message_to_user（正文一段、
+    # 状态栏单独一段；实测 7 轮里 3 轮如此），第 2 次之后的内容就带着裸
+    # [LOVE_DATA] 直达用户，看起来像「漏处理」。
+    #
+    # 拆成专用标记后语义单一：只保证记忆存储与反思调度不重复执行，
+    # 不影响后续工具调用继续被处理。
+    if event.get_extra("_quill_memorized"):
+        return
+    event.set_extra("_quill_memorized", True)
+
+    # ── 动态记忆存储（异步后台任务，不阻塞响应）──
+    if (plugin.rag_retriever and plugin.rag_retriever.enable_memory
+            and plugin.rag_retriever.memory_store):
+        try:
+            user_input = getattr(event, 'message_str', '') or ""
+
+            # 安全提取工具发出的文本内容（resp 不在当前函数签名中）
+            ai_response = ""
+            if tool_args and "messages" in tool_args:
+                msgs = tool_args.get("messages", [])
+                if isinstance(msgs, str):
+                    try:
+                        msgs = json.loads(msgs)
+                    except Exception:
+                        logger.debug("[Quill] tool messages JSON 解析失败，原样作为文本处理", exc_info=True)
+                        msgs = []
+                if isinstance(msgs, list):
+                    for m in msgs:
+                        if isinstance(m, dict) and m.get("type") == "plain" and "text" in m:
+                            ai_response += m["text"] + "\n"
+
+            # 存入记忆库（后台任务，异常在done回调中捕获）
+            target_id = plugin._get_target_id(event)
+            persona_id = await plugin.state_manager.get_persona_id(target_id)
+            mem_session_id = plugin._get_memory_session_id(target_id, persona_id)
+
+            # 记录 AI 回复到对话日志（始终保留，供断点续传使用；
+            # 直接文本流已在 on_llm_response 落库时跳过，防双写）
+            if ai_response.strip() and not event.get_extra("_quill_assistant_logged") \
+                    and getattr(plugin.config, 'rag_enable_chat_logging', True):
+                event.set_extra("_quill_assistant_logged", True)
+                plugin._spawn(plugin.rag_retriever.log_chat_message(
+                    mem_session_id, "assistant", ai_response.strip()
+                ))
+
+            # N 轮反思触发：攒够 N 轮对话后生成摘要（M2.2 第五轮下沉
+            # quill/services/memory.py：内层 warning 吞掉语义、阈值常量、
+            # 调用顺序逐字保真）
+            await _memory_mod.schedule_reflection(
+                plugin.state_manager, plugin.rag_retriever, plugin._spawn,
+                plugin.config, target_id, mem_session_id,
+            )
+
+        except Exception as e:
+            logger.warning(f"[Quill Memory] 记忆存储调度失败: {e}")

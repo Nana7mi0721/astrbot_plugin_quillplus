@@ -58,6 +58,9 @@ from .quill.services.statusbar import strip as _strip_mod
 # M2.2 第二轮：角色卡→对话隔离下沉 quill/services/character.py
 # （_ensure_persona_conversation 保留同名薄转发，见彼处）。
 from .quill.services import character as _character_mod
+# M2.2 第五轮：H5 反思调度下沉 quill/services/memory.py；阈值常量在类属性
+# 处 re-export（QuillPlugin.REFLECTION_* 旧访问面）。
+from .quill.services import memory as _memory_mod
 # M2.2 第三轮：H2 的 telegram Markdown 剥离下沉 quill/services/response.py
 # （_MD_PATTERNS/strip_markdown 在原 main.py 即为零状态模块级纯函数，唯一
 # 消费方是 H2 on_using_llm_tool；此处 re-export 维持 main 模块旧导入面，
@@ -223,9 +226,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     """
 
     # S3-13: 反思/总结相关阈值常量
-    REFLECTION_TURN_THRESHOLD = 4       # 攒够 N 轮触发一次反思摘要
-    RECENT_LOG_LIMIT = 8                # 反思时读取的最近日志条数
-    MIN_LOGS_FOR_SUMMARY = 2            # 触发总结所需的最少日志条数
+    # M2.2 第五轮：反思阈值常量随调度下沉 quill/services/memory.py，
+    # 类属性 re-export 维持 QuillPlugin.REFLECTION_* 旧访问面
+    REFLECTION_TURN_THRESHOLD = _memory_mod.REFLECTION_TURN_THRESHOLD
+    RECENT_LOG_LIMIT = _memory_mod.RECENT_LOG_LIMIT
+    MIN_LOGS_FOR_SUMMARY = _memory_mod.MIN_LOGS_FOR_SUMMARY
 
     def __init__(self, context: Context, config: dict | None = None):
         # quill/ 包日志桥：最早处把宿主 logger 注入，包内方法体的 logger
@@ -1826,107 +1831,32 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     ):
         """工具调用后拦截：Agent Loop 终止信号、动态记忆存储与多轮反思调度。
 
-        核心职责：
+        注册桩（M2.2 第五轮）：装饰器/签名/priority 不变（框架以
+        ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
+        ``interfaces.astrbot_hooks.handle_llm_tool_respond``。核心职责：
+
         - 检测 send_message_to_user 调用，终止 agent loop
         - AI 回复异步写入对话日志（供断点续传使用）
         - N 轮反思触发：攒够阈值后生成上下文摘要
         - 记忆修剪调度（分档遗忘）
         - 过期对话日志无人值守清理（避免长期运行日志膨胀）
+
+        **降级怪癖（全插件唯一，刻意保真）**：本钩子**没有顶层 try**——
+        gate 之间与 ``logger.info`` 等处的异常原样上抛框架；唯一异常处理
+        是 interfaces 实现内两个内层块各自的 warning 吞掉（记忆存储调度 /
+        反思调度，后者已下沉 quill/services/memory.py）。快照
+        test_h5_exception_between_gates_propagates_no_top_try 钉住此行为，
+        防后续误补 try。
+
+        行为契约（legacy t26 源码窗口断言引用的标记原文，实际置位发生在
+        interfaces 实现内，此处逐字保留以锁定泄漏修复语义——记忆去重
+        标记与总闸门必须分离）：
+        ``event.set_extra("_quill_memorized", True)``；
+        总闸门永不在工具回调中被清除（不得出现
+        set_extra("_quill_activated", False) 调用）。
         """
-        if tool.name != "send_message_to_user":
-            return
+        await _quill_hooks.handle_llm_tool_respond(self, event, tool, tool_args, tool_result)
 
-        if not event.get_extra("_quill_activated"):
-            return
-
-        logger.info("[Quill] send_message_to_user 已调用")
-
-        # 记忆/反思只做一次 —— 但**不能用总闸门来兼职**。
-        #
-        # 这里此前写的是 `event.set_extra("_quill_activated", False)`，而
-        # `_quill_activated` 是本轮的**总闸门**，被 on_using_llm_tool(1771) 与
-        # on_llm_response(2341) 读取。清掉它等于宣布「本轮插件下班」：此后
-        # 所有工具调用都不再经过插件，状态栏不处理、残留不剥离。
-        # 而模型在 agent 模式下会**多次**调用 send_message_to_user（正文一段、
-        # 状态栏单独一段；实测 7 轮里 3 轮如此），第 2 次之后的内容就带着裸
-        # [LOVE_DATA] 直达用户，看起来像「漏处理」。
-        #
-        # 拆成专用标记后语义单一：只保证记忆存储与反思调度不重复执行，
-        # 不影响后续工具调用继续被处理。
-        if event.get_extra("_quill_memorized"):
-            return
-        event.set_extra("_quill_memorized", True)
-
-        # ── 动态记忆存储（异步后台任务，不阻塞响应）──
-        if (self.rag_retriever and self.rag_retriever.enable_memory
-                and self.rag_retriever.memory_store):
-            try:
-                user_input = getattr(event, 'message_str', '') or ""
-
-                # 安全提取工具发出的文本内容（resp 不在当前函数签名中）
-                ai_response = ""
-                if tool_args and "messages" in tool_args:
-                    msgs = tool_args.get("messages", [])
-                    if isinstance(msgs, str):
-                        try:
-                            msgs = json.loads(msgs)
-                        except Exception:
-                            logger.debug("[Quill] tool messages JSON 解析失败，原样作为文本处理", exc_info=True)
-                            msgs = []
-                    if isinstance(msgs, list):
-                        for m in msgs:
-                            if isinstance(m, dict) and m.get("type") == "plain" and "text" in m:
-                                ai_response += m["text"] + "\n"
-
-                # 存入记忆库（后台任务，异常在done回调中捕获）
-                target_id = self._get_target_id(event)
-                persona_id = await self.state_manager.get_persona_id(target_id)
-                mem_session_id = self._get_memory_session_id(target_id, persona_id)
-
-                # 记录 AI 回复到对话日志（始终保留，供断点续传使用；
-                # 直接文本流已在 on_llm_response 落库时跳过，防双写）
-                if ai_response.strip() and not event.get_extra("_quill_assistant_logged") \
-                        and getattr(self.config, 'rag_enable_chat_logging', True):
-                    event.set_extra("_quill_assistant_logged", True)
-                    self._spawn(self.rag_retriever.log_chat_message(
-                        mem_session_id, "assistant", ai_response.strip()
-                    ))
-
-                # N 轮反思触发：攒够 N 轮对话后生成摘要
-                try:
-                    unsummarized = await self.state_manager.increment_unsummarized_turns(target_id)
-
-                    if unsummarized >= self.REFLECTION_TURN_THRESHOLD:
-                        await self.state_manager.reset_unsummarized_turns(target_id)
-                        recent_logs = await self.rag_retriever.memory_store.get_recent_chat_logs(mem_session_id, limit=self.RECENT_LOG_LIMIT)
-
-                        if len(recent_logs) >= self.MIN_LOGS_FOR_SUMMARY:
-                            # S1-1 修复：改用 _spawn 保留 task 引用，防止 GC 中断
-                            sum_task = self._spawn(
-                                self.rag_retriever.summarize_contexts(mem_session_id, contexts=recent_logs)
-                            )
-                            def _log_summary_result(t):
-                                exp = t.exception()
-                                if exp:
-                                    logger.warning(f"[Quill Memory] 多轮总结异常: {exp}")
-                            sum_task.add_done_callback(_log_summary_result)
-
-                        # 顺带跑一次记忆修剪（分档遗忘）
-                        if self.rag_retriever.memory_store:
-                            self._spawn(self.rag_retriever.memory_store.prune_memories())
-                            # 清理过期对话日志（无人值守，避免长期运行服务器日志膨胀）
-                            self._spawn(
-                                self.rag_retriever.memory_store.cleanup_chat_logs(
-                                    getattr(self.config, 'rag_chat_log_retention_days', 30)
-                                )
-                            )
-                    else:
-                        logger.debug(f"[Quill Memory] 记忆收集进度: {unsummarized}/4 轮")
-                except Exception as e:
-                    logger.warning(f"[Quill Memory] 反思调度失败: {e}")
-
-            except Exception as e:
-                logger.warning(f"[Quill Memory] 记忆存储调度失败: {e}")
 
     # ================================================================
     # 最后一道防线：发送前擦除残留状态栏（M2.2 薄化：注册桩 + 委托）

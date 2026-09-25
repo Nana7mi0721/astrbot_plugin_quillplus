@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Copyright (C) 2025 Nana7mi0721
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""H6/H1/H2 行为快照测试（v5.3.0 M2.2 钩子薄化）。
+"""H6/H1/H2/H4/H5 行为快照测试（v5.3.0 M2.2 钩子薄化）。
 
 作用
 ----
@@ -21,12 +21,20 @@ M2.2 的"先立保护网再走钢丝"：对钩子现行为建立快照，然后�
   追加到最后一条 plain、JSON 字符串解析-修改-回写（失败即放行）、拒绝模式
   补充扫描（只扫首条 plain）、顶层异常 error 降级放行；telegram 剥离下沉
   quill/services/response.py。
-- 第四轮（本轮）：H4（on_llm_response）——前置清洗（[B:...] 解密安全网、
-  中断标记擦除）、**状态栏段不受 `_quill_activated` gate 限制**（§2.1 不对
-  称点，钉住）、开启提取渲染 + session_vars 持久化、无栏兜底（有 persona
-  才补）、关闭整套剥离、已处理标记下只剥残留不二次渲染、注入报告去重追
-  加、gate 后 chat_logs 落库（开关 + `_quill_assistant_logged` 防双写）、
-  拒绝扫描、顶层异常 error 降级放行（resp 不清空）。本轮无新增下沉。
+- 第四轮（commit 756513a）：H4（on_llm_response）——前置清洗（[B:...] 解密
+  安全网、中断标记擦除）、**状态栏段不受 `_quill_activated` gate 限制**
+  （§2.1 不对称点，钉住）、开启提取渲染 + session_vars 持久化、无栏兜底
+  （有 persona 才补）、关闭整套剥离、已处理标记下只剥残留不二次渲染、
+  注入报告去重追加、gate 后 chat_logs 落库（开关 + `_quill_assistant_logged`
+  防双写）、拒绝扫描、顶层异常 error 降级放行（resp 不清空）。本轮无新增
+  下沉。
+- 第五轮（本轮）：H5（on_llm_tool_respond）——三个早退 gate（非 SMT 工具 /
+  未激活 / `_quill_memorized` 去重）、**无钩子级顶层 try** 的降级怪癖
+  （gate 间异常上抛框架，BASELINE §2 H5 行，全插件唯一，钉住防误补）、
+  **不**把 `_quill_activated` 置 False 的历史行为（§2.1，钉住）、助手回复
+  落 chat_logs（防双写与 H4 互斥）、N 轮反思调度（阈值 4 / 读 8 条 /
+  最少 2 条边界 + prune/cleanup 调用断言）、两个内层块 warning 吞掉；
+  反思调度下沉 quill/services/memory.py（内层降级语义与常量随迁保真）。
 
 宿主建模
 --------
@@ -52,6 +60,7 @@ M2.2 的"先立保护网再走钢丝"：对钩子现行为建立快照，然后�
 from __future__ import annotations
 
 import json
+import logging
 import types
 
 import pytest
@@ -1738,3 +1747,505 @@ async def test_h4_top_level_exception_degrades(monkeypatch):
     # 前置清洗（解密/中断标记）对该文本均为 no-op → 异常点 resp 未被改动
     assert resp.completion_text == "尚未被清空的响应正文"
     assert any("on_llm_response 后处理遭遇未捕获异常" in e for e in rec.errors)
+
+
+# ═══ H5：on_llm_tool_respond（第五轮）═══════════════════════════════
+#
+# H5 是全插件最特殊的钩子（BASELINE §2 H5 行）：**无钩子级顶层 try**——
+# 三个早退 gate 之间与记忆存储块之外的异常原样上抛框架；仅"记忆存储调度"
+# 与"反思调度"两个内层块各自 warning 吞掉。本节除行为外还钉住两个不对称点
+# （BASELINE §2.1）：
+#   1. 去重用 `_quill_memorized` 专用标记，**不**把 `_quill_activated` 置
+#      False（历史 bug，原 main.py L2746-2757 注释随实现搬移）；
+#   2. 反思调度阈值常量（REFLECTION_TURN_THRESHOLD=4 / RECENT_LOG_LIMIT=8 /
+#      MIN_LOGS_FOR_SUMMARY=2）的边界行为——常量随下沉迁至
+#      quill/services/memory.py（main.py 类属性 re-export），此处按行为钉值。
+
+
+class _StateH5:
+    """state_manager 桩：persona 读取 + 反思轮次计数（increment 返回自增
+    后的轮次，与 state.py 语义一致），全部留痕；可注入异常。"""
+
+    def __init__(self, persona_id="p1", count=0):
+        self._persona_id = persona_id
+        self._count = count
+        self.persona_calls: list = []
+        self.increment_calls: list = []
+        self.reset_calls: list = []
+        self.persona_error: Exception | None = None
+        self.increment_error: Exception | None = None
+
+    async def get_persona_id(self, tid):
+        self.persona_calls.append(tid)
+        if self.persona_error:
+            raise self.persona_error
+        return self._persona_id
+
+    async def increment_unsummarized_turns(self, tid):
+        self.increment_calls.append(tid)
+        if self.increment_error:
+            raise self.increment_error
+        self._count += 1
+        return self._count
+
+    async def reset_unsummarized_turns(self, tid):
+        self.reset_calls.append(tid)
+        self._count = 0
+
+
+class _MemStoreH5:
+    """memory_store 桩：最近日志读取/修剪/清理全留痕。"""
+
+    def __init__(self, recent=None):
+        self._recent = list(recent or [])
+        self.recent_calls: list = []
+        self.prune_calls: list = []
+        self.cleanup_calls: list = []
+
+    async def get_recent_chat_logs(self, session_id, limit=8):
+        self.recent_calls.append((session_id, limit))
+        return list(self._recent)
+
+    async def prune_memories(self):
+        self.prune_calls.append(True)
+        return 0
+
+    async def cleanup_chat_logs(self, retention_days):
+        self.cleanup_calls.append(retention_days)
+        return 0
+
+
+class _RagH5:
+    """rag_retriever 桩：enable_memory/memory_store 存在性建模 + 落日志/
+    总结留痕（summarize_contexts 挂在 retriever 而非 store，与线上一致）。
+
+    memory_store 用哨兵区分「未指定」（补默认桩）与「显式 None」（建模
+    memory_store 缺失的外层 gate 分支）。"""
+
+    _DEFAULT = object()
+
+    def __init__(self, enable_memory=True, memory_store=_DEFAULT):
+        self.enable_memory = enable_memory
+        self.memory_store = _MemStoreH5() if memory_store is _RagH5._DEFAULT \
+            else memory_store
+        self.log_calls: list = []
+        self.summarize_calls: list = []
+
+    async def log_chat_message(self, session_id, role, text):
+        self.log_calls.append((session_id, role, text))
+
+    async def summarize_contexts(self, session_id, contexts=None):
+        self.summarize_calls.append((session_id, list(contexts or [])))
+        return "ok"
+
+
+class _SpawnToken:
+    """_spawn 捕获壳：真实 _spawn 返回 asyncio.Task（add_done_callback 可用）。
+    测试不真跑事件循环任务，用本壳承接协程与回调注册——用例内显式 await
+    执行协程；阈值路径的 ``sum_task.add_done_callback(...)`` 依赖本壳提供
+    该契约（若 _spawn 只返回 None，阈值分支会在回调注册处炸进内层 except，
+    prune/cleanup 断言失效）。"""
+
+    def __init__(self, coro):
+        self.coro = coro
+        self.callbacks: list = []
+        self.drained = False
+
+    def add_done_callback(self, cb):
+        self.callbacks.append(cb)
+
+
+class _EvH5(_EvH4):
+    """H5 事件桩：复用 _EvH4 的 UMO/extras 建模，补 message_str（H5 以
+    ``getattr(event, 'message_str', '')`` 读取，仅落日志侧取值，不落库）。"""
+
+    def __init__(self, extras=None, message_str=""):
+        super().__init__(extras=extras)
+        self.message_str = message_str
+
+
+def _smt_tool():
+    """send_message_to_user 工具桩（H5 只读 tool.name）。"""
+    return types.SimpleNamespace(name="send_message_to_user")
+
+
+def _mk_h5_host(rag="full", state=None, chat_logging=True, retention=30):
+    """轻量 QuillPlugin 宿主（t26 手法）：只挂 H5 触碰的协作对象。
+
+    - rag="full"：enable_memory + memory_store 就绪（记忆/反思全通）；
+      "no_memory"：enable_memory=False；"no_store"：memory_store=None；
+      None：rag_retriever=None——三种都命中外层存在性 gate 的跳过分支；
+    - config 只带 H5 读取的键；retention=None 时**不设**
+      rag_chat_log_retention_days（建模 getattr 默认 30 路径）；
+    - _get_target_id/_get_memory_session_id 用类上真实现（零实例状态依赖，
+      与线上路径一致）；阈值常量同理走 QuillPlugin 类属性；
+    - _spawn 捕获协程不调度（_SpawnToken），用例内显式 await 执行。
+    """
+    h = object.__new__(M.QuillPlugin)
+    cfg = {"rag_enable_chat_logging": chat_logging}
+    if retention is not None:
+        cfg["rag_chat_log_retention_days"] = retention
+    h.config = types.SimpleNamespace(**cfg)
+    h.state_manager = state if state is not None else _StateH5()
+    if rag == "full":
+        h.rag_retriever = _RagH5()
+    elif rag == "no_memory":
+        h.rag_retriever = _RagH5(enable_memory=False)
+    elif rag == "no_store":
+        h.rag_retriever = _RagH5(memory_store=None)
+    else:
+        h.rag_retriever = None
+    h._spawned: list = []
+
+    def _capture_spawn(coro):
+        token = _SpawnToken(coro)
+        h._spawned.append(token)
+        return token
+
+    h._spawn = _capture_spawn
+    return h
+
+
+async def _run_h5(host, event, tool, tool_args=None, tool_result=None):
+    """经注册桩调用（搬移前后都是 QuillPlugin.on_llm_tool_respond）。"""
+    await M.QuillPlugin.on_llm_tool_respond(host, event, tool, tool_args, tool_result)
+
+
+async def _drain_spawned(host):
+    """显式执行 _spawn 捕获的后台协程（确定性断言；已执行的 token 跳过，
+    同一 host 可重复调用——二轮去重用例靠它避免协程复用）。"""
+    for token in host._spawned:
+        if not token.drained:
+            token.drained = True
+            await token.coro
+
+
+# ── H5：三个早退 gate ────────────────────────────────────────────────
+
+
+async def test_h5_non_smt_tool_returns_without_touching_state():
+    """gate1：非 send_message_to_user 工具直接 return——零状态触碰（不置
+    memorized、不落日志、不进反思计数、无后台任务）。"""
+    host = _mk_h5_host()
+    ev = _EvH5(extras={"_quill_activated": True})
+    state, rag = host.state_manager, host.rag_retriever
+
+    await _run_h5(host, ev, types.SimpleNamespace(name="web_search"),
+                  {"messages": [{"type": "plain", "text": "工具结果"}]})
+
+    assert "_quill_memorized" not in ev.extras
+    assert "_quill_assistant_logged" not in ev.extras
+    assert rag.log_calls == []
+    assert state.increment_calls == []
+    assert host._spawned == []
+
+
+@pytest.mark.parametrize("activated", [None, False], ids=["missing", "false"])
+async def test_h5_not_activated_gate_returns(activated):
+    """gate2：`_quill_activated` 缺失/False 都 return——记忆/日志/反思全不
+    跑，memorized 也不置位（gate 序在 memorized 之前）。"""
+    host = _mk_h5_host()
+    extras = {"_quill_activated": activated} if activated is not None else {}
+    ev = _EvH5(extras=extras)
+
+    await _run_h5(host, ev, _smt_tool(),
+                  {"messages": [{"type": "plain", "text": "工具正文"}]})
+
+    assert "_quill_memorized" not in ev.extras
+    assert host.rag_retriever.log_calls == []
+    assert host.state_manager.increment_calls == []
+    assert host._spawned == []
+
+
+async def test_h5_memorized_dedup_first_processes_then_skips():
+    """gate3：`_quill_memorized` 去重——首轮完整处理（置位 + 落日志 + 反思
+    计数），同一 event 二轮早退零重复副作用（agent loop 多次 SMT 调用不
+    重复记忆/反思）。"""
+    state = _StateH5()
+    host = _mk_h5_host(state=state)
+    rag = host.rag_retriever
+    ev = _EvH5(extras={"_quill_activated": True})
+    tool_args = {"messages": [{"type": "plain", "text": "第一段回复"}]}
+
+    await _run_h5(host, ev, _smt_tool(), tool_args)
+    await _drain_spawned(host)
+
+    assert ev.extras["_quill_memorized"] is True
+    assert rag.log_calls == [(UMO + "::p1", "assistant", "第一段回复")]
+    assert state.increment_calls == [UMO]
+
+    await _run_h5(host, ev, _smt_tool(), tool_args)
+    await _drain_spawned(host)
+
+    assert rag.log_calls == [(UMO + "::p1", "assistant", "第一段回复")]  # 无第二落
+    assert state.increment_calls == [UMO]                                # 无第二计数
+    assert len(host._spawned) == 1                                       # 二轮未再 spawn
+
+
+async def test_h5_activated_not_cleared_after_processing():
+    """历史 bug 钉住（BASELINE §2.1，原 main.py L2746-2757 注释）：处理完成
+    后 `_quill_activated` **保持 True**——H5 用 `_quill_memorized` 专用标记
+    去重，绝不能清总闸门（清了会让同轮后续 SMT 调用绕过状态栏处理与残留
+    剥离，裸 [LOVE_DATA] 直达用户）。"""
+    host = _mk_h5_host()
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    await _run_h5(host, ev, _smt_tool(),
+                  {"messages": [{"type": "plain", "text": "回复"}]})
+    await _drain_spawned(host)
+
+    assert ev.extras.get("_quill_activated") is True
+    assert ev.extras.get("_quill_memorized") is True
+
+
+# ── H5：助手回复落 chat_logs（防双写，与 H4 互斥）────────────────────
+
+
+async def test_h5_assistant_reply_logged_with_session_key():
+    """tool_args.messages 的 plain 段拼接（每段补 \\n，strip 后）为 AI 回复，
+    落 chat_logs（assistant 角色），session 键 = target_id::persona_id；置
+    `_quill_assistant_logged` 防双写标记。message_str 不参与落库。"""
+    state = _StateH5(persona_id="p9")
+    host = _mk_h5_host(state=state)
+    ev = _EvH5(extras={"_quill_activated": True},
+               message_str="用户输入（不由本钩子落库）")
+    tool_args = {"messages": [
+        {"type": "plain", "text": "第一段"},
+        {"type": "plain", "text": "第二段"},
+    ]}
+
+    await _run_h5(host, ev, _smt_tool(), tool_args)
+    await _drain_spawned(host)
+
+    assert host.rag_retriever.log_calls == [
+        (UMO + "::p9", "assistant", "第一段\n第二段")
+    ]
+    assert ev.extras.get("_quill_assistant_logged") is True
+
+
+async def test_h5_json_string_messages_parsed_and_logged():
+    """tool_args.messages 为 JSON 字符串（agent loop 常见形态）：先解析再
+    提取落库；解析失败降级为空文本（不落库、不上抛）。"""
+    host = _mk_h5_host()
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    await _run_h5(host, ev, _smt_tool(), {
+        "messages": json.dumps([{"type": "plain", "text": "字符串形态"}],
+                               ensure_ascii=False),
+    })
+    await _drain_spawned(host)
+    assert host.rag_retriever.log_calls == [(UMO + "::p1", "assistant", "字符串形态")]
+
+    ev_bad = _EvH5(extras={"_quill_activated": True})
+    await _run_h5(host, ev_bad, _smt_tool(), {"messages": "不是JSON{{{"})
+    await _drain_spawned(host)
+    assert len(host.rag_retriever.log_calls) == 1          # 坏 JSON 未追加落库
+    assert "_quill_assistant_logged" not in ev_bad.extras
+
+
+async def test_h5_assistant_logged_marker_prevents_double_write():
+    """`_quill_assistant_logged` 已置位（H4 直接文本流路径已落库）：H5 不
+    重复落——两路径防双写互斥契约（BASELINE §4 写入侧）；反思计数不受影响。"""
+    state = _StateH5()
+    host = _mk_h5_host(state=state)
+    ev = _EvH5(extras={"_quill_activated": True, "_quill_assistant_logged": True})
+
+    await _run_h5(host, ev, _smt_tool(),
+                  {"messages": [{"type": "plain", "text": "已被 H4 落库的回复"}]})
+    await _drain_spawned(host)
+
+    assert host.rag_retriever.log_calls == []
+    assert state.increment_calls == [UMO]
+
+
+async def test_h5_chat_logging_off_skips_log():
+    """`rag_enable_chat_logging=False`（H5 直读 self.config）：不落库、
+    **不置**防双写标记（开关判断在标记置位之前）。"""
+    host = _mk_h5_host(chat_logging=False)
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    await _run_h5(host, ev, _smt_tool(),
+                  {"messages": [{"type": "plain", "text": "回复"}]})
+
+    assert host.rag_retriever.log_calls == []
+    assert "_quill_assistant_logged" not in ev.extras
+
+
+@pytest.mark.parametrize("tool_args", [
+    None,
+    {},
+    {"messages": []},
+    {"messages": [{"type": "plain", "text": "   "}]},
+], ids=["no_args", "empty_dict", "empty_messages", "blank_text"])
+async def test_h5_blank_tool_text_not_logged(tool_args):
+    """AI 回复为空（无 tool_args / 无 messages / 全空白）：不落库也不置
+    防双写标记；记忆块其余部分（反思计数）照常执行。"""
+    state = _StateH5()
+    host = _mk_h5_host(state=state)
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    await _run_h5(host, ev, _smt_tool(), tool_args)
+
+    assert host.rag_retriever.log_calls == []
+    assert "_quill_assistant_logged" not in ev.extras
+    assert state.increment_calls == [UMO]
+
+
+# ── H5：N 轮反思调度（阈值常量随下沉迁 quill/services/memory.py）──────
+
+
+async def test_h5_reflection_threshold_reached_triggers_once():
+    """第 4 轮（>= REFLECTION_TURN_THRESHOLD=4）：reset 轮次 + 读最近日志
+    （limit=RECENT_LOG_LIMIT=8）+ 三个后台任务调度（摘要/修剪/清理）；摘要
+    任务注册 done 回调（S1-1 修复：保留 task 引用）。本例工具文本为空，
+    隔离出纯反思调度（无落库任务，spawn 序 = 摘要→修剪→清理）。"""
+    state = _StateH5(count=3)          # increment → 4 == 阈值
+    store = _MemStoreH5(recent=[{"role": "user", "text": f"m{i}"} for i in range(5)])
+    host = _mk_h5_host(state=state)
+    host.rag_retriever.memory_store = store
+    rag = host.rag_retriever
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    await _run_h5(host, ev, _smt_tool(), {"messages": []})
+
+    assert state.increment_calls == [UMO]
+    assert state.reset_calls == [UMO]
+    assert store.recent_calls == [(UMO + "::p1", 8)]
+    assert len(host._spawned) == 3     # 摘要 + 修剪 + 清理
+    await _drain_spawned(host)
+    assert rag.summarize_calls == [(UMO + "::p1", store._recent)]
+    assert store.prune_calls == [True]
+    assert store.cleanup_calls == [30]
+    # 摘要任务（首个 spawn）注册了异常记日志的 done 回调
+    assert len(host._spawned[0].callbacks) == 1
+
+
+async def test_h5_reflection_below_threshold_no_trigger():
+    """第 3 轮（< 阈值）：只累计——不 reset、不读日志、零后台任务。"""
+    state = _StateH5(count=2)          # increment → 3 < 4
+    store = _MemStoreH5(recent=[{"text": "x"}])
+    host = _mk_h5_host(state=state)
+    host.rag_retriever.memory_store = store
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    await _run_h5(host, ev, _smt_tool(), {"messages": []})
+
+    assert state.increment_calls == [UMO]
+    assert state.reset_calls == []
+    assert store.recent_calls == []
+    assert host._spawned == []
+
+
+@pytest.mark.parametrize("n_logs,expect_summary", [(1, False), (2, True)],
+                         ids=["below_min_1", "at_min_2"])
+async def test_h5_min_logs_boundary(n_logs, expect_summary):
+    """MIN_LOGS_FOR_SUMMARY=2 边界：最近日志 <2 条不生成摘要，>=2 条生成；
+    修剪/清理不受日志条数影响（阈值分支内无条件调度）。"""
+    state = _StateH5(count=3)
+    store = _MemStoreH5(recent=[{"text": f"m{i}"} for i in range(n_logs)])
+    host = _mk_h5_host(state=state)
+    host.rag_retriever.memory_store = store
+    rag = host.rag_retriever
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    await _run_h5(host, ev, _smt_tool(), {"messages": []})
+    await _drain_spawned(host)
+
+    assert bool(rag.summarize_calls) is expect_summary
+    assert store.prune_calls == [True]
+    assert store.cleanup_calls == [30]
+
+
+async def test_h5_cleanup_retention_default_30_when_config_missing():
+    """清理保留天数：config 无 rag_chat_log_retention_days 属性时 getattr
+    默认 30（原样保真——H5 直读 self.config 而非 props）。"""
+    state = _StateH5(count=3)
+    store = _MemStoreH5(recent=[{"text": "m0"}, {"text": "m1"}])
+    host = _mk_h5_host(state=state, retention=None)
+    host.rag_retriever.memory_store = store
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    await _run_h5(host, ev, _smt_tool(), {"messages": []})
+    await _drain_spawned(host)
+
+    assert store.cleanup_calls == [30]
+
+
+# ── H5：外层存在性 gate 与内层降级 ───────────────────────────────────
+
+
+@pytest.mark.parametrize("rag", ["no_memory", "no_store", "none"],
+                         ids=["enable_memory_off", "memory_store_none",
+                              "retriever_none"])
+async def test_h5_memory_gate_skips_storage_but_marks_memorized(rag):
+    """外层存在性 gate（retriever/enable_memory/memory_store 任一缺失）：
+    跳过记忆存储与反思调度；`_quill_memorized` 已在该 gate 之前置位
+    （标记先于 gate——去重不依赖记忆功能开关）。"""
+    host = _mk_h5_host(rag=rag)
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    await _run_h5(host, ev, _smt_tool(),
+                  {"messages": [{"type": "plain", "text": "回复"}]})
+
+    assert ev.extras.get("_quill_memorized") is True
+    assert host._spawned == []
+    assert host.state_manager.increment_calls == []
+
+
+async def test_h5_persona_read_failure_swallowed_by_storage_block(caplog):
+    """内层块一（记忆存储调度）：get_persona_id 抛异常 → 该块 except
+    warning 吞掉（不上抛框架），落库/反思全未执行。"""
+    state = _StateH5()
+    state.persona_error = RuntimeError("persona 读取失败")
+    host = _mk_h5_host(state=state)
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    with caplog.at_level(logging.WARNING):
+        await _run_h5(host, ev, _smt_tool(),
+                      {"messages": [{"type": "plain", "text": "回复"}]})
+
+    assert any("记忆存储调度失败" in r.getMessage() for r in caplog.records)
+    assert state.increment_calls == []
+    assert host._spawned == []
+
+
+async def test_h5_reflection_failure_swallowed(caplog):
+    """内层块二（反思调度）：increment_unsummarized_turns 抛异常 → 反思块
+    自身 except warning 吞掉（不上抛框架；与块一降级相互独立）。"""
+    state = _StateH5()
+    state.increment_error = RuntimeError("轮次存储损坏")
+    host = _mk_h5_host(state=state)
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    with caplog.at_level(logging.WARNING):
+        await _run_h5(host, ev, _smt_tool(), {"messages": []})
+
+    assert any("反思调度失败" in r.getMessage() for r in caplog.records)
+    assert state.reset_calls == []
+    assert host._spawned == []
+
+
+async def test_h5_exception_between_gates_propagates_no_top_try():
+    """降级怪癖钉住（BASELINE §2 H5 行，全插件唯一）：**无钩子级顶层 try**
+    ——gate 之后、记忆存储 try 之前的异常**原样上抛框架**。本例构造外层
+    存在性 gate（rag_retriever.enable_memory）求值异常；防后续"顺手"补
+    try 改变降级位置（H1 轮同款用例）。"""
+    host = _mk_h5_host()
+    state = host.state_manager
+
+    class _BoomRag:
+        @property
+        def enable_memory(self):
+            raise RuntimeError("retriever 状态损坏")
+        memory_store = None
+
+    host.rag_retriever = _BoomRag()
+    ev = _EvH5(extras={"_quill_activated": True})
+
+    with pytest.raises(RuntimeError, match="retriever 状态损坏"):
+        await _run_h5(host, ev, _smt_tool(),
+                      {"messages": [{"type": "plain", "text": "回复"}]})
+
+    # 异常点在三个 gate（含 memorized 置位）之后、内层 try 之前
+    assert ev.extras.get("_quill_memorized") is True
+    assert state.increment_calls == []
