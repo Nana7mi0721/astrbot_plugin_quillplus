@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased] — v5.3.0（M3 进行中，随里程碑追加）
+
+### 行为变更
+
+- **激活判定 fail-open → fail-close（v5.3.0 唯一有意行为变更，M3.2 D4b）**：
+  激活检测器加载失败或检测过程异常时，本轮按**未激活**处理（不注入），
+  不再可能退化为「每轮全量注入」。权衡（PLAN §M3.2）：fail-open 的故障形态
+  是每轮注入全部设定——最贵行为、用户可感为刷屏注入报告；fail-close 的
+  故障形态是该注入时没注入——下一轮检测恢复即自愈，用户可感为偶发设定丢失，
+  后者更安全。正常激活词/【】括号/WR 关键词判定逻辑零改动；面板
+  `worldbook_always_activate`（用户显式配置的全局常驻）不受影响。
+  详见 `docs/v5.3/BASELINE.md` §9 D4b 专项记录。
+
+### 新增
+
+- `quill/core/errors.py`：QuillError 统一异常族（message/detail/context 分离，
+  异常链保留），存储层高频路径失败改抛 `StorageError`。
+- `quill/core/storage_stats.py`：存储失败六类计数（add/search/prune/delete/
+  backup/restore，线程安全、进程内），`/info` 响应体新增 `storage_errors`
+  字段（只增不改，向后兼容），面板可见存储层健康状况。
+
+### 修复
+
+- **吞错误整改（M3.2 D4，六类高频路径）**：动态记忆/文档向量/写作素材库的
+  写入、检索、修剪、删除与面板备份导出/恢复的底层失败不再静默返回空值——
+  上抛 StorageError 由调用方按既有降级策略处理（聊天链路放行/返回空不变，
+  面板链路错误信封不变），日志统一带方法名与异常链，失败累计进入
+  `/info storage_errors`。顺带修正：`/memory learn` 存储失败此前谎报
+  「已学习」，现如实回执「学习失败」。
+
 ## v5.2.5 — 上架合规（logger 统一到 astrbot.api）
 
 v5.2.4 提交被 AstrBot 插件市场 LLM Guard **Rejected**，原因是硬性违规：

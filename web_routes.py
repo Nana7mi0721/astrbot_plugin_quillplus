@@ -74,6 +74,8 @@ from ._backup_util import (
     remove_sidecars,
 )
 from ._paths import backup_sources, resolve_archive_dest
+from .quill.core.errors import StorageError
+from .quill.core.storage_stats import note_storage_error
 
 from ._route_core import (
     error_text,
@@ -1246,7 +1248,17 @@ class QuillRoutes:
             raise FileNotFoundError("数据目录不存在")
 
         buf = io.BytesIO()
-        zip_count, warnings = await asyncio.to_thread(build_backup_zip, sources, buf)
+        try:
+            zip_count, warnings = await asyncio.to_thread(build_backup_zip, sources, buf)
+        except Exception as e:
+            # M3.2 D4：备份失败抛 StorageError（六类高频路径之一：backup），
+            # 由上层 @_api_handler 转为 500 信封——与改前未捕获异常路径一致，
+            # 但现在可观测（计数 + 异常链）。
+            note_storage_error("backup", e)
+            raise StorageError(
+                "生成备份归档失败",
+                detail=f"_build_backup_zip: {e}",
+            ) from e
         for w in warnings:
             logger.warning("[Quill] 备份快照降级: %s", w)
         fname = (
@@ -1418,6 +1430,7 @@ class QuillRoutes:
             try:
                 await plugin._prepare_for_restore()
             except Exception as e:
+                note_storage_error("restore", e)
                 logger.warning("[Quill] 备份恢复前组件关闭失败: %s", e, exc_info=True)
 
         # 解压失败（zip 条目 CRC 损坏 / 加密等）也必须走到重建：_prepare_for_restore
@@ -1428,6 +1441,7 @@ class QuillRoutes:
             await asyncio.to_thread(_extract)
         except Exception as e:
             extract_error = e
+            note_storage_error("restore", e)
             logger.warning("[Quill] 备份恢复: 解压中断: %s", e, exc_info=True)
         logger.info(
             f"[Quill] 备份恢复: 解压 {extracted_count} 个文件, "
@@ -1446,6 +1460,7 @@ class QuillRoutes:
                 await plugin._reload_after_restore()
                 reload_ok = True
             except Exception as e:
+                note_storage_error("restore", e)
                 logger.warning("[Quill] 备份恢复后组件重建失败: %s", e, exc_info=True)
 
         msg = f"已恢复 {extracted_count} 个文件（跳过 {skipped_count} 个）"

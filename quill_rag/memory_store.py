@@ -13,8 +13,12 @@ import json
 
 try:
     from .._fts_util import escape_trigram, short_tokens
+    from ..quill.core.errors import StorageError
+    from ..quill.core.storage_stats import note_storage_error
 except ImportError:  # 直接运行本文件时无父包
     from _fts_util import escape_trigram, short_tokens
+    from quill.core.errors import StorageError
+    from quill.core.storage_stats import note_storage_error
 
 from astrbot.api import logger
 
@@ -109,7 +113,7 @@ class MemoryStore:
                     await self._conn.execute("DROP TABLE IF EXISTS memories_fts")
                     await self._conn.commit()
             except Exception as e:
-                logger.warning("[Quill Memory] FTS 分词器迁移失败，沿用原表: %s", e)
+                logger.warning("[Quill Memory] FTS 分词器迁移失败，沿用原表: %s", e, exc_info=True)
 
             await self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(summary, content, tokenize='trigram');")
             # Create triggers to sync FTS
@@ -141,7 +145,7 @@ class MemoryStore:
                     await self._conn.execute("INSERT INTO memories_fts(rowid, summary, content) SELECT id, summary, chat_summary FROM memories")
                     await self._conn.commit()
             except Exception as e:
-                logger.warning("[Quill Memory] FTS5 回填失败: %s", e)
+                logger.warning("[Quill Memory] _init_db FTS5 回填失败: %s", e, exc_info=True)
 
             # Schema 热迁移：新增记忆质量管理字段（兼容老数据库）
             for stmt in (
@@ -206,7 +210,12 @@ class MemoryStore:
         return np.frombuffer(blob, dtype=np.float32).copy()
 
     async def add(self, session_id: str, summary: str, vector: list[float], chat_summary: str = ""):
-        """添加一条记忆。"""
+        """添加一条记忆。
+
+        D4（M3.2）：底层失败抛 :class:`StorageError`（六类高频路径之一：add），
+        由调用方决定降级——此前 warning + 静默丢弃，/memory learn 的失败被
+        误报为「已学习」、后台摘要丢记忆完全不可见。
+        """
         if not session_id or not summary or not vector:
             return
         dim = len(vector)
@@ -219,7 +228,12 @@ class MemoryStore:
             )
             await self._invalidate_cache(session_id)
         except Exception as e:
-            logger.warning(f"[Quill Memory] 添加记忆失败: {e}")
+            note_storage_error("add", e)
+            raise StorageError(
+                "写入记忆失败",
+                detail=f"MemoryStore.add: {e}",
+                context={"session_id": session_id},
+            ) from e
 
 
     async def _get_cached_vectors(self, session_id: str):
@@ -303,7 +317,7 @@ class MemoryStore:
                     # 与下方 LIKE 路径的分数量纲保持同一个方向。
                     scores[row[0]] = -row[1]
             except Exception as e:
-                logger.debug("[Quill Memory] FTS 检索失败，回落 LIKE: %s", e)
+                logger.debug("[Quill Memory] _fts_scores FTS 检索失败，回落 LIKE: %s", e, exc_info=True)
 
         # ── 路径 2：短词 LIKE 兜底 ──
         # 即便 FTS 已有命中，短词仍可能带来额外结果（混合查询「生日的猫」），
@@ -326,7 +340,7 @@ class MemoryStore:
                         (session_id, f"%{tok}%", f"%{tok}%"),
                     )
                 except Exception as e:
-                    logger.debug("[Quill Memory] LIKE 兜底检索失败: %s", e)
+                    logger.debug("[Quill Memory] _fts_scores LIKE 兜底检索失败: %s", e, exc_info=True)
                     break
                 weight = 1000.0 + len(tok) * 10.0
                 for row in rows:
@@ -351,7 +365,9 @@ class MemoryStore:
         try:
             rows, matrix = await self._get_cached_vectors(session_id)
         except Exception as e:
-            logger.warning("[Quill Memory] 向量矩阵构建失败，降级为纯关键词检索: %s", e)
+            logger.warning(
+                "[Quill Memory] 向量矩阵构建失败，降级为纯关键词检索: %s", e, exc_info=True
+            )
             rows, matrix, vec_ok = None, None, False
 
         if vec_ok and not rows:
@@ -465,12 +481,21 @@ class MemoryStore:
         for i in range(0, len(ids), 500):
             chunk = ids[i:i + 500]
             placeholders = ",".join("?" for _ in chunk)
-            rows = await self._exec_fetchall(
-                "SELECT id, summary, chat_summary, timestamp, strength, "
-                "useful_count, is_core FROM memories "
-                f"WHERE session_id = ? AND id IN ({placeholders})",
-                (session_id, *chunk),
-            )
+            try:
+                rows = await self._exec_fetchall(
+                    "SELECT id, summary, chat_summary, timestamp, strength, "
+                    "useful_count, is_core FROM memories "
+                    f"WHERE session_id = ? AND id IN ({placeholders})",
+                    (session_id, *chunk),
+                )
+            except Exception as e:
+                # D4（M3.2）：关键词回表失败不再伪装成「没找到」（六类高频路径之一：search）。
+                note_storage_error("search", e)
+                raise StorageError(
+                    "记忆关键词检索失败",
+                    detail=f"_keyword_only_search: {e}",
+                    context={"session_id": session_id},
+                ) from e
             for r in rows:
                 results.append({
                     "id": r[0],
@@ -511,10 +536,15 @@ class MemoryStore:
                 [score_add] + memory_ids
             )
         except Exception as e:
-            logger.warning(f"[Quill Memory] 更新记忆有用性失败: {e}")
+            logger.warning("[Quill Memory] mark_memories_used 失败: %s", e, exc_info=True)
 
     async def prune_memories(self) -> int:
-        """分档遗忘清理任务（无情斩杀低价值记忆）。核心记忆(is_core=1)永不清理。"""
+        """分档遗忘清理任务（无情斩杀低价值记忆）。核心记忆(is_core=1)永不清理。
+
+        D4（M3.2）：失败抛 :class:`StorageError`（六类高频路径之一：prune），
+        调用方（启动初始化 / 反思调度 spawn）负责捕获降级——此前静默 return 0，
+        记忆表膨胀完全不可观测。
+        """
         try:
             # P3-2 修复：除原有 is_active=0 清理外，对 is_active=1 但超过 60 天
             # 未更新的低价值记忆也执行降级清理，避免记忆表无限膨胀。
@@ -538,8 +568,11 @@ class MemoryStore:
                 logger.info(f"[Quill Memory] 记忆修剪: 清理了 {deleted} 条过期低价值记忆")
             return deleted
         except Exception as e:
-            logger.warning(f"[Quill Memory] 记忆修剪失败: {e}")
-            return 0
+            note_storage_error("prune", e)
+            raise StorageError(
+                "记忆修剪失败",
+                detail=f"prune_memories: {e}",
+            ) from e
 
     async def get_chat_logs_after(self, session_id: str, after_id: int, limit: int = 50) -> list[dict]:
         """获取指定 session 中 after_id 之后的对话日志（增量读取）。"""
@@ -556,7 +589,7 @@ class MemoryStore:
                 for r in rows
             ]
         except Exception as e:
-            logger.warning("[Quill Memory] get_chat_logs_after 失败: %s", e)
+            logger.warning("[Quill Memory] get_chat_logs_after 失败: %s", e, exc_info=True)
             return []
 
     async def list_memories(self, session_id: str, limit: int = 50) -> list[dict]:
@@ -578,7 +611,7 @@ class MemoryStore:
                 for r in rows
             ]
         except Exception as e:
-            logger.warning("[Quill Memory] list_memories 失败: %s", e)
+            logger.warning("[Quill Memory] list_memories 失败: %s", e, exc_info=True)
             return []
 
     async def set_core(self, memory_id: int, is_core: bool) -> bool:
@@ -594,7 +627,7 @@ class MemoryStore:
             )
             return cursor.rowcount > 0
         except Exception as e:
-            logger.warning("[Quill Memory] set_core 失败: %s", e)
+            logger.warning("[Quill Memory] set_core 失败: %s", e, exc_info=True)
             return False
 
     async def get_core_memories(self, session_id: str) -> list[dict]:
@@ -608,11 +641,11 @@ class MemoryStore:
             )
             return [{"id": r[0], "summary": r[1]} for r in rows]
         except Exception as e:
-            logger.warning("[Quill Memory] get_core_memories 失败: %s", e)
+            logger.warning("[Quill Memory] get_core_memories 失败: %s", e, exc_info=True)
             return []
 
     async def delete_session_memories(self, session_id: str) -> int:
-        """删除某 session 的所有记忆。"""
+        """删除某 session 的所有记忆（D4：失败抛 StorageError，类别 delete）。"""
         if not session_id:
             return 0
         try:
@@ -621,14 +654,21 @@ class MemoryStore:
             await self._invalidate_cache(session_id)
             return cursor.rowcount
         except Exception as e:
-            logger.warning("[Quill Memory] delete_session_memories 失败: %s", e)
-            return 0
+            note_storage_error("delete", e)
+            raise StorageError(
+                "删除会话记忆失败",
+                detail=f"delete_session_memories: {e}",
+                context={"session_id": session_id},
+            ) from e
 
     async def delete_all_session_memories(self, target_id: str) -> int:
         """删除某 target_id 下所有 session 的记忆（含 target_id 本身和 target_id::* 所有 persona）。
 
         用于 /quill reset 场景：用户可能切换过多个角色卡，每个 persona 有独立的
         mem_session_id（target_id::persona_id）。此方法一次性清理全部。
+
+        D4（M3.2）：失败抛 :class:`StorageError`（六类高频路径之一：delete），
+        /quill reset 的既有 except 会将其转为用户可见的错误回执。
         """
         if not target_id:
             return 0
@@ -643,8 +683,12 @@ class MemoryStore:
                 await self._invalidate_cache(key)
             return cursor.rowcount
         except Exception as e:
-            logger.warning("[Quill Memory] delete_all_session_memories 失败: %s", e)
-            return 0
+            note_storage_error("delete", e)
+            raise StorageError(
+                "删除全部会话记忆失败",
+                detail=f"delete_all_session_memories: {e}",
+                context={"target_id": target_id},
+            ) from e
 
     async def count_session_memories(self, session_id: str) -> int:
         """统计某 session 的记忆总数（供分页显示真实 total）。"""
@@ -656,7 +700,7 @@ class MemoryStore:
             )
             return row[0] if row else 0
         except Exception as e:
-            logger.warning("[Quill Memory] count_session_memories 失败: %s", e)
+            logger.warning("[Quill Memory] count_session_memories 失败: %s", e, exc_info=True)
             return 0
 
     async def get_recent_chat_logs(self, session_id: str, limit: int = 8) -> list[dict]:
@@ -679,7 +723,7 @@ class MemoryStore:
             result.reverse()
             return result
         except Exception as e:
-            logger.warning(f"[Quill Memory] 获取聊天日志失败: %s", e)
+            logger.warning("[Quill Memory] get_recent_chat_logs 失败: %s", e, exc_info=True)
             return []
 
     async def delete_chat_logs_by_ids(self, session_id: str, log_ids: list[int]) -> int:
@@ -696,15 +740,26 @@ class MemoryStore:
         for i in range(0, len(ids), 500):
             chunk = ids[i:i + 500]
             placeholders = ",".join("?" for _ in chunk)
-            cur = await self._exec_write(
-                f"DELETE FROM chat_logs WHERE session_id = ? AND id IN ({placeholders})",
-                (session_id, *chunk)
-            )
+            try:
+                cur = await self._exec_write(
+                    f"DELETE FROM chat_logs WHERE session_id = ? AND id IN ({placeholders})",
+                    (session_id, *chunk)
+                )
+            except Exception as e:
+                # D4（M3.2）：反思清理删除失败必须可见（写记忆成功、删日志失败
+                # 会导致下轮重复摘要），统一抛 StorageError（六类高频路径之一：delete）。
+                note_storage_error("delete", e)
+                raise StorageError(
+                    "删除对话日志批次失败",
+                    detail=f"delete_chat_logs_by_ids: {e}",
+                    context={"session_id": session_id},
+                ) from e
             deleted += cur.rowcount if cur and cur.rowcount > 0 else 0
         return deleted
 
     async def log_message(self, session_id: str, role: str, content: str):
-        """记录一条原始对话"""
+        """记录一条原始对话（D4：底层失败抛 StorageError，类别 add；
+        聊天链路调用方 log_chat_message 保留「落日志失败不连累对话」的降级）。"""
         if not session_id or not content or not content.strip():
             return
         if role not in ("user", "assistant"):
@@ -715,7 +770,12 @@ class MemoryStore:
                 (session_id, role, content[:2000])
             )
         except Exception as e:
-            logger.warning(f"[Quill Memory] 聊天日志记录失败: {e}")
+            note_storage_error("add", e)
+            raise StorageError(
+                "对话日志记录失败",
+                detail=f"log_message: {e}",
+                context={"session_id": session_id, "role": role},
+            ) from e
 
     async def list_chat_logs(self, session_id: str, limit: int = 200) -> list[dict]:
         """按 session 查询原始对话日志（取最近 limit 条，按时间正序返回）"""
@@ -735,7 +795,7 @@ class MemoryStore:
                 for r in rows
             ]
         except Exception as e:
-            logger.warning("[Quill Memory] list_chat_logs 失败: %s", e)
+            logger.warning("[Quill Memory] list_chat_logs 失败: %s", e, exc_info=True)
             return []
 
     async def export_chat_logs(self, session_id: str, format: str = "markdown") -> str:
@@ -749,7 +809,7 @@ class MemoryStore:
                 (session_id,)
             )
         except Exception as e:
-            logger.warning("[Quill Memory] export_chat_logs 失败: %s", e)
+            logger.warning("[Quill Memory] export_chat_logs 失败: %s", e, exc_info=True)
             return ""
 
         if format == "txt":
@@ -762,7 +822,7 @@ class MemoryStore:
         return "\n".join(lines)
 
     async def cleanup_chat_logs(self, retention_days: int) -> int:
-        """清理超过保留天数的对话日志"""
+        """清理超过保留天数的对话日志（D4：失败抛 StorageError，类别 prune）。"""
         if retention_days <= 0:
             return 0
         try:
@@ -772,25 +832,34 @@ class MemoryStore:
             )
             return cursor.rowcount
         except Exception as e:
-            logger.warning(f"[Quill Memory] 对话日志清理失败: {e}")
-            return 0
+            note_storage_error("prune", e)
+            raise StorageError(
+                "对话日志清理失败",
+                detail=f"cleanup_chat_logs: {e}",
+            ) from e
 
     async def delete_session_chat_logs(self, session_id: str) -> int:
-        """删除某 session 的所有对话日志"""
+        """删除某 session 的所有对话日志（D4：失败抛 StorageError，类别 delete）。"""
         if not session_id:
             return 0
         try:
             cursor = await self._exec_write("DELETE FROM chat_logs WHERE session_id = ?", (session_id,))
             return cursor.rowcount
         except Exception as e:
-            logger.warning("[Quill Memory] delete_session_chat_logs 失败: %s", e)
-            return 0
+            note_storage_error("delete", e)
+            raise StorageError(
+                "删除会话对话日志失败",
+                detail=f"delete_session_chat_logs: {e}",
+                context={"session_id": session_id},
+            ) from e
 
     async def delete_all_session_chat_logs(self, target_id: str) -> int:
         """删除某 target_id 下所有 session 的对话日志（含 target_id 本身和 target_id::* 所有 persona）。
 
         用于 /quill reset 场景：清理所有角色卡的对话日志，防止切换角色卡后
         Context Restoration 垫入旧上下文。
+
+        D4（M3.2）：失败抛 :class:`StorageError`（六类高频路径之一：delete）。
         """
         if not target_id:
             return 0
@@ -801,24 +870,33 @@ class MemoryStore:
             )
             return cursor.rowcount
         except Exception as e:
-            logger.warning("[Quill Memory] delete_all_session_chat_logs 失败: %s", e)
-            return 0
+            note_storage_error("delete", e)
+            raise StorageError(
+                "删除全部会话对话日志失败",
+                detail=f"delete_all_session_chat_logs: {e}",
+                context={"target_id": target_id},
+            ) from e
 
     async def delete_memory(self, memory_id: int) -> bool:
-        """删除单条记忆。"""
+        """删除单条记忆（D4：底层失败抛 StorageError，类别 delete；
+        「没有这一行」仍是正常返回 False，不是存储失败）。"""
         try:
             rows = await self._exec_fetchall("SELECT session_id FROM memories WHERE id = ?", (memory_id,))
             if rows:
                 await self._invalidate_cache(rows[0][0])
-        except Exception:
-            pass
-        
+        except Exception as e:
+            logger.warning("[Quill Memory] delete_memory 缓存失效查询失败: %s", e, exc_info=True)
+
         try:
             cursor = await self._exec_write("DELETE FROM memories WHERE id = ?", (memory_id,))
             return cursor.rowcount > 0
         except Exception as e:
-            logger.warning("[Quill Memory] delete_memory 失败: %s", e)
-            return False
+            note_storage_error("delete", e)
+            raise StorageError(
+                "删除记忆失败",
+                detail=f"delete_memory: {e}",
+                context={"memory_id": memory_id},
+            ) from e
 
     async def get_stats(self) -> dict:
         """返回存储统计。"""
@@ -831,7 +909,7 @@ class MemoryStore:
                 "SELECT COUNT(*) FROM memories WHERE date(timestamp) = date('now')"
             ))[0]
         except Exception as e:
-            logger.warning("[Quill Memory] get_stats 失败: %s", e)
+            logger.warning("[Quill Memory] get_stats 失败: %s", e, exc_info=True)
             return {"total_memories": 0, "total_sessions": 0, "today_count": 0}
         return {"total_memories": total, "total_sessions": sessions, "today_count": today}
 
@@ -852,7 +930,7 @@ class MemoryStore:
                 for r in rows
             ]
         except Exception as e:
-            logger.warning("[Quill Memory] list_all_memories 失败: %s", e)
+            logger.warning("[Quill Memory] list_all_memories 失败: %s", e, exc_info=True)
             return []
 
     async def list_sessions(self) -> list[dict]:
@@ -867,7 +945,7 @@ class MemoryStore:
                 for r in rows
             ]
         except Exception as e:
-            logger.warning("[Quill Memory] list_sessions 失败: %s", e)
+            logger.warning("[Quill Memory] list_sessions 失败: %s", e, exc_info=True)
             return []
 
     async def count_all_memories(self) -> int:
@@ -875,7 +953,7 @@ class MemoryStore:
         try:
             return (await self._exec_fetchone("SELECT COUNT(*) FROM memories"))[0]
         except Exception as e:
-            logger.warning("[Quill Memory] count_all_memories 失败: %s", e)
+            logger.warning("[Quill Memory] count_all_memories 失败: %s", e, exc_info=True)
             return 0
 
     async def get_memory_by_id(self, memory_id: int) -> dict | None:
@@ -895,7 +973,7 @@ class MemoryStore:
                 "useful_score": row[7], "is_active": row[8], "is_core": row[9]
             }
         except Exception as e:
-            logger.warning("[Quill Memory] get_memory_by_id 失败: %s", e)
+            logger.warning("[Quill Memory] get_memory_by_id 失败: %s", e, exc_info=True)
             return None
 
     async def search_all(self, query_vector: list[float], top_k: int = 5, session_ids: list[str] | None = None) -> list[dict]:
@@ -921,8 +999,13 @@ class MemoryStore:
                     "ORDER BY timestamp DESC LIMIT 2000"
                 )
         except Exception as e:
-            logger.warning(f"[Quill Memory] 向量检索查询失败: {e}")
-            return []
+            # D4（M3.2）：面板向量检索失败上抛（六类高频路径之一：search），
+            # 不再伪装成「没有结果」。
+            note_storage_error("search", e)
+            raise StorageError(
+                "跨会话向量检索失败",
+                detail=f"search_all 查询: {e}",
+            ) from e
 
         if not rows:
             return []
@@ -971,5 +1054,8 @@ class MemoryStore:
                 })
             return results
         except Exception as e:
-            logger.warning(f"[Quill Memory] 向量检索计算失败: {e}")
-            return []
+            note_storage_error("search", e)
+            raise StorageError(
+                "跨会话向量检索失败",
+                detail=f"search_all 计算: {e}",
+            ) from e

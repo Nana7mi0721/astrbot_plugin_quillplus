@@ -22,8 +22,12 @@ import aiosqlite
 # （无父包，相对导入会失败）。两条路径都要能跑。
 try:
     from ._fts_util import escape_trigram
+    from .quill.core.errors import StorageError
+    from .quill.core.storage_stats import note_storage_error
 except ImportError:  # 直接运行本文件
     from _fts_util import escape_trigram
+    from quill.core.errors import StorageError
+    from quill.core.storage_stats import note_storage_error
 
 try:
     from astrbot.api import logger
@@ -442,6 +446,12 @@ class WritingResourceManager:
         priority: int = 5,
         is_constant: bool = False,
     ) -> bool:
+        """写入一条素材（D4：底层失败抛 :class:`StorageError`，类别 add）。
+
+        ``IntegrityError``（entry_id 重复）不是存储失败，维持返回 False 的
+        既有语义；其余数据库错误此前 warning + 返回 False，调用方把它与
+        「ID 已存在」混为同一种失败——现改为上抛，由调用方决定降级。
+        """
         try:
             async with self._lock:
                 await self.conn.execute(
@@ -469,11 +479,19 @@ class WritingResourceManager:
         except aiosqlite.IntegrityError:
             return False
         except sqlite3.Error as e:
-            logger.error(f"[WR] add_entry 数据库错误: {e}")
-            return False
+            note_storage_error("add", e)
+            raise StorageError(
+                "写入素材条目失败",
+                detail=f"add_entry: {e}",
+                context={"entry_id": entry_id, "category": category},
+            ) from e
         except Exception as e:
-            logger.error(f"[WR] add_entry 失败: {e}", exc_info=True)
-            return False
+            note_storage_error("add", e)
+            raise StorageError(
+                "写入素材条目失败",
+                detail=f"add_entry: {e}",
+                context={"entry_id": entry_id, "category": category},
+            ) from e
 
     async def get_entry(self, entry_id: str) -> Optional[Dict]:
         async with self.conn.execute(
@@ -509,16 +527,18 @@ class WritingResourceManager:
                 await self.conn.commit()
             return cursor.rowcount > 0
         except sqlite3.IntegrityError as e:
-            logger.warning(f"[WR] update_entry 唯一性冲突: {e}")
+            logger.warning("[WR] update_entry 唯一性冲突: %s", e, exc_info=True)
             return False
         except sqlite3.Error as e:
-            logger.error(f"[WR] update_entry 数据库错误: {e}")
+            logger.error("[WR] update_entry 数据库错误: %s", e, exc_info=True)
             return False
         except Exception as e:
-            logger.error(f"[WR] update_entry 失败: {e}", exc_info=True)
+            logger.error("[WR] update_entry 失败: %s", e, exc_info=True)
             return False
 
     async def delete_entry(self, entry_id: str) -> bool:
+        """删除一条素材（D4：底层失败抛 :class:`StorageError`，类别 delete；
+        「没有这一行」仍是正常返回 False）。"""
         try:
             async with self._lock:
                 cursor = await self.conn.execute(
@@ -527,11 +547,19 @@ class WritingResourceManager:
                 await self.conn.commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
-            logger.error(f"[WR] delete_entry 数据库错误: {e}")
-            return False
+            note_storage_error("delete", e)
+            raise StorageError(
+                "删除素材条目失败",
+                detail=f"delete_entry: {e}",
+                context={"entry_id": entry_id},
+            ) from e
         except Exception as e:
-            logger.error(f"[WR] delete_entry 失败: {e}", exc_info=True)
-            return False
+            note_storage_error("delete", e)
+            raise StorageError(
+                "删除素材条目失败",
+                detail=f"delete_entry: {e}",
+                context={"entry_id": entry_id},
+            ) from e
 
     async def enable_entry(self, entry_id: str, enabled: bool = True) -> bool:
         return await self.update_entry(entry_id, enabled=1 if enabled else 0)
@@ -546,10 +574,10 @@ class WritingResourceManager:
                 await self.conn.commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
-            logger.error(f"[WR] set_constant 数据库错误: {e}")
+            logger.error("[WR] set_constant 数据库错误: %s", e, exc_info=True)
             return False
         except Exception as e:
-            logger.error(f"[WR] set_constant 失败: {e}", exc_info=True)
+            logger.error("[WR] set_constant 失败: %s", e, exc_info=True)
             return False
     # ------------------------------------------------------------------
 
@@ -860,8 +888,19 @@ class WritingResourceManager:
         # 2000，避免较大素材库中位于后面的条目永远无法被匹配到。
         sql += " LIMIT 2000"
 
-        async with self.conn.execute(sql, params) as cursor:
-            rows = await cursor.fetchall()
+        try:
+            async with self.conn.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+        except Exception as e:
+            # D4（M3.2）：兜底扫描失败抛 StorageError（六类高频路径之一：search），
+            # 不再与「没匹配到」混同。调用方（_check_activation / 面板 wr_test）
+            # 按各自既有降级处理。
+            note_storage_error("search", e)
+            raise StorageError(
+                "素材库检索失败",
+                detail=f"match 兜底扫描: {e}",
+                context={"category": category},
+            ) from e
 
         matched_entries = []
         for r in rows:

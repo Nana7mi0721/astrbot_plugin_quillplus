@@ -17,6 +17,9 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .quill.core.errors import StorageError
+from .quill.core.storage_stats import storage_error_snapshot
+
 
 _PLUGIN_VERSION_CACHE: str | None = None
 
@@ -122,18 +125,23 @@ async def handle_wr_create(wr_manager, data: dict):
     if "keywords" not in data:
         data["keywords"] = []
 
-    success = await wr_manager.add_entry(
-        category=data["category"],
-        entry_id=data["entry_id"],
-        keywords=data["keywords"],
-        content=data["content"],
-        name=data.get("name"),
-        description=data.get("description"),
-        aliases=data.get("aliases"),
-        secondary_keywords=data.get("secondary_keywords"),
-        priority=data.get("priority", 5),
-        is_constant=bool(data.get("is_constant", False)),
-    )
+    try:
+        success = await wr_manager.add_entry(
+            category=data["category"],
+            entry_id=data["entry_id"],
+            keywords=data["keywords"],
+            content=data["content"],
+            name=data.get("name"),
+            description=data.get("description"),
+            aliases=data.get("aliases"),
+            secondary_keywords=data.get("secondary_keywords"),
+            priority=data.get("priority", 5),
+            is_constant=bool(data.get("is_constant", False)),
+        )
+    except StorageError as e:
+        # M3.2 D4：底层存储失败上抛后在路由层降级——信封形状不变
+        # （此前存储失败被吞成 False，误报为「ID 可能已存在」）。
+        return err(error_text("创建条目失败", e))
     if not success:
         return err("创建条目失败（ID 可能已存在）")
     return ok({"entry_id": data["entry_id"]}, message="Entry created")
@@ -161,7 +169,12 @@ async def handle_wr_delete(wr_manager, entry_id=None):
         return err("写作素材库未加载")
     if not entry_id:
         return err("缺少 entry_id 参数")
-    if not await wr_manager.delete_entry(entry_id):
+    try:
+        deleted = await wr_manager.delete_entry(entry_id)
+    except StorageError as e:
+        # M3.2 D4：存储失败与「条目不存在」区分（信封形状不变）。
+        return err(error_text("删除条目失败", e))
+    if not deleted:
         return err("删除条目失败")
     return ok({"entry_id": entry_id}, message="Entry deleted")
 
@@ -477,6 +490,10 @@ async def handle_info(wr_manager, wb_manager, persona_count=0,
             wr_index = status
         except Exception:
             logger.warning("[Quill] 获取 WR 索引状态失败", exc_info=True)
+    # M3.2 D4：存储层六类高频路径（add/search/prune/delete/backup/restore）
+    # 的底层失败累计计数（进程内，重启清零）。结构见
+    # quill/core/storage_stats.py 模块 docstring；只增字段，响应向后兼容。
+    storage_errors = storage_error_snapshot()
     return ok({
         "wr_count": wr_count,
         "wb_count": len(available_wb),
@@ -487,6 +504,7 @@ async def handle_info(wr_manager, wb_manager, persona_count=0,
         "trigger_log": trigger_log,
         "health": health,
         "wr_index": wr_index,
+        "storage_errors": storage_errors,
     })
 
 

@@ -52,6 +52,7 @@ from .web_routes import QuillRoutes
 from .encryption import decrypt_output  # noqa: F401  (legacy/probe 导入面)
 from .persona_manager import QuillPersonaManager
 from .quill.core import logbridge
+from .quill.core.errors import StorageError
 # M2.2 剥离器下沉：实现住 quill/services/statusbar/strip.py，
 # QuillPlugin 类体内保留同名薄转发（见「状态栏解析共享方法」段）。
 from .quill.services.statusbar import strip as _strip_mod
@@ -569,15 +570,24 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         # 启动时清理过期对话日志
         if self.rag_retriever and self.rag_retriever.memory_store:
             retention_days = getattr(self.config, 'rag_chat_log_retention_days', 30)
-            cleaned = await self.rag_retriever.memory_store.cleanup_chat_logs(retention_days)
-            if cleaned:
-                logger.info(f"[Quill ChatLog] 清理了 {cleaned} 条过期日志（保留 {retention_days} 天）")
+            try:
+                cleaned = await self.rag_retriever.memory_store.cleanup_chat_logs(retention_days)
+                if cleaned:
+                    logger.info(f"[Quill ChatLog] 清理了 {cleaned} 条过期日志（保留 {retention_days} 天）")
+            except StorageError as e:
+                # M3.2 D4：底层失败上抛后由这里降级——启动继续（与改前吞错误
+                # 时「启动照常、清理没跑」的行为一致），日志带方法名与异常链。
+                logger.warning("[Quill] 启动清理过期对话日志失败: %s", e, exc_info=True)
 
         # 启动时修剪过期低价值记忆
         if self.rag_retriever and self.rag_retriever.memory_store:
-            pruned = await self.rag_retriever.memory_store.prune_memories()
-            if pruned:
-                logger.info(f"[Quill Memory] 启动修剪: 清理了 {pruned} 条低价值记忆")
+            try:
+                pruned = await self.rag_retriever.memory_store.prune_memories()
+                if pruned:
+                    logger.info(f"[Quill Memory] 启动修剪: 清理了 {pruned} 条低价值记忆")
+            except StorageError as e:
+                # 同上：修剪失败不阻断插件启动（M3.2 D4 调用方降级点）。
+                logger.warning("[Quill] 启动修剪低价值记忆失败: %s", e, exc_info=True)
 
         # 启动 state 自动落盘（分级落盘：关键字段即时，高频字段 5s 批量刷洗）
         self.state_manager.start_autoflush()
@@ -1425,9 +1435,33 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         return persona_id, persona_data
 
     async def _check_activation(self, user_input: str, context_text: str, persona_data) -> tuple:
-        """检查激活状态（激活词 / 括号 / WR关键词）。返回 (activated, wr_activated)。"""
-        activated = self.activation_detector.should_activate(user_input)
-        has_bracket = self.activation_detector.check_brackets(user_input)
+        """检查激活状态（激活词 / 括号 / WR关键词）。返回 (activated, wr_activated)。
+
+        D4b（M3.2，本版本唯一有意行为变更的落点）：**激活判定 fail-close**。
+        检测过程异常时返回 (False, False)（不注入），绝不允许异常把判定顶成
+        True（全量注入）。理由（PLAN §M3.2）：fail-open 的故障形态是「每轮
+        注入全部设定」——最贵行为、用户可感为刷屏注入报告；fail-close 的故障
+        形态是「该注入时没注入」——下一轮检测恢复即自愈，用户可感为偶发设定
+        丢失。后者更安全。
+
+        与重构参考版 ``interfaces/astrbot/plugin.py`` `_should_activate` 的
+        ``if detector is None: return True`` / ``except Exception: return True``
+        相反——移植该层时（M3.3+）不得把 fail-open 带回来。
+
+        正常判定逻辑（``should_activate`` / ``check_brackets`` / WR match）
+        一行未动：异常路径之外的行为与 v5.2.5 逐字相同（快照
+        tests/test_hook_snapshots.py H3 节钉住）。
+        """
+        try:
+            activated = self.activation_detector.should_activate(user_input)
+            has_bracket = self.activation_detector.check_brackets(user_input)
+        except Exception as e:
+            # 检测器异常（正则/输入形态等理论不可达路径）→ fail-close：
+            # 本轮不注入，warning 带异常链，等待下一轮自然恢复。
+            logger.warning(
+                "[Quill] 激活检测异常，本轮按未激活处理（fail-close）: %s", e, exc_info=True
+            )
+            return False, False
 
         wr_activated = False
         if not (activated or has_bracket) and self.wr_manager:
@@ -1453,7 +1487,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 else:
                     logger.info(f"[Quill] 写作素材库模式: disabled，跳过素材检索")
             except Exception as e:
-                logger.warning(f"[Quill] WR 匹配失败: {e}")
+                # WR 匹配失败（含底层 StorageError）→ wr_activated 保持 False：
+                # 语义上同属激活判定的 fail-close（不因素材库故障全量注入）。
+                logger.warning("[Quill] _check_activation WR 匹配失败: %s", e, exc_info=True)
 
         return activated, wr_activated
 

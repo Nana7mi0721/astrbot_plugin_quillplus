@@ -118,7 +118,9 @@ class QuillRetriever:
                 return await self.reranker.rerank(query, raw_results, top_k=self.top_k)
             return raw_results[:self.top_k]
         except Exception as e:
-            logger.warning(f"[Quill RAG] 文档检索失败: {e}")
+            # M3.2 D4：底层 StorageError（或 embedding 失败）在此降级为带失败
+            # 标记的空结果——注入侧行为不变（本轮无文档内容），健康度能记到失败。
+            logger.warning("[Quill RAG] search_documents 文档检索失败: %s", e, exc_info=True)
             return _rag_failed(str(e))
 
     async def search_memories(self, session_id: str, query: str) -> list[dict]:
@@ -138,7 +140,8 @@ class QuillRetriever:
                 self._spawn(self.memory_store.mark_memories_used(mem_ids, 1.5))
             return results
         except Exception as e:
-            logger.warning(f"[Quill Memory] 记忆检索失败: {e}")
+            # M3.2 D4：底层 StorageError 在此降级为带失败标记的空结果（行为同上）。
+            logger.warning("[Quill Memory] search_memories 记忆检索失败: %s", e, exc_info=True)
             return _rag_failed(str(e))
 
     async def get_core_memories(self, session_id: str) -> list[dict]:
@@ -148,7 +151,7 @@ class QuillRetriever:
         try:
             return await self.memory_store.get_core_memories(session_id)
         except Exception as e:
-            logger.warning(f"[Quill Memory] 核心记忆获取失败: {e}")
+            logger.warning("[Quill Memory] get_core_memories 核心记忆获取失败: %s", e, exc_info=True)
             return []
 
     async def log_chat_message(self, session_id: str, role: str, content: str):
@@ -160,7 +163,9 @@ class QuillRetriever:
         try:
             await self.memory_store.log_message(session_id, role, content)
         except Exception as e:
-            logger.warning(f"[Quill ChatLog] 对话记录失败: {e}")
+            # 底层 log_message 抛 StorageError（M3.2 D4）也在此吞掉：
+            # 落日志失败不连累本轮对话（该放行放行），仅日志更详细。
+            logger.warning("[Quill ChatLog] log_chat_message 对话记录失败: %s", e, exc_info=True)
 
     async def store_memory_direct(self, session_id: str, content: str):
         """直接存储一条用户提供的记忆内容（无需 user_input/ai_response 配对）。
@@ -182,7 +187,7 @@ class QuillRetriever:
                 )
                 logger.info(f"[Quill Memory] 直接记忆存储: session={session_id} summary={summary[:30]}...")
         except Exception as e:
-            logger.warning(f"[Quill Memory] 直接记忆存储失败: {e}")
+            logger.warning("[Quill Memory] store_memory_direct 直接记忆存储失败: %s", e, exc_info=True)
             raise
 
     async def summarize_contexts(self, session_id: str, contexts: list[dict]) -> str:

@@ -11,6 +11,13 @@ import numpy as np
 
 from astrbot.api import logger
 
+try:
+    from ..quill.core.errors import StorageError
+    from ..quill.core.storage_stats import note_storage_error
+except ImportError:  # 直接运行本文件时无父包
+    from quill.core.errors import StorageError
+    from quill.core.storage_stats import note_storage_error
+
 
 class FaissVectorStore:
     """FAISS 向量存储 + SQLite 元数据。
@@ -121,7 +128,7 @@ class FaissVectorStore:
         except ImportError:
             logger.warning("[Quill RAG] faiss 未安装，向量检索不可用")
         except Exception as e:
-            logger.warning(f"[Quill RAG] FAISS 索引加载失败: {e}")
+            logger.warning("[Quill RAG] _load_index FAISS 索引加载失败: %s", e, exc_info=True)
             self._create_index()
 
     def _create_index(self):
@@ -169,8 +176,10 @@ class FaissVectorStore:
         彻底删除基于 ntotal 的 ID 生成逻辑（删除后 ntotal 下降会撞库）。
         S1-4 修复：IndexFlatIP 计算内积，add/search 前必须 L2 归一化，否则非真余弦相似度。
 
-        返回成功写入的 chunk 数；**失败一律抛异常**。此前失败时静默 return，
-        上层 `await add()` 不抛就当作成功，于是出现「上传成功但数据未入库」。
+        返回成功写入的 chunk 数；**失败一律抛 :class:`StorageError`**（M3.2 D4
+        六类高频路径之一：add，失败计数经 quill.core.storage_stats）。此前失败
+        时静默 return，上层 `await add()` 不抛就当作成功，于是出现「上传成功
+        但数据未入库」。
         """
         if not texts or not embeddings:
             return 0
@@ -190,15 +199,23 @@ class FaissVectorStore:
 
         # 1. SQLite 单条插入，精确拿每行 rowid（faiss_id=-1 标记 pending）
         row_ids = []
-        async with self._lock:
-            for i, text in enumerate(texts):
-                cur = await self._conn.execute(
-                    "INSERT INTO chunks (doc_id, source, chunk_index, content, faiss_id) "
-                    "VALUES (?, ?, ?, ?, -1)",
-                    (doc_id, source, i, text)
-                )
-                row_ids.append(cur.lastrowid)
-            await self._conn.commit()
+        try:
+            async with self._lock:
+                for i, text in enumerate(texts):
+                    cur = await self._conn.execute(
+                        "INSERT INTO chunks (doc_id, source, chunk_index, content, faiss_id) "
+                        "VALUES (?, ?, ?, ?, -1)",
+                        (doc_id, source, i, text)
+                    )
+                    row_ids.append(cur.lastrowid)
+                await self._conn.commit()
+        except Exception as e:
+            note_storage_error("add", e)
+            raise StorageError(
+                "写入文档块失败",
+                detail=f"FaissVectorStore.add SQLite 阶段: {e}",
+                context={"source": source, "doc_id": doc_id},
+            ) from e
 
         # 2. FAISS 写入
         if self._index is not None:
@@ -218,9 +235,17 @@ class FaissVectorStore:
                     await asyncio.to_thread(_faiss_add)
             except Exception as e:
                 # 3. FAISS 失败：回滚 SQLite（用精确 row_ids 删除 pending 行）
+                note_storage_error("add", e)
                 if not row_ids:
-                    logger.warning(f"[Quill RAG] FAISS 写入失败且无 row_ids 可回滚: {e}")
-                    raise
+                    logger.warning(
+                        "[Quill RAG] FaissVectorStore.add FAISS 写入失败且无 row_ids 可回滚: %s",
+                        e, exc_info=True,
+                    )
+                    raise StorageError(
+                        "文档向量写入失败（无可回滚数据）",
+                        detail=f"FaissVectorStore.add FAISS 阶段: {e}",
+                        context={"source": source, "doc_id": doc_id},
+                    ) from e
                 async with self._lock:
                     placeholders = ",".join("?" for _ in row_ids)
                     await self._conn.execute(
@@ -228,10 +253,17 @@ class FaissVectorStore:
                         row_ids
                     )
                     await self._conn.commit()
-                logger.warning(f"[Quill RAG] FAISS 写入失败，已回滚 {len(row_ids)} 行 SQLite: {e}")
+                logger.warning(
+                    "[Quill RAG] FaissVectorStore.add FAISS 写入失败，已回滚 %d 行 SQLite: %s",
+                    len(row_ids), e, exc_info=True,
+                )
                 # 回滚完成也必须向上报错：数据没进去就是没进去，不能让上层
                 # 以为入库成功（此前这里 return，界面显示「上传成功」）。
-                raise
+                raise StorageError(
+                    "文档向量写入失败（已回滚数据库写入）",
+                    detail=f"FaissVectorStore.add FAISS 阶段: {e}",
+                    context={"source": source, "doc_id": doc_id, "rolled_back": len(row_ids)},
+                ) from e
             # 4. 回填 faiss_id（S1-3 后 faiss_id == row_id，但仍写入以保持一致性和 search 性能）
             async with self._lock:
                 for rid in row_ids:
@@ -321,24 +353,38 @@ class FaissVectorStore:
                         if len(results) >= top_k:
                             break
             except Exception as e:
-                logger.warning(f"[Quill RAG] SQLite 检索失败: {e}")
+                # 内层：元数据回表失败。保留已映射的部分结果（设计降级，不改语义），
+                # 但日志带方法名与异常链（M3.2 D4 未改造路径统一格式）。
+                logger.warning("[Quill RAG] FaissVectorStore.search SQLite 回表失败: %s", e, exc_info=True)
             return results
         except Exception as e:
-            logger.warning(f"[Quill RAG] FAISS 检索失败: {e}")
-            return []
+            # D4（M3.2）：FAISS 检索失败抛 StorageError（六类高频路径之一：search），
+            # 调用方（retrieval.search_documents）降级为带失败标记的空结果——
+            # 此前静默返回 []，与「确实没找到」不可区分。
+            note_storage_error("search", e)
+            raise StorageError(
+                "文档向量检索失败",
+                detail=f"FaissVectorStore.search: {e}",
+            ) from e
 
     async def delete_by_source(self, source: str) -> int:
         """删除某文档的所有块，并尝试从 FAISS 索引中移除对应向量。
 
         顺序：先查 faiss_id → 再删 FAISS 向量 → 成功后删 SQLite。
-        若 FAISS 删除失败，保留 SQLite 记录并标记需要重建，避免产生无法检索的幽灵向量。
+        若 FAISS 删除失败，保留 SQLite 记录并标记需要重建，避免产生无法检索的
+        幽灵向量（设计降级，保持不变）。SQLite 删除失败则抛
+        :class:`StorageError`（M3.2 D4 六类高频路径之一：delete）——此前裸
+        except 吞掉后返回 0，面板看到「deleted: 0」却不知道删除根本没执行。
         """
         try:
             rows = await self._exec_fetchall(
                 "SELECT faiss_id FROM chunks WHERE source = ? AND faiss_id >= 0", (source,)
             )
             to_remove = np.array([r[0] for r in rows], dtype=np.int64)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "[Quill RAG] delete_by_source 查询 faiss_id 失败: %s", e, exc_info=True
+            )
             to_remove = np.array([], dtype=np.int64)
 
         # 先尝试从 FAISS 移除向量，成功后再删 SQLite
@@ -360,8 +406,13 @@ class FaissVectorStore:
         try:
             cursor = await self._exec_write("DELETE FROM chunks WHERE source = ?", (source,))
             deleted = cursor.rowcount
-        except Exception:
-            deleted = 0
+        except Exception as e:
+            note_storage_error("delete", e)
+            raise StorageError(
+                "删除文档数据失败",
+                detail=f"delete_by_source SQLite 阶段: {e}",
+                context={"source": source},
+            ) from e
 
         return deleted
 
@@ -376,7 +427,8 @@ class FaissVectorStore:
                 {"source": r[0], "doc_id": r[1], "chunk_count": r[2], "created_at": r[3]}
                 for r in rows
             ]
-        except Exception:
+        except Exception as e:
+            logger.warning("[Quill RAG] list_documents 失败: %s", e, exc_info=True)
             return []
 
     async def get_stats(self) -> dict:
@@ -384,7 +436,8 @@ class FaissVectorStore:
         try:
             total_chunks = (await self._exec_fetchone("SELECT COUNT(*) FROM chunks"))[0]
             total_docs = (await self._exec_fetchone("SELECT COUNT(DISTINCT source) FROM chunks"))[0]
-        except Exception:
+        except Exception as e:
+            logger.warning("[Quill RAG] get_stats 失败: %s", e, exc_info=True)
             total_chunks = 0
             total_docs = 0
         return {

@@ -25,7 +25,20 @@ except ModuleNotFoundError:  # 直接运行本文件做自测：先把 AstrBot �
 
 
 class ActivationDetector:
-    """Determines if a user message triggers prompt injection mode."""
+    """Determines if a user message triggers prompt injection mode.
+
+    D4b（M3.2）激活判定 **fail-close** 契约：
+
+    * **加载失败**（触发词文件缺失 / 解析失败 / 格式非法）只意味着「激活词
+      通道降级为永不命中」，``should_activate`` / ``check_brackets`` 照常
+      返回 False——即**不注入**，绝不允许退化为「每轮全量注入」的 fail-open
+      （重构参考版 ``plugin.py`` 曾把 ``detector is None`` 顶成 True，移植
+      时不得带回）。加载状态经 :attr:`load_ok` 暴露，供诊断与测试。
+    * **检测过程异常**：捕获后按未激活处理（返回 False），warning 带异常链。
+      理由（PLAN §M3.2）：fail-open 故障形态 = 每轮注入全部设定（最贵、
+      用户可感刷屏注入报告）；fail-close = 该注入时没注入（下一轮恢复，
+      偶发设定丢失）——后者更安全且自愈。
+    """
 
     def __init__(self, yaml_path: str) -> None:
         self.yaml_path: str = yaml_path
@@ -35,6 +48,9 @@ class ActivationDetector:
         # 仅匹配 CJK 全角方括号【】。半角 [..] 在自然语言/代码/markdown 链接中
         # 误报率极高（如 [INFO]、[1, 2, 3]、[link](url)），不再作为激活触发。
         self._bracket_re: re.Pattern = re.compile(r'【.*?】')
+        # 加载状态：True=触发词已就位；False=文件缺失/解析失败（激活词通道
+        # 降级为不命中，见类 docstring 的 fail-close 契约）。
+        self.load_ok: bool = False
         self._load()
 
     # ------------------------------------------------------------------
@@ -42,12 +58,16 @@ class ActivationDetector:
     def _load(self) -> None:
         if not os.path.exists(self.yaml_path):
             logger.warning("Activation triggers file not found: %s", self.yaml_path)
+            self.load_ok = False
             return
         try:
             with open(self.yaml_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f) or {}
-        except Exception:
-            logger.warning("Failed to load activation triggers: %s", self.yaml_path)
+        except Exception as e:
+            # 此前异常细节被整体吞掉（只记了文件名）；fail-close 的前提是
+            # 故障可诊断——补上异常链。
+            logger.warning("Failed to load activation triggers: %s (%s)", self.yaml_path, e, exc_info=True)
+            self.load_ok = False
             return
 
         words = data.get('activation_words', [])
@@ -61,6 +81,7 @@ class ActivationDetector:
         self._exact_patterns = [
             re.compile(r'\b' + re.escape(w) + r'\b') for w in self.exact_words
         ]
+        self.load_ok = True
 
     def reload(self) -> None:
         self.substring_words.clear()
@@ -73,21 +94,39 @@ class ActivationDetector:
     # ------------------------------------------------------------------
 
     def should_activate(self, message: str) -> bool:
+        """激活词/边界词判定；检测异常时按未激活处理（D4b fail-close）。"""
         if not message:
             return False
-        msg = message.lower()
-        for word in self.substring_words:
-            if word in msg:
-                return True
-        for pat in self._exact_patterns:
-            if pat.search(msg):
-                return True
+        try:
+            msg = message.lower()
+            for word in self.substring_words:
+                if word in msg:
+                    return True
+            for pat in self._exact_patterns:
+                if pat.search(msg):
+                    return True
+        except Exception as e:
+            # 检测过程异常（输入形态异常等）→ 不激活。fail-close：该注入时
+            # 没注入（下一轮自愈）好过每轮全量注入（fail-open，PLAN §M3.2）。
+            logger.warning(
+                "Activation detection error; treating as NOT activated (fail-close): %s",
+                e, exc_info=True,
+            )
+            return False
         return False
 
     def check_brackets(self, message: str) -> bool:
+        """【…】括号判定；检测异常时按未命中处理（D4b fail-close）。"""
         if not message:
             return False
-        return bool(self._bracket_re.search(message))
+        try:
+            return bool(self._bracket_re.search(message))
+        except Exception as e:
+            logger.warning(
+                "Bracket detection error; treating as NOT matched (fail-close): %s",
+                e, exc_info=True,
+            )
+            return False
 
     def get_word_count(self) -> int:
         return len(self.substring_words) + len(self.exact_words)
