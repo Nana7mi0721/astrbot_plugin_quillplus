@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.2.5-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.3.0-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -24,9 +24,9 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 
 完整实现 Character Card V2 标准，兼容多种导入来源。
 
-- 支持 PNG / JPG / JSON 三种 V2 卡片格式的双向导入导出
+- 支持 PNG / JPG / WebP / JSON 格式的 V2 卡片导入，导出为 PNG（含头像）或 JSON
 - 内置正则解析引擎，支持 W++、Raw Text 等纯文本格式导入
-- 头像以 Base64 DataURL 嵌入 API 响应，避免 WebUI iframe 沙箱的跨域限制
+- 头像不随列表内联返回，按需懒加载（Data URL / 静态端点），避免 WebUI iframe 沙箱的跨域限制
 - 支持从 Character.AI / Chub 等平台导入卡片
 - **头像自定义裁剪**：Web 面板内置裁剪器，支持拖拽移动 + 滚轮缩放，Canvas 生成 300×300 方形 PNG
 
@@ -52,7 +52,7 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 
 上传外部文档，AI 检索后注入 prompt。
 
-- 支持 .txt / .md / .pdf 格式
+- 支持 .txt / .md 等纯文本格式（PDF / Office 等二进制格式不支持）
 - 段落优先分块 + 固定长度兜底，overlap 保持上下文连贯
 - 支持 API Embedding（如 SiliconFlow）和本地模型 fallback
 - 独立 Rerank Provider 提升检索精度
@@ -280,10 +280,18 @@ grep -rn "import logging" --include=*.py .   # 期望输出为空
 
 ```
 astrbot_plugin_quillplus/
-├── main.py                  # 插件主类 + LLM hooks + 指令注册
+├── main.py                  # 组合根：插件注册桩 + 组件接线（钩子/指令桩一行委托实现层）
+├── interfaces/              # 框架适配层（钩子/指令实现、Web 层）
+│   ├── astrbot_hooks.py     # 6 个 LLM 钩子的实现函数
+│   └── web/
+│       └── upload.py        # 统一上传通道（multipart / 表单 b64 / JSON b64 三通道消歧）
+├── quill/                   # 与 AstrBot 解耦的核心包（不 import astrbot，可独立测试）
+│   ├── core/                # 错误体系、可重入锁、路径安全、原子写、日志桥
+│   └── services/            # 业务服务：状态栏解析/渲染、记忆、角色卡、响应清洗、热路径增量清洗等
 ├── web_routes.py            # Web API 路由
 ├── _route_core.py           # 业务 handler 实现
 ├── config.py                # 配置解析层
+├── props.py                 # 配置投影：属性访问器（实时读 config）
 ├── persona_manager.py       # 角色卡 JSON CRUD + V2 导入导出
 ├── worldbook.py             # 世界书 JSON 管理
 ├── kb.py                    # 写作素材库 SQLite（文件名保留历史兼容；内部类名 WritingResourceManager）
@@ -302,7 +310,8 @@ astrbot_plugin_quillplus/
 │   ├── reranker.py          # Rerank 封装
 │   ├── llm_summarizer.py    # LLM 摘要生成
 │   └── retrieval.py         # 统一检索入口
-├── pages/panel/index.html   # 管理面板
+├── tests/                   # pytest 双模测试体系（无 AstrBot 时纯 stub，可接真机）
+├── pages/panel/             # 管理面板：index.html + css/ + js/（原生 ES Modules，无构建步骤）
 ├── knowledge/               # 数据目录（gitignore）
 └── worldbooks/              # 世界书目录（gitignore）
 ```
@@ -325,8 +334,9 @@ on_llm_tool_respond (priority=10)  →  停止 agent loop + 记忆存储
 
 ## Roadmap
 
-QuillPlus 遵循持续迭代的开发路线，当前（v5.2）已完成以下里程碑：
+QuillPlus 遵循持续迭代的开发路线，当前（v5.3）已完成以下里程碑：
 
+- ✅ **v5.3.0** — 结构重构：main.py 六钩子薄化为注册桩 + `interfaces/` 适配层，业务下沉 `quill/` 服务分层（与 AstrBot 解耦、可独立测试）；pytest 双模测试体系进 CI（无真机依赖的 stub 模式）；统一上传通道与路径安全加固；热路径历史清洗 O(历史长度)→O(增量)；修复真机实测与自查的 10 项正确性缺陷（详见 CHANGELOG）
 - ✅ **v5.0** — 重构首发版：平行宇宙双轴隔离、JSON 原子化状态机、全链路异步化、Character Card V2 全量支持
 - ✅ **v5.1** — 全自动自迭代记忆：闲时反思守护进程、核心记忆更新、混合检索 (FTS5+Vector+RRF)、LRU 会话缓存
 - ✅ **v5.2/v5.2.1** — 面板功能补全：对话日志查看器、全量备份导出/恢复、WR 批量操作、移动端底部导航、MD3 全面重构、四轮代码审查修复
@@ -339,19 +349,18 @@ QuillPlus 遵循持续迭代的开发路线，当前（v5.2）已完成以下里
 
 **下阶段规划：**
 
-- 🔜 **v5.3 近期**
+- 🔜 **近期**
   - 状态栏变化高亮（前端）— 后端字段变更追踪已就绪，面板消费后即可高亮数值变化
   - 世界书匹配测试台 — 可视化测试关键词命中与注入结果，与 WR 测试台对齐
   - WR 批量移动/分类 — 复用已就绪的多选与批量 API 框架
-- 🔜 **v5.4 中期**
+- 🔜 **中期**
   - 配置预设方案 — 导出/导入当前配置为 JSON，便于社区分享开箱即用方案
   - 记忆时间线视图 — 按会话可视化记忆的生成/召回/遗忘脉络
   - 性能面板 — 注入 token 构成实时统计（/quill debug 的面板化）
 - 🔮 **远期**
   - i18n — 国际化支持（待社区需求驱动）
-  - 前端工程化 — 单文件拆分 + 轻量构建（见下方约束）
 
-> **关于前端拆分的约束**：插件 Pages 走 AstrBot 的 `asset_token` 单文件服务，多文件引用需逐个鉴权，引入构建链会显著增加部署复杂度。当前以「注释分区 + 命名空间模块化」维护单文件，待 AstrBot 支持静态资源目录后再评估构建方案。
+> **关于前端构建链的约束**：面板已拆分为 index.html + 独立 CSS/JS 模块（原生 ES Modules，无构建步骤，以源文件形态直接分发）。AstrBot 的 Plugin Pages 对每个文件单独鉴权且强制禁缓存，引入打包/压缩构建链收益有限，暂不引入。
 
 ---
 
@@ -385,13 +394,12 @@ A: 切换提供商会导致向量维度变化，插件会自动检测并重建 F
 
 ### 前端面板加载说明
 
-由于 AstrBot 框架的 Plugin Pages 静态文件服务默认设置 `Cache-Control: no-store`（强制禁用缓存），前端面板每次刷新都会全量重新加载（约 310KB 的单文件）。如果加载较慢，可以通过以下方式优化：
+AstrBot 框架的 Plugin Pages 静态文件服务默认设置 `Cache-Control: no-store`（强制禁用缓存）。面板由 index.html 与独立 CSS/JS 模块组成（约 30 个文件，合计约 350KB），每次刷新都会按文件重新加载。如果加载较慢，可以通过以下方式优化：
 
 1. **反向代理缓存**：在 AstrBot 前方部署 Nginx/Caddy，对插件 Pages 路径添加缓存头
 2. **本地缓存**：浏览器开发者工具中禁用 "Disable cache" 选项（仅对非 DevTools 窗口生效）
-3. **减少角色卡数量**：角色卡管理页会内联所有头像数据，减少角色卡数量可加快加载
 
-> 该限制来自 AstrBot 框架层面，插件侧已通过内联 CSS/JS 将请求数降至最低（面板本身不依赖任何外部 CDN——界面字体异步加载，失败时自动回退系统字体；自绘下拉、右键菜单、方向键导航均为零依赖手写实现）。
+> 该限制来自 AstrBot 框架层面。面板本身不依赖任何外部 CDN——界面字体异步加载，失败时自动回退系统字体；自绘下拉、右键菜单、方向键导航均为零依赖手写实现。
 
 ---
 

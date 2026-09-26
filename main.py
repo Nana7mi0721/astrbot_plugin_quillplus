@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 # Copyright (C) 2025 Nana7mi0721
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""QuillPlugin — 羽笔 v5.0 多维沉浸式 RP 增强插件
+"""QuillPlugin — 羽笔 v5.3 多维沉浸式 RP 增强插件
 
-五合一沉浸式 RP 注入系统：世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆。
+六合一沉浸式 RP 注入系统：世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆 + 状态栏。
 
 核心架构：
 - 平行宇宙双轴隔离 (target_id::persona_id)：彻底根治群聊切卡串戏
@@ -51,6 +51,7 @@ from .web_routes import QuillRoutes
 # （M2.0 搬移期约定，同 strip_markdown 的 re-export 处理）。
 from .encryption import decrypt_output  # noqa: F401  (legacy/probe 导入面)
 from .persona_manager import QuillPersonaManager
+from .quill import __version__
 from .quill.core import logbridge
 from .quill.core.errors import StorageError
 # M2.2 剥离器下沉：实现住 quill/services/statusbar/strip.py，
@@ -203,14 +204,17 @@ class HealthTracker:
 @register(
     "astrbot_plugin_quillplus",
     "Nana7mi0721 & Gemini & GLM & DeepSeek",
-    "羽笔 v5.0 — 世界书+写作素材库+角色卡+文档RAG+动态记忆 五合一沉浸式 RP 增强插件",
-    "5.0.6",
+    # 描述与 metadata.yaml desc 逐字一致（M4.1 单源化，原先此处是 v5.0 时代
+    # 的五合一旧文案，与六合一漂移）；版本号取 quill/__init__.py 唯一真源，
+    # 由 tools/check_version.py 静态对拍。
+    "世界书+写作素材库+角色卡+文档RAG+动态记忆+状态栏 六合一沉浸式 RP 核心引擎 | 六级降级解析兜底 | 平行宇宙双轴隔离 | JSON 原子化状态机 | 无损断点续传",
+    __version__,
     "https://github.com/Nana7mi0721/astrbot_plugin_quillplus",
 )
 class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
-    """羽笔 — v5.0 多维沉浸式 RP 增强插件
+    """羽笔 — v5.3 多维沉浸式 RP 增强插件
 
-    五合一沉浸式 RP 注入系统：世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆。
+    六合一沉浸式 RP 注入系统：世界书 + 写作素材库 + 角色卡 + 文档 RAG + 动态记忆 + 状态栏。
 
     核心特性：
     - 平行宇宙双轴隔离 (target_id::persona_id)

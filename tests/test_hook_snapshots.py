@@ -2493,18 +2493,32 @@ async def test_h5_persona_read_failure_swallowed_by_storage_block(caplog):
     assert host._spawned == []
 
 
-async def test_h5_reflection_failure_swallowed(caplog):
+async def test_h5_reflection_failure_swallowed(monkeypatch):
     """内层块二（反思调度）：increment_unsummarized_turns 抛异常 → 反思块
-    自身 except warning 吞掉（不上抛框架；与块一降级相互独立）。"""
+    自身 except warning 吞掉（不上抛框架；与块一降级相互独立）。
+
+    日志断言经 logbridge.set_logger 注入留痕 logger（M4.4 起 logbridge
+    未注入时回退 no-op 空 logger，不再走内置 logging——该回退路径的
+    日志本无去处；quill/services/memory.py 的 logger 正是 logbridge 代理）。
+    """
+    from astrbot_plugin_quillplus.quill.core import logbridge
+
+    warnings_seen: list[str] = []
+
+    class _Rec:
+        def warning(self, msg, *args, **kwargs):
+            warnings_seen.append(str(msg))
+
+    monkeypatch.setattr(logbridge, "_LOGGER", _Rec())
+
     state = _StateH5()
     state.increment_error = RuntimeError("轮次存储损坏")
     host = _mk_h5_host(state=state)
     ev = _EvH5(extras={"_quill_activated": True})
 
-    with caplog.at_level(logging.WARNING):
-        await _run_h5(host, ev, _smt_tool(), {"messages": []})
+    await _run_h5(host, ev, _smt_tool(), {"messages": []})
 
-    assert any("反思调度失败" in r.getMessage() for r in caplog.records)
+    assert any("反思调度失败" in m for m in warnings_seen)
     assert state.reset_calls == []
     assert host._spawned == []
 

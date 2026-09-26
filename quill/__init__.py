@@ -12,5 +12,11 @@
 日志：本包不 import astrbot，宿主 logger 经 quill/core/logbridge.py 注入
 （main.py 在 QuillPlugin.__init__ 最早处 set_logger）。
 
-版本号 __version__ 待 M4.1 版本单源化时落位，此处暂不放。
+版本号：本文件定义的 ``__version__`` 是全插件版本号的**唯一真源**
+（M4.1 版本单源化，docs/v5.3/PLAN.md §M4.1）。main.py 的 ``@register``
+经 ``from .quill import __version__`` 引用同一常量；metadata.yaml 的
+version 字段与 README 的版本 badge 由 tools/check_version.py 静态解析
+对拍（CI 步骤），任何不一致即失败。改版本号只改本文件这一处。
 """
+
+__version__ = "5.3.0"
