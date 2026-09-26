@@ -1629,6 +1629,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
           归一比对（报告行抹除 + 状态栏变体剥离后正文全等），命中则置空
           completion 让 respond 阶段走空链——消除 SMT 回声重复回复
           （BASELINE §8.2 F1；宁漏勿误，判定异常/列表异常一律放行原路径）；
+        * **F6 直出丢弃（M3.0c，有意行为变更）**：F1 段之后，
+          ``_quill_smt_send_count`` ≥1（本轮已用工具发过消息）且
+          completion 非空 → 置空——工具描述契约"直出文本不送达"成为真
+          行为，消除元叙述旁白与变体复述（BASELINE §8.2 F6；直接文本流
+          路径 count 缺失/0 不受影响）；
           随后注入报告追加（``_quill_report_added``
           去重，H2 工具路径与本路径共用）；
         * gate 后：未激活 return；助手回复落 chat_logs（

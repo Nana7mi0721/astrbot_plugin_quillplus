@@ -1617,7 +1617,7 @@ async def test_h4_sb_on_missing_bar_fallback_default_appended():
     assert resp.completion_text.startswith("只有剧情正文，没有状态栏\n")
     assert "───── 状态栏 ─────" in resp.completion_text
     assert "好感度：未设置" in resp.completion_text
-    assert ">>> 剧情走向 <<<" in resp.completion_text
+    assert "【剧情走向】" in resp.completion_text  # M3.0c 换标记格式
     assert state.update_vars_calls == []
 
 
@@ -3983,3 +3983,138 @@ def test_f5_parse_status_block_skips_fullwidth_marker_lines():
     # ASCII 语义不变（legacy 同款样本）
     assert host._parse_status_block("好感度：65\n>>> 剧情走向 <<<\n1. 继续") == {
         "好感度": "65"}
+
+
+# ── M3.0c：剧情标记换格式【剧情走向】/【请选择】+ F6 直出丢弃 ──────────
+
+
+def test_m3c_plot_contract_uses_bracket_markers():
+    """M3.0c 换标记格式（用户建议，源头消除）：实际注入的
+    plot_block_v2/plot_markers 用【剧情走向】/【请选择】，不再产出 ASCII
+    箭头——webchat 强制流式路径（content 逐块直出）任何发送前钩子都
+    拦不到，只能让模型根本不再产出 >>>。"""
+    from astrbot_plugin_quillplus.prompt_builder import PromptBuilder
+    cfg = types.SimpleNamespace(
+        max_prompt_length=50000,
+        min_output_length=0,
+        max_output_length=0,
+        status_bar_enabled=True,
+        status_bar_fields=list(M._DEFAULT_LOVE_FIELDS_RAW),
+        status_bar_plot_paths=["继续当前话题", "转换场景", "结束互动"],
+    )
+    c = PromptBuilder(cfg).build_status_contract()
+    assert "【剧情走向】" in c["plot_block_v2"]
+    assert "【请选择】" in c["plot_block_v2"]
+    assert ">>>" not in c["plot_block_v2"]
+    assert "<<<" not in c["plot_block_v2"]
+    assert "【剧情走向】" in c["plot_markers"]
+    # legacy t18 逐字钉住的 ASCII plot_block 仅为兼容保留，不再被注入消费
+    assert ">>> 剧情走向 <<<" in c["plot_block"]
+
+
+def test_m3c_plot_path_re_matches_bracket_form():
+    """`_PLOT_PATH_RE` 双形式：新【剧情走向】形态命中；旧 ASCII/全角形态
+    仍命中（模型旧习惯/旧卡指示向后兼容）。"""
+    bracket = "正文。\n\n【剧情走向】\n1. 继续当前话题\n2. 转换场景\n【请选择】"
+    m = M._PLOT_PATH_RE.search(bracket)
+    assert m is not None
+    assert "继续当前话题" in m.group(1)
+
+    # 旧 ASCII 形态（legacy 样本语义）仍匹配
+    ascii_old = "正文。\n\n>>> 剧情走向 <<<\n1. 继续\n<<< 请选择 >>>"
+    assert M._PLOT_PATH_RE.search(ascii_old) is not None
+    # 全角形态（M3.0b）仍匹配
+    fullwidth = "正文。\n\n＞＞＞ 剧情走向 ＜＜＜\n1. 继续\n＜＜＜ 请选择 ＞＞＞"
+    assert M._PLOT_PATH_RE.search(fullwidth) is not None
+    # 普通引用块仍不误判
+    assert M._PLOT_PATH_RE.search(">>> 这里是普通引用块 <<<") is None
+    assert M._PLOT_PATH_RE.search("【这里是普通括号】") is None
+
+
+def test_m3c_parse_status_block_skips_bracket_marker_lines():
+    """`_parse_status_block` 跳过【剧情走向】/【请选择】标记行（ belt）；
+    ASCII 跳过语义不变。"""
+    host = _mk_h2_host()
+    updates = host._parse_status_block(
+        "好感度：65\n【剧情走向】\n1. 继续\n【请选择】\n心情：开心"
+    )
+    assert updates == {"好感度": "65", "心情": "开心"}
+
+
+def test_m3c_lenient_parse_stops_at_bracket_marker():
+    """`_lenient_parse_status` 行首前瞻认【剧情走向】/【请选择】：字段值
+    不吞并紧随其后的标记行（红→绿：无此前瞻时末字段值会吞到标记行）。
+    lenient 解析器要求 ≥2 个字段命中才返回。"""
+    host = _mk_h2_host()
+    text = "好感度：88\n心情：开心\n【剧情走向】"
+    updates = host._lenient_parse_status(text, list(M._DEFAULT_LOVE_FIELDS_RAW))
+    assert updates.get("好感度") == "88"
+    assert updates.get("心情") == "开心"
+
+
+async def test_f6_discards_direct_output_after_smt_send():
+    """工具已发过消息（count≥1）+ completion 是非回声的直出文本（元叙述
+    "消息已发送。用户当前收到了……"）→ F6 按工具描述契约置空。F1 归一
+    全等的宁漏勿误形态由 F6 兜底覆盖；垃圾不落 chat_logs。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={
+        "_quill_activated": True,
+        "_quill_status_handled": True,
+        _hooks._SMT_SEND_COUNT_KEY: 1,
+    })
+    resp = _RespH4("消息已发送。用户当前收到了 Kate 进门借宿的场景描写，等待用户选择下一步剧情。")
+
+    await _run_h4(host, ev, resp)
+    for coro in host._spawned:
+        await coro
+
+    assert resp.completion_text == ""
+    assert host.rag_retriever.log_calls == []
+    assert state.refusal_calls == []
+
+
+async def test_f6_without_smt_send_pure_text_flow_unchanged():
+    """count 缺失（本会话未走工具，直接文本流路径）→ F6 不触发，六级链
+    照常渲染——行为与 F6 加入前完全一致。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={"_quill_activated": True})
+    resp = _RespH4("纯文本剧情回复。" + DIRTY_LOVE)
+
+    await _run_h4(host, ev, resp)
+
+    assert "纯文本剧情回复。" in resp.completion_text
+    assert "───── 状态栏 ─────" in resp.completion_text
+
+
+async def test_f6_zero_count_keeps_completion():
+    """count=0（未发过）→ 保留。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={
+        "_quill_activated": True,
+        "_quill_status_handled": True,
+        _hooks._SMT_SEND_COUNT_KEY: 0,
+    })
+    resp = _RespH4("没有走工具的回复。")
+
+    await _run_h4(host, ev, resp)
+
+    assert resp.completion_text == "没有走工具的回复。"
+
+
+async def test_f6_invalid_count_type_keeps_completion():
+    """count 非 int（异常值）→ 保留（宁漏勿误）。"""
+    state = _StateH4(persona_id="p1")
+    host = _mk_h4_host(enabled=True, state=state)
+    ev = _EvH4(extras={
+        "_quill_activated": True,
+        "_quill_status_handled": True,
+        _hooks._SMT_SEND_COUNT_KEY: "1",
+    })
+    resp = _RespH4("异常 count 下的回复。")
+
+    await _run_h4(host, ev, resp)
+
+    assert resp.completion_text == "异常 count 下的回复。"

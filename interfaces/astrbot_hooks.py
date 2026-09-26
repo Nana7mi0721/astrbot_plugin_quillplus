@@ -18,7 +18,10 @@ F1 回声置空段（``_normalized_reply_body`` + ``handle_llm_response``
 2.5 段，消除 SMT 回声重复回复）；F2 的 quill_rounds 重置挂点住
 quill/services/character.py（H1 委托链上）。M3.0b：H2 新增 F4 同回合
 SMT 循环调用拦截与放行记录段、F5 剧情分支箭头全角归一（H6 发送前
-同步归一），均为有意行为变更。
+同步归一），均为有意行为变更。M3.0c：H4 新增 F6（SMT 之后直出
+completion 按工具描述契约丢弃）；剧情标记源头换格式
+【剧情走向】/【请选择】（prompt/render/parsers，webchat 流式直出
+路径不可拦截，只能从源头消除）。
 
 降级语义分层：顶层 try/except 留在 main.py 注册桩内（与原 H6 的
 "顶层吞掉放行"同层，不因委托而改变降级位置）；本模块实现体内**不再**
@@ -532,6 +535,12 @@ async def handle_llm_response(
        **已发侧**的插件产物、模型不会回声它，不抹则开启
        show_inject_report 时回声必然漏判；两侧对称抹除，仍是正文全等
        比对，无新增误杀面。
+    2.6. **F6：SMT 之后的直出 completion 丢弃**（M3.0c 新增，紧跟 F1 段
+       之后）：``_quill_smt_send_count`` ≥1（本轮已用工具发过消息）且
+       completion 非空 → 置空。工具描述契约"Output text DIRECTLY will be
+       DISCARDED"由此成为真行为；覆盖 F1 宁漏勿误放行的其余形态（元叙述
+       "消息已发送。用户当前收到了……"、变体复述）。count 只在 H2
+       activated 放行路径登记——直接文本流路径（count 缺失/0）不受影响。
     3. 注入报告追加（``show_inject_report`` 开 + ``_quill_report_added``
        未置位 + 正文非空）——H2 工具路径与本路径都会跑到本函数，标记
        防两行报告；
@@ -645,6 +654,27 @@ async def handle_llm_response(
     except Exception as e:
         # 宁漏勿误：判定自身失败只放行原路径，不吞掉整个 H4
         logger.debug(f"[Quill] 回声判定异常，放行原路径: {e}", exc_info=True)
+
+    # ── F6（M3.0c，BASELINE §8.2 F6）：SMT 之后的直出 completion 丢弃 ──
+    # 真机实证（昨日 19:17:26 / 19:19:47）：模型调用 send_message_to_user
+    # 发完正文后，又在 content 字段输出元叙述（"消息已发送。用户当前收到
+    # 了……等待用户选择下一步剧情。"），框架把这段也发给用户。而改写后的
+    # SMT 工具描述明确承诺 "Output text DIRECTLY in your response will be
+    # DISCARDED"——本段把这个承诺变成真的。
+    #
+    # 与 F1 的关系：F1 只拦"归一后全等的回声"（宁漏勿误）；F6 覆盖其余
+    # 形态（元叙述、变体复述）——本轮已用工具发过消息（count≥1）后，
+    # completion 直出文本按契约一律不送达。F1 保留（F4 记录段异常等极端
+    # 情况下仍有一道）。置空后：注入报告段对空文本天然跳过，gate 后的
+    # 落库/拒绝扫描同样短路——垃圾不进记忆库。
+    _smt_count = event.get_extra(_SMT_SEND_COUNT_KEY)
+    if (isinstance(_smt_count, int) and _smt_count >= 1
+            and (resp.completion_text or "").strip()):
+        resp.completion_text = ""
+        logger.info(
+            "[Quill] F6 已丢弃 SMT 之后的直出 completion"
+            "（工具描述契约：直出文本不送达，消除元叙述/回声重复）"
+        )
 
     # 注入报告（仅开关开启时）。工具路径已在 on_llm_tool_respond 里
     # 追加过，用标记去重——两条路径都会跑到本函数，否则会出现两行报告。

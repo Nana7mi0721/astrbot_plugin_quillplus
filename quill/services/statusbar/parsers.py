@@ -40,8 +40,11 @@ _STATUS_BLOCK_RE = re.compile(r'\*\*状态栏\*\*[\s\S]*?```([\s\S]*?)```')
 # F5（M3.0b）：字符组加入全角 ＞＜——输出侧（H2/H6）已把箭头归一为全角，
 # 模型模仿已归一的历史时会写出全角标记，解析侧必须同样能认。ASCII 语义
 # 不变（渲染模板 render.py/parsers.py:487 仍产 ASCII）。
+# M3.0c：渲染模板改产【剧情走向】/【请选择】（用户报告 webchat 流式路径
+# 的 ASCII >>> 不可拦截，源头换格式）；正则改为双形式——【】新形态与
+# 旧 ASCII/全角形态（模型旧习惯/旧卡指示）都能解析。
 _PLOT_PATH_RE = re.compile(
-    r'[>|＞]{2,}\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*[|<＜]{2,}\s*(.+?)\s*[|<＜]{2,}\s*(?:Select|请选择|选择)\s*[>|＞]{2,}',
+    r'(?:[>|＞]{2,}\s*|【)\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*(?:[|<＜]{2,}\s*|】)\s*(.+?)\s*(?:[|<＜]{2,}\s*|【)\s*(?:Select|请选择|选择)\s*(?:[>|＞]{2,}|】)',
     re.DOTALL | re.IGNORECASE
 )
 
@@ -249,7 +252,7 @@ class StatusbarParsersMixin:
         seen = set()
         field_pattern = re.compile(
             r'(?:^|\n)\s*(?:[-\*\•]*\s*)?'
-            r'([^\s：:=]+?)\s*[：:=]\s*(.+?)(?=\n(?:[^\s：:=]+\s*[：:=])|\n\n|\n(?:>>>|＞＞＞)|$)',
+            r'([^\s：:=]+?)\s*[：:=]\s*(.+?)(?=\n(?:[^\s：:=]+\s*[：:=])|\n\n|\n(?:>>>|＞＞＞|【剧情走向】|【请选择】)|$)',
             re.MULTILINE | re.DOTALL
         )
         for m in field_pattern.finditer(text):
@@ -487,7 +490,7 @@ class StatusbarParsersMixin:
             if pm:
                 plot_content = pm.group(1).strip()
                 new_text = new_text.replace(pm.group(0), "").strip()
-                plot_str = f"\n\n>>> 剧情走向 <<<\n{plot_content}\n<<< 请选择 >>>"
+                plot_str = f"\n\n【剧情走向】\n{plot_content}\n【请选择】"
             block_content = _annotate_changes("\n".join(parsed_lines), changed) + plot_str
             beautiful_bar = ctx.template.replace("{content}", block_content)
             new_text = new_text.strip() + "\n\n" + beautiful_bar
@@ -578,7 +581,10 @@ class StatusbarParsersMixin:
                 continue
             # F5（M3.0b）：全角箭头标记行同样跳过（输出侧已归一为全角，
             # 模型模仿历史时可能写出全角标记 + 冒号，不跳过会被当字段读走）
-            if ">>>" in line or "<<<" in line or "＞＞＞" in line or "＜＜＜" in line:
+            # M3.0c：【剧情走向】/【请选择】新标记行同样跳过
+            if (">>>" in line or "<<<" in line or "＞＞＞" in line
+                    or "＜＜＜" in line or "【剧情走向】" in line
+                    or "【请选择】" in line):
                 continue
             if "：" in line:
                 k, v = line.split("：", 1)

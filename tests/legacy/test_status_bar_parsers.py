@@ -417,7 +417,10 @@ def t18_contract_single_source() -> None:
     reminder = b.build_status_reminder()
     _assert(c["fields_line"] in reminder, "tail 提醒与契约格式行同源")
     _assert(c["sample_line"] in reminder, "tail 提醒与契约示例同源")
-    _assert(c["plot_block"] in reminder, "tail 提醒含完整选项块")
+    # M3.0c 有意修订（BASELINE §9，用户指令：剧情标记不再用 >>>）：
+    # tail 是每轮注入的强引导位，必须教【剧情走向】/【请选择】形态；
+    # 原 ASCII plot_block 断言会强迫 tail 继续教 >>>，故改为 v2 键。
+    _assert(c["plot_block_v2"] in reminder, "tail 提醒含完整选项块")
 
     # 字段变更必须传导到所有四处：这就是「单一来源」的实际含义
     b2 = M.PromptBuilder({

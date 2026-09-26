@@ -686,8 +686,10 @@ class PromptBuilder:
           fields_line     —— 契约格式行（`[LOVE_DATA] {好感度} | ...`）
           sample_line     —— 按当前字段表生成的完整示例行
           fields_help     —— 逐字段说明（多行）
-          plot_block      —— 剧情走向的三选项格式块
-          plot_markers    —— `>>> ... <<<` 两个标记（给一行式提醒用）
+          plot_block      —— 剧情走向三选项格式块（ASCII 形态，仅 legacy
+                            t18 逐字钉住保留，勿消费）
+          plot_block_v2   —— 实际注入的【剧情走向】/【请选择】形态（M3.0c）
+          plot_markers    —— 【剧情走向】/【请选择】两个标记（给一行式提醒用）
           forbidden_hint  —— 关闭状态栏时的禁止项（与开启时同源，避免两边漂移）
         """
         fields = [f for f in (self.love_fields or []) if f] or list(_DEFAULT_FIELDS)
@@ -721,14 +723,21 @@ class PromptBuilder:
         plot_options = "\n".join(
             f"{i}. {p}" for i, p in enumerate(plots[:3] or _DEFAULT_PLOT_PATHS, 1)
         )
+        # legacy t18（tests/legacy/test_status_bar_parsers.py，断言逐字保留
+        # 铁律）把 plot_block 的 ASCII 箭头形态逐字钉死；M3.0c 起实际注入
+        # 一律走 plot_block_v2（【剧情走向】/【请选择】——webchat 强制流式
+        # 路径 content 逐块直出、任何发送前钩子都拦不到 ASCII 的 >>>，只能
+        # 从源头让模型不再产出）。勿再消费 plot_block。
         plot_block = ">>> 剧情走向 <<<\n" + plot_options + "\n<<< 请选择 >>>"
+        plot_block_v2 = "【剧情走向】\n" + plot_options + "\n【请选择】"
 
         return {
             "fields_line": fields_line,
             "sample_line": sample_line,
             "fields_help": "\n".join(help_lines),
             "plot_block": plot_block,
-            "plot_markers": ">>> 剧情走向 <<< ... <<< 请选择 >>>",
+            "plot_block_v2": plot_block_v2,
+            "plot_markers": "【剧情走向】 ... 【请选择】",
             "forbidden_hint": (
                 "[LOVE_DATA]、状态栏、好感度数值、关系阶段、心情标签、"
                 "穿着描述、位置信息、剧情走向选项"
@@ -770,7 +779,7 @@ class PromptBuilder:
             "- 各选项应导向不同的剧情可能，不应三个都差不多\n"
             "- 基于当前剧情合理延伸，而非凭空创造新的设定\n\n"
             "格式：\n"
-            f"{c['plot_block']}"
+            f"{c['plot_block_v2']}"
         )
 
     def build_status_reminder(self) -> str:
@@ -785,9 +794,9 @@ class PromptBuilder:
             "本轮回复末尾必须严格按以下格式追加状态栏和剧情选项，禁止使用其他格式：\n"
             f"{c['fields_line']}\n"
             f"示例：{c['sample_line']}\n"
-            f"{c['plot_block']}\n"
+            f"{c['plot_block_v2']}\n"
             "禁止使用 --- 分隔线、> 块引用、```代码块```、或其他格式。"
-            "必须使用上述 [LOVE_DATA] 和 >>> <<< 标记。"
+            "必须使用上述 [LOVE_DATA] 和【剧情走向】/【请选择】标记。"
         )
 
 async def _self_test():

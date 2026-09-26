@@ -123,8 +123,8 @@ class StatusbarRenderMixin:
             val = vars.get(field_name, "")
             parts.append(val if val else self.status_bar_default_placeholder)
         love_section = "\n".join(f"{f}：{v}" for f, v in zip(self.love_fields, parts))
-        plot_section = "\n\n>>> 剧情走向 <<<\n" + "\n".join(
+        plot_section = "\n\n【剧情走向】\n" + "\n".join(
             f"{i+1}. {p}" for i, p in enumerate(self.status_bar_plot_paths)
-        ) + "\n<<< 请选择 >>>"
+        ) + "\n【请选择】"
         full_content = love_section + plot_section
         return template.replace("{content}", full_content)
