@@ -37,12 +37,8 @@ data/
 imports/
 data_runtime/
 
-# knowledge/ 只保留两份文档；数据库与其 sidecar 全排除。
-# 注意：不能用 `knowledge/` 直接排除整个目录——父目录被排除后，
-# 其下的 ! 反向白名单会失效（git 不会回溯进被排除的目录）。
-knowledge/*
-!knowledge/KB_ENTRIES.md
-!knowledge/KB_CONTENT_PROPOSAL.md
+# knowledge/ 素材库残留（v5.3 精简：KB 提案/条目文档移入 .backup/，不入公开库）
+knowledge/
 
 # 数据库及其 sidecar：-wal 里可能有未 checkpoint 的已提交事务，同样不能入库
 *.db
@@ -94,3 +90,12 @@ htmlcov/
 .test_api_token.txt
 .test_asset_token.txt
 .test_jwt.txt
+
+# ── 开发期产物（v5.3 精简：公开仓库只留运行/用户所需，开发件本地保留）──
+# 精简范围与理由见 docs/v5.3/BASELINE.md（本地文档）与本次提交说明。
+docs/
+tests/
+tools/
+pytest.ini
+requirements-ci.txt
+.github/workflows/

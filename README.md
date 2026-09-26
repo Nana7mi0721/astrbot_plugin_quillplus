@@ -310,9 +310,7 @@ astrbot_plugin_quillplus/
 │   ├── reranker.py          # Rerank 封装
 │   ├── llm_summarizer.py    # LLM 摘要生成
 │   └── retrieval.py         # 统一检索入口
-├── tests/                   # pytest 双模测试体系（无 AstrBot 时纯 stub，可接真机）
 ├── pages/panel/             # 管理面板：index.html + css/ + js/（原生 ES Modules，无构建步骤）
-├── knowledge/               # 数据目录（gitignore）
 └── worldbooks/              # 世界书目录（gitignore）
 ```
 
@@ -336,7 +334,7 @@ on_llm_tool_respond (priority=10)  →  停止 agent loop + 记忆存储
 
 QuillPlus 遵循持续迭代的开发路线，当前（v5.3）已完成以下里程碑：
 
-- ✅ **v5.3.0** — 结构重构：main.py 六钩子薄化为注册桩 + `interfaces/` 适配层，业务下沉 `quill/` 服务分层（与 AstrBot 解耦、可独立测试）；pytest 双模测试体系进 CI（无真机依赖的 stub 模式）；统一上传通道与路径安全加固；热路径历史清洗 O(历史长度)→O(增量)；修复真机实测与自查的 10 项正确性缺陷（详见 CHANGELOG）
+- ✅ **v5.3.0** — 结构重构：main.py 六钩子薄化为注册桩 + `interfaces/` 适配层，业务下沉 `quill/` 服务分层（与 AstrBot 解耦、可独立测试）；开发期建立 pytest 双模回归测试（本地运行）；统一上传通道与路径安全加固；热路径历史清洗 O(历史长度)→O(增量)；修复真机实测与自查的 10 项正确性缺陷（详见 CHANGELOG）
 - ✅ **v5.0** — 重构首发版：平行宇宙双轴隔离、JSON 原子化状态机、全链路异步化、Character Card V2 全量支持
 - ✅ **v5.1** — 全自动自迭代记忆：闲时反思守护进程、核心记忆更新、混合检索 (FTS5+Vector+RRF)、LRU 会话缓存
 - ✅ **v5.2/v5.2.1** — 面板功能补全：对话日志查看器、全量备份导出/恢复、WR 批量操作、移动端底部导航、MD3 全面重构、四轮代码审查修复
