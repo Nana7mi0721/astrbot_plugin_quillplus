@@ -1379,7 +1379,15 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
           （handled 后 set ``_quill_status_handled``，后续只清残留），关闭时
           整套 ``_strip_status_artifacts``；注入报告追加到最后一条 plain；
         * messages 为 JSON 字符串时解析-修改-回写（解析失败原样放行）；
-        * 拒绝模式补充扫描（S3-2，只扫首条 plain）。
+        * 拒绝模式补充扫描（S3-2，只扫首条 plain）；
+        * F4 同回合循环拦截（M3.0b）：JSON 解析后、其余处理前——已发正文
+          精确/子串重复、整段状态栏痕迹且 ``_quill_status_handled`` 已置位、
+          发送预算（``_SMT_MAX_SENDS_PER_TURN = 2``）任一命中 → messages
+          置 []（was_string 回写 "[]"），框架对空 messages 返回 error 且
+          不发送（模型收到拒绝结果，用户侧零副作用）；含媒体段放行、
+          守卫异常只 debug 放行（宁漏勿误）；放行路径末尾登记已发正文
+          （与 F1 回声比对共用 ``_normalized_reply_body`` 归一）与次数
+          （恒 +1，含媒体调用）。
 
         顶层降级留在桩内（与原 H2 同层，S2-3 语义）：任何异常吞掉 +
         error 日志放行——工具参数钩子抛出会打断 agent loop，降级语义 =
@@ -1537,6 +1545,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 "THIS IS THE ONLY TOOL for sending replies. Output text DIRECTLY in your response will be DISCARDED. "
                 "You MUST call this tool to send ANY reply text — do NOT output text in the content field. "
                 "Call this tool IMMEDIATELY as your first action — do not call any other tools before sending your message."
+                # F4（M3.0b）源头减压：单次调用契约 + 明示重发会被拒绝
+                " Send the COMPLETE reply — all story segments AND the status bar — in ONE single call. "
+                "NEVER call this tool more than once per reply; repeated calls are rejected."
             )
             logger.info(f"[Quill] 已重写 send_message_to_user 描述 (persona={persona_id})")
 

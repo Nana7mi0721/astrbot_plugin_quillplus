@@ -11,7 +11,11 @@ on_using_llm_tool，经 interfaces/astrbot_hooks.py 委托调用）：
   在 send_message_to_user 执行前用正则擦除标记，让用户看到干净文本；
 - ``strip_markdown_in_plain_messages``：对 tool_args.messages 的 plain 段
   逐条套用 strip_markdown——仅 telegram/tg 平台执行（未知平台不剥离，
-  避免破坏原生 Markdown 渲染），返回被改写的段数（仅用于日志统计）。
+  避免破坏原生 Markdown 渲染），返回被改写的段数（仅用于日志统计）；
+- ``normalize_plot_markers``（M3.0b 新增，BASELINE §8.2 F5）：ASCII 剧情
+  分支箭头 → 全角（H2/H6 发送前统一调用——webchat 等 Markdown 渲染器
+  把行首 >>> 解析为嵌套引用块渲染成三条竖线；提示词/渲染模板保持
+  ASCII 不动，由输出侧归一兜住观感）。
 
 搬移纪律：三段在原 main.py 中即为零 self 依赖的模块级纯函数/自由段，
 逐字照搬；logger 经 logbridge 桥接（M2.1 以来 quill/ 侧统一做法）。
@@ -83,3 +87,19 @@ def strip_markdown_in_plain_messages(messages, platform: str) -> int:
     if modified:
         logger.info(f"[Quill] 已清理 {modified} 条消息中的 Markdown 标记")
     return modified
+
+
+# F5（M3.0b）：ASCII 剧情分支箭头整组映射（≥3 个连续 > 或 < 视为一组）。
+_PLOT_ARROW_RE = re.compile(r"([<>]){3,}")
+_PLOT_ARROW_TRANS = str.maketrans("<>", "＜＞")
+
+
+def normalize_plot_markers(text: str) -> str:
+    """ASCII 剧情分支箭头 → 全角（webchat 等 Markdown 渲染器把行首 >>> 解析为
+    嵌套引用块渲染成三条竖线，<<< 无此语义，观感割裂；全角在任何渲染器都是
+    字面文本）。3 个以上的连续 > 或 < 整组映射，>>>> → ＞＞＞＞。"""
+    if not text:
+        return text
+    return _PLOT_ARROW_RE.sub(
+        lambda m: m.group(0).translate(_PLOT_ARROW_TRANS), text
+    )

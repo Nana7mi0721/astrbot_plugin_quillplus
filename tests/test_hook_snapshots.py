@@ -3662,3 +3662,324 @@ async def test_h3_top_level_exception_degrades(monkeypatch, inject_at):
                    for e in rec.errors if "extra_summary=" in e)
     assert "_quill_activated" not in ev.extras
     assert state.reset_rounds_calls == []                  # gate 前异常不 reset
+
+
+# ════════════════════════════════════════════════════════════════════
+# F4/F5（M3.0b，BASELINE §8.2）行为快照 —— 有意行为变更，red→green
+#
+# F4 同回合 SMT 循环调用拦截：真机日志实证同一回合内模型反复调用
+# send_message_to_user（00:06:36 发正文+状态栏 → 00:06:49 又单独发一遍
+# 状态栏 → 00:07:22/00:07:32 再发两遍变体正文），插件照单全发，用户被迫
+# 手动停止 agent。框架证据（message_tools.py SendMessageToUserTool.call）：
+# messages 为空列表或 plain text 为空 → 直接返回
+# "error: messages parameter is empty or invalid."，**不向用户发送任何
+# 内容**——因此 H2 改写 tool_args["messages"] = [] 即「拒绝本次发送」：
+# 模型收到 error 结果，用户侧零副作用。三规则（首个命中即拦截）：
+# 精确/子串重复、重复状态栏（bar-only 且 `_quill_status_handled` 已置位）、
+# 发送预算（`_SMT_MAX_SENDS_PER_TURN = 2`）；含媒体段放行、守卫异常放行
+# （宁漏勿误）。放行路径在函数末尾登记已发正文与次数，与 F1 回声比对
+# 共用同一归一函数（`_normalized_reply_body`），保证两侧对称。
+#
+# F5 剧情分支标记渲染割裂：`>>> 剧情走向 <<<` 在 webchat 等 Markdown
+# 渲染器里行首 >>> 被解析为嵌套引用块渲染成三条竖线（<<< 无此语义保持
+# 字面），观感割裂。方案：输出侧归一为全角（H2/H6 发送前统一转换，
+# >>>→＞＞＞ / <<<→＜＜＜），提示词模板与渲染模板保持 ASCII 不动
+# （零解析回归风险）；解析侧三处加全角容忍（模型模仿已归一历史时仍要
+# 能解析）。
+#
+# 注入点约定（同 H2/H6 节）：用例一律经注册桩
+# QuillPlugin.on_using_llm_tool / on_decorating_result 进入；F4 判定经
+# `_normalized_reply_body`（经 plugin._scrub_inject_report /
+# plugin._strip_status_artifacts 动态分发），宿主照 _mk_h2_host / _mk_host
+# 造法（真实 QuillPlugin 宿主，动态分发路径天然可用）。
+# ════════════════════════════════════════════════════════════════════
+
+
+# ── F4：同回合 SMT 循环调用拦截 ─────────────────────────────────────
+
+
+async def test_f4_first_call_passes_and_records_body_and_count():
+    """首调用放行：处理后的归一正文登记进 `_quill_smt_sent_bodies`、
+    `_quill_smt_send_count` 计 1（记录的是 H2 各段处理**之后**的文本，
+    与 F1 回声比对共用同一归一函数，两侧对称）。"""
+    host = _mk_h2_host(enabled=False)
+    ev = _EvH2()
+    tool_args = {"messages": [_plain("剧情正文A。")]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    assert tool_args["messages"][0]["text"] == "剧情正文A。"
+    assert ev.extras.get("_quill_smt_send_count") == 1
+    assert ev.extras.get("_quill_smt_sent_bodies") == ["剧情正文A。"]
+
+
+async def test_f4_exact_duplicate_blocked_and_postprocessing_skipped():
+    """精确重复拦截：messages 置 []（框架对空 messages 返回 error、不向
+    用户发送）；拦截发生在 JSON 解析之后、其余处理之前——状态栏链/拒绝
+    扫描/记录段全部不跑（计数保持首次的 1、无 `_quill_status_handled`
+    置位、状态栏开关查询停在首次）。"""
+    host = _mk_h2_host(enabled=False)
+    ev = _EvH2()
+    first = {"messages": [_plain("剧情正文A。")]}
+    await _run_h2(host, ev, _ToolH2(), first)
+    assert ev.extras.get("_quill_smt_send_count") == 1
+
+    second = {"messages": [_plain("剧情正文A。")]}
+    await _run_h2(host, ev, _ToolH2(), second)
+
+    assert second["messages"] == []
+    assert ev.extras.get("_quill_status_handled") is None
+    assert ev.extras.get("_quill_smt_send_count") == 1
+    assert ev.extras.get("_quill_smt_sent_bodies") == ["剧情正文A。"]
+    assert len(host.state_manager.get_mode_calls) == 1
+
+
+async def test_f4_exact_duplicate_blocked_json_string_writeback():
+    """was_string 形态：拦截后回写 "[]"（保持 JSON 字符串类型，参数类型
+    不漂移；模型经框架 error 得知被拒）。"""
+    host = _mk_h2_host(enabled=False)
+    ev = _EvH2()
+    first = {"messages": json.dumps([_plain("剧情正文A。")], ensure_ascii=False)}
+    await _run_h2(host, ev, _ToolH2(), first)
+
+    second = {"messages": json.dumps([_plain("剧情正文A。")], ensure_ascii=False)}
+    await _run_h2(host, ev, _ToolH2(), second)
+
+    assert second["messages"] == "[]"
+    assert ev.extras.get("_quill_smt_send_count") == 1
+
+
+async def test_f4_substring_of_sent_body_blocked():
+    """子串拦截：候选正文（≥ _SMT_SUBSTR_MIN_LEN）是已发正文的子串
+    （状态栏残尾/分段重发）→ 拦截；反方向（新正文**包含**已发正文）不拦
+    ——只防更短的重发，宁漏勿误。"""
+    host = _mk_h2_host(enabled=False)
+    ev = _EvH2()
+    first = {"messages": [_plain(
+        "开头正文。她转过身看向窗外，雨还没停，屋檐滴水声一下一下敲着安静。\n"
+        "结尾是一大段状态栏残尾混在正文里没有清理干净的部分。"
+    )]}
+    await _run_h2(host, ev, _ToolH2(), first)
+
+    second = {"messages": [_plain(
+        "结尾是一大段状态栏残尾混在正文里没有清理干净的部分。"
+    )]}
+    await _run_h2(host, ev, _ToolH2(), second)
+    assert second["messages"] == []
+
+    # 反方向：更长的正文包含已发正文 → 放行（判定只有 body in b 方向）
+    third = {"messages": [_plain(
+        "开头正文。她转过身看向窗外，雨还没停，屋檐滴水声一下一下敲着安静。\n"
+        "结尾是一大段状态栏残尾混在正文里没有清理干净的部分。\n新增后续剧情。"
+    )]}
+    await _run_h2(host, ev, _ToolH2(), third)
+    assert third["messages"][0]["text"].endswith("新增后续剧情。")
+
+
+async def test_f4_short_body_substring_of_sent_passes():
+    """短正文（< _SMT_SUBSTR_MIN_LEN）即使是已发正文的子串也放行——
+    一句短对话偶然含于已发长文属合法新消息，宁漏勿误。"""
+    host = _mk_h2_host(enabled=False)
+    ev = _EvH2()
+    first = {"messages": [_plain(
+        "门口的对话还在继续。好，转身走向厨房，她把湿伞收了起来。"
+    )]}
+    await _run_h2(host, ev, _ToolH2(), first)
+
+    short = {"messages": [_plain("好，转身走向厨房")]}
+    await _run_h2(host, ev, _ToolH2(), short)
+    assert short["messages"] != []
+    assert short["messages"][0]["text"] == "好，转身走向厨房"
+
+
+async def test_f4_bar_only_repeat_blocked_when_status_handled():
+    """重复状态栏：整段全是状态栏痕迹（归一后正文为空）且
+    `_quill_status_handled` 已置位 → 拦截（真机 00:06:49 单独重发状态栏
+    的形态）。"""
+    host = _mk_h2_host(enabled=True)
+    ev = _EvH2(extras={"_quill_status_handled": True})
+    tool_args = {"messages": [_plain(DIRTY_LOVE)]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    assert tool_args["messages"] == []
+    assert host.state_manager.get_mode_calls == []   # 拦截在状态栏链之前
+
+
+async def test_f4_bar_only_first_round_without_handled_passes():
+    """`_quill_status_handled` 未置位（首轮）：整段状态栏痕迹放行——那是
+    历史上「正文一段、状态栏单独一段」的合法分割模式；状态栏链照常提取
+    渲染，计数 +1。"""
+    host = _mk_h2_host(enabled=True)
+    ev = _EvH2()
+    tool_args = {"messages": [_plain(DIRTY_LOVE)]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    assert "───── 状态栏 ─────" in tool_args["messages"][0]["text"]
+    assert ev.extras.get("_quill_status_handled") is True
+    assert ev.extras.get("_quill_smt_send_count") == 1
+    assert len(ev.extras.get("_quill_smt_sent_bodies")) == 1
+
+
+async def test_f4_budget_blocks_third_distinct_call():
+    """发送预算（`_SMT_MAX_SENDS_PER_TURN = 2`）：三条互不重复的正文，
+    第三条仍被拦截——合法分割两条、循环失败实测 3-4 条；拦截调用不计数。"""
+    host = _mk_h2_host(enabled=False)
+    ev = _EvH2()
+    for text in ("第一条正文。", "第二条正文。"):
+        ta = {"messages": [_plain(text)]}
+        await _run_h2(host, ev, _ToolH2(), ta)
+    assert ev.extras.get("_quill_smt_send_count") == 2
+    assert ev.extras.get("_quill_smt_sent_bodies") == ["第一条正文。", "第二条正文。"]
+
+    third = {"messages": [_plain("第三条正文。")]}
+    await _run_h2(host, ev, _ToolH2(), third)
+
+    assert third["messages"] == []
+    assert ev.extras.get("_quill_smt_send_count") == 2
+
+
+async def test_f4_media_call_not_blocked_even_if_text_duplicates():
+    """含媒体段（image + plain 重复文本）：`_has_media` 为真跳过全部拦截
+    规则直接放行（媒体消息无法凭正文比对判重）；计数恒 +1、正文照常登记
+    （媒体调用同样消耗本轮预算）。"""
+    host = _mk_h2_host(enabled=False)
+    ev = _EvH2()
+    first = {"messages": [_plain("剧情正文A。")]}
+    await _run_h2(host, ev, _ToolH2(), first)
+
+    second = {"messages": [{"type": "image", "url": "x"}, _plain("剧情正文A。")]}
+    await _run_h2(host, ev, _ToolH2(), second)
+
+    assert second["messages"][0] == {"type": "image", "url": "x"}   # 原样放行
+    assert second["messages"][1]["text"] == "剧情正文A。"
+    assert ev.extras.get("_quill_smt_send_count") == 2
+    assert ev.extras.get("_quill_smt_sent_bodies") == ["剧情正文A。", "剧情正文A。"]
+
+
+async def test_f4_guard_exception_passes_through_original_path(monkeypatch):
+    """守卫自身异常（注入 `_normalized_reply_body` 抛出）：debug 放行原路径
+    ——H2 其余处理照常（状态栏链提取渲染），记录段同样吞掉（计数/正文
+    均不置位），顶层降级不触发。"""
+    calls: list = []
+
+    def _boom(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError("injected F4 guard failure")
+
+    monkeypatch.setattr(_hooks, "_normalized_reply_body", _boom)
+    rec = _LoggerRec()
+    monkeypatch.setattr(_hooks, "logger", rec)
+
+    host = _mk_h2_host(enabled=True)
+    ev = _EvH2()
+    tool_args = {"messages": [_plain("开头正文\n" + DIRTY_LOVE)]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)   # 不应抛
+
+    assert calls, "异常注入未命中实际调用路径（假绿）"
+    assert "───── 状态栏 ─────" in tool_args["messages"][0]["text"]
+    assert ev.extras.get("_quill_status_handled") is True
+    assert "_quill_smt_send_count" not in ev.extras
+    assert "_quill_smt_sent_bodies" not in ev.extras
+
+
+# ── F5：剧情分支标记全角归一 ────────────────────────────────────────
+
+
+async def test_f5_h2_plain_plot_markers_normalized():
+    """H2 工具路径：plain 段的 ASCII 剧情分支箭头在发送前统一转全角
+    （含 `<<< 请选择 >>>` 行内尾部 >>>）；正文与选项内容原样保留。"""
+    host = _mk_h2_host(enabled=True)
+    ev = _EvH2()
+    text = "剧情正文。\n\n>>> 剧情走向 <<<\n1. 继续当前话题\n<<< 请选择 >>>"
+    tool_args = {"messages": [_plain(text)]}
+
+    await _run_h2(host, ev, _ToolH2(), tool_args)
+
+    out = tool_args["messages"][0]["text"]
+    assert "＞＞＞ 剧情走向 ＜＜＜" in out
+    assert "＜＜＜ 请选择 ＞＞＞" in out
+    assert ">>>" not in out
+    assert "<<<" not in out
+    assert "剧情正文。" in out
+    assert "1. 继续当前话题" in out
+
+
+async def test_f5_h6_chain_plain_plot_markers_normalized():
+    """H6 兜底路径：result.chain 的 Plain 组件在发送前同样归一（剥离之后、
+    赋回 comp.text 之前），箭头归一计入 cleaned。
+
+    例外（有意收窄，见接口 docstring）：剥离后仍含渲染签名
+    （``**状态栏**`` + ``` 围栏）的段**不**归一——
+    tests/legacy/test_status_bar_parsers.py 兜底钩子节（断言逐字保留
+    铁律）把「开启时已渲染状态栏原样保留」连同 ASCII 箭头逐字钉死；
+    该契约由上节 test_h6_enabled_never_eats_rendered_bar_or_custom_
+    template 继续逐字锁定，渲染栏的归一由 H2 工具路径（正常产生路径）
+    承担。"""
+    host = _mk_host(enabled=True)
+    ev = _Ev(_Result(["剧情正文。\n\n>>> 剧情走向 <<<\n1. 选项一\n<<< 请选择 >>>"]))
+
+    await _run_hook(host, ev)
+
+    out = ev.get_result().chain[0].text
+    assert "＞＞＞ 剧情走向 ＜＜＜" in out
+    assert "＜＜＜ 请选择 ＞＞＞" in out
+    assert ">>>" not in out
+    assert "<<<" not in out
+
+
+def test_f5_normalize_plot_markers_unit():
+    """`normalize_plot_markers` 单元：≥3 连续箭头整组映射（>>>> → ＞＞＞＞）、
+    1-2 连箭头与普通正文无 collateral、空串原样。"""
+    from astrbot_plugin_quillplus.quill.services import response as _resp
+
+    assert _resp.normalize_plot_markers(">>>>") == "＞＞＞＞"
+    assert _resp.normalize_plot_markers(">>> 剧情走向 <<<") == "＞＞＞ 剧情走向 ＜＜＜"
+    assert _resp.normalize_plot_markers("a > b") == "a > b"
+    assert _resp.normalize_plot_markers("a >> b") == "a >> b"
+    assert _resp.normalize_plot_markers(
+        "普通的剧情正文，没有标记。") == "普通的剧情正文，没有标记。"
+    assert _resp.normalize_plot_markers("") == ""
+
+
+def test_f5_plot_path_re_tolerates_fullwidth():
+    """解析器全角容忍：`_PLOT_PATH_RE` 匹配全角变体（含混合宽度）；
+    ASCII 语义不变——普通 `>>> 引用 <<<` 仍不误判（legacy t6 语义）。"""
+    cn_fw = ("正文\n\n＞＞＞ 剧情走向 ＜＜＜\n1. 继续当前话题\n"
+             "2. 转换场景\n＜＜＜ 请选择 ＞＞＞")
+    m = M._PLOT_PATH_RE.search(cn_fw)
+    assert m is not None
+    assert "继续当前话题" in m.group(1)
+
+    mixed = "正文\n\n>>> 剧情走向 ＜＜＜\n1. 选项一\n<<< 请选择 ＞＞＞"
+    assert M._PLOT_PATH_RE.search(mixed) is not None
+
+    # ASCII 语义不变（对应 legacy t6：普通引用块不误判）
+    assert M._PLOT_PATH_RE.search(">>> 这里是普通引用块 <<<") is None
+
+
+def test_f5_lenient_parse_status_stops_at_fullwidth_marker():
+    """`_lenient_parse_status` 行首前瞻容忍全角 ＞＞＞：字段值在下一行为
+    全角箭头标记时正确终止（不把标记行吞进值里）。"""
+    host = _mk_h2_host()
+    text = "好感度：88\n位置：海滩\n＞＞＞ 剧情走向 ＞＞＞\n1. 选项一"
+    updates = host._lenient_parse_status(text, list(M._DEFAULT_LOVE_FIELDS_RAW))
+    assert updates.get("好感度") == "88"
+    assert updates.get("位置") == "海滩"
+
+
+def test_f5_parse_status_block_skips_fullwidth_marker_lines():
+    """`_parse_status_block` 跳过含全角箭头标记的行（模型模仿已归一历史时
+    可能写出全角标记 + 冒号，不跳过会把标记当成字段读进 session_vars）；
+    ASCII 跳过语义不变。"""
+    host = _mk_h2_host()
+    updates = host._parse_status_block(
+        "好感度：65\n＞＞＞ 剧情走向：海边约会 ＜＜＜\n心情：开心"
+    )
+    assert updates == {"好感度": "65", "心情": "开心"}
+
+    # ASCII 语义不变（legacy 同款样本）
+    assert host._parse_status_block("好感度：65\n>>> 剧情走向 <<<\n1. 继续") == {
+        "好感度": "65"}

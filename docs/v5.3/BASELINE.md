@@ -261,6 +261,8 @@
 - [ ] **F1 SMT 回声重复回复**：AstrBot 4.28.x 的 `send_message_to_user` 为直接发送（`message_tools.py:349` context.send_message），并把已发文本记入 `_send_message_to_user_current_session_plain_texts`；respond.stage 以**精确文本匹配**去重回声（`respond/stage.py:189-207`）。羽笔流程天然打破匹配：H2 把状态栏**渲染后**随工具文本发送，H4 把 completion 回声里的状态栏**剥离**——两个变体不等 → 去重失效 → 用户收到两条（实测：19:31:22 工具直发带渲染状态栏 + 19:31:47 respond 再发剥离版，间隔 25s）。修复方向：H4 检测 completion 为已发送文本的回声（对照 extra 记录 + 状态栏变体归一）时置空 result，让 respond.stage 走空链跳过。
 - [ ] **F2 quill_rounds 不随换卡重置**：`_get_target_id` 返回 UMO（聊天会话级，main.py `_get_target_id`），计数跨角色卡连续（实测三张卡连计到第 9 轮）；换卡建新隔离对话后第一轮即 `skip_constants=True`，而新对话无历史可承载被跳过的 Layer 1 常驻 → 新卡首轮缺失 WR/WB 常驻内容。修复方向：`_ensure_persona_conversation` 新建/切换对话时 `reset_quill_rounds`（记忆会话键 `UMO::persona` 已隔离，仅注入计数键需要跟上）。
 - [ ] **F3（记录，暂不修）**：SMT 强制描述下模型仍可能纯文本直出（实测 Layla 两轮），属模型合规性，框架侧行为，与插件无关。
+- [x] **F4 同回合 send_message_to_user 循环调用（M3.0b 已修）**：现象——同一回合内模型反复调用 SMT（00:06:36 发正文+状态栏 → 00:06:49 又单独发一遍状态栏 → 00:07:22/00:07:32 再发两遍变体正文），插件照单全发，用户被迫手动停止 agent。根因——H2 对 `tool_args.messages` 照单处理，无同回合去重/预算语义。处置（M3.0b）——H2 JSON 解析后新增守卫段，三规则首个命中即把 messages 置 []（框架 `message_tools.py` 对空 messages 直接返回 error 且**不发送任何内容** → 用户侧零副作用）：①已发正文精确/子串重复；②整段状态栏痕迹（归一正文为空）且 `_quill_status_handled` 已置位（未置位放行 = 历史「正文一段、状态栏单独一段」合法分割）；③发送预算 `_SMT_MAX_SENDS_PER_TURN = 2`（合法分割两条、循环失败实测 3-4 条）。含媒体段放行；守卫异常只 debug 放行（宁漏勿误）；放行路径末尾登记已发正文（与 F1 回声比对共用 `_normalized_reply_body` 归一，两侧对称）与次数（恒 +1，含媒体调用）；SMT 改写描述末尾追加单次调用契约（源头减压）。
+- [x] **F5 剧情分支标记渲染割裂（M3.0b 已修）**：现象——`>>> 剧情走向 <<<` 在 webchat 等 Markdown 渲染器里行首 `>>>` 被解析为嵌套引用块渲染成三条竖线，`<<<` 无此语义保持字面，观感割裂。根因——提示词/渲染模板产 ASCII 箭头，输出侧未做渲染器安全归一。处置（M3.0b）——输出侧归一为全角（＞＞＞/＜＜＜，`response.normalize_plot_markers`，≥3 连续箭头整组映射）：H2 对每个 plain 段无条件归一；解析器三处加全角容忍（`_PLOT_PATH_RE` 字符组 / `_lenient_parse_status` 行首前瞻 / `_parse_status_block` 跳行）；提示词模板与渲染模板（render.py:126-128、parsers.py:487）保持 ASCII 不动（零解析回归风险）。**有意收窄**：H6 对剥离后仍含渲染签名（`**状态栏**` + ``` 围栏）的段不归一——tests/legacy/test_status_bar_parsers.py 兜底钩子节（断言逐字保留铁律）把「开启时已渲染状态栏原样保留」连同 ASCII 箭头逐字钉死为契约；渲染栏的正常产生路径在 H2 工具链（彼处无条件归一），H6 只对非渲染栏段兜底归一。
 
 ---
 
@@ -280,3 +282,4 @@
   - 面板配置保存 ×3（含 status_bar.llm_provider_id / performance.max_output_length / worldbook.injection_position）全部成功、injection_position 变更即时反映到 prompt ✓
   - 全程插件日志零 ERROR、零 Prompt 装配降级 ✓
   - 发现 F1/F2/F3（见 §8.2），均为预存行为，转入 M3 修复清单。
+- **2026-09-25 M3.0b（F4/F5 真机实测缺陷修复）**：F4 同回合 SMT 循环调用拦截（H2 守卫三规则 + 放行记录段 + SMT 描述单次契约）与 F5 剧情分支箭头输出侧全角归一（H2 plain / H6 非渲染栏段 + 解析器三处全角容忍；H6 渲染栏段豁免见 §8.2 F5 有意收窄）。主审补强：F4 规则 1 子串判重加最小长度 `_SMT_SUBSTR_MIN_LEN = 20`（短正文偶然含于已发长文属合法新消息，宁漏勿误），配套 `test_f4_short_body_substring_of_sent_passes`。快照新增 16 条（F4×10 / F5×6，红相验证 14 failed/1 passed）；双模测试 **191 passed**（基线 175 + 新增 16，纯桩模式与 ASTRBOT_APP 真实模式一致）；tests/legacy 零改动。待部署真机复测：循环调用拦截日志（`[Quill] F4 已拦截第 N 次…`）与 webchat 箭头观感。

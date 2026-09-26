@@ -37,8 +37,11 @@ from .tokens import LOVE_DATA_TAG, STATUS_END_TAG, STATUS_TAG
 _STATUS_RE = re.compile(re.escape(STATUS_TAG) + r'([\s\S]*?)' + re.escape(STATUS_END_TAG))
 _LOVE_DATA_RE = re.compile(re.escape(LOVE_DATA_TAG) + r'\s*(.+)')
 _STATUS_BLOCK_RE = re.compile(r'\*\*状态栏\*\*[\s\S]*?```([\s\S]*?)```')
+# F5（M3.0b）：字符组加入全角 ＞＜——输出侧（H2/H6）已把箭头归一为全角，
+# 模型模仿已归一的历史时会写出全角标记，解析侧必须同样能认。ASCII 语义
+# 不变（渲染模板 render.py/parsers.py:487 仍产 ASCII）。
 _PLOT_PATH_RE = re.compile(
-    r'[>|]{2,}\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*[|<]{2,}\s*(.+?)\s*[|<]{2,}\s*(?:Select|请选择|选择)\s*[>|]{2,}',
+    r'[>|＞]{2,}\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*[|<＜]{2,}\s*(.+?)\s*[|<＜]{2,}\s*(?:Select|请选择|选择)\s*[>|＞]{2,}',
     re.DOTALL | re.IGNORECASE
 )
 
@@ -246,7 +249,7 @@ class StatusbarParsersMixin:
         seen = set()
         field_pattern = re.compile(
             r'(?:^|\n)\s*(?:[-\*\•]*\s*)?'
-            r'([^\s：:=]+?)\s*[：:=]\s*(.+?)(?=\n(?:[^\s：:=]+\s*[：:=])|\n\n|\n(?:>>>)|$)',
+            r'([^\s：:=]+?)\s*[：:=]\s*(.+?)(?=\n(?:[^\s：:=]+\s*[：:=])|\n\n|\n(?:>>>|＞＞＞)|$)',
             re.MULTILINE | re.DOTALL
         )
         for m in field_pattern.finditer(text):
@@ -573,7 +576,9 @@ class StatusbarParsersMixin:
             line = line.strip()
             if not line:
                 continue
-            if ">>>" in line or "<<<" in line:
+            # F5（M3.0b）：全角箭头标记行同样跳过（输出侧已归一为全角，
+            # 模型模仿历史时可能写出全角标记 + 冒号，不跳过会被当字段读走）
+            if ">>>" in line or "<<<" in line or "＞＞＞" in line or "＜＜＜" in line:
                 continue
             if "：" in line:
                 k, v = line.split("：", 1)

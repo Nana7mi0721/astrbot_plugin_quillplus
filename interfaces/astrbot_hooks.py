@@ -16,7 +16,9 @@
 M3.0 真机实测修复（BASELINE §8.2，**有意行为变更**里程碑）：H4 新增
 F1 回声置空段（``_normalized_reply_body`` + ``handle_llm_response``
 2.5 段，消除 SMT 回声重复回复）；F2 的 quill_rounds 重置挂点住
-quill/services/character.py（H1 委托链上）。
+quill/services/character.py（H1 委托链上）。M3.0b：H2 新增 F4 同回合
+SMT 循环调用拦截与放行记录段、F5 剧情分支箭头全角归一（H6 发送前
+同步归一），均为有意行为变更。
 
 降级语义分层：顶层 try/except 留在 main.py 注册桩内（与原 H6 的
 "顶层吞掉放行"同层，不因委托而改变降级位置）；本模块实现体内**不再**
@@ -48,6 +50,18 @@ from ..quill.services import response as _response_mod
 # 记入本 extra 键（message_tools.py:349-361，值经 strip()），respond.stage
 # 以它与最终 result 做精确匹配去重（respond/stage.py:189-207）。
 _SMT_SENT_TEXTS_KEY = "_send_message_to_user_current_session_plain_texts"
+
+# F4（M3.0b，BASELINE §8.2 F4）：同回合 SMT 循环拦截的登记键。
+_SMT_SENT_BODIES_KEY = "_quill_smt_sent_bodies"
+_SMT_SEND_COUNT_KEY = "_quill_smt_send_count"
+# 发送预算：合法的分割发送是两条（历史上「正文一段、状态栏单独一段」的
+# 模式，实测 7 轮里 3 轮如此）；同回合循环失败实测连发 3-4 条——预算取 2，
+# 再多的调用几乎必然是循环失败（拦截方式：messages 置 []，框架对空
+# messages 直接返回 error 且不发送任何内容）。
+_SMT_MAX_SENDS_PER_TURN = 2
+# 子串判重（规则 1）的最小候选长度：短正文（一句短对话）偶然是已发长文
+# 的子串属合法新消息，不拦；真实的残尾/分段重发形态远长于此。
+_SMT_SUBSTR_MIN_LEN = 20
 
 
 def _normalized_reply_body(plugin, text: str) -> str:
@@ -101,6 +115,17 @@ async def handle_decorating_result(plugin, event: AstrMessageEvent) -> None:
     另外**不做**「补栏」：此刻正文已定型，补栏会与前面已发出的分段重复；
     发送前只做减法。
 
+    F5（M3.0b，BASELINE §8.2 F5）：剥离结果在赋回 ``comp.text`` 前追加
+    ``_response_mod.normalize_plot_markers``（ASCII 剧情分支箭头 → 全角）
+    ——本钩子是发送前最后一道，提示词/渲染模板保持 ASCII，模型直出的
+    箭头在此归一（webchat 等 Markdown 渲染器把行首 >>> 解析为嵌套引用块
+    渲染成三条竖线）；归一变化并入 cleaned 计数。**例外**：剥离后仍含
+    L1/L2 渲染签名（``**状态栏**`` + ``` 围栏）的段不归一——
+    tests/legacy/test_status_bar_parsers.py 兜底钩子节（铁律：断言逐字
+    保留）把「开启时已渲染状态栏原样保留」连同 ASCII 箭头逐字钉死为本
+    钩子契约；渲染栏的正常产生路径在 H2 工具链（彼处对每个 plain 段
+    无条件归一），H6 只对非渲染栏段兜底归一。
+
     剥离器经 ``plugin._strip_*`` 调用而非直接 import：与原 ``self._strip_*``
     的动态分发路径逐字等价（转发链最终落在
     quill/services/statusbar/strip.py 的纯函数），并让行为快照测试
@@ -131,13 +156,25 @@ async def handle_decorating_result(plugin, event: AstrMessageEvent) -> None:
             stripped = plugin._strip_raw_markers(text, plugin.props.love_fields)
         else:
             stripped = plugin._strip_status_artifacts(text, plugin.props.love_fields)
+        # F5（M3.0b）：ASCII 剧情分支箭头 → 全角（webchat 等 Markdown
+        # 渲染器把行首 >>> 解析为嵌套引用块渲染成三条竖线；输出侧归一，
+        # 提示词/渲染模板保持 ASCII 不动）。归一变化并入 cleaned 计数
+        # （stripped != text 判定在其之后）。
+        # 例外：剥离后仍含渲染签名（**状态栏** + ``` 围栏）的段不归一——
+        # legacy 兜底钩子节（断言逐字保留铁律）把「开启时已渲染状态栏
+        # 原样保留」连同 ASCII 箭头逐字钉死为本钩子契约；渲染栏的正常
+        # 产生路径在 H2 工具链（彼处无条件归一），此处只对非渲染栏段
+        # 兜底归一。签名判定用 stripped（关闭档整套剥离后栏已不存在，
+        # 剩余正文照常归一）。
+        if not ("**状态栏**" in stripped and "```" in stripped):
+            stripped = _response_mod.normalize_plot_markers(stripped)
         if stripped != text:
             comp.text = stripped
             cleaned += 1
     if cleaned:
         logger.info(
-            f"[Quill] 发送前擦除 {cleaned} 段状态栏残留"
-            f"（{'原始标记' if enabled else '全套剥离'}）"
+            f"[Quill] 发送前清洗 {cleaned} 段（状态栏残留/剧情标记，"
+            f"{'原始标记' if enabled else '全套剥离'}）"
         )
 
 
@@ -215,16 +252,25 @@ async def handle_using_llm_tool(
        刻意逐字保留，不借搬移"顺手统一"；
     2. messages 为 JSON 字符串时先解析（失败 → 立即 return，后续一切
        不跑、tool_args 原样）；
-    3. telegram/tg 平台剥离 plain 段 Markdown（逐字下沉
+    3. F4 同回合循环拦截（M3.0b 新增，BASELINE §8.2 F4）：守卫段——
+       已发正文精确/子串重复、重复状态栏（bar-only 且
+       ``_quill_status_handled`` 已置位）、发送预算
+       （``_SMT_MAX_SENDS_PER_TURN = 2``）任一命中 → messages 置 []
+       （was_string 回写 "[]"）并 return，后续一切不跑；
+    4. telegram/tg 平台剥离 plain 段 Markdown（逐字下沉
        quill/services/response.py，调用点一行）；
-    4. 状态栏（全平台）：开启时首条 plain 走六级链
+    5. 状态栏（全平台）：开启时首条 plain 走六级链
        （``plugin._handle_status_bar``，M2.1 Mixin，MRO 动态分发），
        handled 后 set ``_quill_status_handled``，后续 plain 只清残留；
        关闭时整套 ``_strip_status_artifacts``；注入报告追加到最后一条
-       plain（``_append_inject_report``）；
-    5. JSON 回写（was_string 时序列化回去）；
-    6. 拒绝模式补充扫描（S3-2：completion_text 为空时拒绝内容藏于
-       tool_args.messages，只扫首条 plain，命中 mark_refusal）。
+       plain（``_append_inject_report``）；每个 plain 段追加 F5 剧情分支
+       箭头全角归一（M3.0b，``_response_mod.normalize_plot_markers``）；
+    6. JSON 回写（was_string 时序列化回去）；
+    7. 拒绝模式补充扫描（S3-2：completion_text 为空时拒绝内容藏于
+       tool_args.messages，只扫首条 plain，命中 mark_refusal）；
+    8. F4 记录段（M3.0b 新增）：放行路径登记已发正文（重算处理后的
+       plain concat 经 ``_normalized_reply_body`` 归一，与 F1 回声比对
+       共用同一函数）与发送次数（恒 +1，含媒体调用）。
 
     下沉决策（本轮评估记录）：telegram 剥离（``strip_markdown`` 正则组与
     逐段套用循环）在原 main.py 即为零 self 依赖的模块级纯函数/自由段，
@@ -265,6 +311,76 @@ async def handle_using_llm_tool(
     else:
         messages = messages_raw
 
+    # ── F4（M3.0b，BASELINE §8.2 F4）：同回合 SMT 循环调用拦截 ────────
+    # 真机实证：同一回合内模型反复调用 send_message_to_user（正文+状态栏
+    # → 单独状态栏 → 两遍变体正文），插件照单全发，用户被迫手动停止
+    # agent。框架 message_tools.py 对空 messages 直接返回
+    # "error: messages parameter is empty or invalid." 且**不发送任何内容**，
+    # 故把 tool_args["messages"] 置 [] 即等于「拒绝本次发送」：模型收到
+    # error 结果，用户侧零副作用。
+    #
+    # 守卫位于 JSON 解析之后、其余全部处理之前：拦截时 H2 后续（Markdown
+    # 剥离/状态栏链/报告/扫描/记录）一律不跑。仅当 messages 是 list 时
+    # 执行；整体 try/except——判定自身异常只 debug 放行原路径（宁漏勿误，
+    # 不吞 H2 其他处理）。与 F1 回声比对共用 _normalized_reply_body（经
+    # plugin 动态分发 _scrub_inject_report / _strip_status_artifacts），
+    # 保证判定两侧归一对称。
+    if isinstance(messages, list):
+        try:
+            _plain_concat = "\n".join(
+                m.get("text") for m in messages
+                if isinstance(m, dict) and m.get("type") == "plain"
+                and isinstance(m.get("text"), str)
+            )
+            # 存在非 plain 段（image/record/video/file 等）→ 媒体调用：
+            # 无法凭正文比对判重，跳过全部拦截规则直接放行
+            _has_media = any(
+                isinstance(m, dict) and m.get("type") != "plain"
+                for m in messages
+            )
+            _body = _normalized_reply_body(plugin, _plain_concat)
+            _sent = event.get_extra(_SMT_SENT_BODIES_KEY)
+            if not (isinstance(_sent, list)
+                    and all(isinstance(s, str) for s in _sent)):
+                _sent = []
+            _count = event.get_extra(_SMT_SEND_COUNT_KEY)
+            _count = _count if isinstance(_count, int) else 0
+
+            _reason = ""
+            if not _has_media:
+                if _body:
+                    # 规则 1：精确重复；或候选（≥ _SMT_SUBSTR_MIN_LEN）是
+                    # 已发正文的子串（如状态栏残尾/分段重发）。反方向
+                    # （新正文包含已发正文）不拦；短正文不做子串判定——
+                    # 一句短对话偶然含于已发长文属合法新消息，宁漏勿误。
+                    for _b in _sent:
+                        if _b == _body or (
+                            len(_body) >= _SMT_SUBSTR_MIN_LEN and _body in _b
+                        ):
+                            _reason = "重复正文"
+                            break
+                elif _plain_concat.strip() and event.get_extra(
+                        "_quill_status_handled"):
+                    # 规则 2：整段全是状态栏痕迹（归一后正文为空）且本轮
+                    # 状态栏已处理过 → 重复状态栏；未置位时放行——那是
+                    # 历史上「正文一段、状态栏单独一段」的合法分割模式
+                    _reason = "重复状态栏"
+                if not _reason and _count >= _SMT_MAX_SENDS_PER_TURN:
+                    # 规则 3：发送预算（合法分割两条、循环失败实测 3-4 条）
+                    _reason = "发送预算"
+            if _reason:
+                tool_args["messages"] = (
+                    json.dumps([], ensure_ascii=False) if was_string else []
+                )
+                logger.info(
+                    f"[Quill] F4 已拦截第 {_count + 1} 次 "
+                    f"send_message_to_user（{_reason}），本次调用不发送"
+                )
+                return
+        except Exception as e:
+            # 宁漏勿误：判定自身失败只放行原路径，不吞掉 H2 其余处理
+            logger.debug(f"[Quill] F4 守卫异常，放行原路径: {e}", exc_info=True)
+
     # 仅对特定平台执行 Markdown 清理（未知平台不剥离，避免破坏原生 Markdown 渲染）
     _response_mod.strip_markdown_in_plain_messages(messages, platform)
 
@@ -303,6 +419,12 @@ async def handle_using_llm_tool(
                     if msg["text"] != before:
                         event.set_extra("_quill_report_added", True)
                     report_done = True
+                # F5（M3.0b）：ASCII 剧情分支箭头 → 全角。webchat 等
+                # Markdown 渲染器把行首 >>> 解析为嵌套引用块渲染成三条
+                # 竖线（<<< 无此语义），观感割裂；输出侧统一归一，提示词
+                # 模板与渲染模板保持 ASCII 不动。F4 拦截分支已在此前
+                # return，不受影响。
+                msg["text"] = _response_mod.normalize_plot_markers(msg["text"])
 
     # JSON 回写：如果原始类型是字符串，序列化回去
     if was_string:
@@ -323,6 +445,34 @@ async def handle_using_llm_tool(
                         logger.info(f"[Quill] (tool_args) 检测到拒绝模式 '{pattern}' (target={target_id})")
                         break
                 break  # 只扫首条 plain 文本
+
+    # ── F4 记录段（M3.0b）：放行路径的已发正文/次数登记 ────────────────
+    # 重算**处理后**的 plain concat（本函数已在各段改写 msg["text"]），
+    # 经 _normalized_reply_body 归一后非空才登记；发送次数恒 +1（含媒体
+    # 调用——媒体调用放行同样消耗本轮预算）。与 F1 回声比对
+    # （handle_llm_response）共用同一归一函数，保证两侧对称。
+    # 整体 try/except：记录自身异常只 debug 放行，不影响本钩子语义。
+    try:
+        _bodies = event.get_extra(_SMT_SENT_BODIES_KEY)
+        if not (isinstance(_bodies, list)
+                and all(isinstance(s, str) for s in _bodies)):
+            _bodies = []
+        _concat = ""
+        if isinstance(messages, list):
+            _concat = "\n".join(
+                m.get("text") for m in messages
+                if isinstance(m, dict) and m.get("type") == "plain"
+                and isinstance(m.get("text"), str)
+            )
+        _body = _normalized_reply_body(plugin, _concat)
+        if _body:
+            _bodies.append(_body)
+            event.set_extra(_SMT_SENT_BODIES_KEY, _bodies)
+        _count = event.get_extra(_SMT_SEND_COUNT_KEY)
+        _count = _count if isinstance(_count, int) else 0
+        event.set_extra(_SMT_SEND_COUNT_KEY, _count + 1)
+    except Exception as e:
+        logger.debug(f"[Quill] F4 已发记录异常，放行: {e}", exc_info=True)
 
 
 async def handle_llm_response(
