@@ -1195,6 +1195,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             return text
         return text.rstrip() + "\n\n" + line
 
+    # 注入报告行正则的类属性别名（M2.0 re-export 约定；模块级定义见本文件
+    # 顶部）。唯一消费者：M3.4 增量清洗游标的世代指纹
+    # （quill/services/history_scrub.py:_inputs_fingerprint）——指纹须覆盖
+    # 清洗函数的全部外部输入（报告行格式），格式一变指纹即变 → 游标整体
+    # 失效回退全量重洗。钩子/服务侧的清洗调用路径
+    # （plugin._scrub_inject_report）不经此属性，纯属指纹读取面。
+    _INJECT_REPORT_LINE_RE = _INJECT_REPORT_LINE_RE
+
     @staticmethod
     def _scrub_inject_report(text: str) -> str:
         """从对话历史里抹掉上一轮的注入报告行。

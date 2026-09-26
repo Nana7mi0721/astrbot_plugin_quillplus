@@ -45,6 +45,7 @@ from astrbot.core.agent.tool import FunctionTool
 
 from ..commands import _check_group_permission
 from ..encryption import decrypt_output
+from ..quill.services import history_scrub as _history_scrub_mod
 from ..quill.services import memory as _memory_mod
 from ..quill.services import prompt as _prompt_mod
 from ..quill.services import response as _response_mod
@@ -859,11 +860,13 @@ async def handle_llm_request(
     22 步编排（BASELINE §4 一一对应，搬移前后顺序逐字一致，不得重排）：
 
     1.  ``_restore_smt_tool``（无条件、最先——SMT 请求级还原，§4.1）；
-    2.  Context Restoration 垫回：类型守卫 + 注入报告行抹除 →
+    2.  Context Restoration 垫回：类型守卫 + 注入报告行抹除（M3.4 起经
+        quill/services/history_scrub.py 的增量游标通道，见下沉决策）→
         contexts 空/≤1 且 ``rag_enable_chat_logging``（默认 True）且
         retriever.memory_store 存在 → ``get_recent_chat_logs`` 前插 8 条；
-    3.  状态栏关闭时清洗历史 contexts 已渲染状态栏（``_sb_effective``
-        在此求值，供步 15/20 复用——跨步存活值，不下沉的原因之一）；
+    3.  状态栏关闭时清洗历史 contexts 已渲染状态栏（M3.4 起同上走增量
+        通道；``_sb_effective`` 在此求值，供步 15/20 复用——跨步存活值，
+        不下沉的原因之一）；
     4.  ``_inject_persona_and_first_message``（[%None] 切断原生人格 +
         开场白首插）；
     5.  用户消息落 chat_logs（仅绑卡、非 ``/`` 指令——**在激活 gate 之前**，
@@ -900,12 +903,19 @@ async def handle_llm_request(
       ``build_context_text``：22 步中唯一零 async、零插件实例状态、零控制
       流交织的纯函数段，显式参数即完整依赖面，调用点原位一行替换（块内
       对 req.contexts 的 isinstance 守卫随迁，求值时序不变）。
-    * **步 2-3 垫回/历史清洗块不下沉**：块内求值的 ``mem_session_id``（供
-      步 5/6 使用）与 ``_sb_effective``（供步 15/20 使用）是跨步存活值，
-      下沉需以返回值/出参形态交还编排层，传参形态与求值时序都要改；且
-      块内三个动态分发点（``_scrub_inject_report`` /
-      ``_effective_status_bar_enabled`` / ``_strip_status_artifacts``）使
-      服务函数要么收 plugin（伪解耦的代码搬家）要么改传参——强搬=重写。
+    * **步 2-3 垫回块与编排控制流不下沉**：块内求值的 ``mem_session_id``
+      （供步 5/6 使用）与 ``_sb_effective``（供步 15/20 使用）是跨步存活
+      值，下沉需以返回值/出参形态交还编排层，传参形态与求值时序都要改。
+      **M3.4 修订（D8 热路径优化）**：步 2-3 中「逐条清洗消息」的两段
+      纯变换（报告行抹除列表推导 / 状态栏剥离循环）下沉
+      quill/services/history_scrub.py（``scrub_inject_report_history`` /
+      ``strip_status_history``）——它们是逐条消息上的纯文本变换，可安全
+      外移；垫回闸门、fresh 判定、``_sb_effective`` 求值与两通道的先后
+      （报告行洗在垫回前、剥离洗在垫回后）留在本函数原位。服务函数收
+      plugin 与 ``_normalized_reply_body`` 先例同理：清洗本体必须经
+      ``plugin._scrub_inject_report`` / ``plugin._strip_status_artifacts``
+      动态分发（与改前 self._* 同一路径，保证增量与全量是同一个函数），
+      游标/世代机制见该模块 docstring。
     * **步 9-12 gate 块不下沉**：步 11 是早退 return（编排控制流本体），
       下沉需要哨兵返回值改变控制流形状；顺序即行为的核心段。
     * **步 6 核心记忆块不下沉**：权限校验经根包 commands 模块函数
@@ -935,11 +945,14 @@ async def handle_llm_request(
         req.contexts = []
     # 抹掉历史里的注入报告行：它只该出现在用户看到的那条消息里，
     # 回显进上下文会被模型模仿（下一轮自己写一行），且对本轮推理无价值。
-    req.contexts = [
-        ({**c, "content": plugin._scrub_inject_report(c.get("content", ""))}
-         if isinstance(c, dict) and isinstance(c.get("content"), str) else c)
-        for c in req.contexts
-    ]
+    # M3.4（D8）：清洗本体仍是 plugin._scrub_inject_report（动态分发，
+    # 与改前 self._* 同一路径），外包一层按会话的增量游标缓存——旧消息
+    # 指纹命中直接复用上次输出（不跑正则），新消息照常清洗；结果与逐条
+    # 全量清洗逐字节一致，机制与失效条件见
+    # quill/services/history_scrub.py 模块 docstring。
+    req.contexts = _history_scrub_mod.scrub_inject_report_history(
+        plugin, target_id, req.contexts
+    )
     contexts_is_fresh = not req.contexts or len(req.contexts) <= 1
     if contexts_is_fresh \
             and getattr(plugin.config, 'rag_enable_chat_logging', True) \
@@ -958,16 +971,12 @@ async def handle_llm_request(
     # 用会话级最终开关判断：/quill statusbar off 之后同样要清历史示范。
     _sb_effective = await plugin._effective_status_bar_enabled(target_id)
     if not _sb_effective and req.contexts:
-        _scrubbed = []
-        for c in req.contexts:
-            if isinstance(c, dict) and isinstance(c.get("content"), str):
-                clean = plugin._strip_status_artifacts(
-                    c["content"], plugin.props.love_fields
-                )
-                _scrubbed.append({**c, "content": clean} if clean != c["content"] else c)
-            else:
-                _scrubbed.append(c)
-        req.contexts = _scrubbed
+        # M3.4（D8）：同上——同一剥离函数 + 增量游标，逐字节一致；开关
+        # 方向（关闭才洗历史、开启不洗）与求值时序一行未动，strip 通道
+        # 游标在开启轮次不推进、缓存跨开关状态存活（纯函数，命中即正确）。
+        req.contexts = _history_scrub_mod.strip_status_history(
+            plugin, target_id, req.contexts
+        )
 
     persona_id, persona_data = await plugin._inject_persona_and_first_message(req, event, target_id)
 
