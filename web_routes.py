@@ -58,7 +58,6 @@ def _urlquote(name: str) -> str:
     return quote(str(name), safe='')
 
 from astrbot.api.web import (
-    PluginUploadFile,
     error_response,
     json_response,
     request,
@@ -117,7 +116,35 @@ from ._route_core import (
     handle_chat_log_export,
 )
 
+# M3.1 统一上传通道：文件读取 / base64 消歧 / 大小上限 / 扩展名集合的唯一实现
+from .interfaces.web.upload import (
+    BINARY_EXTS,
+    CARD_IMAGE_EXTS,
+    CARD_IMPORT_EXTS,
+    CARD_LIMIT,
+    DEFAULT_LIMIT,
+    UploadError,
+    UploadTooLarge,
+    decode_base64,
+    read_upload,
+)
+from .quill.core.paths import sanitize_name
+
 PLUGIN_NAME = "astrbot_plugin_quillplus"
+
+
+class _BytesUpload:
+    """bytes → upload-like 适配：handle_rag_upload 只需 ``async read()``。
+
+    （原 rag_upload / rag_upload_base64 内各自定义的 _BytesUpload/DummyFile
+    收敛为此处唯一实现。）
+    """
+
+    def __init__(self, content: bytes) -> None:
+        self._content = content
+
+    async def read(self) -> bytes:
+        return self._content
 
 
 async def _json_body() -> dict:
@@ -212,13 +239,15 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/persona/update",        self.persona_update, ["POST"],   "更新角色卡")
         _r(f"/{PLUGIN_NAME}/persona/delete",        self.persona_delete, ["POST"],   "删除角色卡")
         _r(f"/{PLUGIN_NAME}/upload_avatar",         self.upload_avatar,  ["POST"],   "上传头像(文件)")
-        _r(f"/{PLUGIN_NAME}/upload_avatar_base64",  self.upload_avatar_base64, ["POST"], "上传头像(Base64)")
+        # M3.1：base64 变体与正身共用同一 handler（同上）
+        _r(f"/{PLUGIN_NAME}/upload_avatar_base64",  self.upload_avatar,  ["POST"],   "上传头像(Base64)")
         _r(f"/{PLUGIN_NAME}/persona/import",        self.persona_import, ["POST"],   "导入V2角色卡(文件)")
-        _r(f"/{PLUGIN_NAME}/persona/import_base64", self.persona_import_base64, ["POST"], "导入V2角色卡(Base64)")
+        _r(f"/{PLUGIN_NAME}/persona/import_base64", self.persona_import, ["POST"],   "导入V2角色卡(Base64)")
         _r(f"/{PLUGIN_NAME}/persona/export",        self.persona_export, ["GET"],    "导出V2角色卡")
         _r(f"/{PLUGIN_NAME}/persona/export_base64",     self.persona_export_base64, ["POST"], "导出V2角色卡(Base64)")
         _r(f"/{PLUGIN_NAME}/persona/import_text",        self.persona_import_text, ["POST"], "文本导入角色卡")
-        _r(f"/{PLUGIN_NAME}/persona/import_text_base64", self.persona_import_text_base64, ["POST"], "文本导入角色卡(Base64)")
+        # M3.1：base64 变体与正身共用同一 handler（同上）
+        _r(f"/{PLUGIN_NAME}/persona/import_text_base64", self.persona_import_text, ["POST"], "文本导入角色卡(Base64)")
         _r(f"/{PLUGIN_NAME}/avatar/<path:filename>", self.serve_avatar,  ["GET"],    "获取头像文件")
 
         # ── Info (世界书列表 + 触发日志) ──
@@ -231,7 +260,8 @@ class QuillRoutes:
 
         # ── RAG 文档知识库 (5 个) ──
         _r(f"/{PLUGIN_NAME}/rag/upload",       self.rag_upload,     ["POST"],   "上传文档")
-        _r(f"/{PLUGIN_NAME}/rag/upload_base64", self.rag_upload_base64, ["POST"], "上传文档(Base64)")
+        # M3.1：base64 变体与正身共用同一 handler（通道消歧收敛于 upload.read_upload）
+        _r(f"/{PLUGIN_NAME}/rag/upload_base64", self.rag_upload,    ["POST"],   "上传文档(Base64)")
         _r(f"/{PLUGIN_NAME}/rag/documents",    self.rag_documents,  ["GET"],    "列出已上传文档")
         _r(f"/{PLUGIN_NAME}/rag/delete",       self.rag_delete,     ["POST"],   "删除文档")
         _r(f"/{PLUGIN_NAME}/rag/search",       self.rag_search,     ["POST"],   "语义检索测试")
@@ -410,74 +440,40 @@ class QuillRoutes:
 
     @_api_handler
     async def rag_upload(self):
-        """上传文档（multipart/form-data）。"""
-        from astrbot.api.web import PluginUploadFile
-        files = await request.files()
-        upload = files.get("file")
-        if not isinstance(upload, PluginUploadFile):
-            return error_response("未收到文件", status_code=400)
-        file_bytes = await upload.read()
-        if len(file_bytes) > 50 * 1024 * 1024:
-            return error_response("文档文件过大（最大 50MB）", status_code=413)
-        # 文件类型检测：仅支持纯文本文件
-        filename = getattr(upload, 'name', 'unknown').lower()
-        _TEXT_EXTS = {'.txt', '.md', '.markdown', '.csv', '.log', '.json', '.xml', '.yaml', '.yml', '.html', '.htm'}
-        _BINARY_EXTS = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.7z', '.png', '.jpg', '.jpeg', '.gif', '.bmp'}
-        ext = os.path.splitext(filename)[1].lower()
-        if ext in _BINARY_EXTS:
-            return error_response(f"不支持的文件格式：{ext}。目前仅支持纯文本文件（.txt/.md/.csv/.json 等）。PDF/Word 请先转换为纯文本。", status_code=400)
-        form = await request.form()
-        source = form.get("source", "") or getattr(upload, 'name', 'unknown')
-        chunk_size = self.config.rag_chunk_size if self.config else 500
-        chunk_overlap = self.config.rag_chunk_overlap if self.config else 50
-        embedding = self.rag.get('embedding')
-        vector_store = self.rag.get('vector_store')
-        if embedding is None or vector_store is None:
-            return error_response("RAG 未初始化", status_code=500)
-        class _BytesUpload:
-            def __init__(self, content):
-                self._content = content
-            async def read(self):
-                return self._content
-        return json_response(
-            await handle_rag_upload(vector_store, embedding, _BytesUpload(file_bytes), source, chunk_size, chunk_overlap)
-        )
+        """上传文档（multipart 文件 / base64 双通道统一入口，M3.1 收敛）。
 
-    @_api_handler
-    async def rag_upload_base64(self):
-        """接收前端发来的 Base64 JSON，完美绕过沙盒 FormData 拦截。"""
-        import base64
-        data = await _json_body()
-        source = data.get("source", "unknown")
-        b64_data = data.get("b64_data", "")
-        if not b64_data:
-            return error_response("未收到文件数据", status_code=400)
+        ``/rag/upload``（multipart）与 ``/rag/upload_base64``（JSON+b64_data，
+        面板 bridge 通道）共用同一 handler：通道消歧、50MB 上限、base64
+        解码全部收敛于 upload.read_upload。原 base64 变体的 ``source``
+        字段既是文件名（扩展名黑名单检查对象）也是文档名。
+        """
         try:
-            file_bytes = base64.b64decode(b64_data)
-        except Exception as e:
-            return error_response(error_text("Base64 解码失败", e), status_code=400)
-        if len(file_bytes) > 50 * 1024 * 1024:
+            payload = await read_upload(
+                request,
+                keys=("file",),
+                limit=DEFAULT_LIMIT,
+                filename_field="source",
+                default_filename="unknown",
+            )
+        except UploadTooLarge:
             return error_response("文档文件过大（最大 50MB）", status_code=413)
-        # 文件类型检测：仅支持纯文本文件
-        _BINARY_EXTS = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.7z', '.png', '.jpg', '.jpeg', '.gif', '.bmp'}
-        src_filename = (source or "unknown").lower()
-        src_ext = os.path.splitext(src_filename)[1].lower()
-        if src_ext in _BINARY_EXTS:
-            return error_response(f"不支持的文件格式：{src_ext}。目前仅支持纯文本文件（.txt/.md/.csv/.json 等）。PDF/Word 请先转换为纯文本。", status_code=400)
+        except UploadError as e:
+            return error_response(error_text("Base64 解码失败", e), status_code=400)
+        if payload is None:
+            return error_response("未收到文件", status_code=400)
+        # 文件类型检测：仅支持纯文本文件（黑名单常量唯一来源：upload.BINARY_EXTS）
+        ext = os.path.splitext(payload.filename.lower())[1]
+        if ext in BINARY_EXTS:
+            return error_response(f"不支持的文件格式：{ext}。目前仅支持纯文本文件（.txt/.md/.csv/.json 等）。PDF/Word 请先转换为纯文本。", status_code=400)
+        source = payload.fields.get("source") or payload.filename
         chunk_size = self.config.rag_chunk_size if self.config else 500
         chunk_overlap = self.config.rag_chunk_overlap if self.config else 50
         embedding = self.rag.get('embedding')
         vector_store = self.rag.get('vector_store')
         if embedding is None or vector_store is None:
             return error_response("RAG 未初始化", status_code=500)
-        class DummyFile:
-            def __init__(self, content):
-                self._content = content
-            async def read(self):
-                return self._content
-        upload_file = DummyFile(file_bytes)
         return json_response(
-            await handle_rag_upload(vector_store, embedding, upload_file, source, chunk_size, chunk_overlap)
+            await handle_rag_upload(vector_store, embedding, _BytesUpload(payload.data), source, chunk_size, chunk_overlap)
         )
 
     @_api_handler
@@ -853,9 +849,12 @@ class QuillRoutes:
     @_api_handler
     async def wb_import_st(self):
         """上传 ST 格式 lorebook 文件并导入。"""
-        files = await request.files()
-        upload = files.get("file")
-        if not isinstance(upload, PluginUploadFile):
+        # M3.1：文件读取统一走上传通道（保持无大小上限的历史语义 limit=None）
+        try:
+            payload = await read_upload(request, keys=("file",), limit=None)
+        except UploadError as e:
+            return error_response(error_text("Base64 解码失败", e), status_code=400)
+        if payload is None:
             return error_response("未收到文件", status_code=400)
 
         form = await request.form()
@@ -868,9 +867,7 @@ class QuillRoutes:
         if not _validate_name(name):
             return error_response("无效的世界书名称", status_code=400)
 
-        # 必须先读取数据再 save（save 后文件指针在末尾，read() 返回空）
-        data = await upload.read()
-        if not data:
+        if not payload.data:
             return error_response("上传的文件为空", status_code=400)
 
         if self.plugin is None or not getattr(self.plugin, "paths", None):
@@ -878,10 +875,10 @@ class QuillRoutes:
         # 写入导入暂存目录（数据根下的 imports/，不再写进插件目录）
         target_dir = Path(self.plugin.paths["imports_dir"])
         target_dir.mkdir(parents=True, exist_ok=True)
-        await upload.save(target_dir / f"{name}.json")
+        (target_dir / f"{name}.json").write_bytes(payload.data)
 
         return json_response(
-            await handle_wb_import_st(self.wb_manager, name, data)
+            await handle_wb_import_st(self.wb_manager, name, payload.data)
         )
 
     @_api_handler
@@ -1012,55 +1009,28 @@ class QuillRoutes:
 
     @_api_handler
     async def upload_avatar(self):
-        """上传头像图片（multipart/form-data）。"""
+        """上传头像图片（multipart 文件 / base64 双通道统一入口，M3.1 收敛）。
+
+        ``/upload_avatar``（multipart）与 ``/upload_avatar_base64``
+        （JSON+b64_data）共用同一 handler；5MB 上限与通道消歧收敛于
+        upload.read_upload。
+        """
         if not self.persona_manager:
             return error_response("角色卡管理器未加载", status_code=500)
 
-        from astrbot.api.web import PluginUploadFile
-        files = await request.files()
-        upload = files.get("file")
-        if not isinstance(upload, PluginUploadFile):
+        try:
+            payload = await read_upload(
+                request, keys=("file",), limit=CARD_LIMIT, default_filename="avatar.png"
+            )
+        except UploadTooLarge:
+            return error_response("图片文件过大（最大 5MB）", status_code=413)
+        except UploadError as e:
+            return error_response(error_text("Base64 解码失败", e), status_code=400)
+        if payload is None:
             return error_response("未收到文件", status_code=400)
 
-        data = await upload.read()
-        filename = getattr(upload, 'name', 'avatar.png')
-
-        # 验证文件大小 (最大 5MB，与 Base64 接口保持一致)
-        if len(data) > 5 * 1024 * 1024:
-            return error_response("图片文件过大（最大 5MB）", status_code=413)
-
         try:
-            rel_path = await self.persona_manager.save_avatar(filename, data)
-            url = f"/{PLUGIN_NAME}/avatar/{os.path.basename(rel_path)}"
-            return json_response({"url": url, "path": rel_path, "message": "Avatar uploaded"})
-        except Exception as e:
-            return error_response(error_text("保存失败", e), status_code=500)
-
-    @_api_handler
-    async def upload_avatar_base64(self):
-        """上传头像图片（Base64 模式，绕过沙盒 FormData 拦截）。"""
-        if not self.persona_manager:
-            return error_response("角色卡管理器未加载", status_code=500)
-
-        import base64
-        data = await _json_body()
-        filename = (data.get("filename") or "avatar.png").strip()
-        b64_data = (data.get("b64_data") or "").strip()
-
-        if not b64_data:
-            return error_response("未收到文件数据", status_code=400)
-
-        try:
-            file_bytes = base64.b64decode(b64_data)
-        except Exception as e:
-            return error_response(error_text("Base64 解码失败", e), status_code=400)
-
-        # 验证文件大小 (最大 5MB，与 multipart 接口保持一致)
-        if len(file_bytes) > 5 * 1024 * 1024:
-            return error_response("图片文件过大（最大 5MB）", status_code=413)
-
-        try:
-            rel_path = await self.persona_manager.save_avatar(filename, file_bytes)
+            rel_path = await self.persona_manager.save_avatar(payload.filename, payload.data)
             url = f"/{PLUGIN_NAME}/avatar/{os.path.basename(rel_path)}"
             return json_response({"url": url, "path": rel_path, "message": "Avatar uploaded"})
         except Exception as e:
@@ -1068,86 +1038,42 @@ class QuillRoutes:
 
     @_api_handler
     async def persona_import(self):
-        """导入 V2 角色卡（multipart/form-data，支持 PNG/JPG/JSON）。"""
+        """导入 V2 角色卡（multipart 文件 / base64 双通道统一入口，M3.1 收敛）。
+
+        扩展名白名单为原两通道并集（含 .webp，BASELINE §8.1 决策）；
+        5MB 上限与通道消歧收敛于 upload.read_upload。
+        """
         if not self.persona_manager:
             return error_response("角色卡管理器未加载", status_code=500)
 
-        from astrbot.api.web import PluginUploadFile
-        files = await request.files()
-        upload = files.get("file")
-        if not isinstance(upload, PluginUploadFile):
+        try:
+            payload = await read_upload(
+                request, keys=("file",), limit=CARD_LIMIT, default_filename="card.png"
+            )
+        except UploadTooLarge:
+            return error_response("文件过大（最大 5MB）", status_code=413)
+        except UploadError as e:
+            return error_response(error_text("Base64 解码失败", e), status_code=400)
+        if payload is None:
             return error_response("未收到文件", status_code=400)
 
-        file_data = await upload.read()
-        filename = getattr(upload, 'name', 'card.png').lower()
+        filename = payload.filename.lower()
         ext = os.path.splitext(filename)[1].lower()
         # 处理 .card.png 等特殊扩展名
-        if filename.lower().endswith('.card.png'):
+        if filename.endswith('.card.png'):
             ext = '.png'
-        elif ext not in ('.png', '.jpg', '.jpeg', '.json'):
-            return error_response("不支持的文件格式（支持 PNG/JPG/JSON）", status_code=400)
-
-        if len(file_data) > 5 * 1024 * 1024:
-            return error_response("文件过大（最大 5MB）", status_code=413)
-
-        try:
-            is_image = ext in ('.png', '.jpg', '.jpeg')
-            persona_data = await asyncio.to_thread(self.persona_manager.parse_v2_card, file_data, is_image)
-
-            # 如果是图片，保存为头像（头像保存失败不影响角色卡导入）
-            if is_image:
-                try:
-                    avatar_filename = f"{persona_data['name']}{ext}"
-                    avatar_path = await self.persona_manager.save_avatar(avatar_filename, file_data)
-                    persona_data["avatar_path"] = avatar_path
-                except Exception as av_e:
-                    logger.warning(f"[Quill] 头像保存失败（角色卡仍会导入）: {av_e}")
-
-            result = await self.persona_manager.create_persona(persona_data)
-            return json_response(result)
-
-        except ImportError as e:
-            return error_response(str(e), status_code=501)
-        except ValueError as e:
-            return error_response(str(e), status_code=400)
-        except Exception as e:
-            return error_response(error_text("导入失败", e), status_code=500)
-
-    @_api_handler
-    async def persona_import_base64(self):
-        """导入 V2 角色卡（Base64 模式，绕过沙盒 FormData 拦截）。"""
-        if not self.persona_manager:
-            return error_response("角色卡管理器未加载", status_code=500)
-
-        import base64
-        data = await _json_body()
-        filename = (data.get("filename") or "card.png").strip().lower()
-        b64_data = (data.get("b64_data") or "").strip()
-
-        if not b64_data:
-            return error_response("未收到文件数据", status_code=400)
-
-        try:
-            file_bytes = base64.b64decode(b64_data)
-        except Exception as e:
-            return error_response(error_text("Base64 解码失败", e), status_code=400)
-
-        ext = os.path.splitext(filename)[1].lower()
-        if ext not in ('.png', '.jpg', '.jpeg', '.webp', '.json'):
+        elif ext not in CARD_IMPORT_EXTS:
             return error_response("不支持的文件格式（支持 PNG/JPG/WebP/JSON）", status_code=400)
 
-        if len(file_bytes) > 5 * 1024 * 1024:
-            return error_response("文件过大（最大 5MB）", status_code=413)
-
         try:
-            is_image = ext in ('.png', '.jpg', '.jpeg', '.webp')
-            persona_data = await asyncio.to_thread(self.persona_manager.parse_v2_card, file_bytes, is_image)
+            is_image = ext in CARD_IMAGE_EXTS
+            persona_data = await asyncio.to_thread(self.persona_manager.parse_v2_card, payload.data, is_image)
 
             # 如果是图片，保存为头像（头像保存失败不影响角色卡导入）
             if is_image:
                 try:
                     avatar_filename = f"{persona_data['name']}{ext}"
-                    avatar_path = await self.persona_manager.save_avatar(avatar_filename, file_bytes)
+                    avatar_path = await self.persona_manager.save_avatar(avatar_filename, payload.data)
                     persona_data["avatar_path"] = avatar_path
                 except Exception as av_e:
                     logger.warning(f"[Quill] 头像保存失败（角色卡仍会导入）: {av_e}")
@@ -1214,8 +1140,11 @@ class QuillRoutes:
         if not self.persona_manager:
             return error_response("管理器未加载", status_code=500)
 
-        # 安全检查
-        if not filename or '..' in filename or '/' in filename or '\\' in filename:
+        # 安全检查（M3.1）：原手工 '..'、'/'、'\\' 三连检查收敛为
+        # sanitize_name 规整比对——任何会被规整改写的名字（分隔符、..、
+        # 控制字符、Windows 保留名、首尾空白）一律 400。
+        # 对比基准用 fallback=""：空输入同样落入"无效"分支。
+        if not filename or sanitize_name(filename, fallback="") != filename:
             return error_response("无效的文件名", status_code=400)
 
         data = await self.persona_manager.read_avatar(filename)
@@ -1238,36 +1167,25 @@ class QuillRoutes:
 
     @_api_handler
     async def persona_import_text(self):
-        """从剪贴板文本导入角色卡"""
+        """从剪贴板文本导入角色卡（text 直传 / b64_text 绕沙箱，M3.1 收敛）。
+
+        ``/persona/import_text``（text 字段）与 ``/persona/import_text_base64``
+        （b64_text 字段，面板 bridge 通道）共用同一 handler。
+        """
         if not self.persona_manager:
             return error_response("角色卡管理器未加载", status_code=500)
         data = await _json_body()
         text = (data.get("text") or "").strip()
         if not text:
+            # 沙箱 bridge 通道：文本以 Base64 编码放 b64_text 字段传输
+            b64_text = (data.get("b64_text") or "").strip()
+            if b64_text:
+                try:
+                    text = decode_base64(b64_text).decode('utf-8')
+                except Exception as e:
+                    return error_response(error_text("Base64 解码失败", e), status_code=400)
+        if not text:
             return error_response("缺少 text 参数", status_code=400)
-        try:
-            persona_data = self.persona_manager.parse_clipboard_text(text)
-            result = await self.persona_manager.create_persona(persona_data)
-            return json_response(result)
-        except ValueError as e:
-            return error_response(str(e), status_code=400)
-        except Exception as e:
-            return error_response(error_text("解析失败", e), status_code=400)
-
-    @_api_handler
-    async def persona_import_text_base64(self):
-        """从剪贴板文本导入角色卡（Base64 绕过沙盒）"""
-        if not self.persona_manager:
-            return error_response("角色卡管理器未加载", status_code=500)
-        data = await _json_body()
-        b64_text = (data.get("b64_text") or "").strip()
-        if not b64_text:
-            return error_response("缺少 b64_text 参数", status_code=400)
-        import base64
-        try:
-            text = base64.b64decode(b64_text).decode('utf-8')
-        except Exception as e:
-            return error_response(error_text("Base64 解码失败", e), status_code=400)
         try:
             persona_data = self.persona_manager.parse_clipboard_text(text)
             result = await self.persona_manager.create_persona(persona_data)

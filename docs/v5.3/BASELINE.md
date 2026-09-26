@@ -184,13 +184,15 @@
 | 组 | multipart 侧 | base64 侧 | 备注 |
 |---|---|---|---|
 | 1 | rag_upload L412-444 | rag_upload_base64 L447-481 | base64 解码 L456；**50MB 限制两处抄写** L420/L459；**二进制黑名单两处抄写** L425/L462（同字面集合 `{.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.rar,.7z,.png,.jpg,.jpeg,.gif,.bmp}`；配套 `_TEXT_EXTS` 仅 L424 且实际未参与判断） |
-| 2 | persona_import L1070-1114 | persona_import_base64 L1117-1163 | **扩展名白名单不一致**：multipart 侧 `.png/.jpg/.jpeg/.json`+`.card.png` 特判（L1085-1088），base64 侧多 `.webp`（L1136）——收敛时需决定归一方向（见 §7 开放问题） |
+| 2 | persona_import L1070-1114 | persona_import_base64 L1117-1163 | **扩展名白名单不一致**：multipart 侧 `.png/.jpg/.jpeg/.json`+`.card.png` 特判（L1085-1088），base64 侧多 `.webp`（L1136）——**M3.1 已收敛：并集 {.png,.jpg,.jpeg,.webp,.json}，两通道同一 handler**（决策记录见 §8.1） |
 | 3 | persona_import_text L1240-1255 | persona_import_text_base64 L1258-1278 | b64_text→UTF-8 L1268 |
 | 4 | backup_export L1340-1354 | backup_export_base64 L1357-1375 | 出向 b64 L1368-1372 |
 | 5 | backup_restore L1378-1397（裸 body） | backup_restore_base64 L1400-1418 | **两种 restore 均无大小上限** |
 | 6 | upload_avatar L1013-1037 | upload_avatar_base64 L1039-1062 | 5MB；另有 persona_export（GET 二进制）↔ persona_export_base64（POST JSON）一对 |
 
 **消歧机制**：路由级双端点 + **前端选择**——`pages/panel/js/api.js:47`（bridge 通道拒绝 FormData/Blob；isFormData/isBlob 才走 fetch）、api.js:13-45（bridge 探测+负缓存）；面板实际只调 base64/JSON 变体（rag.js:74、persona.js:450/462/487、backup.js:19/43、cropper.js:156；worldbook.js:238 注释确认"读为文本走 JSON 绕开沙箱 FormData 限制"）。**M3.1 统一上传通道不得改变此传输契约。**
+
+**M3.1 收敛状态（2026-09-26）**：组 1/2/3/6 已收敛为单一 handler + base64 路由别名注册（复用组 P3-3 delete_book 先例），消歧逻辑唯一实现于 `interfaces/web/upload.py:read_upload`（multipart 文件 → 表单 b64 → JSON b64 三通道按序探测）；wb_import_st（multipart 单通道）文件读取同批接入。组 4（backup_export，出向 zip）与组 5（backup_restore，裸 body / JSON-b64）不属文件上传通道，维持双端点现状。memory_import / wr_import / wb_import_json 为 JSON 文本通道，不属文件上传，未动。
 
 ### 6.3 请求体读取方式（M3.1 收敛的等价面）
 
@@ -251,8 +253,8 @@
 ### 8.1 开放问题（实施中需拍板，随答案更新本节）
 
 - [x] **v5.2.5 基线点 git tag**：已打在 M1 结束点 `a60ed3e`（tag `v5.2.5+testbase`，含测试保护网），2026-09-25。
-- [ ] **persona_import 扩展名白名单归一方向**（§6.2 组2 不一致）：倾向 base64 侧集合（更宽，含 .webp）——确认后同步 BASELINE §6.2 并在 M3.1 实施时消歧。
-- [ ] **backup_restore 无大小上限**：M3.1 统一上传通道是否为 restore 加上限（会改变行为）→ 倾向维持现状（restore 是管理员操作且已有 zip 校验），BASELINE 记录即可。
+- [x] **persona_import 扩展名白名单归一方向**（§6.2 组2 不一致）：**M3.1 已决——统一取并集** `{.png, .jpg, .jpeg, .webp, .json}`（即 base64 侧更宽集合）。理由：①M3.1 收敛后两通道共用同一 handler，白名单物理上只剩一份，必须取单值；②并集兼容面最宽、纯放宽——multipart 侧用户此前传 `.webp` 会 400，现转为可用，无任何既有客户端受损；③`.webp` 本就经 PIL 解析（parse_v2_card 图像分支 + save_avatar 白名单含 .webp），语义自洽。实现于 `interfaces/web/upload.py` 的 `CARD_IMPORT_EXTS`/`CARD_IMAGE_EXTS`，错误文案统一为「支持 PNG/JPG/WebP/JSON」。2026-09-26。
+- [x] **backup_restore 无大小上限**：维持现状（restore 是管理员操作，已有 `_maintenance_lock` 互斥 + zip 校验 + SQLite 头校验 + 白名单落点三重防护）；`read_upload` 不套用于 restore 两端点（裸 body / JSON-b64 均不属 multipart 文件通道）。2026-09-26。
 
 ### 8.2 真机实测发现（2026-09-25 19:04-19:32 部署后首测，经真机日志 + 框架源码确证）
 
@@ -285,3 +287,4 @@
   - 发现 F1/F2/F3（见 §8.2），均为预存行为，转入 M3 修复清单。
 - **2026-09-25 M3.0b（F4/F5 真机实测缺陷修复）**：F4 同回合 SMT 循环调用拦截（H2 守卫三规则 + 放行记录段 + SMT 描述单次契约）与 F5 剧情分支箭头输出侧全角归一（H2 plain / H6 非渲染栏段 + 解析器三处全角容忍；H6 渲染栏段豁免见 §8.2 F5 有意收窄）。主审补强：F4 规则 1 子串判重加最小长度 `_SMT_SUBSTR_MIN_LEN = 20`（短正文偶然含于已发长文属合法新消息，宁漏勿误），配套 `test_f4_short_body_substring_of_sent_passes`。快照新增 16 条（F4×10 / F5×6，红相验证 14 failed/1 passed）；双模测试 **191 passed**（基线 175 + 新增 16，纯桩模式与 ASTRBOT_APP 真实模式一致）；tests/legacy 零改动。待部署真机复测：循环调用拦截日志（`[Quill] F4 已拦截第 N 次…`）与 webchat 箭头观感。
 - **2026-09-26 M3.0c（F5 源头换格式 + F6 直出丢弃）**：日志复诊确认 13:09 重载后新版已生效（main:1552 / interfaces:745 行号吻合、微信侧箭头已全角）；用户 webchat 仍见 `>>>` 根因 = 强制流式 content 逐块直出、发送前钩子不可达 → 按用户指令从源头换标记【剧情走向】/【请选择】（prompt_builder `plot_block_v2` 实际注入键 + guide/tail/wrapper 消费点切换、render.py 兜底栏、parsers.py plot_str；`_PLOT_PATH_RE` 双形式兼容旧输出）；F6 = H4 置空 SMT 之后的直出 completion（工具描述契约落地，消除元叙述旁白）。快照新增 8 条（M3.0c×4 + F6×4）；**tests/legacy 首次修订例外 1 行**（t18 L420 tail 选项块断言 plot_block → plot_block_v2，内联注释 + §8.2 F5 记录，理由：tail 教 ASCII 与用户指令直接冲突）；契约 `plot_block` 键保留 ASCII 仅作 legacy 钉住、勿消费。双模测试 **199 passed**。待部署真机复测：webchat 剧情分支观感 + F4/F1/F2 回归。
+- **2026-09-26 M3.1（统一上传通道 & 路径安全，D3+F2）**：`interfaces/web/upload.py` 落地 `read_upload`（multipart 文件 → 表单 b64 → JSON b64 三通道按序消歧，json/form/files 全 await 契约）+ `UploadPayload`/`UploadError`/`UploadTooLarge`；二进制扩展名黑名单 `BINARY_EXTS` 与角色卡白名单 `CARD_IMPORT_EXTS`（并集决策见 §8.1）单源化。`quill/core/paths.py` 自参考版移植 `sanitize_name`/`_WINDOWS_RESERVED`/`resolve_safe`（模块级纯函数；移植修正：参考版 `_UNSAFE_CHARS` 为普通字符串，`\x00-\x1f` 区间写法实际只含 NUL/减号/单元分隔符三字符——既漏其余控制字符又误伤连字符，改为正则字符类让区间语义成立，连字符系合法文件名字符、persona 头像文件名真实存在）。web_routes 四组双份 handler（rag_upload / upload_avatar / persona_import / persona_import_text）收敛为单一函数体 + base64 路由别名注册，`*_base64` 重复函数删除（1549→1467 行）；wb_import_st 文件读取接入 read_upload（limit=None 保持无上限）；serve_avatar 手工 `'..'/'/'/'\\'` 三连检查收敛为 sanitize_name 规整比对（400 形态不变；合法头像名 `{safe}_{ts}{ext}` 全数透传，分隔符/保留名/首尾点空白比原检查拒得更严——纯收紧）。**等价面微移（均为错误边缘，envelope 形态不变）**：①persona_import「超限且扩展名同时非法」从 400 转 413（limit 在通道内先于扩展名检查，与 rag 原序一致）；②缺参文案统一（base64 侧「未收到文件数据」→「未收到文件」、「缺少 b64_text 参数」→「缺少 text 参数」）；③真机附带修复：原 multipart handler `getattr(upload, 'name', ...)` 在真机 PluginUploadFile（暴露 `.filename`，无 `.name`）上恒取默认值，扩展名黑名单/文件名形同虚设——read_upload 改读 `.filename`（回退 `.name` 兼容 stub）后恢复设计意图。快照新增 49 条（read_upload×13 / sanitize_name×7 / resolve_safe×7 / 路由层×22，tests/test_upload_channel.py，红相验证 import 失败 + 4 断言红）；双模测试 **248 passed**（基线 199 + 新增 49）；tests/legacy 零改动。待部署真机复测：面板头像裁剪上传、RAG 文档上传、角色卡导入（含 .webp）、世界书 ST 导入。
