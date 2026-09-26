@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import sqlite3
-import asyncio
 import aiosqlite
 
 import numpy as np
@@ -12,12 +11,14 @@ from collections import OrderedDict
 import json
 
 try:
-    from .._fts_util import escape_trigram, short_tokens
+    from .._fts_util import escape_trigram, escape_like, short_tokens
     from ..quill.core.errors import StorageError
+    from ..quill.core.locks import ReentrantLock
     from ..quill.core.storage_stats import note_storage_error
 except ImportError:  # 直接运行本文件时无父包
-    from _fts_util import escape_trigram, short_tokens
+    from _fts_util import escape_trigram, escape_like, short_tokens
     from quill.core.errors import StorageError
+    from quill.core.locks import ReentrantLock
     from quill.core.storage_stats import note_storage_error
 
 from astrbot.api import logger
@@ -35,7 +36,9 @@ class MemoryStore:
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._conn = None
-        self._lock = asyncio.Lock()
+        # M3.3 D5：可重入锁（同任务重入只加深度）。此前是不可重入的
+        # asyncio.Lock，持锁块内不得调用 _exec_* 只能靠注释纪律维系。
+        self._lock = ReentrantLock()
         self._cache = OrderedDict()
         self._MAX_CACHE = 50
 
@@ -135,9 +138,7 @@ class MemoryStore:
             ''')
             await self._conn.commit()
 
-            # Backfill FTS5
-            # 注意：此处已在 self._lock 内，不能再调用 _exec_* 辅助方法（内部会重复获取锁导致死锁），
-            # 必须直接使用 self._conn。
+            # Backfill FTS5（直连 self._conn 的既有写法保持不变）
             try:
                 cur = await self._conn.execute("SELECT COUNT(*) FROM memories_fts")
                 row = await cur.fetchone()
@@ -335,9 +336,9 @@ class MemoryStore:
                 try:
                     rows = await self._exec_fetchall(
                         "SELECT id FROM memories "
-                        "WHERE session_id = ? AND (summary LIKE ? OR chat_summary LIKE ?) "
+                        "WHERE session_id = ? AND (summary LIKE ? ESCAPE '\\' OR chat_summary LIKE ? ESCAPE '\\') "
                         "LIMIT 50",
-                        (session_id, f"%{tok}%", f"%{tok}%"),
+                        (session_id, f"%{escape_like(tok)}%", f"%{escape_like(tok)}%"),
                     )
                 except Exception as e:
                     logger.debug("[Quill Memory] _fts_scores LIKE 兜底检索失败: %s", e, exc_info=True)
@@ -673,9 +674,11 @@ class MemoryStore:
         if not target_id:
             return 0
         try:
+            # LIKE 通配符转义（M3.3 自查）：target_id 含 %/_ 时，
+            # 未转义的 'target::%' 前缀匹配会误删其他会话的记忆。
             cursor = await self._exec_write(
-                "DELETE FROM memories WHERE session_id = ? OR session_id LIKE ?",
-                (target_id, target_id + "::%"),
+                "DELETE FROM memories WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'",
+                (target_id, escape_like(target_id) + "::%"),
             )
             # 按 target_id 前缀失效所有 persona 维度的会话缓存
             prefix = target_id + "::"
@@ -864,9 +867,10 @@ class MemoryStore:
         if not target_id:
             return 0
         try:
+            # LIKE 通配符转义（M3.3 自查），理由同 delete_all_session_memories。
             cursor = await self._exec_write(
-                "DELETE FROM chat_logs WHERE session_id = ? OR session_id LIKE ?",
-                (target_id, target_id + "::%"),
+                "DELETE FROM chat_logs WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'",
+                (target_id, escape_like(target_id) + "::%"),
             )
             return cursor.rowcount
         except Exception as e:

@@ -557,7 +557,16 @@ async def handle_rag_documents(vector_store):
     """列出已上传文档。"""
     try:
         docs = await vector_store.list_documents()
-        return ok({"documents": docs})
+        # M3.3 F1：附带向量索引状态（真实维度 / 维度不一致标记 / 最近重建），
+        # 面板 RAG 页据此感知「索引将按新维度重建」类状态。只增字段，向后兼容。
+        index_status = None
+        get_stats = getattr(vector_store, "get_stats", None)
+        if get_stats is not None:
+            try:
+                index_status = await get_stats()
+            except Exception as e:
+                logger.warning("[Quill] 获取向量索引状态失败: %s", e, exc_info=True)
+        return ok({"documents": docs, "index_status": index_status})
     except Exception as e:
         return err(error_text("查询失败", e))
 

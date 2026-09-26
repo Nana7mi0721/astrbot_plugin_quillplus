@@ -267,6 +267,7 @@ async def test_d4_add_chat_log_caller_degrades_silently(tmp_path, monkeypatch):
 async def test_d4_search_vector_store_raises_and_counts(tmp_path):
     store = FaissVectorStore(str(tmp_path / "v.db"), str(tmp_path / "idx"))
     store._index = _FakeFaissIndex()               # 绕开 faiss 依赖，直接注入故障
+    store.dim = 8                                  # M3.3 F1：注入索引需声明维度，过 dim 门
     before = storage_error_snapshot()["search"]
     with pytest.raises(StorageError):
         await store.search([0.1] * 8, top_k=3)
@@ -292,6 +293,7 @@ async def test_d4_search_caller_degrades_to_rag_failed(tmp_path):
     注入侧拿到的仍是空结果（该返回空返回空），健康度可记失败。"""
     store = FaissVectorStore(str(tmp_path / "v.db"), str(tmp_path / "idx"))
     store._index = _FakeFaissIndex()
+    store.dim = 8                                  # M3.3 F1：注入索引需声明维度，过 dim 门
 
     class _Embedding:
         async def embed(self, texts):

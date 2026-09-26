@@ -298,3 +298,25 @@
   - **改前**：检测器加载失败（YAML 缺失/损坏）→ 词表为空、激活词通道恒不命中（`load_ok` 不可见，仅 init 日志一条「激活词: 0 个」）；检测过程异常（理论不可达，纯正则）→ 上抛 H3 顶层 except 吞掉 → 不注入。两处均为「碰巧 fail-close」——无契约、无专门日志、无测试保护；而重构参考版 `interfaces/astrbot/plugin.py` `_should_activate` 是显式 fail-open（`detector is None → return True` / `except → return True`，坏检测器退化为每轮全量注入），M3.3+ 服务层整合若照搬会把 fail-open 带回来。
   - **改后**：①`activation.py`：`should_activate`/`check_brackets` 检测异常 → 捕获、warning 带异常链、返回 False（该轮不注入）；`_load` 失败 → `load_ok=False` + warning 带异常链（此前异常细节被整体吞掉）。②`main.py._check_activation`：检测调用包 try → 异常返回 `(False, False)`，与 WR 匹配既有降级（`wr_activated=False`）语义对齐。**正常判定逻辑一行未动**（快照 H3 节钉住）；`worldbook_always_activate` 强制激活是用户显式配置，不属故障路径，保持不变。
   - **权衡（PLAN §M3.2 原文理由）**：fail-open 故障形态 = 每轮注入全部设定（最贵行为、用户可感为刷屏注入报告）；fail-close 故障形态 = 该注入时没注入（下一轮检测恢复即自愈，用户可感为偶发设定丢失）——后者更安全且自愈。括号【】通道不依赖触发词文件，加载失败时仍正常工作（fail-close 只关激活词通道，不误伤括号激活）。
+- **2026-09-26 M3.3 + M3.3.5（存储层修复 D5 + F1 + 缺陷自查 + kb 回表）**：
+  - **D5 可重入锁**：`quill/core/locks.py` 落地 `ReentrantLock`（自重构参考版 `infrastructure/db/database.py:51-99` 移植，任务级持有者 + 重入深度）。`memory_store` / `vector_store` / `kb` 三处 `asyncio.Lock` 替换，锁语义等价（仍串行化写）；三处"此处已在 _lock 内不能再调用 _exec_*"注释警告删除，**调用结构保持不变**（不为利用可重入重构调用链），仅消除同任务自死锁风险。回归测试用 `asyncio.wait_for(timeout=5.0)` 守卫死锁场景（嵌套 acquire 同任务不阻塞、跨任务排队、非持有者释放 RuntimeError、超时守卫下的嵌套业务调用、真件 MemoryStore 持锁调 _exec_*）。**实测教训（测试写法）**：`wait_for(coro, t)` 在 Python 3.10 会把 coro 包成新任务、3.12 则在当前任务内直接 await（stub 模式 3.10.11 / 真机模式 3.12.12 行为分裂）——守卫必须包完整场景，"另一任务"必须 `ensure_future` 显式创建，否则任务身份错位把重入判定测歪。
+  - **F1 FAISS 维度自适应**（真机 SiliconFlow/bge-m3 实测 1024 维 vs 硬编码 512）：`embedding.get_dim()` 去除 `return 512` 硬编码，未知返回 **0**（未知≠猜一个值）；`FaissVectorStore` 维度改由**事实**决定——磁盘已有索引以索引为准；无索引不预建（旧版在此按推断值建错维度索引），延迟到 `add()` 用**首批真实向量**的维度建；`add()` 批内异维度仍拒（调用方缺陷），provider 报告维度与实际向量不一致仅告警、以向量为准。**索引文件头**：魔数 `QPVI` + 版本号(LE uint32) + 维度冗余位 + faiss 序列化负载，单文件原子替换（`_save_index` 改 serialize+头+负载）；旧版无头文件按旧规则兼容读取（faiss fourcc ≠ QPVI 区分），首次保存自动升级；未知版本/截断文件优雅降级（移除坏文件等首批向量重建）。**维度不匹配重建**：加载期 provider 维度已知且不一致、或 add() 时维度变化 → 丢旧索引文件、按新维度建空索引、SQLite 孤儿 faiss_id 复位 -1，文本全留 chunks 表随上传回填，**不自动重烧 API 配额**（PLAN 决策保留）。
+  - **VERIFICATION.md 11 类缺陷存储相关项自查结论**（详见下方清单）：修 1（锁自死锁=F1 同类）、修 3（LIKE 转义三处）、核对不适用 7。PLAN 点名项：session 键处理（_fts_scores 双路径 session 过滤 ✓ 已有，新增回归测试钉住）；LIKE 转义（**发现并修复**：memory 短词兜底 `summary/chat_summary LIKE`、`delete_all_session_memories/chat_logs` 的 `target_id::%` 前缀、`kb.search`——用户输入/会话键含 `%`/`_` 时前者多召回噪声、后者**误删其他会话数据**；统一走 `_fts_util.escape_like` + `ESCAPE '\'`）。
+  - **M3.3.5 kb 全表扫描**：`kb.py` 兜底扫描（`SELECT wr.* … LIMIT 2000`）与 `keyword_match`（`SELECT * … LIMIT 2000`）改两段式——瘦身列扫描（打分只需 keywords/aliases/secondary_keywords/name/priority，LIMIT 2000 扫描窗口语义不变）→ 命中后按 id 回表（`SELECT * WHERE id IN`，500/批防变量上限）。命中集合/打分/顺序与改前一致（含 FTS 正常路径命中即返回、FTS 部分命中宁缺勿滥、FTS 故障降级路径行为原样）；O(全库) 的 content 全文搬运消失。SQL 层回归测试经连接代理记录实际执行语句断言（`wr.*`/`SELECT *` 全表捞取不得再现）+ 2101 条目钉 LIMIT 2000 边界语义 + FTS JOIN rank 契约。
+  - **等价面微移（有意行为变更，均为缺陷修复方向）**：①`FaissVectorStore.search` 查询维度与索引不一致时返回 `[]`（WARNING + `dim_mismatch` 面板标记）而非 FAISS 断言炸成 StorageError——配置状态≠存储故障，与重构参考版一致；改前该形态计为 search 失败。②`FaissVectorStore.add` 维度不匹配从 ValueError 拒绝上传改为重建空索引后照常写入（文本保留、随上传回填）——改前 provider 维度错时所有上传永久失败。③`get_stats()` 的 `dim` 语义从「启动期推断值」变为「索引真实维度（0=未建）」，新增 `dim_mismatch`/`last_rebuild` 字段；`/rag/documents` 响应新增 `index_status`（只增字段）。④LIKE 转义使命中/删除**严格字面化**（含 `%`/`_` 的查询此前召回更宽、`target_id` 含 `_` 时前缀删除误伤他库——现与缓存失效的 `startswith` 语义完全对齐）。⑤`expected_dim`/`dim` 形参默认 768→0（仅提示位，不再参与建索引）。
+  - **新增测试 35 条**（双模：stub 305 passed+10 skipped（faiss 用例环境无 faiss 自动 skip）；真机 315 passed）：`tests/test_locks.py`×7、`tests/test_vector_store_dim.py`×13（真 faiss×10 + 无需 faiss×3）、`tests/test_kb_fetchback.py`×8、`tests/test_like_escape.py`×7；`tests/test_storage_errors.py` 两条假 FAISS 注入用例补 `store.dim = 8`（F1 dim 门新契约，非 legacy 文件）；tests/legacy 零改动。`python kb.py` 自检脚本全过。
+  - **缺陷自查逐类结论（VERIFICATION.md 11 类，仅存储层）**：
+    | # | 类别 | 结论 |
+    |---|---|---|
+    | 1 | 数据库事务自死锁 | **同类形态存在，本轮修复**（三处不可重入锁 + 注释纪律 → ReentrantLock + 死锁回归测试） |
+    | 2 | plugin_dir 差两层 | 不适用（非存储；本仓库激活路径经真机多轮验证正常，M0-M2 未现该形态） |
+    | 3 | 桥 upload() 不接受额外字段 | 不适用（前端/桥类，任务范围外；本仓库 M3.1 统一上传通道已覆盖双通道语义） |
+    | 4 | app.js 默认导入页面模块 | 不适用（前端类） |
+    | 5 | 日志通道不合规 | 已核对：本仓库 v5.2.5（d203163）已修复——存储三模块均 `from astrbot.api import logger`（kb 顶层回退仅 standalone 自检用），无帧代理依赖 |
+    | 6 | 前端 svg() 重复 6 份 | 不适用（前端类） |
+    | 7 | 配置枚举项没有可选项 | 不适用（配置 schema/前端类） |
+    | 8 | 验证脚本自身缺陷 | 不适用（工具类）；教训已采纳：本仓库 pytest.ini 无 `-q` 叠加问题、汇总判断走退出码 |
+    | 9 | mode=ro 数据安全缺口 | 不适用（迁移器类；本仓库三库不动、无迁移路径，备份为文件级 zip、不触 SQLite 连接） |
+    | 10 | 插件类放错模块 | 不适用（加载契约类；M2.2 修订已按 BASELINE §1.2 注册桩留 main.py，真机加载验证通过） |
+    | 11 | 两代插件注册重名 | 不适用（部署冲突类，非存储） |
+    附：PLAN §M3.3 点名的存储类专项——session 键处理 ✓（双路径过滤已有 + 新增测试钉住）；LIKE 转义 **存在→已修**（三处，见上）；N+1/批量回表 ✓（memory 关键词回表 500/批、vector 回表 IN 批量、WR 计数/日志批处理，均已有）；`search_all` LIMIT 2000 载入向量 BLOB 为检索必需载荷（向量运算输入），形态不同、非缺陷。

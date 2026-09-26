@@ -82,7 +82,14 @@ class QuillEmbeddingProvider:
             raise ImportError(f"加载本地模型失败: {e}")
 
     def get_dim(self) -> int:
-        """获取向量维度。"""
+        """获取向量维度。**0 = 未知**（尚未成功 embed 过，且 provider 不提供维度）。
+
+        M3.3 F1：不再硬编码 512。此前未知时返回本地模型 bge-small-zh-v1.5
+        的 512——对维度非 512 的 provider（真机实测 SiliconFlow bge-m3 =
+        1024）是错误答案：FaissVectorStore 按 512 建索引/校验写入，全部
+        上传被拒。维度未知的正确表达是 0，实际索引维度由 vector_store 用
+        「已加载索引 / 首批真实向量」决定。
+        """
         if self._dim is not None:
             return self._dim
         # 尝试从 API provider 获取
@@ -90,11 +97,13 @@ class QuillEmbeddingProvider:
             try:
                 provider = self.context.get_provider_by_id(self.provider_id)
                 if provider and hasattr(provider, 'get_dim'):
-                    return provider.get_dim()
+                    dim = provider.get_dim()
+                    if dim:
+                        return int(dim)
             except Exception as e:
                 logger.debug("[Quill Embedding] get_dim 查询 provider 失败: %s", e)
-        # 本地模型默认维度
-        return 512  # bge-small-zh-v1.5 的维度
+        # 未知：0（调用方按「维度待定」处理，禁止再猜一个具体数值）
+        return 0
 
     def get_status(self) -> dict:
         """返回当前 provider 状态信息。"""

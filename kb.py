@@ -12,7 +12,6 @@ Identical table schema — compatible with existing .db files.
 import os
 import re as _re
 import json
-import asyncio
 import sqlite3
 from typing import List, Dict, Optional, Any
 
@@ -21,12 +20,14 @@ import aiosqlite
 # 双模式导入：插件内以包形式加载，`python kb.py` 自检时则是顶层脚本
 # （无父包，相对导入会失败）。两条路径都要能跑。
 try:
-    from ._fts_util import escape_trigram
+    from ._fts_util import escape_trigram, escape_like
     from .quill.core.errors import StorageError
+    from .quill.core.locks import ReentrantLock
     from .quill.core.storage_stats import note_storage_error
 except ImportError:  # 直接运行本文件
-    from _fts_util import escape_trigram
+    from _fts_util import escape_trigram, escape_like
     from quill.core.errors import StorageError
+    from quill.core.locks import ReentrantLock
     from quill.core.storage_stats import note_storage_error
 
 try:
@@ -59,8 +60,9 @@ class WritingResourceManager:
         self._conn: Optional[aiosqlite.Connection] = None
         self.category_dedup_limit = category_dedup_limit
         # F4 对齐：与 memory/vector store 一致，串行化 execute+commit 写序列，
-        # 防止并发协程（聊天匹配 × Web 面板编辑）交错提交半途事务
-        self._lock = asyncio.Lock()
+        # 防止并发协程（聊天匹配 × Web 面板编辑）交错提交半途事务。
+        # M3.3 D5：可重入锁（同任务重入只加深度），不再依赖注释纪律。
+        self._lock = ReentrantLock()
         # FTS 降级可见性：此前索引失效只记一条 INFO（默认控制台级别下不可见），
         # 然后静默退化成全表扫描，面板 /info 也不暴露，问题完全不可观测。
         self._fts_ok: Optional[bool] = None   # None=尚未尝试
@@ -617,8 +619,9 @@ class WritingResourceManager:
         conditions = []
         params: list = []
         for field in fields:
-            conditions.append(f"{field} LIKE ?")
-            params.append(f"%{query}%")
+            # M3.3 自查：查询词里的 %/_ 是 LIKE 通配符，先转义回归字面语义
+            conditions.append(f"{field} LIKE ? ESCAPE '\\'")
+            params.append(f"%{escape_like(query)}%")
         sql = (
             f"SELECT * FROM writing_resource WHERE enabled = 1 "
             f"AND ({' OR '.join(conditions)}) ORDER BY priority DESC LIMIT 20"
@@ -789,10 +792,34 @@ class WritingResourceManager:
         else:
             logger.debug("[WR] FTS5 仍不可用: %s", exc)
 
+    async def _fetch_rows_by_ids(self, row_ids: List[int]) -> List[aiosqlite.Row]:
+        """按 id 批量回表取整行（M3.3.5）。
+
+        分批规避 SQLite 变量上限（~999）。返回行的顺序不保证，调用方需
+        自行按 id 顺序重建结果序。
+        """
+        out: List[aiosqlite.Row] = []
+        for i in range(0, len(row_ids), 500):
+            chunk = row_ids[i:i + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            async with self.conn.execute(
+                f"SELECT * FROM writing_resource WHERE id IN ({placeholders})", chunk
+            ) as cursor:
+                out.extend(await cursor.fetchall())
+        return out
+
     async def keyword_match(
         self, user_input: str, category: Optional[str] = None
     ) -> List[Dict]:
-        sql = "SELECT * FROM writing_resource WHERE enabled = 1"
+        """关键词兜底匹配（M3.3.5 两段式：瘦身扫描 → 按 id 回表）。
+
+        此前 ``SELECT * … LIMIT 2000`` 把 2000 条**含 content 全文**的完整行
+        拖进 Python，而匹配阶段只用到 keywords 一列。改为先按
+        ``(id, keywords)`` 瘦身扫描圈定命中 id（LIMIT 2000 扫描语义不变），
+        再只对命中行按 id 回表取整行。命中集合、顺序（扫描序）、match_score
+        与改前一致。
+        """
+        sql = "SELECT id, keywords FROM writing_resource WHERE enabled = 1"
         params: list = []
         if category:
             sql += " AND category = ?"
@@ -804,17 +831,32 @@ class WritingResourceManager:
             rows = await cursor.fetchall()
 
         user_input_lower = user_input.lower()
-        matched: List[Dict] = []
-
+        matched_ids: List[int] = []
+        matched_kw_by_id: Dict[int, str] = {}
         for r in rows:
-            entry = self._row_to_dict(r)
-            kw_list = entry.get("keywords", [])
-            for kw in kw_list:
+            row_id = r[0]
+            for kw in self._ensure_list(r[1]):
                 if kw and kw.lower() in user_input_lower:
-                    entry["matched_keywords"] = [kw]
-                    entry["match_score"] = 3
-                    matched.append(entry)
+                    matched_ids.append(row_id)
+                    matched_kw_by_id[row_id] = kw
                     break
+
+        if not matched_ids:
+            return []
+
+        rows_by_id = {row["id"]: row for row in await self._fetch_rows_by_ids(matched_ids)}
+        matched: List[Dict] = []
+        for row_id in matched_ids:
+            row = rows_by_id.get(row_id)
+            if row is None:
+                # 扫描与回表之间被并发删除，跳过（改前该行已在扫描快照里，
+                # 但 SQLite 单语句快照语义下行为等价于读到删除前的行——
+                # 这里选择跳过，不构造幽灵结果）
+                continue
+            entry = self._row_to_dict(row)
+            entry["matched_keywords"] = [matched_kw_by_id[row_id]]
+            entry["match_score"] = 3
+            matched.append(entry)
 
         matched.sort(key=lambda x: x["match_score"], reverse=True)
         return matched
@@ -879,7 +921,14 @@ class WritingResourceManager:
                     )
                 return fts_entries
             # 一条都没命中才是真正的「需要扫描」场景
-        sql = "SELECT wr.*, 0 AS match_score FROM writing_resource wr WHERE wr.enabled = 1"
+        # M3.3.5：扫描阶段只取打分所需列（keywords/aliases/secondary_keywords/
+        # name/priority/category），**不捞 content 全文**；命中后按 id 回表取
+        # 整行。O(全库) 的 content 搬运消失，命中集合 / 打分 / 顺序不变。
+        sql = (
+            "SELECT wr.id, wr.category, wr.name, wr.keywords, "
+            "wr.secondary_keywords, wr.aliases, wr.priority "
+            "FROM writing_resource wr WHERE wr.enabled = 1"
+        )
         params: list = []
         if category:
             sql += " AND wr.category = ?"
@@ -902,11 +951,30 @@ class WritingResourceManager:
                 context={"category": category},
             ) from e
 
-        matched_entries = []
+        scored: list = []
         for r in rows:
-            entry = self._row_to_dict(r)
-            score, matched_kw = self._score_entry(entry, user_input_lower)
+            slim = {
+                "id": r[0],
+                "category": r[1],
+                "name": r[2],
+                "keywords": self._ensure_list(r[3]),
+                "secondary_keywords": self._ensure_list(r[4]),
+                "aliases": self._ensure_list(r[5]),
+                "priority": r[6],
+            }
+            score, matched_kw = self._score_entry(slim, user_input_lower)
             if score >= min_match:
+                scored.append((r[0], score, matched_kw))
+
+        matched_entries = []
+        if scored:
+            ids = [s[0] for s in scored]
+            rows_by_id = {row["id"]: row for row in await self._fetch_rows_by_ids(ids)}
+            for row_id, score, matched_kw in scored:
+                row = rows_by_id.get(row_id)
+                if row is None:
+                    continue  # 扫描与回表之间被并发删除，跳过
+                entry = self._row_to_dict(row)
                 entry["match_score"] = score + entry.get("priority", 5) * 0.1
                 entry["matched_keywords"] = matched_kw
                 matched_entries.append(entry)

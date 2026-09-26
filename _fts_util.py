@@ -76,3 +76,21 @@ def short_tokens(text: str, *, min_len: int = 1, max_len: int = TRIGRAM_MIN_LEN 
         if min_len <= len(t) <= max_len and t not in out:
             out.append(t)
     return out
+
+
+def escape_like(text: str, *, escape_char: str = "\\") -> str:
+    """转义 SQL ``LIKE`` 模式串中的通配符，配合 ``LIKE ? ESCAPE '\\'`` 使用。
+
+    **为什么需要（M3.3 存储自查）**：用户输入/会话键会原样拼进 LIKE 模式，
+    其中的 ``%``/``_`` 会被当成通配符——查询 ``100%`` 实际按 ``%100%%``
+    匹配（多召回噪声），会话键 ``群_1`` 的 ``群_1::%`` 前缀删除会连
+    ``群X1::*`` 一起误删（``_`` 匹配任意单字符）。转义后两者都回归字面
+    语义。转义符本身（默认 ``\\``）也要先转义，否则会吃掉后面的字面量。
+    """
+    if not text:
+        return text
+    return (
+        text.replace(escape_char, escape_char * 2)
+        .replace("%", escape_char + "%")
+        .replace("_", escape_char + "_")
+    )
