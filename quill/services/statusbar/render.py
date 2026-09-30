@@ -21,6 +21,7 @@ QuillPlugin 提供。
 from __future__ import annotations
 
 from ...core.logbridge import logger  # noqa: F401  # 方法体 logger 引用经 logbridge 桥接
+from . import jev_client as _jev_mod
 from .parsers import _LOVE_DATA_RE
 
 
@@ -92,17 +93,25 @@ class StatusbarRenderMixin:
             return self.status_bar_format_plain
         return self.status_bar_format_template
 
-    def _format_love_data(self, content: str) -> tuple:
-        """Parse [LOVE_DATA] line, return (updates_dict, formatted_text, raw_line) or (None, None, None)."""
+    def _format_love_data(self, content: str, fallback: dict | None = None) -> tuple:
+        """Parse [LOVE_DATA] line, return (updates_dict, formatted_text, raw_line) or (None, None, None).
+
+        B2：L2 是**位置**格式，模型少写几段就会留下空位。`fallback` 传上一轮的
+        session_vars 后，空位回填上一轮的值而不是空串——否则「[LOVE_DATA] 85」
+        这种只给了 1 个值的输出会把其余字段一起清空（下一轮兜底栏全变「未设置」）。
+        不传 fallback 时行为与修复前完全一致（缺位补空串），既有断言不受影响。
+        """
         m = _LOVE_DATA_RE.search(content)
         if not m:
             return None, None, None
         raw_data = m.group(1).strip()
         parts = [p.strip() for p in raw_data.split("|")]
+        fb = fallback or {}
         updates = {}
         formatted_lines = []
         for i, field_name in enumerate(self.love_fields):
-            val = parts[i] if i < len(parts) else ""
+            provided = parts[i] if i < len(parts) else ""
+            val = provided or str(fb.get(field_name, "") or "")
             updates[field_name] = val
             formatted_lines.append(f"{field_name}：{val}")
         formatted = "\n".join(formatted_lines)
@@ -123,8 +132,19 @@ class StatusbarRenderMixin:
             val = vars.get(field_name, "")
             parts.append(val if val else self.status_bar_default_placeholder)
         love_section = "\n".join(f"{f}：{v}" for f, v in zip(self.love_fields, parts))
-        plot_section = "\n\n【剧情走向】\n" + "\n".join(
+        plot_content = "\n".join(
             f"{i+1}. {p}" for i, p in enumerate(self.status_bar_plot_paths)
-        ) + "\n【请选择】"
+        )
+        # JEV 推荐选择度：与解析侧（parsers L4）同一份轮次缓存、同一 fail-open
+        # 语义——兜底栏也带「▸ N%」，避免同一轮两条路径显示不一致。
+        rd = (getattr(self, "_jev_round_cache", None) or {}).get(target_id)
+        if isinstance(rd, dict) and rd.get("probs"):
+            plot_content = _jev_mod.annotate_plot_probs(
+                plot_content,
+                rd["probs"],
+                float(rd.get("confidence", 0.0)),
+                floor=getattr(self, "status_bar_jev_confidence_floor", 0.6),
+            )
+        plot_section = "\n\n【剧情走向】\n" + plot_content + "\n【请选择】"
         full_content = love_section + plot_section
         return template.replace("{content}", full_content)

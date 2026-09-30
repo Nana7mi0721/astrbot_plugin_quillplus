@@ -717,7 +717,7 @@
         <section class="cfg-section" id="sec-statusbar">
           <div class="cfg-section-head">
             <h2>状态栏</h2>
-            <span class="cfg-section-sub">沉浸式属性追踪（实验性）</span>
+            <span class="cfg-section-sub">沉浸式属性追踪（<span class="cfg-sub-danger">实验性</span>）</span>
           </div>
 
           <div class="card">
@@ -776,6 +776,27 @@
                     <label class="cfg-field-label" for="c-sb-llm">状态栏提取 LLM 模型</label>
                     <select class="field field--wide" id="c-sb-llm"></select>
                     <span class="hint">留空则回退到 RAG 摘要 LLM。建议选择轻量、便宜的模型。</span>
+                  </div>
+                  <!-- ── JEV 模式（TypeSafe System One 结构化判定）── -->
+                  <div class="cfg-row cfg-row--stack">
+                    <div class="cfg-row-text">
+                      <div class="cfg-row-title">JEV 模式（剧情走向推荐选择度）</div>
+                      <div class="cfg-row-desc">开启后，剧情走向选项会附带「剧情倾向」百分比（如「2. 转换场景 ▸ 62%」）；你用自由文字回复时，插件会自动判定你选择了哪个分支并明确告知模型，不再靠模型自己猜。判定由 TypeSafe Jev（System One）结构化模型完成，每轮回复前多一次判定调用（约 1–3 秒）；判定失败或置信度不足时自动回退普通渲染，不影响聊天。</div>
+                      <div class="cfg-row-desc warn">⚠ 必须选择指向 TypeSafe（api.typesafe.ai）的 Jev 类模型提供商（模型名如 jev-latest / jev-1.13）。普通对话模型没有 /systemone 接口，选错会静默降级为普通渲染。开启即表示你知悉并接受：对话文本将发送至 api.typesafe.ai 做结构化判定。</div>
+                    </div>
+                    <div class="cfg-row-control">
+                      <label class="switch"><input type="checkbox" id="c-sb-jev"><span class="switch-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-sb-jev-provider">JEV 判定模型（AstrBot 提供商）</label>
+                    <select class="field field--wide" id="c-sb-jev-provider"></select>
+                    <span class="hint">先在 AstrBot「模型提供商」新建一个 openai_compatible 提供商：API 地址填 <code>https://api.typesafe.ai/v1</code>，密钥填 TypeSafe API Key，模型填 <code>jev-latest</code>，再回到这里选中它。</span>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-sb-jev-floor">推荐选择度显示阈值</label>
+                    <input class="field" type="number" id="c-sb-jev-floor" min="0" max="1" step="0.05" value="0.6">
+                    <span class="hint">判定置信度低于该值时不显示百分比、不做分支路由（分布平坦时数字没有信息量）。范围 0–1，默认 0.6。</span>
                   </div>
                 </div>
                 <div class="sb-col sb-col--tpl">

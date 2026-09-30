@@ -19,4 +19,4 @@ version 字段与 README 的版本 badge 由 tools/check_version.py 静态解析
 对拍（CI 步骤），任何不一致即失败。改版本号只改本文件这一处。
 """
 
-__version__ = "5.3.0"
+__version__ = "5.3.1"

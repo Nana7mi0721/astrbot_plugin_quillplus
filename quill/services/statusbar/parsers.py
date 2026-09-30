@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 
 from ...core.logbridge import logger  # noqa: F401  # 方法体 logger 引用经 logbridge 桥接
+from . import jev_client as _jev_mod
 from .tokens import LOVE_DATA_TAG, STATUS_END_TAG, STATUS_TAG
 
 # ── 解析侧正则 ────────────────────────────────────────────────────
@@ -125,6 +126,13 @@ def _extract_numeric(value: str) -> float | None:
     """
     if not value:
         return None
+    # L6：先认**千分位**形态（1,000 / 12,345.5）。此前 `,` 在分隔符类里，
+    # `1,000` 会被解析成 1.0 —— 增量标注随之算成（↓998）。
+    # 只认严格的三位分组，所以「数值 + 逗号分隔的自由文本」（`65, 暧昧`）
+    # 不受影响，仍走下面的分隔符分支。
+    m = re.match(r"\s*([+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?)", value)
+    if m:
+        return float(m.group(1).replace(",", ""))
     m = re.match(r"\s*([+-]?\d+(?:\.\d+)?)\s*(?:$|[/、,，%级点分])", value)
     if not m:
         return None
@@ -345,6 +353,24 @@ class StatusbarParsersMixin:
                 handled = True
                 break
 
+        # JEV 推荐选择度（第二档）：链条结束后对**最终文本**统一标注一次。
+        # 各级对剧情块的处理不同（L4 会把块搬进重建栏，L1/L2/L3 原样保留），
+        # 在链后按最终文本拼接（start(1)/end(1) 精确切片）覆盖所有级别，
+        # 且天然不会重复标注。缺料（未启用/低置信/结构对不上）原样返回——
+        # annotate_plot_probs 内部已做全部 fail-open。
+        _rd = (getattr(self, "_jev_round_cache", None) or {}).get(target_id)
+        if isinstance(_rd, dict) and _rd.get("probs"):
+            _pm = _PLOT_PATH_RE.search(new_text)
+            if _pm:
+                _annotated = _jev_mod.annotate_plot_probs(
+                    _pm.group(1),
+                    _rd["probs"],
+                    float(_rd.get("confidence", 0.0)),
+                    floor=getattr(self, "status_bar_jev_confidence_floor", 0.6),
+                )
+                if _annotated != _pm.group(1):
+                    new_text = new_text[:_pm.start(1)] + _annotated + new_text[_pm.end(1):]
+
         # P1-1: 所有降级解析均失败时，记录原始文本片段便于调试（不暴露给用户）
         # 注意：本函数只在「本轮最终开关为开」时才被调用（调用方已用
         # _effective_status_bar_enabled 判过），所以这里不再看全局开关——
@@ -413,9 +439,22 @@ class StatusbarParsersMixin:
         guide 明确要求模型输出这个格式（还把代码块列为错误示例），实测 40 次
         解析里 36 次走这里。此前这一级不套模板、直接把裸字段行替换进正文，
         导致 format_template 配置在整个子系统的主力路径上从未生效。
+
+        B2：传入 prev_vars 回填空位，并且空值不落库。L2 是位置格式，模型少写
+        几段就会产生空位；旧实现把空位一并 persist，等于「一条只给了 1 个值的
+        [LOVE_DATA] 把其余字段清空」——而它恰是最常命中的一级。
         """
-        love_updates, love_formatted, raw_line = self._format_love_data(ctx.text)
+        love_updates, love_formatted, raw_line = self._format_love_data(
+            ctx.text, ctx.prev_vars
+        )
         if not love_updates:
+            return None
+        # 缺位在 fallback 里也是空的（prev 没值）时仍会留下空串，同样不交给持久化：
+        # 只写「本轮真的有值」的字段，避免把已知值清空。
+        love_updates = {k: v for k, v in love_updates.items() if v}
+        if not love_updates:
+            # 整行都是空位（形如 `[LOVE_DATA] | |`）——没有可落库的信息，
+            # 按未命中处理，让降级链继续往下走。
             return None
         annotated = _annotate_changes(love_formatted, ctx.mk_changed(love_updates))
         # 套用本平台模板，与其余五级一致

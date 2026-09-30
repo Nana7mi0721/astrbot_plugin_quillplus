@@ -104,8 +104,10 @@ class QuillRetriever:
             if not query_emb:
                 return _rag_failed("embedding 返回空向量")
 
-            rag_config = getattr(self, 'config', None) and getattr(self.config, '_raw', None) or {}
-            dense_top_k = int(rag_config.get('rag', {}).get('dense_top_k', self.top_k))
+            # N5/D-清理：改用 QuillConfig 上的 typed 属性读取。原实现绕过它直接读
+            # config._raw（等于跳过了 _safe_int 钳位）：面板写入非法值时 int() 会在
+            # 这里抛错，被外层 except 变成「文档 RAG 永久不可用」，直到用户改回配置。
+            dense_top_k = int(getattr(self.config, "rag_dense_top_k", None) or self.top_k)
 
             # 传递 allowed_sources 给 vector_store 过滤
             raw_results = await self.vector_store.search(
@@ -238,14 +240,21 @@ class QuillRetriever:
             raise RuntimeError("Embedding 生成失败")
 
         # 5. 防重复：检查是否已有语义高度重叠的记忆
+        # B11：阈值必须打在**原始余弦** sim 上。vec_score 是排序分
+        # （sim × 时间衰减 + 引用频次加成 ×0.2）：一条 cosine 0.80 但被引用 6 次的
+        # 旧记忆就能到 0.92，于是真正的新记忆被当成重复丢弃，日志还把 0.93 报成
+        # similarity，排查时越看越偏。
         if self.memory_store:
             try:
                 existing = await self.memory_store.search(
                     session_id, vector[0], top_k=3
                 )
                 for mem in existing:
-                    if mem.get("vec_score", 0) > 0.92:
-                        logger.info(f"[Quill Memory] 跳过重复记忆: session={session_id} similarity={mem.get('vec_score', 0):.2f}")
+                    sim = mem.get("sim", 0.0)
+                    if sim > 0.92:
+                        logger.info(
+                            f"[Quill Memory] 跳过重复记忆: session={session_id} cosine={sim:.2f}"
+                        )
                         return summary  # 已存在高度相似记忆，跳过存储
             except Exception:
                 logger.debug("[Quill Memory] 重复记忆检查失败，继续存储", exc_info=True)

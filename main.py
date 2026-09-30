@@ -46,10 +46,6 @@ from .props import QuillConfigProperties
 from .prompt_builder import PromptBuilder  # noqa: F401  (legacy/probe 导入面)
 from . import commands as _cmds
 from .web_routes import QuillRoutes
-# M2.2 第四轮：H4 的 [B:...] 解密消费方已随钩子实现迁至
-# interfaces/astrbot_hooks.py（实现侧自行 import）；此处保留旧导入面
-# （M2.0 搬移期约定，同 strip_markdown 的 re-export 处理）。
-from .encryption import decrypt_output  # noqa: F401  (legacy/probe 导入面)
 from .persona_manager import QuillPersonaManager
 from .quill import __version__
 from .quill.core import logbridge
@@ -63,22 +59,18 @@ from .quill.services import character as _character_mod
 # M2.2 第五轮：H5 反思调度下沉 quill/services/memory.py；阈值常量在类属性
 # 处 re-export（QuillPlugin.REFLECTION_* 旧访问面）。
 from .quill.services import memory as _memory_mod
-# M2.2 第三轮：H2 的 telegram Markdown 剥离下沉 quill/services/response.py
-# （_MD_PATTERNS/strip_markdown 在原 main.py 即为零状态模块级纯函数，唯一
-# 消费方是 H2 on_using_llm_tool；此处 re-export 维持 main 模块旧导入面，
-# M2.0 搬移期约定）。实现与完整设计理由（Telegram 无 parse_mode 为何要擦）
-# 见 response.py。
-from .quill.services.response import _MD_PATTERNS, strip_markdown  # noqa: F401
+# M2.2 第三轮：H2 的 telegram Markdown 剥离下沉 quill/services/response.py。
+# 唯一的实现消费方在 astrbot_hooks（经 response_mod 调用），故本模块**不再**
+# re-export `_MD_PATTERNS`/`strip_markdown`——那三个名字全仓库零引用，只是
+# M2.0 搬移期留下的空导入面，已随 D1/D2 一并清理。
 from .quill.services.statusbar import (
-    LOVE_DATA_TAG,
-    STATUS_END_TAG,
-    STATUS_TAG,
     StatusbarParsersMixin,
     StatusbarRenderMixin,
     # ── 搬移期 re-export（M2.0 约定）：状态栏解析侧常量/纯函数已搬至
     # quill/services/statusbar/parsers.py，这里保留旧模块级名字，
-    # 供 tests/legacy、probe 脚本的旧 import 面使用。
-    # （剥离器已于 M2.2 下沉 strip.py，不再从本文件取这些名字。）
+    # 供 tests/legacy、probe 脚本的旧 import 面使用（t8 与各处 M.<name> 断言）。
+    # 标签常量（LOVE_DATA_TAG/STATUS_TAG/STATUS_END_TAG）与剥离器侧常量
+    # （_STRIP_LOVE_DATA_RE 等）无任何外部引用，故不在本列表内。
     _DEFAULT_LOVE_FIELDS_RAW,
     _LOVE_DATA_RE,
     _PLOT_PATH_RE,
@@ -198,7 +190,7 @@ class HealthTracker:
 # _StatusLevelResult / _StatusLevelContext 数据类已搬至
 # quill/services/statusbar/parsers.py（M2.1），经顶部 import 保持旧名可用。
 # strip_markdown/_MD_PATTERNS 已下沉 quill/services/response.py（M2.2 第三轮），
-# 经顶部 import 保持旧名可用。
+# 本模块不再 re-export（零引用，见 D2）。
 
 
 @register(
@@ -263,6 +255,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         self._rag_reinit_task: asyncio.Task | None = None
         # P1-4: 健康度追踪器（内存滑动窗口，重启清零）
         self.health_tracker = HealthTracker(window_size=20)
+        # JEV 剧情走向轮次缓存（内存态，按 target_id 一轮一条，5 分钟过期自动清）：
+        # H4 请求钩子写入（推荐选择度分布 + argmax 分支），H6 装饰（parsers/render
+        # 追加「▸ N%」）与 /quill debug 读取。不落盘——百分比只服务当前轮回复，
+        # 持久化反而会把过期分布带进下一轮。
+        self._jev_round_cache: dict[str, dict] = {}
 
         # --- 运行数据位置 ---
         # 数据库/世界书/状态原先放在插件目录内（knowledge/、worldbooks/、data/），
@@ -345,6 +342,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         "status_bar_format_plain",
         "status_bar_plain_platforms",
         "status_bar_plot_paths",
+        "status_bar_jev_confidence_floor",
         "status_bar_default_placeholder",
         "status_bar_show_delta",
     })
@@ -788,8 +786,18 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 self._rag_reinit_task = None
 
         self._rag_reinit_task = loop.create_task(_run())
-        # 也纳入插件自己的任务集合，terminate 时能被统一取消/等待
+        # 也纳入插件自己的任务集合，terminate 时能被统一取消/等待。
+        # L3：与 _spawn 一样必须挂 done 回调把任务从集合里摘掉，否则每次
+        # embedding provider 变更都会在 _bg_tasks 留下一个已完成的 Task 对象
+        # （长期运行无界增长，且 terminate 会去 await 一堆死任务）。
         self._bg_tasks.add(self._rag_reinit_task)
+
+        def _on_reinit_done(task: asyncio.Task):
+            self._bg_tasks.discard(task)
+            if not task.cancelled() and task.exception() is not None:
+                logger.warning(f"[Quill] RAG 重建任务异常退出: {task.exception()}")
+
+        self._rag_reinit_task.add_done_callback(_on_reinit_done)
 
     async def _prepare_for_restore(self):
         """备份恢复前的准备：停 autoflush（不 flush）+ 关闭持有 DB 句柄的组件。
@@ -873,11 +881,24 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             for t in list(self._bg_tasks):
                 if not t.done():
                     t.cancel()
-            for t in list(self._bg_tasks):
-                try:
-                    await t
-                except (asyncio.CancelledError, Exception):
-                    pass
+            # B4-fix：等待要带超时，并记下非取消类异常。旧写法
+            # `except (asyncio.CancelledError, Exception): pass` 既吞掉了自身被取消的
+            # 信号，也让卡死/自屏蔽取消的任务把 terminate 永久挂住。
+            pending = [t for t in list(self._bg_tasks)]
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True), timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[Quill] 退出时仍有 %d 个后台任务未结束（已超时放弃等待）", len(pending))
+            else:
+                for task, res in zip(pending, results):
+                    if isinstance(res, BaseException) and not isinstance(
+                        res, asyncio.CancelledError
+                    ):
+                        logger.warning(
+                            f"[Quill] 后台任务 {task.get_coro()} 异常退出: {res}"
+                        )
             self._bg_tasks.clear()
             logger.info(f"[Quill] 已清理 {bg_count} 个后台任务")
         if self.state_manager:
@@ -891,10 +912,28 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 await self.wr_manager.close()
             except Exception as e:
                 logger.warning(f"[Quill] 写作素材库关闭失败: {e}")
-        if self.rag_retriever and self.rag_retriever.memory_store:
-            await self.rag_retriever.memory_store.close()
-        if self.rag_retriever and self.rag_retriever.vector_store:
-            await self.rag_retriever.vector_store.close()
+        # B4 修复（两处）：
+        # 1) 关连接前先排空 retriever 自己的在途任务（_close_rag_components 做了，
+        #    terminate 之前漏了）——否则在途的 mark_memories_used 会往刚关掉的
+        #    aiosqlite 连接里写，静默丢一轮统计。
+        # 2) 关闭必须覆盖**顶层引用**，不能只走 rag_retriever。_init_rag 是
+        #    「先 vector_store.initialize()，后 MemoryStore.initialize()」且整段
+        #    只有一个 except 记日志；中途失败时 rag_retriever 仍为 None，而
+        #    vector_store 已经打开了 quill_rag.db/.index —— 旧写法下这些句柄
+        #    再无人关闭，Windows 上会锁住 DB 文件，插件更新/重载直接失败。
+        #    （与 _close_rag_components 的收尾口径保持一致。）
+        if self.rag_retriever:
+            await self._drain_retriever_tasks()
+        for comp, name in (
+            (self.rag_memory_store, "memory_store"),
+            (self.rag_vector_store, "vector_store"),
+        ):
+            if comp is None:
+                continue
+            try:
+                await comp.close()
+            except Exception as e:
+                logger.warning(f"[Quill] RAG {name} 关闭失败: {e}")
         logger.info("[Quill] 插件已停用")
 
     def _spawn(self, coro):
@@ -1099,15 +1138,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     #   - tests/legacy（t7/t8/t15/t26）与 probe 脚本经
     #     QuillPlugin.<name> 的旧访问面不变；
     #   - 钩子/服务侧经 self._strip_* 的动态分发路径与搬移前一致。
-    # 下面的类属性与 strip 模块常量是**同一对象**的别名（缓存 dict 亦然）：
-    # 任何一侧清缓存/改表都作用于同一份状态，与搬移前单一代码路径等价。
+    # 下面的类属性与 strip 模块常量是**同一对象**的别名：任何一侧改表都作用
+    # 于同一份状态，与搬移前单一代码路径等价。
+    # D4：`_strip_field_re_cache` / `_STRIP_LOVE_DATA_RE` / `_STRIP_LEGACY_STATUS_RE`
+    # 三个别名零引用（私有缓存由 strip 模块内部持有，标签正则只在模块内用），已删。
     # 实现与完整设计理由（两档强度为何分设、为何不擦裸字段行）见 strip.py。
 
     # 聚合所有状态栏变体的剥离正则（disabled 模式 + dedup 清理用）
     _STRIP_PATTERNS = _strip_mod._STRIP_PATTERNS
-    _strip_field_re_cache = _strip_mod._strip_field_re_cache
-    _STRIP_LOVE_DATA_RE = _strip_mod._STRIP_LOVE_DATA_RE
-    _STRIP_LEGACY_STATUS_RE = _strip_mod._STRIP_LEGACY_STATUS_RE
 
     @classmethod
     def _strip_bare_fields_re(cls, fields: list) -> re.Pattern:
@@ -1558,14 +1596,16 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             # P1-4: 记录 RAG 检索结果。此前检索器吞异常返回 []，这里统一记 True，
             # 于是 embedding/索引故障在健康度里表现为 100% 成功。现在按 rag_ok
             # 判定：空结果算成功（确实没找到），只有真出错才算失败。
-            from .quill_rag.retrieval import rag_ok as _rag_ok
+            # D9：用 RAG_ERROR_ATTR 常量而不是再写一遍字面量 "_rag_error"——
+            # 否则改了常量名这里会静默失配（读不到错误原因，只报 "ok"）。
+            from .quill_rag.retrieval import RAG_ERROR_ATTR, rag_ok as _rag_ok
             doc_ok = _rag_ok(doc_results)
             mem_ok = _rag_ok(mem_results)
             if not doc_ok or not mem_ok:
                 logger.warning(
                     "[Quill RAG] 检索降级: doc=%s mem=%s",
-                    getattr(doc_results, "_rag_error", "ok"),
-                    getattr(mem_results, "_rag_error", "ok"),
+                    getattr(doc_results, RAG_ERROR_ATTR, "ok"),
+                    getattr(mem_results, RAG_ERROR_ATTR, "ok"),
                 )
             self.health_tracker.record_rag(doc_ok and mem_ok)
         except Exception as e:

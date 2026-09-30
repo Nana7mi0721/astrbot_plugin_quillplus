@@ -362,6 +362,14 @@ class FaissVectorStore:
                     row_ids.append(cur.lastrowid)
                 await self._conn.commit()
         except Exception as e:
+            # L11：失败必须回滚。此前中途抛错时前几条 INSERT 留在**未提交事务**里，
+            # 共享连接上的下一次任意写（别的 doc 的 add/delete）会把它们一起提交，
+            # 留下永久 faiss_id=-1 的幽灵行，污染 get_stats/list_documents 的计数
+            # （搜索侧有 F11 过滤，所以只是计数噪音，但会一直累积）。
+            try:
+                await self._conn.rollback()
+            except Exception as rb_err:  # noqa: BLE001 - 回滚失败只能降级为日志
+                logger.warning("[Quill RAG] add 失败后回滚未成功: %s", rb_err)
             note_storage_error("add", e)
             raise StorageError(
                 "写入文档块失败",

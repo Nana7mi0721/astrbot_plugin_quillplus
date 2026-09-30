@@ -637,14 +637,16 @@ async def handle_memory_delete(memory_store, memory_id=None, session_id=None):
         return err(error_text("删除失败", e))
 
 
-async def handle_memory_list_all(memory_store, limit=200, page=1, per_page=50):
+async def handle_memory_list_all(memory_store, page=1, per_page=50):
     """列出全部记忆（跨 session），按创建时间倒序，支持分页。
 
     返回 total 为数据库中记忆的真实总数（不受分页限制），
     前端据此修正"总览"和"列表"之间的数量脱节问题。
+    D7：删掉从未被使用的 ``limit`` 形参（唯一调用方只传 page/per_page）。
     """
     try:
-        per_page = min(per_page, 200)
+        per_page = min(max(1, per_page), 200)
+        page = max(1, page)
         offset = (page - 1) * per_page
         total = await memory_store.count_all_memories()
         memories = await memory_store.list_all_memories(per_page, offset)

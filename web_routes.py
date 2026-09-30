@@ -36,6 +36,9 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("status_bar", "llm_extract"), ("status_bar", "llm_provider_id"),
     ("status_bar", "default_placeholder"), ("status_bar", "show_delta"),
     ("status_bar", "format_template_plain"), ("status_bar", "plain_platforms"),
+    # status_bar / JEV 模式（TypeSafe System One：推荐选择度 + 分支路由）
+    ("status_bar", "jev_enabled"), ("status_bar", "jev_provider_id"),
+    ("status_bar", "jev_confidence_floor"),
     # refusal
     ("refusal", "enabled"), ("refusal", "patterns"),
     # debug
@@ -45,7 +48,6 @@ _ALLOWED_CONFIG_KEYS: set = {
 }
 
 import asyncio
-import json
 import os
 import tempfile
 from functools import wraps
@@ -74,7 +76,7 @@ from ._backup_util import (
     remove_sidecars,
 )
 from ._paths import backup_sources, resolve_archive_dest
-from .quill.core.errors import StorageError
+from .quill.core.errors import QuillError, StorageError
 from .quill.core.storage_stats import note_storage_error
 
 from ._route_core import (
@@ -127,12 +129,18 @@ from .interfaces.web.upload import (
     DEFAULT_LIMIT,
     UploadError,
     UploadTooLarge,
+    _declared_length,
     decode_base64,
     read_upload,
 )
 from .quill.core.paths import sanitize_name
 
 PLUGIN_NAME = "astrbot_plugin_quillplus"
+
+#: 备份恢复包体积上限（M6.2）。备份只含插件数据根（DB + JSON + 头像），
+#: 512MB 已远超正常规模；上限存在的意义是挡住「用一个高压缩比 zip 撑爆内存
+#: 与事件循环」的构造请求。
+_MAX_RESTORE_BYTES = 512 * 1024 * 1024
 
 
 class _BytesUpload:
@@ -164,12 +172,23 @@ async def _json_body() -> dict:
 def _api_handler(handler):
     """统一的 handler 异常捕获装饰器。
 
-    任何未捕获异常转为 500 error_response，避免向前端泄露堆栈。
+    未捕获异常转为 500 error_response，避免向前端泄露堆栈。
+
+    D11：`except QuillError` 分支让受控异常体系真正生效（此前 `status_code`
+    与 `to_payload` 零调用，所有失败一律 500——参数/冲突类错误也报成服务端故障，
+    还陪一条 logger.exception 噪音）。这里只回 `message`（类文档约定它是对用户
+    可见的中文摘要，`detail` 才是不外泄的内部上下文）。
     """
     @wraps(handler)
     async def wrapper(*args, **kwargs):
         try:
             return await handler(*args, **kwargs)
+        except QuillError as e:
+            logger.warning(
+                "[Quill Web] handler 受控失败 (%s): %s",
+                getattr(handler, "__name__", "?"), e,
+            )
+            return error_response(e.message, status_code=e.status_code)
         except Exception as e:
             # P1-1 修复：记录完整异常日志，前端仅返回通用错误，避免泄漏内部信息
             logger.exception("[Quill Web] handler 异常 (%s): %s", getattr(handler, "__name__", "?"), e)
@@ -300,6 +319,9 @@ class QuillRoutes:
         # ── 流式模式批量控制 ──
         _r(f"/{PLUGIN_NAME}/stream/stats",     self.stream_stats,     ["GET"],   "流式模式统计")
         _r(f"/{PLUGIN_NAME}/stream/all",       self.stream_set_all,   ["POST"],  "批量设置流式模式")
+
+        # ── 会话状态清理（管理） ──
+        _r(f"/{PLUGIN_NAME}/state/cleanup",    self.state_cleanup,    ["POST"],  "按 UMO 前缀清理会话状态(默认 dry_run)")
 
         # ── 全量备份导出/恢复 ──
         _r(f"/{PLUGIN_NAME}/backup/export",   self.backup_export,  ["GET"],    "全量备份导出")
@@ -437,6 +459,58 @@ class QuillRoutes:
                 "message": f"已将 {count} 个会话的流式模式设为: {mode_names[mode]}"
             }
         })
+
+    # ── 会话状态清理（管理） ──────────────────────────────────────
+
+    @staticmethod
+    def _validate_cleanup_prefix(prefix: str) -> str | None:
+        """校验 state/cleanup 的 session_prefix；返回错误信息，None 表示通过。
+
+        UMO 键形如 ``平台:事件:平台ID!用户ID!会话``。放行条件：
+        至少 8 字符 **且包含 '!'** —— 即前缀至少定位到某个用户/会话边界；
+        裸平台前缀（``webchat:`` 无 '!'）会被拒，防止一键清掉全部真实会话。
+        误放量的最后一道闸是 StateManager 的单次删除上限（500）。
+        """
+        if not prefix:
+            return "缺少 session_prefix"
+        if any(ord(c) < 32 or c == "\x7f" for c in prefix):
+            return "session_prefix 含非法控制字符"
+        if len(prefix) < 8 or "!" not in prefix:
+            return (
+                "session_prefix 过宽或过短：需 ≥8 字符且包含 '!'"
+                "（至少定位到用户边界），例如 "
+                "webchat:FriendMessage:webchat!quilltest!"
+            )
+        return None
+
+    @_api_handler
+    async def state_cleanup(self):
+        """按 UMO 前缀清理 quill_state.json 里的会话状态键（管理端点）。
+
+        请求体 ``{"session_prefix": "...", "dry_run": true}``：
+        - **dry_run 默认 true**：只返回 matched/deleted=0/sample，不改动任何数据；
+        - dry_run=false 才真删；前缀校验 + 单次 500 上限双保险；
+        - 删除走 StateManager 锁内路径并置脏，由 autoflush 正常落盘。
+        """
+        plugin = self.plugin
+        if plugin is None or getattr(plugin, "state_manager", None) is None:
+            return error_response("状态管理器未加载", status_code=500)
+        data = await _json_body()
+        prefix = str(data.get("session_prefix") or "").strip()
+        dry_run = data.get("dry_run", True)
+        # 显式收 bool：JSON 里 "false" 是真值，字符串误传会把 dry_run 变成真删。
+        if not isinstance(dry_run, bool):
+            return error_response("dry_run 必须是布尔值", status_code=400)
+        err_msg = self._validate_cleanup_prefix(prefix)
+        if err_msg:
+            return error_response(err_msg, status_code=400)
+        try:
+            result = await plugin.state_manager.cleanup_states_by_prefix(
+                prefix, dry_run=dry_run
+            )
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
+        return json_response({"status": "ok", "data": result})
 
     # ── RAG ───────────────────────────────────────────────────
 
@@ -654,7 +728,13 @@ class QuillRoutes:
         is_core = bool(data.get("is_core", False))
         if not memory_id:
             return error_response("缺少 memory_id", status_code=400)
-        ok = await memory_store.set_core(int(memory_id), is_core)
+        # L7：非数字 memory_id 此前抛 ValueError 被 _api_handler 兜成 500（服务端
+        # 错误），其实是调用方参数不合法 → 400。同文件 chat_log_list 已用 type=int。
+        try:
+            memory_id_int = int(memory_id)
+        except (TypeError, ValueError):
+            return error_response("memory_id 必须是整数", status_code=400)
+        ok = await memory_store.set_core(memory_id_int, is_core)
         if not ok:
             return error_response("记忆不存在或更新失败", status_code=404)
         return json_response({
@@ -671,7 +751,13 @@ class QuillRoutes:
         if memory_store is None:
             return error_response("记忆系统未加载", status_code=500)
         session_id = request.query.get("session_id")
-        limit = min(max(1, int(request.query.get("limit", 200))), 1000)
+        # L7：非数字（?limit=abc）回落到默认值。不用 request.query.get(..., type=int)：
+        # 真机 PluginMultiDict 支持 type 参数，但显式解析在两种实现下行为一致。
+        try:
+            raw_limit = int(request.query.get("limit") or 200)
+        except (TypeError, ValueError):
+            raw_limit = 200
+        limit = min(max(1, raw_limit), 1000)
         return json_response(await handle_chat_log_list(memory_store, session_id, limit))
 
     @_api_handler
@@ -851,9 +937,13 @@ class QuillRoutes:
     @_api_handler
     async def wb_import_st(self):
         """上传 ST 格式 lorebook 文件并导入。"""
-        # M3.1：文件读取统一走上传通道（保持无大小上限的历史语义 limit=None）
+        # M6.2：此前是 limit=None（无大小上限）——请求体会被**全量读进内存**
+        # 再落盘到 imports/，一次性上传即可放大内存占用。世界书是纯文本设定集，
+        # 50MB（= RAG 文档通道的 DEFAULT_LIMIT）已远超任何真实用例，故收敛一致。
         try:
-            payload = await read_upload(request, keys=("file",), limit=None)
+            payload = await read_upload(request, keys=("file",), limit=DEFAULT_LIMIT)
+        except UploadTooLarge:
+            return error_response("世界书文件过大（最大 50MB）", status_code=413)
         except UploadError as e:
             return error_response(error_text("Base64 解码失败", e), status_code=400)
         if payload is None:
@@ -874,10 +964,11 @@ class QuillRoutes:
 
         if self.plugin is None or not getattr(self.plugin, "paths", None):
             return error_response("插件实例不可用", status_code=500)
-        # 写入导入暂存目录（数据根下的 imports/，不再写进插件目录）
+        # 写入导入暂存目录（数据根下的 imports/，不再写进插件目录）。
+        # 落盘走线程池：同步 write_bytes 在事件循环上会阻塞整台 bot 的聊天管道。
         target_dir = Path(self.plugin.paths["imports_dir"])
-        target_dir.mkdir(parents=True, exist_ok=True)
-        (target_dir / f"{name}.json").write_bytes(payload.data)
+        await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread((target_dir / f"{name}.json").write_bytes, payload.data)
 
         return json_response(
             await handle_wb_import_st(self.wb_manager, name, payload.data)
@@ -895,6 +986,10 @@ class QuillRoutes:
             return error_response("缺少世界书名称", status_code=400)
         if not file_data:
             return error_response("未收到文件数据", status_code=400)
+        # L7：data 字段是数组/对象/数字时，下面 f.write 会抛 TypeError →
+        # 被 _api_handler 兜成 500。参数问题应当是 400。
+        if not isinstance(file_data, str):
+            return error_response("data 字段必须是世界书 JSON 文本", status_code=400)
         # 写入临时文件供 import_from_st 解析
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
         try:
@@ -1318,6 +1413,13 @@ class QuillRoutes:
           恢复的 quill_state.json 反向覆盖回去）。
         - 逐文件容错：单个文件失败不中断整体恢复，失败数如实返回。
         """
+        # 先按 Content-Length 拒一次，避免为了报「过大」而先把整个请求体读进内存。
+        declared = _declared_length(request)
+        if declared is not None and declared > _MAX_RESTORE_BYTES:
+            return error_response(
+                f"备份文件过大（最大 {_MAX_RESTORE_BYTES // (1024 * 1024)}MB）",
+                status_code=413,
+            )
         raw = await request.body()
         if not raw:
             return error_response("请上传备份文件", status_code=400)
@@ -1353,18 +1455,29 @@ class QuillRoutes:
         plugin_root = os.path.dirname(os.path.abspath(__file__))
         paths = getattr(self.plugin, "paths", None) or {}
 
+        # M6.2：恢复包上限。此前 body/base64 无任何体积约束，配合下面的
+        # 全量 CRC 校验，一个高压缩比的小包就能撑爆内存 + 冻结事件循环。
+        if len(raw) > _MAX_RESTORE_BYTES:
+            return error_response(
+                f"备份文件过大（最大 {_MAX_RESTORE_BYTES // (1024 * 1024)}MB）",
+                status_code=413,
+            )
+
         # Fully validate the archive before touching live databases or
         # stopping autoflush. A corrupt/irrelevant zip must not evict runtime
         # state or overwrite existing data.
-        try:
+        #
+        # M6.2：校验（testzip 会对整包逐条 CRC 解压 + 每个 .db 读头嗅探）是
+        # CPU/IO 密集操作，此前直接在事件循环上跑 —— 校验期间台 bot 的所有
+        # 聊天管道与面板请求一起卡住。这里整体丢进线程池；函数只读 raw 与本
+        # 地文件，不碰任何共享状态，线程安全。
+        def _validate() -> list:
+            candidates: list = []
+            bad_db: list[str] = []
             with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
                 bad_file = zf.testzip()
                 if bad_file:
-                    return error_response(
-                        f"备份文件损坏: {bad_file}", status_code=400
-                    )
-                candidates = []
-                bad_db = []
+                    raise ValueError(f"备份文件损坏: {bad_file}")
                 for info in zf.infolist():
                     if info.is_dir():
                         continue
@@ -1380,17 +1493,20 @@ class QuillRoutes:
                         with zf.open(info) as fh:
                             if not is_sqlite_bytes(fh.read(16)):
                                 bad_db.append(info.filename)
-                if not candidates:
-                    return error_response(
-                        "备份中没有可恢复的数据文件", status_code=400
-                    )
-                if bad_db:
-                    return error_response(
-                        "备份中的数据库文件已损坏，拒绝恢复: " + ", ".join(bad_db),
-                        status_code=400,
-                    )
+            if bad_db:
+                raise ValueError(
+                    "备份中的数据库文件已损坏，拒绝恢复: " + ", ".join(bad_db)
+                )
+            return candidates
+
+        try:
+            candidates = await asyncio.to_thread(_validate)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
         except (zipfile.BadZipFile, OSError) as e:
             return error_response(error_text("无效的备份文件", e), status_code=400)
+        if not candidates:
+            return error_response("备份中没有可恢复的数据文件", status_code=400)
 
         extracted_count = 0
         skipped_count = 0

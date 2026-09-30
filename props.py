@@ -153,6 +153,21 @@ class QuillConfigProperties:
         return self._plugin.config.status_bar_plot_paths
 
     @property
+    def status_bar_jev_enabled(self) -> bool:
+        """JEV 模式总开关（config.status_bar.jev_enabled）。"""
+        return self._plugin.config.status_bar_jev_enabled
+
+    @property
+    def status_bar_jev_provider_id(self) -> str:
+        """JEV 判定模型对应的 AstrBot 提供商 id（config.status_bar.jev_provider_id）。"""
+        return self._plugin.config.status_bar_jev_provider_id
+
+    @property
+    def status_bar_jev_confidence_floor(self) -> float:
+        """JEV 推荐选择度显示/分支路由的置信度下限（config.status_bar.jev_confidence_floor）。"""
+        return self._plugin.config.status_bar_jev_confidence_floor
+
+    @property
     def status_bar_default_placeholder(self) -> str:
         """字段缺值时的占位符（config.status_bar.default_placeholder）。"""
         return self._plugin.config.status_bar_default_placeholder

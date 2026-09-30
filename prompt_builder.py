@@ -142,8 +142,6 @@ class PromptBuilder:
             else:
                 self.status_bar_plot_paths = list(_DEFAULT_PLOT_PATHS)
 
-        self.token_ratio: float = 1.5  # 保留用于向后兼容，新估算使用 _estimate_tokens
-
     def _estimate_tokens(self, text: str) -> float:
         """更精确的 Token 估算：CJK 字符 ≈ 1 token，ASCII ≈ 0.25 token。"""
         if not text:
@@ -1008,5 +1006,5 @@ async def _self_test():
 
 
 if __name__ == "__main__":
-    import asyncio
+    # asyncio 已在模块顶部导入，无需重复导入
     asyncio.run(_self_test())

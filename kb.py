@@ -914,12 +914,17 @@ class WritingResourceManager:
             # （2000 条素材读到 Python 里逐条评分），且本轮已经有了部分命中。
             # 保持返回已有命中即可——素材库匹配是「有则注入」，宁缺勿滥。
             if fts_entries:
+                # B5：必须切片。候选池是按 top_k*3 取的（见上面的 fts_match 调用），
+                # 而这条分支此前直接 return 未截断的池子——「命中数不足 top_k」时
+                # 会返回最多 3×top_k 条；prompt_builder 对返回的每一条都注入，且
+                # WR 路径没有 token 上限，等于 wr_max_entries 在这条路径上失效。
+                result = fts_entries[:top_k]
                 if log_match:
-                    await self._increment_match_counts([e["id"] for e in fts_entries])
+                    await self._increment_match_counts([e["id"] for e in result])
                     await self._log_match(
-                        user_input, [e["entry_id"] for e in fts_entries], len(fts_entries)
+                        user_input, [e["entry_id"] for e in result], len(result)
                     )
-                return fts_entries
+                return result
             # 一条都没命中才是真正的「需要扫描」场景
         # M3.3.5：扫描阶段只取打分所需列（keywords/aliases/secondary_keywords/
         # name/priority/category），**不捞 content 全文**；命中后按 id 回表取

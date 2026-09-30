@@ -149,6 +149,25 @@ def _upload_filename(file: object) -> str:
     return ""
 
 
+def _declared_length(request) -> int | None:
+    """读 ``Content-Length``；缺失或不可解析返回 None。
+
+    真机 ``PluginRequest.headers`` 是 starlette ``Headers``（大小写不敏感），
+    测试假件是普通 dict，故两种键都探一次。
+    """
+    headers = getattr(request, "headers", None)
+    if not headers:
+        return None
+    try:
+        raw = headers.get("content-length") or headers.get("Content-Length")
+    except Exception:  # noqa: BLE001 - 头部对象形态不可控，缺失即当没有
+        return None
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 async def read_upload(
     request,
     *,
@@ -177,6 +196,17 @@ async def read_upload(
         UploadTooLarge: 内容超过 *limit*。
         UploadError: base64 解码失败。
     """
+    # ── ⓪ 体积预检（M6.2）──
+    # 此前每个通道都是「先全量读进内存，再比对 limit」，于是一个声称
+    # 不限长的请求能按实际体积把 bot 进程的内存吃满。先按 Content-Length
+    # 拒一次；真实体积仍会在下面按解码后/读入后的长度复检。
+    # 注意这挡不住分块传输（chunked）——那需要在反代/宿主层限流，
+    # 这里是廉价的第一道闸。
+    if limit is not None:
+        declared = _declared_length(request)
+        if declared is not None and declared > limit:
+            raise UploadTooLarge(limit)
+
     # ── ① multipart 文件通道 ──
     files = await request.files()
     for key in keys:
@@ -206,6 +236,10 @@ async def read_upload(
         b64_raw = source.get(B64_FIELD)
         if not (isinstance(b64_raw, (str, bytes)) and str(b64_raw).strip()):
             continue
+        # 解码前先按编码长度拒：base64 膨胀率 4/3，留 1KB 余量容空白/填充。
+        # 否则 decode_base64 会先把整个载荷解进内存，limit 形同虚设。
+        if limit is not None and len(b64_raw) > (limit * 4) // 3 + 1024:
+            raise UploadTooLarge(limit)
         data = decode_base64(b64_raw)
         if limit is not None and len(data) > limit:
             raise UploadTooLarge(limit)

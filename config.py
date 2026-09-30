@@ -161,6 +161,18 @@ class QuillConfig:
         # 状态栏数值变化标注（相对上一轮的 ↑↓ 幅度）
         self.status_bar_show_delta: bool = _safe_bool(sb.get("show_delta", True))
 
+        # ── JEV 模式（TypeSafe System One 结构化判定）──
+        # 剧情走向「推荐选择度」（选项后追加 ▸ N%）+ 自由文本回复的分支路由。
+        # 判定模型走 AstrBot 自带提供商（须指向 api.typesafe.ai 的 Jev 类模型），
+        # 插件从 provider_config 提取 api_base/key 直连 /v1/systemone。
+        # 全链 fail-open：判定失败/低置信/模型不对 → 维持普通渲染。
+        self.status_bar_jev_enabled: bool = _safe_bool(sb.get("jev_enabled"))
+        self.status_bar_jev_provider_id: str = str(sb.get("jev_provider_id", "") or "").strip()
+        # 置信度低于该值不标百分比、不路由（分布平坦时数字没有信息量）
+        self.status_bar_jev_confidence_floor: float = min(
+            max(_safe_float(sb.get("jev_confidence_floor"), 0.6), 0.0), 1.0
+        )
+
         # ── refusal ──
         ref = _get_nested(self._raw, "refusal", {}) or {}
         self.refusal_enabled: bool = _safe_bool(ref.get("enabled"), True)

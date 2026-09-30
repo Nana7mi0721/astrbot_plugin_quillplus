@@ -76,10 +76,47 @@ class QuillPersonaManager:
                 os.remove(tmp)
             raise
 
+    def _resolve_avatar_file(self, filename: str) -> Optional[str]:
+        """把文件名解析为头像目录内的绝对路径；越界返回 None。
+
+        M6.1 安全修复：此前 read/delete 直接用 ``os.path.join(avatar_dir, filename)``，
+        而 filename 来自角色卡的 ``avatar_path``（可由面板或 ``/char import`` 写入），
+        于是 ``quill_avatars/../../../cmd_config.json`` 能通过调用方的前缀检查，
+        被拼到头像目录之外——读取即任意文件读取、删除即任意文件删除。
+
+        这里改用 realpath + 前缀包含性校验（与 ``_paths.resolve_archive_dest`` 同一套
+        思路），一次拦住 ``..``、绝对路径、盘符、UNC 与指向外部的符号链接；
+        不依赖文件名黑名单，也就不会随命名策略变化而失效。
+        """
+        if not filename or "\x00" in filename:
+            return None
+        base = os.path.realpath(self.avatar_dir)
+        target = os.path.realpath(os.path.join(base, filename))
+        if target != base and not target.startswith(base + os.sep):
+            return None
+        return target
+
+    def _normalize_avatar_path(self, value: Any) -> str:
+        """归一化写入角色卡的 ``avatar_path``，非法一律落空串。
+
+        合法形态只有 :meth:`save_avatar` 的产出 ``quill_avatars/<文件名>``。
+        读取侧已做包含性校验，这里再在**写入**侧拒一次：既让越界值不进库
+        （不再依赖「每个出口都记得校验」），也让 ``has_avatar`` 之类的判断不会被
+        畸形值干扰。
+        """
+        prefix = "quill_avatars/"
+        raw = str(value or "").strip().replace("\\", "/")
+        if not raw.startswith(prefix):
+            return ""
+        name = raw[len(prefix):]
+        if not name or name in (".", "..") or name != os.path.basename(name):
+            return ""
+        return prefix + name if self._resolve_avatar_file(name) else ""
+
     async def read_avatar(self, filename: str) -> Optional[bytes]:
-        """读取头像文件数据。"""
-        path = os.path.join(self.avatar_dir, filename)
-        if not os.path.isfile(path):
+        """读取头像文件数据。路径越界一律返回 None。"""
+        path = self._resolve_avatar_file(filename)
+        if not path or not os.path.isfile(path):
             return None
         return await asyncio.to_thread(self._sync_read_bytes, path)
 
@@ -89,8 +126,10 @@ class QuillPersonaManager:
             return f.read()
 
     async def delete_avatar(self, filename: str) -> bool:
-        """删除头像文件。"""
-        path = os.path.join(self.avatar_dir, filename)
+        """删除头像文件。路径越界一律返回 False（不删除任何文件）。"""
+        path = self._resolve_avatar_file(filename)
+        if not path:
+            return False
         exists = await asyncio.to_thread(os.path.isfile, path)
         if exists:
             await asyncio.to_thread(os.remove, path)
@@ -174,7 +213,15 @@ class QuillPersonaManager:
             if not fname.endswith(".json"):
                 continue
             path = os.path.join(self.data_dir, fname)
-            data = await self._read_file(path)
+            # B7：单个文件损坏不能让整个子系统瘫掉。load_all 在热路径上
+            # （每轮 get_persona、面板列表、create 的重名校验），此前一个截断的
+            # JSON 就会 json 解析异常冒泡、循环中断、_cache_loaded 永不置位——
+            # 之后每次调用都重新炸。与 worldbook._load_all 对齐，逐文件容错。
+            try:
+                data = await self._read_file(path)
+            except Exception as e:
+                logger.warning(f"[QuillPersona] 跳过损坏的角色卡文件 {fname}: {e}")
+                continue
             if data and data.get("id"):
                 self._cache[data["id"]] = data
         self._cache_loaded = True
@@ -228,11 +275,18 @@ class QuillPersonaManager:
             persona_id = (data.get("id") or "").strip() or name
             if self._cache_loaded and persona_id in self._cache:
                 raise ValueError(f"角色 ID '{persona_id}' 已存在")
+            # B10：不同 id 可能被 _sanitize_id 规整成同一个文件名
+            # （"a/b" 与 "a:b" → 都是 a_b.json）。缓存按**原始 id** 判重抓不到，
+            # 落盘却是 os.replace → 静默覆盖前一张卡。这里按文件名再判一次。
+            if await asyncio.to_thread(os.path.isfile, self._persona_path(persona_id)):
+                raise ValueError(
+                    f"角色卡文件名冲突：{os.path.basename(self._persona_path(persona_id))} 已被占用"
+                )
 
             persona = {
                 "id": persona_id,
                 "name": name,
-                "avatar_path": (data.get("avatar_path") or "").strip(),
+                "avatar_path": self._normalize_avatar_path(data.get("avatar_path")),
                 "summary": (data.get("summary") or "").strip(),
                 "core_prompts": {
                     "personality": (data.get("core_prompts", {}).get("personality") or "").strip(),
@@ -277,7 +331,10 @@ class QuillPersonaManager:
 
             for field in ("avatar_path", "summary"):
                 if field in data:
-                    existing[field] = (data[field] or "").strip()
+                    existing[field] = (
+                        self._normalize_avatar_path(data[field])
+                        if field == "avatar_path" else (data[field] or "").strip()
+                    )
 
             if "core_prompts" in data and isinstance(data["core_prompts"], dict):
                 cp = existing.setdefault("core_prompts", {})
@@ -312,29 +369,36 @@ class QuillPersonaManager:
         """删除角色卡及其关联的头像文件。
 
         S2-7 修复：加 _cache_lock 保护，避免与 load_all/create_persona 竞争。
+        B9 修复：与 update_persona 同序取「每卡锁 → 缓存锁」。此前只取缓存锁，
+        而 update 在「读到 deepcopy」与「写回 + 回填缓存」之间不持缓存锁——
+        先删后写回会让刚删掉的卡复活（头像却已删）。锁序与 update 一致，
+        不存在 AB-BA 反转。
         """
-        async with self._cache_lock:
-            path = self._persona_path(persona_id)
-            exists = await asyncio.to_thread(os.path.isfile, path)
-            if not exists:
-                raise ValueError(f"角色卡不存在: {persona_id}")
-            # 读取角色卡数据以获取头像路径
-            try:
-                data = await self._read_file(path)
-                if data:
-                    avatar_path = data.get("avatar_path", "")
-                    if avatar_path and avatar_path.startswith("quill_avatars/"):
-                        avatar_filename = avatar_path[len("quill_avatars/"):]
-                        await self.delete_avatar(avatar_filename)
-                        logger.info(f"[QuillPersona] 已删除头像: {avatar_filename}")
-            except Exception as e:
-                logger.warning(f"[QuillPersona] 读取头像路径失败: {e}")
-            await asyncio.to_thread(os.remove, path)
-            self._cache.pop(persona_id, None)
-            # S3-3: 清理 _locks 中的孤儿锁，防止 defaultdict 无限增长
-            self._locks.pop(persona_id, None)
-            logger.info(f"[QuillPersona] 已删除角色卡: {persona_id}")
-            return True
+        async with self._locks[persona_id]:
+            async with self._cache_lock:
+                path = self._persona_path(persona_id)
+                exists = await asyncio.to_thread(os.path.isfile, path)
+                if not exists:
+                    raise ValueError(f"角色卡不存在: {persona_id}")
+                # 读取角色卡数据以获取头像路径
+                try:
+                    data = await self._read_file(path)
+                    if data:
+                        avatar_path = data.get("avatar_path", "")
+                        if avatar_path and avatar_path.startswith("quill_avatars/"):
+                            avatar_filename = avatar_path[len("quill_avatars/"):]
+                            await self.delete_avatar(avatar_filename)
+                            logger.info(f"[QuillPersona] 已删除头像: {avatar_filename}")
+                except Exception as e:
+                    logger.warning(f"[QuillPersona] 读取头像路径失败: {e}")
+                await asyncio.to_thread(os.remove, path)
+                self._cache.pop(persona_id, None)
+                logger.info(f"[QuillPersona] 已删除角色卡: {persona_id}")
+        # S3-3: 清理 _locks 中的孤儿锁，防止 defaultdict 无限增长。
+        # 必须等锁释放后再 pop——持锁时 pop，并发调用者会拿到另一把新锁，
+        # 同一 id 的两个操作就不再互斥。
+        self._locks.pop(persona_id, None)
+        return True
 
     async def get_persona_count(self) -> int:
         """返回角色卡数量。"""

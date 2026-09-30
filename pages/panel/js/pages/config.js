@@ -56,6 +56,10 @@ const CFG_FIELDS = [
   ["status_bar", "plot_paths", "#c-sb-plots", "str"],
   ["status_bar", "llm_extract", "#c-sb-llm-extract", "bool"],
   ["status_bar", "llm_provider_id", "#c-sb-llm", "str"],
+  // JEV 模式（TypeSafe System One：剧情走向推荐选择度 + 分支路由）
+  ["status_bar", "jev_enabled", "#c-sb-jev", "bool"],
+  ["status_bar", "jev_provider_id", "#c-sb-jev-provider", "str"],
+  ["status_bar", "jev_confidence_floor", "#c-sb-jev-floor", "float"],
   ["refusal", "enabled", "#c-ref-enabled", "bool"],
   ["refusal", "patterns", "#c-ref-pat", "str"],
   ["permissions", "admin_users", "#c-perm-admins", "str"],
@@ -82,6 +86,7 @@ const CFG_DEFAULTS = {
   "status_bar.plot_paths": "继续当前话题|转换场景|结束互动",
   "status_bar.default_placeholder": "未设置",
   "status_bar.show_delta": true,
+  "status_bar.jev_confidence_floor": 0.6,
   "debug.show_inject_report": false,
   "refusal.enabled": true,
   "refusal.patterns": "我不能\n我无法\n这违反\n我不应该\n这不合适\n我拒绝",
@@ -105,6 +110,7 @@ function applySettings(providers, cfg) {
   fillProviderSelect($("#c-rag-rerank"), providers.rerank, "（不使用重排）");
   fillProviderSelect($("#c-rag-llm"), providers.llm, "（退化为文本截断）");
   fillProviderSelect($("#c-sb-llm"), providers.llm, "（回退到 RAG 摘要 LLM）");
+  fillProviderSelect($("#c-sb-jev-provider"), providers.llm, "（未选择——JEV 模式不会生效）");
 
   CFG_FIELDS.forEach(([group, key, sel, kind]) => {
     const el = $(sel);

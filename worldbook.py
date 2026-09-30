@@ -54,16 +54,29 @@ except ModuleNotFoundError:  # 直接运行本文件做自测：先把 AstrBot �
 
 _VALID_NAME_RE = re.compile(r'[a-zA-Z0-9_\-\u4e00-\u9fff]')
 
+#: Windows 保留设备名（L5）。纯字母名会通过 _VALID_NAME_RE，但 CON.json /
+#: NUL.json 这类路径在 Windows 上指向设备而非文件：写入静默失败，
+#: 而内存缓存里那本世界书还在 → 重启后凭空消失。quill/core/paths.sanitize_name
+#: 已有同样一份名单，这里补上以保持两个入口口径一致。
+_WIN_RESERVED_NAMES = frozenset(
+    {'con', 'prn', 'aux', 'nul'}
+    | {f'com{i}' for i in range(1, 10)}
+    | {f'lpt{i}' for i in range(1, 10)}
+)
+
 
 def _validate_name(name: str) -> bool:
     """Return True if *name* is a safe worldbook identifier.
 
     Rejects empty names, path traversal fragments (``..``, ``/``, ``\\``),
-    and any character outside [a-zA-Z0-9_\\-\\u4e00-\u9fff].
+    Windows reserved device names, and any character outside
+    [a-zA-Z0-9_\\-\\u4e00-\u9fff].
     """
     if not name:
         return False
     if '..' in name or '/' in name or '\\' in name:
+        return False
+    if name.strip().lower() in _WIN_RESERVED_NAMES:
         return False
     # After removing allowed chars, nothing should remain
     return not _VALID_NAME_RE.sub('', name)
@@ -98,6 +111,16 @@ class WorldbookManager:
                 if not _validate_name(name):
                     logger.warning("[WorldbookManager] Skipping %s: invalid name %r", f, name)
                     continue
+                # L10：以文件内的 name 为键时，两本世界书可能撞同一个键（同名文件
+                # 后者静默覆盖前者），文件 a.json 里写 name:"b" 也会让运行时行为
+                # 与文件名脱节（delete "b" 删的是 b.json，a.json 下次启动又把它带
+                # 回来）。这里至少把撞键事实记下来，便于排查「世界书不见了」。
+                if name in self.worldbooks:
+                    logger.warning(
+                        "[WorldbookManager] %s 与已加载的世界书同名（name=%r），已覆盖；"
+                        "建议把文件内的 name 改成唯一值",
+                        f, name,
+                    )
                 self.worldbooks[name] = wb
             except (OSError, json.JSONDecodeError) as exc:
                 logger.warning("[WorldbookManager] 读取失败 %s: %s", f, exc)
@@ -300,16 +323,23 @@ class WorldbookManager:
     # ── Atomic entry operations (F1 fix: read-modify-write under single lock) ──
 
     def add_entry_to_worldbook(self, name: str, entry: dict) -> bool:
-        """Atomically add an entry to a worldbook. Thread-safe."""
+        """Atomically add an entry to a worldbook. Thread-safe.
+
+        B6：改「副本 → 落盘 → 换缓存」。此前就地改缓存再落盘，落盘抛错
+        （磁盘满、Windows 上文件被 AV/备份占用）时缓存已经变了 —— 面板显示
+        改成功、重启后消失。副本失败则缓存保持原样，内存与磁盘不会再分叉。
+        """
         if not _validate_name(name):
             return False
         with self._lock:
             wb = self.worldbooks.get(name)
             if wb is None:
                 return False
-            wb["entries"].append(entry)
+            updated = copy.deepcopy(wb)
+            updated["entries"].append(entry)
             path = os.path.join(self.worldbooks_dir, name + ".json")
-            _save_json_atomic(path, wb)
+            _save_json_atomic(path, updated)
+            self.worldbooks[name] = updated
         return True
 
     def update_entry_in_worldbook(self, name: str, entry_id: str, patch: dict) -> bool:
@@ -320,11 +350,13 @@ class WorldbookManager:
             wb = self.worldbooks.get(name)
             if wb is None:
                 return False
-            for i, item in enumerate(wb["entries"]):
+            updated = copy.deepcopy(wb)
+            for i, item in enumerate(updated["entries"]):
                 if item.get("id") == entry_id:
-                    wb["entries"][i].update(patch)
+                    updated["entries"][i].update(patch)
                     path = os.path.join(self.worldbooks_dir, name + ".json")
-                    _save_json_atomic(path, wb)
+                    _save_json_atomic(path, updated)
+                    self.worldbooks[name] = updated
                     return True
             return False
 
@@ -337,11 +369,13 @@ class WorldbookManager:
             if wb is None:
                 return False
             before = len(wb["entries"])
-            wb["entries"] = [e for e in wb["entries"] if e.get("id") != entry_id]
-            if len(wb["entries"]) == before:
+            updated = copy.deepcopy(wb)
+            updated["entries"] = [e for e in updated["entries"] if e.get("id") != entry_id]
+            if len(updated["entries"]) == before:
                 return False
             path = os.path.join(self.worldbooks_dir, name + ".json")
-            _save_json_atomic(path, wb)
+            _save_json_atomic(path, updated)
+            self.worldbooks[name] = updated
         return True
 
     # ── ST Lorebook import ───────────────────────────────────────────────
@@ -361,8 +395,16 @@ class WorldbookManager:
             entries: List[dict] = []
 
             # 检测格式：如果第一个条目包含 Quill 特征字段（content + keys），按 Quill 原生处理
-            items_list = raw_entries.values() if isinstance(raw_entries, dict) else raw_entries
-            if items_list and isinstance(items_list, list) and len(items_list) > 0:
+            # L9：dict 形态的 entries 要转成 list 再判类型——此前 `items_list` 是
+            # dict_values，`isinstance(..., list)` 恒为 False，Quill 原生格式被误判成
+            # ST 格式，is_constant / inject_position 随之丢失（常驻条目不再常驻）。
+            if isinstance(raw_entries, dict):
+                items_list = list(raw_entries.values())
+            elif isinstance(raw_entries, list):
+                items_list = raw_entries
+            else:
+                items_list = []
+            if items_list:
                 first = items_list[0] if isinstance(items_list[0], dict) else {}
                 is_quill_native = 'content' in first and ('keys' in first or 'is_constant' in first)
             else:
@@ -381,7 +423,10 @@ class WorldbookManager:
                     else:
                         keys_raw = []
                     entries.append({
-                        "id": e.get('id', f"entry_{len(entries)}")[:50],
+                        # L8：id 可能是数字（round-trip 过 ST 工具/hand-edit 后很常见），
+                        # 直接 [:50] 会 TypeError；而异常被外层宽 except 吞掉 ⇒ 不是
+                        # 跳过这一条，而是**整本**世界书导入失败。
+                        "id": str(e.get('id') or f"entry_{len(entries)}")[:50],
                         "title": e.get('title', ''),
                         "content": e.get('content', ''),
                         "is_constant": e.get('is_constant', False),

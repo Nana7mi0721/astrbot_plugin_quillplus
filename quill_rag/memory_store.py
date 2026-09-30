@@ -441,6 +441,10 @@ class MemoryStore:
                     "useful_count": useful_count,
                     "age_days": age_days,
                     "is_core": row[10],
+                    # B11：vec_score 是「相似度 × 时间衰减 + 引用频次加成」的**排序分**，
+                    # 不是相似度本身。去重判定必须用原始余弦 sim，否则一条 cosine 0.80
+                    # 但被高频引用的旧记忆（0.80 + 0.12 = 0.92）会把真正的新记忆挤掉。
+                    "sim": sim,
                     "vec_score": final_vec_score,
                     "fts_score": fts_scores.get(row_id, 0.0)
                 })
@@ -507,7 +511,8 @@ class MemoryStore:
                     "useful_count": r[5],
                     "age_days": 0.0,
                     "is_core": r[6],
-                    # 无向量分：仅关键词分参与排序
+                    # 无向量分：仅关键词分参与排序（sim 同理为 0，去重判定不会误命中）
+                    "sim": 0.0,
                     "vec_score": 0.0,
                     "fts_score": fts_scores.get(r[0], 0.0),
                     "degraded": True,
@@ -801,28 +806,48 @@ class MemoryStore:
             logger.warning("[Quill Memory] list_chat_logs 失败: %s", e, exc_info=True)
             return []
 
+    #: 导出条数上限（B12）。导出要把整段文本拼进内存并一次性回给面板，
+    #: 此前无 LIMIT：一个长会话能拉出几十万行、每条最长 2000 字。
+    MAX_EXPORT_ROWS = 5000
+
     async def export_chat_logs(self, session_id: str, format: str = "markdown") -> str:
-        """导出对话日志为文本格式"""
+        """导出对话日志为文本格式。
+
+        B12：加条数上限；`ORDER BY timestamp, id` 让同秒内的多条记录也有稳定次序
+        （时间戳是秒级，只按它排序时同秒记录顺序不确定，导出结果会抖动）。
+        """
         if not session_id:
             return ""
         try:
             rows = await self._exec_fetchall(
                 "SELECT role, content, timestamp FROM chat_logs "
-                "WHERE session_id = ? ORDER BY timestamp ASC",
-                (session_id,)
+                "WHERE session_id = ? ORDER BY timestamp ASC, id ASC LIMIT ?",
+                (session_id, self.MAX_EXPORT_ROWS + 1)
             )
         except Exception as e:
             logger.warning("[Quill Memory] export_chat_logs 失败: %s", e, exc_info=True)
             return ""
 
+        truncated = len(rows) > self.MAX_EXPORT_ROWS
+        if truncated:
+            rows = rows[: self.MAX_EXPORT_ROWS]
+
         if format == "txt":
             lines = [f"[{r[2]}] {r[0]}: {r[1]}" for r in rows]
-            return "\n\n".join(lines)
-        lines = [f"# 对话记录 — `{session_id}`\n"]
-        for r in rows:
-            role_label = "**用户**" if r[0] == "user" else "**AI**"
-            lines.append(f"{role_label}: {r[1]}\n")
-        return "\n".join(lines)
+            body = "\n\n".join(lines)
+        else:
+            lines = [f"# 对话记录 — `{session_id}`\n"]
+            for r in rows:
+                role_label = "**用户**" if r[0] == "user" else "**AI**"
+                lines.append(f"{role_label}: {r[1]}\n")
+            body = "\n".join(lines)
+
+        if truncated:
+            body += (
+                f"\n\n> 已截断：单次导出上限 {self.MAX_EXPORT_ROWS} 条，"
+                f"更早的记录未包含在本文件中。"
+            )
+        return body
 
     async def cleanup_chat_logs(self, retention_days: int) -> int:
         """清理超过保留天数的对话日志（D4：失败抛 StorageError，类别 prune）。"""

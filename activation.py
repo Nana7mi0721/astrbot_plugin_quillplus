@@ -49,7 +49,9 @@ class ActivationDetector:
         # 误报率极高（如 [INFO]、[1, 2, 3]、[link](url)），不再作为激活触发。
         self._bracket_re: re.Pattern = re.compile(r'【.*?】')
         # 加载状态：True=触发词已就位；False=文件缺失/解析失败（激活词通道
-        # 降级为不命中，见类 docstring 的 fail-close 契约）。
+        # 降级为不命中，见类 docstring 的 fail-close 契约）。D12 复核：本字段
+        # 被 tests/test_storage_errors.py 的 D4b 断言直接读取（fail-close 的可观测
+        # 契约），故**保留**——它是有测试锁定的诊断面，不是死代码。
         self.load_ok: bool = False
         self._load()
 
@@ -70,6 +72,20 @@ class ActivationDetector:
             self.load_ok = False
             return
 
+        # B8：yaml.safe_load 只保证「解析成功」，不保证顶层是映射。顶层是列表/标量
+        # 时（编辑时误删 `activation_words:` 那一行就会发生）下面 data.get 会抛
+        # AttributeError，从 __init__ 一路冒到 main.py 的构造点——那里没有 try，
+        # 整个插件加载失败；而本类 docstring 承诺的是 fail-close（激活词通道降级
+        # 为不命中）。这里显式兜住，把「配置写坏」限制在能力降级而非插件崩掉。
+        if not isinstance(data, dict):
+            logger.warning(
+                "Activation triggers 顶层必须是映射，实际是 %s，已按空配置处理"
+                "（激活词通道降级为不命中）: %s",
+                type(data).__name__, self.yaml_path,
+            )
+            self.load_ok = False
+            return
+
         words = data.get('activation_words', [])
         if isinstance(words, list):
             self.substring_words = [str(w).strip().lower() for w in words if w and str(w).strip()]
@@ -82,6 +98,7 @@ class ActivationDetector:
             re.compile(r'\b' + re.escape(w) + r'\b') for w in self.exact_words
         ]
         self.load_ok = True
+
 
     def reload(self) -> None:
         self.substring_words.clear()

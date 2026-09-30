@@ -96,7 +96,29 @@ class StateManager:
             self._evict_if_needed()
             logger.info(f"[Quill State] 已恢复 {len(self._states)} 个对话状态")
         except Exception as e:
-            logger.error(f"[Quill State] 加载失败: {e}")
+            # B3 修复：整份文件解析失败时必须**先隔离再继续**。此前只记一条 error
+            # 就返回，_states 留空；而紧接着的第一次 autoflush（≤5 秒）会用
+            # 「只含新用户的快照」os.replace 覆盖掉这个文件——损坏的主文件就这样
+            # 被彻底抹掉，角色卡对话隔离映射/session_vars/last_learned_id 全部
+            # 不可恢复。改名留档后即使后续落盘失败，原始字节仍在盘上可人工抢救。
+            self._quarantine_corrupt_file(e)
+
+    def _quarantine_corrupt_file(self, exc: Exception) -> None:
+        """把解析失败的 quill_state.json 改名留档（失败也不能影响插件启动）。"""
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        target = f"{self.state_file}.corrupt-{stamp}"
+        try:
+            os.replace(self.state_file, target)
+            logger.error(
+                "[Quill State] 加载失败: %s | 原文件已保全为 %s（本次从空状态启动；"
+                "如其中确有数据，可修复该 JSON 后改回原文件名）",
+                exc, os.path.basename(target),
+            )
+        except OSError as move_err:
+            logger.error(
+                f"[Quill State] 加载失败: {exc} | 且无法隔离原文件（{move_err}），"
+                f"为防覆盖已跳过本次加载"
+            )
 
     def _evict_if_needed(self) -> None:
         """Evict oldest sessions beyond max_users limit (LRU by last_active)."""
@@ -186,6 +208,43 @@ class StateManager:
     async def persist_all(self) -> None:
         """Force persist all in-memory states to disk (call on shutdown)."""
         await self._persist()
+
+    # ── 会话状态清理（管理端点专用） ────────────────────────────────
+
+    CLEANUP_MAX_DELETE = 500
+
+    async def cleanup_states_by_prefix(
+        self, prefix: str, dry_run: bool = True, max_delete: int | None = None,
+    ) -> dict:
+        """按 UMO 前缀统计/删除会话状态键，返回 {matched, deleted, sample}。
+
+        测试 harness（quilltest! 前缀）等一次性会话会永久留在
+        quill_state.json 里——此前没有任何删除通道，只能停机手改 JSON
+        （运行中 autoflush 每 5 秒会用内存态回写，外部编辑必然被覆盖）。
+
+        - dry_run=True（默认）：只统计与抽样，绝不改动内存与磁盘；
+        - dry_run=False：锁内删除匹配键并置脏，由 autoflush / persist_all
+          走正常落盘管线（世代号 + 写锁保证不会旧盖新）；
+        - 匹配数超过 max_delete（默认 500）时拒绝执行并抛 ValueError——
+          防止过宽前缀（如整平台）一次性清掉真实用户状态。
+        前缀本身的合法性（长度/是否含用户边界 '!'）由调用方校验。
+        """
+        cap = self.CLEANUP_MAX_DELETE if max_delete is None else max_delete
+        async with self._lock:
+            matched = sorted(k for k in self._states if k.startswith(prefix))
+            sample = matched[:8]
+            if dry_run:
+                return {"matched": len(matched), "deleted": 0, "sample": sample}
+            if len(matched) > cap:
+                raise ValueError(
+                    f"匹配 {len(matched)} 个会话，超过单次删除上限 {cap}；"
+                    "请收窄 session_prefix 或分批执行"
+                )
+            for key in matched:
+                del self._states[key]
+            if matched:
+                self._mark_dirty()
+            return {"matched": len(matched), "deleted": len(matched), "sample": sample}
 
     # ── Autoflush ──────────────────────────────────────────────────
 
@@ -504,8 +563,8 @@ class StateManager:
         await self._persist()
 
 if __name__ == "__main__":
+    # tempfile 已在模块顶部导入（_atomic_write 使用），此处无需重复导入
     import shutil
-    import tempfile
 
     _tmp_dir = tempfile.mkdtemp(prefix="quill_state_test_")
 

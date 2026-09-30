@@ -75,10 +75,14 @@
 /* 分区导航行不再单独关闭 .toolbar 的渐变淡出：它现在是标题带的最后一行，
    和其它页面的工具栏一样用同一条 12px 渐隐收尾，全站吸顶带的底边处理
    保持一致（不再需要靠 0.5px 发丝线去硬切）。 */
-.cfg-section { margin-bottom: var(--sp-8); scroll-margin-top: 117px; }
+.cfg-section { margin-bottom: var(--sp-8); margin-top: var(--sp-8); scroll-margin-top: 117px; }
+/* 页面第一个节的顶距交给页头，避免双重空隙 */
+.page .cfg-section:first-of-type { margin-top: 0; }
 .cfg-section-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: var(--sp-3); flex-wrap: wrap; }
 .cfg-section-head h2 { font-size: 20px; font-weight: 700; letter-spacing: -.015em; }
 .cfg-section-head .cfg-section-sub { font-size: 12.5px; color: var(--label-3); }
+/* 节副标题里的警示词（如「实验性」）——与 .is-bad / .badge--red 同一红色 token */
+.cfg-section-head .cfg-section-sub .cfg-sub-danger { color: var(--red-text); }
 
 /* 配置行：标题/说明在左、控件在右（HIG 分组表单标准布局）。
    水平内边距由 .card-body-inner 统一提供，行内只留垂直方向，

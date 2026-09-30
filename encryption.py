@@ -122,7 +122,10 @@ if __name__ == "__main__":
 
     # Empty / None
     check("decrypt_output empty", decrypt_output(""), "")
-    check("decrypt_output None", decrypt_output(None) if False else "", "")  # type guard
+    # 非字符串输入走函数首行 `if not text: return text` 原样返回。此前写的是
+    # `decrypt_output(None) if False else ""`——等于什么都没测，还留下一条
+    # 100% 确定性的死分支；现在直接断言真实契约。
+    check("decrypt_output None passthrough", decrypt_output(None), None)
 
     # Whitespace in base64 (simulating LLM formatting quirk)
     encoded_with_spaces = b64_encode("测试内容")

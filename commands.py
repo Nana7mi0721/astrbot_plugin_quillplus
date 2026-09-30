@@ -19,6 +19,15 @@ from ._route_core import error_text
 from astrbot.api import logger
 
 
+#: `/memory del|pin <序号>` 的序号上限（L5）。序号会被直接当作 SQL ``LIMIT``
+#: 使用（``list_memories(session_id, max(idx, 50))``），不夹的话
+#: `/memory del 999999999` 会把整个会话的记忆全部物化进内存。
+_MAX_MEMORY_INDEX = 1000
+
+#: `/memory list <页码>` 的页码上限（同上，offset 会进 LIMIT）。
+_MAX_MEMORY_PAGE = 200
+
+
 def _get_target_id(event: AstrMessageEvent) -> str:
     """获取指令作用域 ID（群号或私聊用户ID）"""
     if hasattr(event, "unified_msg_origin") and event.unified_msg_origin:
@@ -615,8 +624,14 @@ async def _char_import(plugin, event: AstrMessageEvent, json_text: str):
         event.set_result(MessageEventResult().message(f"JSON 解析失败: {e}"))
         return
 
-    if not data.get("name"):
-        data["name"] = data.get("name", "导入的角色")
+    # L1：非对象 JSON 直接判为格式错误。json_str 由「首个 { 到末个 }」截取，
+    # 正常不会走到这里，但显式兜住比让 AttributeError 冒到框架层好。
+    if not isinstance(data, dict):
+        event.set_result(MessageEventResult().message("角色卡 JSON 顶层必须是对象 {...}"))
+        return
+    # L1：`data.get("name", default)` 的默认值只在**键缺失**时生效，
+    # `{"name": ""}` 会原样落空串并最终报含糊的「导入失败」。改用 `or` 取默认值。
+    data["name"] = (data.get("name") or "").strip() or "导入的角色"
 
     try:
         result = await plugin.persona_manager.create_persona(data)
@@ -999,8 +1014,11 @@ async def quill_debug(plugin, event: AstrMessageEvent):
                 if lv:
                     top = " · ".join(f"{k}×{v}" for k, v in list(lv.items())[:4])
                     lines.append(f"  降级链命中: {top}")
-        except Exception:
-            pass
+        except Exception as e:
+            # L4：诊断指令里不能静默吞异常——否则用户分不清「没数据」和
+            # 「查询炸了」。相邻的 WR/WB/记忆段落都是打印「查询失败」。
+            logger.warning(f"[Quill] /quill debug 读取健康度失败: {e}")
+            lines.append("  健康度: 查询失败（详见服务端日志）")
 
     # Session vars
     try:
@@ -1008,13 +1026,28 @@ async def quill_debug(plugin, event: AstrMessageEvent):
         if svars:
             vars_str = ", ".join(f"{k}={v}" for k, v in list(svars.items())[:8])
             lines.append(f"  Session Vars: {vars_str}")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[Quill] /quill debug 读取 Session Vars 失败: {e}")
+        lines.append("  Session Vars: 查询失败（详见服务端日志）")
 
     # 上一轮注入构成（无论 debug 开关都能查，用于调参时的事后核对）
     if hasattr(plugin, "_format_inject_report"):
         report = plugin._format_inject_report(plugin._get_inject_report(target_id))
         lines.append(f"  注入: {report or '（无命中记录）'}")
+
+    # JEV 轮次判定（内存态，仅最近一轮；未启用/本轮无判定时无此行）
+    rd = (getattr(plugin, "_jev_round_cache", None) or {}).get(target_id)
+    if isinstance(rd, dict) and rd.get("probs"):
+        opts = rd.get("options") or []
+        dist = " / ".join(
+            f"选项{k} {round(float(v) * 100)}%"
+            for k, v in sorted(rd["probs"].items(), key=lambda kv: str(kv[0]))
+        )
+        pick = rd.get("pick")
+        pick_txt = f" → 分支 {pick}（{opts[pick - 1]}）" if pick and 1 <= pick <= len(opts) else ""
+        lines.append(f"  JEV 推荐选择度: {dist}{pick_txt}（置信度 {float(rd.get('confidence', 0)):.2f}）")
+    elif getattr(plugin.config, "status_bar_jev_enabled", False):
+        lines.append("  JEV: 已启用，本轮无判定（未触发/低置信/判定失败均静默跳过）")
 
     event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
 
@@ -1065,7 +1098,8 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
     if sub == "list":
         page_str = (arg2 or "1").strip()
         try:
-            page = max(1, int(page_str))
+            # L5：页码要夹上限——offset 会进 list_memories 的 SQL LIMIT
+            page = min(max(1, int(page_str)), _MAX_MEMORY_PAGE)
         except ValueError:
             page = 1
         page_size = 5
@@ -1082,8 +1116,18 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             event.set_result(MessageEventResult().message(f"当前会话没有记忆。\n会话: {session_id}"))
             return
 
-        page_items = all_memories[offset:offset + page_size]
+        if not total:
+            total = len(all_memories)
         total_pages = max(1, (total + page_size - 1) // page_size)
+        # L5：页码越界此前报「当前会话没有记忆」，而列表其实是有的 —— 用户会被
+        # 误导去怀疑记忆丢了。这里先按真实总数判越界，给出确切的页码范围。
+        if offset >= total:
+            event.set_result(MessageEventResult().message(
+                f"页码超出范围: 第 {page} 页不存在（共 {total_pages} 页，共 {total} 条）"
+            ))
+            return
+
+        page_items = all_memories[offset:offset + page_size]
 
         lines = [f"[记忆列表] 第 {page}/{total_pages} 页 (共 {total} 条)"]
         for idx, m in enumerate(page_items, offset + 1):
@@ -1107,8 +1151,16 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             event.set_result(MessageEventResult().message("用法: /memory del <序号>（使用 /memory list 查看序号）"))
             return
         idx = int(idx_str)
+        # L5：序号即 SQL LIMIT，先夹上限，避免一次请求把整个会话记忆拉进内存
+        if idx > _MAX_MEMORY_INDEX:
+            event.set_result(MessageEventResult().message(
+                f"序号超出范围: {idx}（上限 {_MAX_MEMORY_INDEX}）"
+            ))
+            return
         try:
-            all_memories = await plugin.rag_memory_store.list_memories(session_id, max(idx, 50))
+            all_memories = await plugin.rag_memory_store.list_memories(
+                session_id, min(max(idx, 50), _MAX_MEMORY_INDEX)
+            )
             if 0 < idx <= len(all_memories):
                 memory_id = all_memories[idx - 1].get("id")
                 if memory_id and await plugin.rag_memory_store.delete_memory(memory_id):
@@ -1205,8 +1257,12 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
                 lines = [f"[记忆搜索] \"{query}\" → {len(results)} 条:"]
                 for r in results:
                     summary = r.get("summary", "?")[:60]
-                    # 混合检索返回 rrf_score/vec_score，无 "score" 键
-                    score = r.get("rrf_score") or r.get("vec_score", 0)
+                    # 混合检索返回 rrf_score/vec_score，无 "score" 键。
+                    # 用显式 None 判定：rrf_score 合法地可能为 0.0，`or` 会把它
+                    # 误判成「没有该键」而回落到 vec_score（显示分就错了）。
+                    score = r.get("rrf_score")
+                    if score is None:
+                        score = r.get("vec_score", 0) or 0
                     lines.append(f"  [{score:.2f}] {summary}")
                 event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
             else:
@@ -1227,6 +1283,11 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             event.set_result(MessageEventResult().message("用法: /memory pin <序号> [on|off]（使用 /memory list 查看序号）"))
             return
         idx = int(parts[0])
+        if idx > _MAX_MEMORY_INDEX:  # L5：同上，序号即 SQL LIMIT
+            event.set_result(MessageEventResult().message(
+                f"序号超出范围: {idx}（上限 {_MAX_MEMORY_INDEX}）"
+            ))
+            return
         want_core = True  # 默认钉住
         if len(parts) > 1:
             flag = parts[1].strip().lower()
@@ -1238,7 +1299,9 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
                 event.set_result(MessageEventResult().message("用法: /memory pin <序号> [on|off]"))
                 return
         try:
-            all_memories = await plugin.rag_memory_store.list_memories(session_id, max(idx, 50))
+            all_memories = await plugin.rag_memory_store.list_memories(
+                session_id, min(max(idx, 50), _MAX_MEMORY_INDEX)
+            )
             if 0 < idx <= len(all_memories):
                 memory_id = all_memories[idx - 1].get("id")
                 if memory_id:
