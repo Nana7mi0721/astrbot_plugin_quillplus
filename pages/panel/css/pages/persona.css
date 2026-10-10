@@ -111,3 +111,69 @@
   border: 2px solid rgba(255, 255, 255, .9);
   border-radius: 50%;
 }
+
+/* ── 由 AstrBot 人格导入（弹窗） ───────────────────────────────────
+   人格列表沿用面板的分组列表观感：0.5px 分隔线 + 选中态用强调色底。
+   整行由 <button> 承载（键盘可达），故需清掉按钮默认样式。
+   .ab-status 复用全局 .note 的配色，但 .note 是 display:flex，
+   会盖过 UA 的 [hidden]{display:none}，必须自己补一条。 */
+.ab-status[hidden] { display: none; }
+.ab-list {
+  max-height: min(46vh, 380px);
+  overflow: auto;
+  padding: 0 var(--sp-3);
+  border: .5px solid var(--separator);
+  border-radius: var(--r-lg);
+  background: var(--bg-secondary);
+}
+.ab-list:empty { display: none; }
+.ab-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: 10px var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-standard);
+}
+.ab-item + .ab-item::before {
+  content: "";
+  position: absolute; top: 0; left: 0; right: 0;
+  height: .5px; background: var(--separator); transform: scaleY(.5);
+}
+.ab-item:hover { background: var(--fill-quaternary); }
+.ab-item.is-selected { background: var(--accent-tint); }
+.ab-item-main { flex: 1; min-width: 0; }
+.ab-item-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 500;
+  word-break: break-all;
+}
+.ab-item-sub { margin-top: 2px; font-size: 12px; color: var(--label-3); font-variant-numeric: tabular-nums; }
+.ab-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  background: var(--orange-fill);
+  color: var(--orange-text);
+  font-size: 11px;
+  font-weight: 500;
+}
+.ab-item-check {
+  flex: none;
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity var(--dur-micro) var(--ease-standard);
+}
+.ab-item.is-selected .ab-item-check { opacity: 1; }
+.ab-empty { padding: 14px var(--sp-2); font-size: 12.5px; color: var(--label-3); text-align: center; }

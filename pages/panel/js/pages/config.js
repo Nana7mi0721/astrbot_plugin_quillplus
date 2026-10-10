@@ -22,6 +22,7 @@ const CFG_FIELDS = [
   ["rag", "rerank_provider_id", "#c-rag-rerank", "str"],
   ["rag", "llm_provider_id", "#c-rag-llm", "str"],
   ["rag", "enable_local_embedding", "#c-rag-local", "bool"],
+  ["rag", "astrbot_kb_enabled", "#c-rag-kb", "bool"],
   ["rag", "chunk_size", "#c-rag-chunk", "int"],
   ["rag", "chunk_overlap", "#c-rag-overlap", "int"],
   ["rag", "top_k", "#c-rag-topk", "int"],
@@ -71,6 +72,7 @@ const CFG_FIELDS = [
 const CFG_DEFAULTS = {
   "rag.chunk_size": 500, "rag.chunk_overlap": 50, "rag.top_k": 3,
   "rag.dense_top_k": 5, "rag.enable_local_embedding": true,
+  "rag.astrbot_kb_enabled": true,
   "rag.enable_autonomous_reflection": true, "rag.enable_chat_logging": true,
   "rag.chat_log_retention_days": 30,
   "worldbook.enabled": true, "worldbook.max_token_limit": 4000, "worldbook.max_dynamic_entries": 4,

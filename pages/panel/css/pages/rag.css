@@ -79,3 +79,109 @@
   font-variant-numeric: tabular-nums;
 }
 .stat-cell-label { margin-top: 1px; font-size: 12px; color: var(--label-3); }
+
+/* 子知识库组（卡片范式对齐 AstrBot 面板的「知识库」列表） */
+#ragGroupList { display: flex; flex-direction: column; gap: var(--sp-3); }
+.kb-group {
+  border: .5px solid var(--separator);
+  border-radius: var(--r-lg);
+  background: var(--bg-secondary);
+  overflow: hidden;
+  transition: border-color var(--dur-micro) var(--ease-standard),
+              box-shadow var(--dur-micro) var(--ease-standard);
+}
+.kb-group:hover { border-color: var(--accent); box-shadow: var(--shadow-1); }
+.kb-group-head { display: flex; align-items: center; gap: var(--sp-3); padding: 12px var(--sp-3) 12px var(--sp-1); }
+.kb-group-caret {
+  flex: none;
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--label-3);
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-standard),
+              color var(--dur-micro) var(--ease-standard);
+}
+.kb-group-caret:hover { background: var(--fill-tertiary); color: var(--label-1); }
+.kb-group-caret .icon { transition: transform var(--dur-micro) var(--ease-standard); }
+.kb-group-caret[aria-expanded="true"] .icon { transform: rotate(90deg); }
+.kb-group-icon {
+  flex: none;
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  border-radius: var(--r-md);
+  background: var(--fill-quaternary);
+  font-size: 18px;
+  line-height: 1;
+}
+.kb-group-name { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; word-break: break-all; }
+.kb-group-desc { margin-top: 2px; font-size: 12px; line-height: 1.55; color: var(--label-2); }
+.kb-group-meta { margin-top: 3px; font-size: 12px; color: var(--label-3); font-variant-numeric: tabular-nums; }
+.kb-group-actions { flex: none; display: flex; align-items: center; gap: var(--sp-2); }
+.kb-group-docs { padding: 0 var(--sp-3) var(--sp-2) 46px; border-top: .5px solid var(--separator); }
+.kb-group-docs[hidden] { display: none; }
+.kb-group-docs .doc-row { padding: 8px 0; }
+.kb-group-docs .skeleton-row { margin: 10px 0; }
+
+/* ── 大组（插件文档库 / AstrBot 兼容） ────────────────────────────
+   两级结构：大组 → 子知识库组 → 文档。大组是外层容器，视觉上比子组
+   更"厚"（更宽的留白 + 更强的标题），子组沿用上面的 .kb-group。 */
+.kb-big { margin-bottom: var(--sp-3); }
+.kb-big:last-child { margin-bottom: 0; }
+.kb-big-head {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-1);
+  border-radius: var(--r-lg);
+  background: var(--bg-secondary);
+  border: .5px solid var(--separator);
+}
+.kb-big-body {
+  margin-top: var(--sp-2);
+  padding-left: 18px;
+  border-left: 2px solid var(--fill-tertiary);
+  display: flex; flex-direction: column; gap: var(--sp-2);
+}
+.kb-big-body[hidden] { display: none; }
+.kb-big-caret {
+  flex: none;
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--label-2);
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-standard),
+              color var(--dur-micro) var(--ease-standard);
+}
+.kb-big-caret:hover { background: var(--fill-tertiary); color: var(--label-1); }
+.kb-big-caret .icon { transition: transform var(--dur-micro) var(--ease-standard); }
+.kb-big-caret[aria-expanded="true"] .icon { transform: rotate(90deg); }
+.kb-big-icon {
+  flex: none;
+  width: 38px; height: 38px;
+  display: grid; place-items: center;
+  border-radius: var(--r-md);
+  background: var(--fill-tertiary);
+  font-size: 20px;
+  line-height: 1;
+}
+.kb-big-name { display: flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 650; }
+.kb-big-desc { margin-top: 2px; font-size: 12px; line-height: 1.55; color: var(--label-2); }
+.kb-big-meta { margin-top: 3px; font-size: 12px; color: var(--label-3); font-variant-numeric: tabular-nums; }
+.kb-big-actions { flex: none; display: flex; align-items: center; gap: var(--sp-2); }
+/* 文档行里的「移动到分组」下拉：只占内容宽度，不抢文档名的空间。
+   增强后被 .sel-wrap 遮蔽（宽度由 JS 从内联 width 复制过来），
+   所以可见尺寸的规则要同时落在原生 select 与包装元素上。 */
+.doc-group-select { flex: none; max-width: 150px; }
+.doc-row > .sel-wrap { flex: none; }
+/* 大组头部「上传到分组」下拉同理（与角色卡的模式下拉同宽，视觉对齐） */
+.kb-big-actions > .sel-wrap { flex: none; }
+@media (max-width: 760px) {
+  .kb-big-head { flex-wrap: wrap; }
+  .kb-big-actions { width: 100%; justify-content: flex-end; }
+  .doc-group-select { max-width: 110px; }
+  .doc-row > .sel-wrap, .kb-big-actions > .sel-wrap { width: 104px !important; }
+}

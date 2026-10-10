@@ -19,6 +19,7 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("rag", "enable_memory"), ("rag", "enable_chat_logging"),
     ("rag", "enable_autonomous_reflection"),
     ("rag", "chat_log_retention_days"),
+    ("rag", "astrbot_kb_enabled"),
     # worldbook
     ("worldbook", "enabled"), ("worldbook", "max_dynamic_entries"),
     ("worldbook", "max_token_limit"), ("worldbook", "match_sensitivity"),
@@ -104,6 +105,8 @@ from ._route_core import (
     handle_wb_export_st,
     handle_rag_upload,
     handle_rag_documents,
+    handle_rag_kb_documents,
+    handle_rag_group_action,
     handle_rag_delete,
     handle_rag_search,
     handle_rag_config,
@@ -135,7 +138,22 @@ from .interfaces.web.upload import (
 )
 from .quill.core.paths import sanitize_name
 
+# AstrBot 人格 → 角色卡（只读人格、用摘要模型做语义切分，见 persona_import.py）
+from .persona_import import (
+    CARD_NAME_MAX,
+    AstrBotPersonaSource,
+    PersonaCardConverter,
+    PersonaImportError,
+)
+
 PLUGIN_NAME = "astrbot_plugin_quillplus"
+
+
+def _clip_name(name: str, limit: int = CARD_NAME_MAX) -> str:
+    """角色名截断（与 persona_import.CARD_NAME_MAX 同口径）。"""
+    name = (name or "").strip()
+    return name if len(name) <= limit else name[:limit]
+
 
 #: 备份恢复包体积上限（M6.2）。备份只含插件数据根（DB + JSON + 头像），
 #: 512MB 已远超正常规模；上限存在的意义是挡住「用一个高压缩比 zip 撑爆内存
@@ -269,6 +287,9 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/persona/import_text",        self.persona_import_text, ["POST"], "文本导入角色卡")
         # M3.1：base64 变体与正身共用同一 handler（同上）
         _r(f"/{PLUGIN_NAME}/persona/import_text_base64", self.persona_import_text, ["POST"], "文本导入角色卡(Base64)")
+        # AstrBot 人格导入：list 供面板选人，import 走摘要模型转换后落卡
+        _r(f"/{PLUGIN_NAME}/persona/astrbot_list",       self.persona_astrbot_list, ["GET"], "列出 AstrBot 人格")
+        _r(f"/{PLUGIN_NAME}/persona/astrbot_import",     self.persona_astrbot_import, ["POST"], "由 AstrBot 人格导入角色卡")
         _r(f"/{PLUGIN_NAME}/avatar/<path:filename>", self.serve_avatar,  ["GET"],    "获取头像文件")
 
         # ── Info (世界书列表 + 触发日志) ──
@@ -284,6 +305,8 @@ class QuillRoutes:
         # M3.1：base64 变体与正身共用同一 handler（通道消歧收敛于 upload.read_upload）
         _r(f"/{PLUGIN_NAME}/rag/upload_base64", self.rag_upload,    ["POST"],   "上传文档(Base64)")
         _r(f"/{PLUGIN_NAME}/rag/documents",    self.rag_documents,  ["GET"],    "列出已上传文档")
+        _r(f"/{PLUGIN_NAME}/rag/kb_documents", self.rag_kb_documents, ["GET"],  "列出内置库的文档"),
+        _r(f"/{PLUGIN_NAME}/rag/groups",       self.rag_groups,     ["POST"],   "插件文档分组操作"),
         _r(f"/{PLUGIN_NAME}/rag/delete",       self.rag_delete,     ["POST"],   "删除文档")
         _r(f"/{PLUGIN_NAME}/rag/search",       self.rag_search,     ["POST"],   "语义检索测试")
         _r(f"/{PLUGIN_NAME}/rag/config",       self.rag_config,     ["GET"],    "RAG 配置状态")
@@ -549,16 +572,52 @@ class QuillRoutes:
         if embedding is None or vector_store is None:
             return error_response("RAG 未初始化", status_code=500)
         return json_response(
-            await handle_rag_upload(vector_store, embedding, _BytesUpload(payload.data), source, chunk_size, chunk_overlap)
+            await handle_rag_upload(vector_store, embedding, _BytesUpload(payload.data), source, chunk_size, chunk_overlap,
+                                    group_store=self.rag.get('doc_groups'),
+                                    group=payload.fields.get("group", ""))
         )
 
     @_api_handler
     async def rag_documents(self):
-        """列出已上传文档。"""
+        """列出已上传文档 + 插件文档分组 + AstrBot 内置知识库。"""
         vector_store = self.rag.get('vector_store')
-        if vector_store is None:
+        kb_source = self.rag.get('kb_source')
+        kb_ready = bool(kb_source and getattr(kb_source, "available", False))
+        if vector_store is None and not kb_ready:
             return error_response("RAG 未初始化", status_code=500)
-        return json_response(await handle_rag_documents(vector_store))
+        return json_response(await handle_rag_documents(
+            vector_store, kb_source=kb_source, group_store=self.rag.get('doc_groups')
+        ))
+
+    @_api_handler
+    async def rag_groups(self):
+        """插件文档分组（子知识库）的增删改与归组。
+
+        body: ``{"action": "create|rename|delete|assign", "name": ..., "new_name": ...,
+        "sources": [...], "group": ...}``
+        """
+        data = await _json_body()
+        return json_response(await handle_rag_group_action(
+            self.rag.get('doc_groups'),
+            data.get("action", ""),
+            name=data.get("name", ""),
+            new_name=data.get("new_name", ""),
+            sources=data.get("sources") or [],
+            group=data.get("group", ""),
+        ))
+
+    @_api_handler
+    async def rag_kb_documents(self):
+        """列出某个 AstrBot 内置知识库里的文档（面板「子知识库组」展开懒加载）。"""
+        kb_name = request.query.get("kb_name", "")
+        limit = request.query.get("limit", 200)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 200
+        return json_response(
+            await handle_rag_kb_documents(self.rag.get('kb_source'), kb_name, limit=limit)
+        )
 
     @_api_handler
     async def rag_delete(self):
@@ -570,7 +629,9 @@ class QuillRoutes:
         vector_store = self.rag.get('vector_store')
         if vector_store is None:
             return error_response("RAG 未初始化", status_code=500)
-        return json_response(await handle_rag_delete(vector_store, source))
+        return json_response(await handle_rag_delete(
+            vector_store, source, group_store=self.rag.get('doc_groups')
+        ))
 
     @_api_handler
     async def rag_search(self):
@@ -583,10 +644,12 @@ class QuillRoutes:
         embedding = self.rag.get('embedding')
         vector_store = self.rag.get('vector_store')
         reranker = self.rag.get('reranker')
-        if embedding is None or vector_store is None:
+        kb_source = self.rag.get('kb_source')
+        kb_ready = bool(kb_source and getattr(kb_source, "available", False))
+        if (embedding is None or vector_store is None) and not kb_ready:
             return error_response("RAG 未初始化", status_code=500)
         return json_response(
-            await handle_rag_search(vector_store, embedding, reranker, query, top_k)
+            await handle_rag_search(vector_store, embedding, reranker, query, top_k, kb_source=kb_source)
         )
 
     @_api_handler
@@ -1291,6 +1354,120 @@ class QuillRoutes:
             return error_response(str(e), status_code=400)
         except Exception as e:
             return error_response(error_text("解析失败", e), status_code=400)
+
+    # ── AstrBot 人格 → 角色卡（M7） ───────────────────────────
+
+    def _summary_provider_id(self) -> str:
+        """「用于生成摘要的模型」= 面板 RAG 页配置的 LLM 提供商。
+
+        与 QuillSummarizer 取同一个配置项（config.rag_llm_provider_id）：用户已经
+        为摘要配过模型，不该再为导入配第二次；也没必要多一个配置项。
+        """
+        if self.config is None:
+            return ""
+        return str(getattr(self.config, "rag_llm_provider_id", "") or "").strip()
+
+    def _persona_source(self) -> AstrBotPersonaSource:
+        return AstrBotPersonaSource(self.context)
+
+    async def _card_names(self) -> set:
+        """现有角色卡名集合（重名预检用）。读取失败按空集合处理，不阻断导入。"""
+        if not self.persona_manager:
+            return set()
+        try:
+            personas = await self.persona_manager.load_all()
+        except Exception as e:
+            logger.warning("[Quill Persona] 读取角色卡列表失败: %s", e)
+            return set()
+        return {str(p.get("name") or "") for p in personas or []}
+
+    async def _create_card_with_unique_name(self, card: dict) -> tuple:
+        """落卡；重名 / 文件名冲突时自动加后缀重试。
+
+        重试而不是直接报错：转换已经花掉一次 LLM 调用，让用户为了一个重名再点一次
+        「导入」既慢又费 token。加的后缀通过 ``renamed_from`` 如实回报给面板 toast，
+        不是静默改名；后缀全撞满仍失败才抛错（调用方转 400）。
+        """
+        base = str(card.get("name") or "").strip()
+        for i in range(6):
+            if i == 0:
+                candidate = _clip_name(base)
+            else:
+                tail = "（导入）" if i == 1 else f"（导入{i}）"
+                candidate = _clip_name(base, CARD_NAME_MAX - 8) + tail
+            try:
+                created = await self.persona_manager.create_persona({**card, "name": candidate})
+                return created, ("" if i == 0 else base)
+            except ValueError as e:
+                msg = str(e)
+                if "已存在" in msg or "文件名冲突" in msg:
+                    continue
+                raise
+        raise ValueError(f"角色名 '{base}' 及其导入变体都已存在，请手动指定一个名称")
+
+    @_api_handler
+    async def persona_astrbot_list(self):
+        """列出 AstrBot 面板里已配置的人格（「由人格导入」的选择列表）。"""
+        source = self._persona_source()
+        converter = PersonaCardConverter(self.context, provider_id=self._summary_provider_id())
+        personas = await source.list_personas()
+        existing = await self._card_names()
+        for item in personas:
+            # persona_id 就是 AstrBot 里的显示名，多半会被直接当角色卡名用：先标出来，
+            # 面板可以提前提示，避免转换跑完才撞重名。
+            item["name_taken"] = item.get("persona_id") in existing
+        return json_response({
+            "available": source.available,
+            "reason": "" if source.available else
+                      "当前 AstrBot 未向插件提供人格管理器（persona_manager），无法读取人格",
+            "personas": personas,
+            "count": len(personas),
+            "provider_id": converter.provider_id,
+            "provider_ready": converter.ready,
+        })
+
+    @_api_handler
+    async def persona_astrbot_import(self):
+        """把选中的 AstrBot 人格转成角色卡并落卡。
+
+        请求体 ``{persona_id, name?}``（``name`` 为空时由模型决定角色名）。
+        返回 ``{persona, renamed_from, source_persona, provider_id}``。
+        """
+        if not self.persona_manager:
+            return error_response("角色卡管理器未加载", status_code=500)
+        data = await _json_body()
+        persona_id = str(data.get("persona_id") or "").strip()
+        if not persona_id:
+            return error_response("缺少 persona_id 参数", status_code=400)
+        name = str(data.get("name") or "").strip()
+
+        source = self._persona_source()
+        if not source.available:
+            return error_response(
+                "当前 AstrBot 未向插件提供人格管理器，无法导入人格", status_code=400
+            )
+        raw = await source.get_persona(persona_id)
+        if raw is None:
+            return error_response(f"人格不存在：{persona_id}", status_code=404)
+        if name and name in await self._card_names():
+            # 用户显式指定的名字撞重名：先报错，别白跑一次 LLM
+            return error_response(f"角色名 '{name}' 已存在", status_code=400)
+
+        converter = PersonaCardConverter(self.context, provider_id=self._summary_provider_id())
+        try:
+            card = await converter.convert(raw, name_override=name)
+        except PersonaImportError as e:
+            return error_response(str(e), status_code=400)
+        try:
+            created, renamed_from = await self._create_card_with_unique_name(card)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
+        return json_response({
+            "persona": created,
+            "renamed_from": renamed_from,
+            "source_persona": persona_id,
+            "provider_id": converter.provider_id,
+        })
 
     @_api_handler
     async def persona_export_base64(self):

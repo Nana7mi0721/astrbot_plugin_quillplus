@@ -47,11 +47,47 @@ def rag_ok(result) -> bool:
     return bool(getattr(result, RAG_OK_ATTR, True))
 
 
+def format_for_prompt(doc_results: list[dict], memory_results: list[dict], core_memories: list[dict] = None) -> str:
+    """将检索结果格式化为 XML 规范文本（模块级纯函数，无实例状态）。
+
+    核心记忆优先注入，不参与 Top-K 竞争。独立成模块函数的原因：接入
+    AstrBot 内置知识库后，本地 RAG 栈可能整体未初始化（rag_retriever
+    为 None）而 KB 路可用，此时没有实例可挂这个方法。
+    """
+    parts = []
+    # 核心记忆优先注入（无条件，类似人设基石）
+    if core_memories:
+        core_texts = [f"  [{i+1}] {r['summary']}" for i, r in enumerate(core_memories)]
+        parts.append("<core_memory>\n" + "\n".join(core_texts) + "\n</core_memory>")
+
+    if doc_results:
+        doc_texts = [f"  [{i+1}] [文档-{r.get('source', '?')}] {r['content']}" for i, r in enumerate(doc_results)]
+        parts.append("<documents>\n" + "\n".join(doc_texts) + "\n</documents>")
+
+    if memory_results:
+        mem_texts = [
+            f"  [{i+1}] [记忆] {r['summary']} (引用:{r.get('useful_count', 0)}次)"
+            for i, r in enumerate(memory_results)
+        ]
+        parts.append("<memories>\n" + "\n".join(mem_texts) + "\n</memories>")
+
+    if parts:
+        tag_hint = "、".join(filter(None, [
+            "<core_memory>" if core_memories else None,
+            "<memories>" if memory_results else None,
+            "<documents>" if doc_results else None,
+        ]))
+        parts.append(f"请自然地结合上述 {tag_hint} 提供的信息进行回复，保持设定的连贯性。")
+
+    return "\n\n".join(parts)
+
+
 class QuillRetriever:
     """统一检索入口。
 
     - Doc RAG: FAISS 召回 + Rerank 重排
     - Memory: SQLite + NumPy 余弦相似度
+    - AstrBot 内置知识库: kb_manager.retrieve 适配（kb_source，可选）
     """
 
     def __init__(
@@ -64,6 +100,7 @@ class QuillRetriever:
         top_k: int = 3,
         enable_memory: bool = False,
         config=None,
+        kb_source=None,
     ):
         self.embedding = embedding_provider
         self.vector_store = vector_store      # Doc RAG (FAISS)
@@ -73,6 +110,7 @@ class QuillRetriever:
         self.top_k = top_k
         self.enable_memory = enable_memory
         self.config = config
+        self.kb_source = kb_source            # AstrBot 内置知识库（可选，quill_rag.astrbot_kb.AstrBotKBSource）
         # F5 修复：保留后台 task 引用
         self._bg_tasks: set = set()
 
@@ -123,6 +161,23 @@ class QuillRetriever:
             # M3.2 D4：底层 StorageError（或 embedding 失败）在此降级为带失败
             # 标记的空结果——注入侧行为不变（本轮无文档内容），健康度能记到失败。
             logger.warning("[Quill RAG] search_documents 文档检索失败: %s", e, exc_info=True)
+            return _rag_failed(str(e))
+
+    async def search_astrbot_kb(self, query: str, kb_names: list[str] = None,
+                                doc_filters: dict = None) -> list[dict]:
+        """AstrBot 内置知识库检索（kb: 前缀源），失败语义同 search_documents。
+
+        kb_names=None 表示 auto（全部非空库）；doc_filters 为文档级过滤
+        ``{库名: None(整库) | [文档名, ...]}``；无 kb_source / 功能未启用时
+        返回成功空结果——调用方（_run_rag_retrieval）负责先判 available 再并发。
+        """
+        if not self.kb_source or not query:
+            return []
+        try:
+            return await self.kb_source.search(query, kb_names=kb_names, doc_filters=doc_filters)
+        except Exception as e:
+            # AstrBotKBSource.search 内部已兜底，这里防御未来改动漏抛的情况
+            logger.warning("[Quill RAG] search_astrbot_kb 内置知识库检索失败: %s", e, exc_info=True)
             return _rag_failed(str(e))
 
     async def search_memories(self, session_id: str, query: str) -> list[dict]:
@@ -268,30 +323,5 @@ class QuillRetriever:
         return summary
 
     def format_for_prompt(self, doc_results: list[dict], memory_results: list[dict], core_memories: list[dict] = None) -> str:
-        """将检索结果格式化为 XML 规范文本。核心记忆优先注入，不参与 Top-K 竞争。"""
-        parts = []
-        # 核心记忆优先注入（无条件，类似人设基石）
-        if core_memories:
-            core_texts = [f"  [{i+1}] {r['summary']}" for i, r in enumerate(core_memories)]
-            parts.append("<core_memory>\n" + "\n".join(core_texts) + "\n</core_memory>")
-
-        if doc_results:
-            doc_texts = [f"  [{i+1}] [文档-{r.get('source', '?')}] {r['content']}" for i, r in enumerate(doc_results)]
-            parts.append("<documents>\n" + "\n".join(doc_texts) + "\n</documents>")
-
-        if memory_results:
-            mem_texts = [
-                f"  [{i+1}] [记忆] {r['summary']} (引用:{r.get('useful_count', 0)}次)"
-                for i, r in enumerate(memory_results)
-            ]
-            parts.append("<memories>\n" + "\n".join(mem_texts) + "\n</memories>")
-
-        if parts:
-            tag_hint = "、".join(filter(None, [
-                "<core_memory>" if core_memories else None,
-                "<memories>" if memory_results else None,
-                "<documents>" if doc_results else None,
-            ]))
-            parts.append(f"请自然地结合上述 {tag_hint} 提供的信息进行回复，保持设定的连贯性。")
-
-        return "\n\n".join(parts)
+        """将检索结果格式化为 XML 规范文本。委托模块级纯函数（兼容旧调用面）。"""
+        return format_for_prompt(doc_results, memory_results, core_memories)

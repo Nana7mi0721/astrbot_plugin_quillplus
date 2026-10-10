@@ -55,6 +55,12 @@
         "default": 5,
         "hint": "向量库初步召回的数量，随后由重排模型精筛。建议为最终注入量的 2-3 倍。"
       },
+      "astrbot_kb_enabled": {
+        "type": "bool",
+        "description": "启用 AstrBot 内置知识库",
+        "default": true,
+        "hint": "开启后，AstrBot 面板中创建的知识库将作为可绑定源（kb: 前缀）并入文档检索：/doc 命令与角色卡编辑器均可绑定，auto（全库）模式一并检索非空内置库。内置库使用 AstrBot 自身的 Embedding 配置，无需在本插件重复配置。"
+      },
       "enable_memory": {
         "type": "bool",
         "description": "启用动态记忆",

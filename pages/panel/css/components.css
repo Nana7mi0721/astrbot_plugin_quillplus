@@ -395,6 +395,8 @@ select.field:focus-visible {
 .ext-list.is-disabled {
   opacity: .45;
 }
+/* 知识库是三级树，比世界书/素材库多一层，给高一点避免频繁滚动 */
+#pf-rag-list { max-height: 280px; }
 .ext-list .check {
   min-height: 32px;
   padding: 0 var(--sp-2);
@@ -403,6 +405,110 @@ select.field:focus-visible {
 .ext-list .check:hover {
   background: var(--fill-quaternary);
 }
+
+/* 文档知识库绑定的三级结构：大组 → 子知识库组 → 组内文档 */
+.ext-big { border-radius: var(--r-md); }
+.ext-big + .ext-big { margin-top: var(--sp-2); }
+.ext-big-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 34px;
+  padding-right: var(--sp-2);
+  border-radius: var(--r-xs);
+}
+.ext-big-head:hover { background: var(--fill-quaternary); }
+.ext-big-head .check {
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 var(--sp-1) 0 0;
+  font-weight: 600;
+}
+.ext-big-caret {
+  flex: none;
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--label-3);
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-standard),
+              color var(--dur-micro) var(--ease-standard);
+}
+.ext-big-caret:hover { background: var(--fill-tertiary); color: var(--label-1); }
+.ext-big-caret .icon { transition: transform var(--dur-micro) var(--ease-standard); }
+.ext-big-caret[aria-expanded="true"] .icon { transform: rotate(90deg); }
+.ext-big-meta {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--label-3);
+  font-variant-numeric: tabular-nums;
+}
+.ext-big-body {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 var(--sp-1) 26px;
+  padding-left: var(--sp-2);
+  border-left: .5px solid var(--separator);
+}
+.ext-big-body[hidden] { display: none; }
+.ext-big-body > .ext-group:first-child { margin-top: 2px; }
+.ext-big-body > .ext-group + .ext-group { border-top: .5px solid var(--separator); }
+.ext-big-body .ext-group-head .check { font-weight: 400; }
+
+/* 文档知识库绑定的两级结构：子知识库组 + 组内文档 */
+.ext-group { border-radius: var(--r-sm); }
+.ext-group + .ext-group { border-top: .5px solid var(--separator); }
+.ext-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 32px;
+  padding-right: var(--sp-2);
+  border-radius: var(--r-xs);
+}
+.ext-group-head:hover { background: var(--fill-quaternary); }
+.ext-group-head .check {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 var(--sp-1) 0 0;
+}
+.ext-group-caret {
+  flex: none;
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--label-3);
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-standard),
+              color var(--dur-micro) var(--ease-standard);
+}
+.ext-group-caret:hover { background: var(--fill-tertiary); color: var(--label-1); }
+.ext-group-caret .icon { transition: transform var(--dur-micro) var(--ease-standard); }
+.ext-group-caret[aria-expanded="true"] .icon { transform: rotate(90deg); }
+.ext-group-meta {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--label-3);
+  font-variant-numeric: tabular-nums;
+}
+.ext-group-docs {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 var(--sp-2) 26px;
+  padding-left: var(--sp-2);
+  border-left: .5px solid var(--separator);
+}
+.ext-group-docs[hidden] { display: none; }
+.ext-group-docs .check { min-height: 30px; padding: 0 var(--sp-2); border-radius: var(--r-xs); }
+.ext-group-docs .check:hover { background: var(--fill-quaternary); }
+.ext-group-docs .check .nowrap { overflow: hidden; text-overflow: ellipsis; }
+.ext-doc-meta { margin-left: auto; padding-left: var(--sp-2); flex: none; font-size: 11.5px; color: var(--label-3); }
 
 /* ── 7. 分组列表与卡片 ───────────────────────────────────────────────
    HIG 的「内缩分组列表」是配置类界面的主力形态：卡片承载一组相关行，

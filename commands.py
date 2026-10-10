@@ -1344,15 +1344,53 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
 # /doc — 外部文档 (Doc RAG)
 # ================================================================
 
+async def _merged_rag_sources(plugin) -> list:
+    """插件文档 + AstrBot 内置知识库的合一绑定候选列表（统一编号）。
+
+    /doc list / bind / unbind 三处共用，保证序号一致。内置库项
+    kind="kb"、source 形如 ``kb:库名``；本地文档项 kind="doc"。
+    单侧列举失败降级为空段并记日志，不阻塞另一侧。
+    """
+    items: list = []
+    if plugin.rag_vector_store:
+        try:
+            for d in await plugin.rag_vector_store.list_documents():
+                items.append({
+                    "source": d.get("source", d.get("doc_id", "?")),
+                    "chunk_count": d.get("chunk_count", 0),
+                    "kind": "doc",
+                })
+        except Exception as e:
+            logger.warning("[Quill] 列举插件文档失败: %s", e)
+    kb_source = getattr(plugin, "rag_kb_source", None)
+    if kb_source and kb_source.available:
+        try:
+            for info in await kb_source.list_kbs():
+                items.append({
+                    "source": info.get("source", ""),
+                    "chunk_count": info.get("chunk_count", 0),
+                    "kind": "kb",
+                    "description": info.get("description", ""),
+                    "init_error": info.get("init_error", ""),
+                })
+        except Exception as e:
+            logger.warning("[Quill] 列举 AstrBot 内置知识库失败: %s", e)
+    return items
+
+
 async def doc_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
     """
-    /doc list             列出已加载的外部文档
-    /doc bind <序号>      绑定文档到当前角色卡
-    /doc unbind <序号>    解绑文档从当前角色卡
+    /doc list             列出已加载的外部文档与 AstrBot 内置知识库
+    /doc bind <序号>      绑定文档/知识库到当前角色卡
+    /doc unbind <序号>    解绑文档/知识库从当前角色卡
     /doc search <关键词>  RAG 检索返回原文片段
     /doc reload           重新加载文档索引
     """
-    if not plugin.rag_vector_store:
+    kb_ready = bool(
+        getattr(plugin, "rag_kb_source", None)
+        and plugin.rag_kb_source.available
+    )
+    if not plugin.rag_vector_store and not kb_ready:
         event.set_result(MessageEventResult().message("Doc RAG 系统未加载"))
         return
 
@@ -1382,21 +1420,31 @@ async def doc_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
             event.set_result(MessageEventResult().message("用法: /doc search <关键词>"))
             return
         try:
-            if plugin.rag_retriever:
-                results = await plugin.rag_retriever.search_documents(query)
-                if not results:
-                    event.set_result(MessageEventResult().message("未找到匹配的文档。"))
-                    return
-                lines = [f"[Doc 检索] \"{query}\" → {len(results)} 段:"]
-                for r in results:
-                    content = r.get("content", "?")[:100]
-                    score = r.get("score", 0)
-                    source = r.get("source", "")
-                    source_str = f" ({source})" if source else ""
-                    lines.append(f"  [{score:.2f}]{source_str} {content}")
-                event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
-            else:
+            local_ready = bool(plugin.rag_retriever)
+            if not local_ready and not kb_ready:
                 event.set_result(MessageEventResult().message("检索器未就绪"))
+                return
+            # 两路合并展示：本地 FAISS 在前，AstrBot 内置库在后（与注入顺序一致）
+            results = []
+            if local_ready:
+                results.extend(await plugin.rag_retriever.search_documents(query))
+            if kb_ready:
+                results.extend(await plugin.rag_kb_source.search(query))
+            if not results:
+                event.set_result(MessageEventResult().message("未找到匹配的文档。"))
+                return
+            lines = [f"[Doc 检索] \"{query}\" → {len(results)} 段:"]
+            for r in results:
+                content = r.get("content", "?")[:100]
+                score = r.get("score", 0)
+                source = r.get("source", "")
+                # 内置库命中追加文档名，便于定位到 AstrBot 面板里的源文档
+                doc_name = r.get("doc_name", "")
+                if source.startswith("kb:") and doc_name:
+                    source = f"{source}/{doc_name}"
+                source_str = f" ({source})" if source else ""
+                lines.append(f"  [{score:.2f}]{source_str} {content}")
+            event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
         except Exception as e:
             event.set_result(MessageEventResult().message(error_text("搜索失败", e)))
         return
@@ -1424,7 +1472,8 @@ async def doc_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
 
 async def _doc_list(plugin, event: AstrMessageEvent):
     try:
-        docs = await plugin.rag_vector_store.list_documents()
+        from .quill_rag.astrbot_kb import KB_DOC_SEP
+        docs = await _merged_rag_sources(plugin)
         if not docs:
             event.set_result(MessageEventResult().message("没有已加载的外部文档。"))
             return
@@ -1447,11 +1496,25 @@ async def _doc_list(plugin, event: AstrMessageEvent):
 
         lines = [f"可用文档（✓ 已绑定 | 模式: {persona_mode}）："]
         for i, d in enumerate(docs, 1):
-            source = d.get("source", d.get("doc_id", "?"))
+            source = d.get("source", "?")
             chunks = d.get("chunk_count", "")
             chunk_str = f" ({chunks} 段)" if chunks else ""
-            mark = "✓" if source in persona_bound else " "
-            lines.append(f"  {mark} {i}. {source}{chunk_str}")
+            if d.get("kind") == "kb":
+                # 文档级绑定（kb:库/文档）也算这一行「已绑定」，并在括号里
+                # 说明选了几个文档 —— 否则用户绑了子文档却在列表里看不到勾。
+                sub_prefix = source + KB_DOC_SEP
+                sub_docs = [b for b in persona_bound if isinstance(b, str) and b.startswith(sub_prefix)]
+                mark = "✓" if (source in persona_bound or sub_docs) else " "
+                sub_str = f"（已绑定 {len(sub_docs)} 个文档）" if sub_docs and source not in persona_bound else ""
+                label = "[内置库]"
+                desc = d.get("description", "")
+                desc_str = f" {desc}" if desc else ""
+                err = d.get("init_error", "")
+                err_str = f" ⚠{err}" if err else ""
+                lines.append(f"  {mark} {i}. {label} {source}{chunk_str}{desc_str}{sub_str}{err_str}")
+            else:
+                mark = "✓" if source in persona_bound else " "
+                lines.append(f"  {mark} {i}. {source}{chunk_str}")
 
         if persona_name:
             lines.append(f"\n当前角色: {persona_name}（模式: {persona_mode}）")
@@ -1460,7 +1523,8 @@ async def _doc_list(plugin, event: AstrMessageEvent):
         lines.append("使用: /doc bind <序号>      绑定到当前角色")
         lines.append("     /doc unbind <序号>    解绑从当前角色")
         lines.append("     /doc search <关键词>  检索文档")
-        lines.append("     /doc reload           重新加载索引")
+        lines.append("     /doc reload           重新加载本地索引")
+        lines.append("[内置库] 项在 AstrBot 面板管理，本插件只做绑定与检索")
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
     except Exception as e:
         event.set_result(MessageEventResult().message(error_text("查询失败", e)))
@@ -1489,7 +1553,7 @@ async def _doc_bind(plugin, event: AstrMessageEvent, arg: str):
         return
 
     idx = int(arg) - 1
-    docs = await plugin.rag_vector_store.list_documents()
+    docs = await _merged_rag_sources(plugin)
     if idx < 0 or idx >= len(docs):
         event.set_result(MessageEventResult().message(f"文档序号不存在: {arg}"))
         return
@@ -1518,8 +1582,9 @@ async def _doc_bind(plugin, event: AstrMessageEvent, arg: str):
 
         await plugin.persona_manager.update_persona(persona_id, persona_data)
         logger.info(f"[Quill] 对话 {target_id} 绑定文档 '{doc_source}' 到角色卡 '{persona_id}'")
+        kind_label = "内置知识库" if docs[idx].get("kind") == "kb" else "文档"
         event.set_result(MessageEventResult().message(
-            f"已绑定文档: {doc_source} ({chunk_count} 段) → 当前角色"
+            f"已绑定{kind_label}: {doc_source} ({chunk_count} 段) → 当前角色"
         ).use_t2i(False))
     else:
         logger.info(f"[Quill] 对话 {target_id} 尝试绑定已绑定的文档 '{doc_source}' 到角色卡 '{persona_id}'")
@@ -1551,7 +1616,7 @@ async def _doc_unbind(plugin, event: AstrMessageEvent, arg: str):
         return
 
     idx = int(arg) - 1
-    docs = await plugin.rag_vector_store.list_documents()
+    docs = await _merged_rag_sources(plugin)
     if idx < 0 or idx >= len(docs):
         event.set_result(MessageEventResult().message(f"文档序号不存在: {arg}"))
         return

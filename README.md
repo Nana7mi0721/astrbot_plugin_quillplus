@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.3.1-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.3.2-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -29,6 +29,13 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 - 头像不随列表内联返回，按需懒加载（Data URL / 静态端点），避免 WebUI iframe 沙箱的跨域限制
 - 支持从 Character.AI / Chub 等平台导入卡片
 - **头像自定义裁剪**：Web 面板内置裁剪器，支持拖拽移动 + 滚轮缩放，Canvas 生成 300×300 方形 PNG
+- **由 AstrBot 人格导入**：角色卡页工具条新增「由人格导入」，直接读取 AstrBot 面板
+  「人格」页里已创建的人格（列出设定字数与开场对话条数，与现有角色卡同名时标注提示），
+  用你自己配置的摘要模型（「配置 → RAG 与动态记忆 → LLM 提供商」）整理成角色卡的
+  `name` / `summary` 与四段核心设定（`personality` / `scenario` / `examples_of_dialogue`
+  / `first_message`）；重名会自动加「（导入）」后缀，也可以在弹窗里手动指定名称
+  （手动指定的名称撞重名会在调用模型之前就报错）。**人格本体只读**：不修改、不删除
+  AstrBot 里的人格，只读出来转成角色卡
 
 ### 世界书系统 (Worldbook)
 
@@ -56,6 +63,22 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 - 段落优先分块 + 固定长度兜底，overlap 保持上下文连贯
 - 支持 API Embedding（如 SiliconFlow）和本地模型 fallback
 - 独立 Rerank Provider 提升检索精度
+- **兼容 AstrBot 内置知识库**：AstrBot 面板「知识库」页创建的库会自动出现在
+  `/doc list` 与角色卡编辑器的绑定列表中（`kb:库名` 标识，标注 `[内置库]`），
+  绑定、检索、注入与本地文档完全同权。内置库使用 AstrBot 自身的 Embedding
+  配置，无需在本插件重复配置；`auto`（全库）模式会一并检索全部非空内置库，
+  隔离（custom）模式只检索勾选项。内置库的新建/删除/文档管理仍在 AstrBot
+  面板进行，本插件只做绑定与检索（插件配置页与羽笔面板「RAG 与动态记忆」节
+  均有总开关 `rag.astrbot_kb_enabled`，默认开启；关闭后行为与旧版一致，
+  面板保存即时生效、无需重载插件）
+- **子知识库分组（插件内自建 + 勾到单篇文档）**：面板「文档知识库」页分两个平级大组
+  ——「插件文档库」与「AstrBot 兼容」。插件文档库支持**新建分组**（子知识库），上传时
+  选目标分组、之后用一个下拉随时改组，分组可改名/删除（组内文档回到「未分组」，
+  没进任何分组的文档依然存在）。分组只是元数据（`rag_doc_groups.json`），所有插件
+  文档共用同一份向量索引，改名/改组不需要重新上传。角色卡「高级扩展 → 文档知识库」
+  是三级勾选：勾大组＝全选，勾分组＝整个分组的文档（`grp:组名`），勾库＝整库
+  （`kb:库名`），展开后还能只勾其中几篇（插件文档＝文件名，内置库＝`kb:库名/文档名`）。
+  只挂单篇时检索会把候选池放大后再按文档名过滤，不会被同库其它文档挤掉
 
 ### 动态记忆 (Vector Memory)
 
@@ -150,11 +173,11 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 
 | 指令 | 说明 |
 |------|------|
-| `/doc list` | 列出已加载的外部文档 |
-| `/doc search <关键词>` | RAG 检索返回原文片段 |
-| `/doc bind <序号>` | 绑定文档到当前角色卡 |
-| `/doc unbind <序号>` | 解绑文档 |
-| `/doc reload` | 重新加载文档索引 |
+| `/doc list` | 列出已上传文档与 AstrBot 内置知识库（`[内置库]` 标注，统一编号） |
+| `/doc search <关键词>` | RAG 检索返回原文片段（本地文档 + 内置知识库） |
+| `/doc bind <序号>` | 绑定文档/内置知识库到当前角色卡（隐式切换为隔离模式）；要只挂某个内置库里的单篇文档，面板勾选会写成 `kb:库名/文档名` |
+| `/doc unbind <序号>` | 解绑文档/内置知识库 |
+| `/doc reload` | 重新加载本地文档索引（内置库由 AstrBot 管理，无需 reload） |
 
 ### 其他控制
 
@@ -183,10 +206,10 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 
 > 面板仅针对**桌面端**设计。移动端适配已于 v5.2.3 移除。
 
-- **角色卡管理**：网格化卡片展示，新建/编辑/删除，V2 卡片导入，纯文本解析，头像上传与自定义裁剪
+- **角色卡管理**：网格化卡片展示，新建/编辑/删除，V2 卡片导入，纯文本解析，**由 AstrBot 人格导入**，头像上传与自定义裁剪
 - **写作素材库**：全文搜索，分类筛选，条目编辑，匹配测试台
 - **世界书**：多选配置，条目管理，ST 格式导入/导出
-- **文档知识库**：拖拽上传，已上传文档管理，语义检索测试
+- **文档知识库**：拖拽上传，子知识库分组（插件文档库可新建分组、上传时选组、随时改组 / AstrBot 兼容大组，可点开看单篇文档），语义检索测试
 - **动态记忆**：系统总览，搜索过滤，数据表格，JSON 备份与恢复，**对话日志查看器**（按会话浏览/导出 RP 对话记录）
 - **配置页面**：一键备份下载（zip 打包素材库/世界书/角色卡/记忆/文档索引），系统健康度卡片，流式模式批量控制
 
@@ -334,6 +357,7 @@ on_llm_tool_respond (priority=10)  →  停止 agent loop + 记忆存储
 
 QuillPlus 遵循持续迭代的开发路线，当前（v5.3）已完成以下里程碑：
 
+- ✅ **v5.3.2** — 双向兼容 AstrBot 原生配置：AstrBot「人格」只读导入为角色卡（用你配置的摘要模型转换，同名自动加后缀，人格本体不改不删）；Doc RAG 兼容 AstrBot 内置知识库（`kb:库名` 绑定，文档级 `kb:库名/文档名`）；插件文档新增子知识库分组与面板/角色卡三级勾选；分组下拉改为面板自绘控件；顺带修复文本导入弹窗遮罩无守卫导致的误关窗
 - ✅ **v5.3.0** — 结构重构：main.py 六钩子薄化为注册桩 + `interfaces/` 适配层，业务下沉 `quill/` 服务分层（与 AstrBot 解耦、可独立测试）；开发期建立 pytest 双模回归测试（本地运行）；统一上传通道与路径安全加固；热路径历史清洗 O(历史长度)→O(增量)；修复真机实测与自查的 10 项正确性缺陷（详见 CHANGELOG）
 - ✅ **v5.0** — 重构首发版：平行宇宙双轴隔离、JSON 原子化状态机、全链路异步化、Character Card V2 全量支持
 - ✅ **v5.1** — 全自动自迭代记忆：闲时反思守护进程、核心记忆更新、混合检索 (FTS5+Vector+RRF)、LRU 会话缓存
@@ -371,7 +395,7 @@ A: 大多数世界书插件仅提供关键词注入。QuillPlus 在此基础上�
 A: 可以。通过发送指令（`/char`、`/wb`、`/memory`、`/quill` 等）在聊天窗口直接管理功能，无需打开 Web 面板。
 
 **Q: 角色卡和其他插件冲突吗？**
-A: QuillPlus 使用独立的 JSON 存储，不依赖 AstrBot 原生的 persona 系统，不会影响其他插件数据。
+A: QuillPlus 使用独立的 JSON 存储，不依赖 AstrBot 原生的 persona 系统，不会影响其他插件数据。v5.3.2 起还支持把 AstrBot「人格」页里的人格**只读导入**为角色卡：只读取人格正文交给摘要模型转换，不修改、不删除 AstrBot 里的人格，导入结果也只是本插件自己的角色卡。
 
 **Q: Embedding 和 Rerank 模型推荐？**
 A: 推荐 SiliconFlow 的 `Qwen3-Embedding-8B` 和 `bge-reranker-v2-m3`。不配置时自动使用本地模型 `BAAI/bge-small-zh-v1.5`。

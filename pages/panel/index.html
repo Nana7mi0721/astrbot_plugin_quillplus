@@ -309,6 +309,9 @@
                 <input type="file" accept=".png,.jpg,.jpeg,.webp,.json" data-file="persona-import" aria-label="导入角色卡">
               </label>
               <button type="button" class="btn btn--gray" data-action="persona-import-text">文本导入</button>
+              <button type="button" class="btn btn--gray" data-action="persona-import-astrbot">
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-brain"/></svg>由人格导入
+              </button>
               <button type="button" class="btn btn--gray" data-action="persona-refresh">
                 <svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
               </button>
@@ -349,6 +352,8 @@
                 <div class="stat-cell"><div class="stat-cell-value" id="ragStatDocs">—</div><div class="stat-cell-label">文档数</div></div>
                 <div class="stat-cell"><div class="stat-cell-value" id="ragStatChunks">—</div><div class="stat-cell-label">总分块</div></div>
                 <div class="stat-cell"><div class="stat-cell-value" id="ragStatVectors">—</div><div class="stat-cell-label">向量数</div></div>
+                <div class="stat-cell"><div class="stat-cell-value" id="ragStatGroups">—</div><div class="stat-cell-label">分组</div></div>
+                <div class="stat-cell"><div class="stat-cell-value" id="ragStatKbs">—</div><div class="stat-cell-label">内置知识库</div></div>
               </div>
               <div class="note" style="margin-top:var(--sp-4)">
                 分块大小、重叠与注入条数等策略，请前往「配置 → RAG 与动态记忆」调整。
@@ -358,16 +363,30 @@
         </div>
 
         <div class="card" style="margin-bottom:var(--sp-4)">
-          <div class="card-head"><h3>文档管理</h3><span class="card-head-sub">支持 .txt / .md / .pdf</span></div>
+          <div class="card-head"><h3>知识库</h3><span class="card-head-sub">插件文档库可新建分组归类文档；点开可见每篇文档，随时改分组</span></div>
+          <div class="card-body"><div class="card-body-inner">
+            <div class="cfg-row">
+              <div class="cfg-row-text">
+                <div class="cfg-row-title">兼容 AstrBot 知识库</div>
+                <div class="cfg-row-desc">打开后额外显示 AstrBot 面板「知识库」页里已配置的库。库与文档在此为只读，管理入口在 AstrBot 面板。</div>
+              </div>
+              <div class="cfg-row-control">
+                <label class="switch"><input type="checkbox" id="ragKbToggle"><span class="switch-track"></span></label>
+              </div>
+            </div>
+            <div id="ragGroupList"><span class="skeleton" style="width:220px"></span></div>
+          </div></div>
+        </div>
+
+        <div class="card" style="margin-bottom:var(--sp-4)">
+          <div class="card-head"><h3>添加文档</h3><span class="card-head-sub">支持 .txt / .md / .pdf；上传到哪个分组在「知识库」卡片里选</span></div>
           <div class="card-body"><div class="card-body-inner">
             <div class="dropzone" id="ragDrop" role="button" tabindex="0" aria-label="上传文档">
               <svg class="icon icon--xl" aria-hidden="true"><use href="#i-upload"/></svg>
               <div>拖拽文件到此处，或点击选择（支持多选）</div>
               <input type="file" id="ragFile" accept=".txt,.md,.pdf" multiple hidden aria-label="选择文档">
             </div>
-            <div id="ragUploadStatus" class="fs-13 t2" style="margin-top:var(--sp-3);text-align:center" role="status"></div>
-            <div class="group-title">已上传文档</div>
-            <div id="ragDocList"><span class="skeleton" style="width:220px"></span></div>
+            <div id="ragUploadStatus" class="fs-13 t2" style="text-align:center" role="status"></div>
           </div></div>
         </div>
 
@@ -847,12 +866,20 @@
                   <label class="switch"><input type="checkbox" id="c-rag-local"><span class="switch-track"></span></label>
                 </div>
               </div>
+              <div class="cfg-row">
+                <div class="cfg-row-text">
+                  <div class="cfg-row-title">启用 AstrBot 内置知识库</div>
+                  <div class="cfg-row-desc">把 AstrBot 面板「知识库」页建的库作为可绑定源（<code>kb:库名</code>）纳入人设绑定与检索。关闭后完全不触碰 kb_manager。</div>
+                </div>
+                <div class="cfg-row-control">
+                  <label class="switch"><input type="checkbox" id="c-rag-kb"><span class="switch-track"></span></label>
+                </div>
+              </div>
               <div class="cfg-field">
                 <label class="cfg-field-label" for="c-rag-rerank">Rerank 重排模型</label>
                 <select class="field field--wide" id="c-rag-rerank"></select>
                 <span class="hint">对向量初筛结果二次打分，明显提升检准率。建议配置。</span>
-              </div>
-              <div class="cfg-field">
+              </div>              <div class="cfg-field">
                 <label class="cfg-field-label" for="c-rag-llm">摘要 LLM 模型</label>
                 <select class="field field--wide" id="c-rag-llm"></select>
                 <span class="hint">后台把长对话压缩为记忆摘要。留空则退化为按长度截断。</span>
@@ -1080,7 +1107,10 @@
 </div>
 
 <!-- ══ 文本粘贴导入 ══ -->
-<div class="scrim" id="textScrim" data-action="text-close">
+<!-- 遮罩上的动作必须做 target 守卫（见 app.js 的 text-scrim）：点击委托用
+     closest("[data-action]")，遮罩自己挂无守卫的 action 时，点弹窗内部
+     也会被当成「点了空白处」而误关。 -->
+<div class="scrim" id="textScrim" data-action="text-scrim">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="textModalTitle">
     <div class="modal-head">
       <h2 id="textModalTitle">文本粘贴导入</h2>
@@ -1098,6 +1128,35 @@
     <div class="modal-foot">
       <button type="button" class="btn btn--gray" data-action="text-close">取消</button>
       <button type="button" class="btn btn--filled" data-action="text-import">解析并导入</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 由 AstrBot 人格导入 ══ -->
+<!-- 背景点击关闭走带 target 守卫的 astrbot-scrim（与主弹窗的 scrim-close 同款）：
+     点击委托用 closest("[data-action]") 向上找，若 scrim 上挂的是无守卫的
+     action，点弹窗内部任意位置都会被判成点背景而误关。 -->
+<div class="scrim" id="astrbotScrim" data-action="astrbot-scrim">
+  <div class="modal modal--hug" role="dialog" aria-modal="true" aria-labelledby="abModalTitle">
+    <div class="modal-head">
+      <h2 id="abModalTitle">由 AstrBot 人格导入</h2>
+      <button type="button" class="icon-btn" data-action="astrbot-close" aria-label="关闭">
+        <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p class="row-desc" style="margin-bottom:var(--sp-3)">读取 AstrBot 面板「人格」页里已创建的人格，用你配置的摘要模型（「配置 → RAG 与动态记忆 → LLM 提供商」）整理成角色卡字段。人格本身不会被修改。</p>
+      <div class="ab-status" id="abStatus" hidden></div>
+      <div class="ab-list" id="abList" role="listbox" aria-label="AstrBot 人格"></div>
+      <div class="form-group" style="margin-top:var(--sp-4);margin-bottom:0">
+        <label for="abName">角色卡名称</label>
+        <input class="field field--wide" type="text" id="abName" placeholder="留空则由摘要模型命名" autocomplete="off">
+        <p class="row-desc" id="abNameHint">留空时用摘要模型给出的名字；若与现有角色卡重名，会自动加「（导入）」后缀并提示。</p>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn--gray" data-action="astrbot-close">取消</button>
+      <button type="button" class="btn btn--filled" id="abImportBtn" data-action="astrbot-import">导入</button>
     </div>
   </div>
 </div>

@@ -90,6 +90,9 @@ class QuillConfig:
         self.rag_chunk_overlap: int = _safe_int(rag.get("chunk_overlap", 50), 50)
         self.rag_top_k: int = _safe_int(rag.get("top_k", 3), 3)
         self.rag_dense_top_k: int = _safe_int(rag.get("dense_top_k", 5), 5)
+        # AstrBot 内置知识库（kb: 前缀可绑定源）。默认开：没建库时零副作用，
+        # 关闭后完全不碰 kb_manager，行为与旧版一致。
+        self.rag_astrbot_kb_enabled: bool = _safe_bool(rag.get("astrbot_kb_enabled"), True)
         self.rag_enable_memory: bool = _safe_bool(rag.get("enable_memory"))
         self.rag_enable_autonomous_reflection: bool = _safe_bool(rag.get("enable_autonomous_reflection"), True)
         self.rag_enable_chat_logging: bool = _safe_bool(rag.get("enable_chat_logging"), True)

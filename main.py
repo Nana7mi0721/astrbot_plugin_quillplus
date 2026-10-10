@@ -314,6 +314,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         self.rag_memory_store = None
         self.rag_summarizer = None
         self.rag_retriever = None
+        self.rag_kb_source = None  # AstrBot 内置知识库源（无自建句柄，仅引用）
+        self.rag_doc_groups = None  # 插件文档分组的元数据存储（JSON）
 
         logger.info(f"[Quill] 插件构造完成 | {self.config}")
 
@@ -547,6 +549,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             'reranker': self.rag_reranker,
             'memory_store': self.rag_memory_store,
             'summarizer': self.rag_summarizer,
+            'kb_source': self.rag_kb_source,
+            'doc_groups': self.rag_doc_groups,
         }
         try:
             # 审查修复：保存 routes 实例引用——_init_rag/备份恢复重建组件后，
@@ -630,6 +634,19 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             )
             await self.rag_vector_store.initialize()
 
+            # 插件文档分组（子知识库）元数据：所有插件文档共用同一套
+            # embedding/FAISS 索引，分组只是 source → 组名 的映射，不进 chunks 表。
+            # 独立 try：分组存储出问题不该连累整条 RAG 栈。
+            self.rag_doc_groups = None
+            try:
+                from .quill_rag.doc_groups import DocGroupStore
+                self.rag_doc_groups = DocGroupStore(
+                    os.path.join(self.paths["state_dir"], "rag_doc_groups.json")
+                )
+                await self.rag_doc_groups.load()
+            except Exception as e:
+                logger.warning(f"[Quill RAG] 文档分组存储初始化失败（分组功能不可用）: {e}")
+
             # Reranker
             self.rag_reranker = QuillReranker(
                 self.context,
@@ -648,6 +665,22 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 provider_id=self.config.rag_llm_provider_id,
             )
 
+            # AstrBot 内置知识库源（kb: 前缀可绑定源）。独立 try：本地栈
+            # 任何一步失败都不能连累 KB 路——KB 检索走 AstrBot 自己的
+            # embedding，本地 embedding 未配置时它仍可独立工作。
+            self.rag_kb_source = None
+            try:
+                from .quill_rag.astrbot_kb import AstrBotKBSource
+                self.rag_kb_source = AstrBotKBSource(
+                    self.context,
+                    enabled=self.config.rag_astrbot_kb_enabled,
+                    top_k=self.config.rag_top_k,
+                )
+                if self.rag_kb_source.available:
+                    logger.info("[Quill RAG] AstrBot 内置知识库源已启用")
+            except Exception as e:
+                logger.warning(f"[Quill RAG] AstrBot 内置知识库源初始化失败（KB 检索不可用）: {e}")
+
             # 统一检索器
             self.rag_retriever = QuillRetriever(
                 embedding_provider=self.rag_embedding,
@@ -658,11 +691,13 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 top_k=self.config.rag_top_k,
                 enable_memory=self.config.rag_enable_memory,
                 config=self.config,
+                kb_source=self.rag_kb_source,
             )
 
-            logger.info("[Quill RAG] 组件初始化完成 | embedding=%s | memory=%s",
+            logger.info("[Quill RAG] 组件初始化完成 | embedding=%s | memory=%s | 内置KB=%s",
                         self.config.rag_embedding_provider_id or "local",
-                        "on" if self.config.rag_enable_memory else "off")
+                        "on" if self.config.rag_enable_memory else "off",
+                        "on" if (self.rag_kb_source and self.rag_kb_source.available) else "off")
         except Exception as e:
             logger.warning(f"[Quill RAG] 初始化失败（RAG 功能不可用）: {e}")
 
@@ -696,6 +731,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         self.rag_embedding = None
         self.rag_reranker = None
         self.rag_summarizer = None
+        # KB 源无自建句柄（检索全程用 AstrBot 侧的 kb_manager），无需 close
+        self.rag_kb_source = None
+        self.rag_doc_groups = None
 
     async def _drain_retriever_tasks(self, timeout: float = 10.0) -> int:
         """等待 retriever 在途后台任务结束，返回等待到的任务数。
@@ -740,6 +778,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             'reranker': self.rag_reranker,
             'memory_store': self.rag_memory_store,
             'summarizer': self.rag_summarizer,
+            'kb_source': self.rag_kb_source,
+            'doc_groups': self.rag_doc_groups,
         }
 
     async def _reinit_rag_and_refresh_routes(self):
@@ -1039,6 +1079,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     # 换掉 retriever 持有的 config 引用，保证它读到的
                     # `config._raw`（rag_dense_top_k 走这条路）也是新的
                     self.rag_retriever.config = self.config
+
+                # KB 源的 enabled/top_k 也是构造期快照，随面板保存实时同步
+                #（available 是属性，读 self.context.kb_manager + enabled，
+                # 所以关掉开关下一轮检索立即失效，无需重建）。
+                kb_src = getattr(self, "rag_kb_source", None)
+                if kb_src is not None:
+                    kb_src.enabled = self.config.rag_astrbot_kb_enabled
+                    kb_src.top_k = self.config.rag_top_k
 
                 if hasattr(self._raw_config, "save_config") and callable(
                     self._raw_config.save_config
@@ -1548,8 +1596,16 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
         `stats` 为可选出参：回填 doc/mem 的命中条数与文档来源名（注入报告用）。
         """
-        if not (self.rag_retriever and self.rag_retriever.embedding):
-            logger.warning(f"[Quill RAG] 文档系统未初始化")
+        # 文档注入有两条路：本地 FAISS Doc RAG 与 AstrBot 内置知识库（kb: 源）。
+        # KB 路用 AstrBot 自己的 embedding，本地栈未初始化时仍可独立工作，
+        # 所以两条路都不可用才跳过（此前只看本地栈）。
+        # getattr 防御：快照测试以裸对象构造插件实例（不走 __init__），
+        # 插件 __getattr__ 对未知属性会抛 AttributeError。
+        kb_source = (getattr(self.rag_retriever, "kb_source", None) if self.rag_retriever else None) \
+            or getattr(self, "rag_kb_source", None)
+        kb_ready = bool(kb_source and kb_source.available)
+        if not (self.rag_retriever and self.rag_retriever.embedding) and not kb_ready:
+            logger.warning("[Quill RAG] 文档系统未初始化（本地 RAG 与内置知识库均不可用）")
             return dynamic_prompt
 
         try:
@@ -1557,28 +1613,91 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             persona_id = await self.state_manager.get_persona_id(target_id)
             mem_session_id = self._get_memory_session_id(target_id, persona_id)
 
-            doc_results = []
+            # D9：用 RAG_ERROR_ATTR 常量而不是再写一遍字面量 "_rag_error"——
+            # 否则改了常量名这里会静默失配（读不到错误原因，只报 "ok"）。
+            # P1-4：空结果算成功（确实没找到），只有真出错才算失败。
+            from .quill_rag.retrieval import RAG_ERROR_ATTR, format_for_prompt, rag_ok as _rag_ok
+            from .quill_rag.astrbot_kb import split_bound_ex
+            from .quill_rag.doc_groups import is_group_source, parse_group_source
+
+            doc_results: list = []   # 合并后的注入列表（本地在前，内置库在后）
             ext = persona_data.get("quill_extensions", {}) if persona_data else {}
             rag_mode = ext.get("rag_mode", "disabled")
 
             logger.info(f"[Quill RAG] 模式: {rag_mode}，绑定文档: {ext.get('bound_rag_docs', []) if rag_mode == 'custom' else 'Auto (全库)'}")
 
+            # 合并 list 会丢掉 RagResult 子类的失败标记，按路分别取 ok/原因
+            local_ok = kb_ok = True
+            doc_errors: list[str] = []
+
             if rag_mode != "disabled":
                 bound_rag_docs = ext.get("bound_rag_docs", []) if rag_mode == "custom" else None
-                doc_results = await self.rag_retriever.search_documents(user_input, allowed_sources=bound_rag_docs)
-                logger.info(f"[Quill RAG] 文档检索结果: {len(doc_results)} 段")
+                kb_doc_filters: dict = {}
+                if rag_mode == "custom":
+                    # kb: 前缀 = 内置库绑定（可细到 kb:库名/文档名），
+                    # grp: 前缀 = 插件文档分组（展开成组内全部 source），
+                    # 其余按插件文档 source 精确过滤
+                    group_store = getattr(self, "rag_doc_groups", None)
+                    plugin_sources, kb_names, kb_doc_filters = split_bound_ex(
+                        bound_rag_docs,
+                        group_resolver=(group_store.resolve if group_store else None),
+                    )
+                    doc_level = {k: v for k, v in kb_doc_filters.items() if v is not None}
+                    if doc_level:
+                        logger.info(f"[Quill RAG] 文档级绑定: {doc_level}")
+                    group_bound = [parse_group_source(s) for s in (bound_rag_docs or [])
+                                   if is_group_source(s)]
+                    if group_bound:
+                        logger.info(f"[Quill RAG] 分组绑定: {group_bound} → {len(plugin_sources)} 篇插件文档")
+                else:
+                    # auto：本地全库 + 全部非空内置库
+                    plugin_sources, kb_names = None, None
+
+                # 路 1：本地 FAISS Doc RAG
+                if self.rag_retriever and self.rag_retriever.embedding:
+                    local_results = await self.rag_retriever.search_documents(
+                        user_input, allowed_sources=plugin_sources
+                    )
+                    local_ok = _rag_ok(local_results)
+                    if not local_ok:
+                        doc_errors.append(f"本地: {getattr(local_results, RAG_ERROR_ATTR, '?')}")
+                    doc_results.extend(local_results)
+                    logger.info(f"[Quill RAG] 本地文档检索: {len(local_results)} 段")
+
+                # 路 2：AstrBot 内置知识库（custom 模式仅绑定的 kb: 源，
+                # 一个都没绑就不发空跑请求）
+                if kb_ready and (rag_mode != "custom" or kb_names):
+                    kb_results = await kb_source.search(
+                        user_input,
+                        kb_names=kb_names if rag_mode == "custom" else None,
+                        doc_filters=kb_doc_filters if rag_mode == "custom" else None,
+                    )
+                    kb_ok = _rag_ok(kb_results)
+                    if not kb_ok:
+                        doc_errors.append(f"内置库: {getattr(kb_results, RAG_ERROR_ATTR, '?')}")
+                    doc_results.extend(kb_results)
+                    logger.info(f"[Quill RAG] 内置知识库检索: {len(kb_results)} 段")
             else:
                 logger.info(f"[Quill RAG] 模式: disabled，跳过文档检索")
 
-            mem_results = await self.rag_retriever.search_memories(mem_session_id, user_input)
-            logger.info(f"[Quill RAG] 记忆检索: {len(mem_results)} 条 (Session: {mem_session_id})")
+            mem_results = []
+            core_mems = []
+            if self.rag_retriever:
+                mem_results = await self.rag_retriever.search_memories(mem_session_id, user_input)
+                logger.info(f"[Quill RAG] 记忆检索: {len(mem_results)} 条 (Session: {mem_session_id})")
 
-            # 核心记忆：无条件注入，不参与 Top-K 竞争
-            core_mems = await self.rag_retriever.get_core_memories(mem_session_id)
-            if core_mems:
-                logger.info(f"[Quill RAG] 核心记忆: {len(core_mems)} 条 (Session: {mem_session_id})")
+                # 核心记忆：无条件注入，不参与 Top-K 竞争
+                core_mems = await self.rag_retriever.get_core_memories(mem_session_id)
+                if core_mems:
+                    logger.info(f"[Quill RAG] 核心记忆: {len(core_mems)} 条 (Session: {mem_session_id})")
 
-            rag_context = self.rag_retriever.format_for_prompt(doc_results, mem_results, core_mems)
+            # format_for_prompt 优先走 retriever 实例方法（H3 快照钉住的调用
+            # 契约：步 17 在 retriever 上发生）；模块级纯函数仅为 KB-only 模式
+            # （本地栈未初始化、rag_retriever 为 None）兜底。
+            if self.rag_retriever:
+                rag_context = self.rag_retriever.format_for_prompt(doc_results, mem_results, core_mems)
+            else:
+                rag_context = format_for_prompt(doc_results, mem_results, core_mems)
             if rag_context:
                 dynamic_prompt += "\n\n" + rag_context
                 logger.info(f"[Quill RAG] 注入上下文: {len(rag_context)} 字符")
@@ -1593,18 +1712,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 stats["doc_sources"] = seen_src
                 stats["mem"] = len(mem_results)
                 stats["core_mem"] = len(core_mems)
-            # P1-4: 记录 RAG 检索结果。此前检索器吞异常返回 []，这里统一记 True，
-            # 于是 embedding/索引故障在健康度里表现为 100% 成功。现在按 rag_ok
-            # 判定：空结果算成功（确实没找到），只有真出错才算失败。
-            # D9：用 RAG_ERROR_ATTR 常量而不是再写一遍字面量 "_rag_error"——
-            # 否则改了常量名这里会静默失配（读不到错误原因，只报 "ok"）。
-            from .quill_rag.retrieval import RAG_ERROR_ATTR, rag_ok as _rag_ok
-            doc_ok = _rag_ok(doc_results)
+            # P1-4: 记录 RAG 检索结果，按 rag_ok 判定（见上）。文档路现在有
+            # 本地/内置库两段，失败标记在合并前分别取（合并 list 会丢标记）。
+            doc_ok = local_ok and kb_ok
             mem_ok = _rag_ok(mem_results)
             if not doc_ok or not mem_ok:
                 logger.warning(
                     "[Quill RAG] 检索降级: doc=%s mem=%s",
-                    getattr(doc_results, RAG_ERROR_ATTR, "ok"),
+                    "; ".join(doc_errors) if doc_errors else "ok",
                     getattr(mem_results, RAG_ERROR_ATTR, "ok"),
                 )
             self.health_tracker.record_rag(doc_ok and mem_ok)

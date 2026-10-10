@@ -122,6 +122,7 @@ Base64 解密 + 状态栏二次处理 + 兜底注入 + refusal 扫描。
 | `chunk_overlap` | `50` | 相邻块重叠 |
 | `top_k` | `3` | 最终注入片段数 |
 | `dense_top_k` | `5` | FAISS 粗排数量 |
+| `astrbot_kb_enabled` | `true` | 把 AstrBot 内置知识库并入可绑定源（`kb:库名`）。关闭后完全不触碰 `kb_manager` |
 | `enable_memory` | `false` | 动态记忆总开关 |
 | `enable_chat_logging` | `true` | 对话日志归档 |
 | `chat_log_retention_days` | `30` | 日志保留天数 |

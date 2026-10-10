@@ -510,8 +510,14 @@ async def handle_info(wr_manager, wb_manager, persona_count=0,
 
 # ── RAG Handlers ────────────────────────────────────────────────
 
-async def handle_rag_upload(vector_store, embedding_provider, upload_file, source_name, chunk_size=500, chunk_overlap=50):
-    """处理文档上传：提取文本 → 分块 → 向量化 → 存储。"""
+async def handle_rag_upload(vector_store, embedding_provider, upload_file, source_name, chunk_size=500, chunk_overlap=50,
+                            group_store=None, group=""):
+    """处理文档上传：提取文本 → 分块 → 向量化 → 存储（可选归入某个分组）。
+
+    ``group`` 非空时把新文档归入该分组（子知识库）。归组失败不影响入库结果
+    ——文档已经花钱算完向量了，不能因为分组名过期就把它丢掉；改为在响应里
+    带回 ``group_error`` 让面板提示。
+    """
     from .quill_rag.chunker import chunk_text
     try:
         content = await upload_file.read()
@@ -544,53 +550,171 @@ async def handle_rag_upload(vector_store, embedding_provider, upload_file, sourc
                 "文档已保存，但向量索引不可用（faiss 未安装或初始化失败），"
                 "暂无法检索。请检查依赖后重新上传。"
             )
-        return ok({
+        # 归组（可选）：面板上传时选的「目标分组」
+        group_error = ""
+        target_group = str(group or "").strip()
+        if target_group and group_store is not None:
+            try:
+                await group_store.assign([source_name], target_group)
+            except Exception as e:  # noqa: BLE001 — 归组失败不能吞掉已入库的文档
+                group_error = str(e) or "归组失败"
+                logger.warning("[Quill] 上传后归组失败: %s", e)
+
+        payload = {
             "source": source_name,
             "chunk_count": stored,
             "dim": len(embeddings[0]) if embeddings else 0,
-        })
+        }
+        if group_error:
+            payload["group_error"] = group_error
+        return ok(payload)
     except Exception as e:
         return err(error_text("上传失败", e))
 
+async def handle_rag_documents(vector_store, kb_source=None, group_store=None):
+    """列出已上传文档 + 插件文档分组 + AstrBot 内置知识库（只读展示）。
 
-async def handle_rag_documents(vector_store):
-    """列出已上传文档。"""
+    vector_store 允许为 None（本地 RAG 未初始化、仅内置库可用的场景），
+    此时 documents 为空列表。
+    """
     try:
-        docs = await vector_store.list_documents()
+        docs = await vector_store.list_documents() if vector_store is not None else []
         # M3.3 F1：附带向量索引状态（真实维度 / 维度不一致标记 / 最近重建），
         # 面板 RAG 页据此感知「索引将按新维度重建」类状态。只增字段，向后兼容。
         index_status = None
-        get_stats = getattr(vector_store, "get_stats", None)
+        get_stats = getattr(vector_store, "get_stats", None) if vector_store is not None else None
         if get_stats is not None:
             try:
                 index_status = await get_stats()
             except Exception as e:
                 logger.warning("[Quill] 获取向量索引状态失败: %s", e, exc_info=True)
-        return ok({"documents": docs, "index_status": index_status})
+        # AstrBot 内置知识库列表（S-兼容新增，只读——管理入口在 AstrBot 面板）。
+        # kb_source 不可达时返回空列表，旧前端忽略该字段不受影响。
+        astrbot_kbs: list = []
+        if kb_source is not None and getattr(kb_source, "available", False):
+            try:
+                astrbot_kbs = await kb_source.list_kbs()
+            except Exception as e:
+                logger.warning("[Quill] 列举内置知识库失败: %s", e, exc_info=True)
+        # 插件文档分组（子知识库）与每个文档的 group 字段。分组存储不可用时
+        # 只回空分组列表，旧前端与「只有内置库」的场景都不受影响。
+        groups: list = []
+        if group_store is not None:
+            try:
+                # 文档可能已被删除，先清掉指向幽灵文档的分组条目
+                await group_store.prune(
+                    [str(d.get("source") or "") for d in docs]
+                )
+                docs = await group_store.attach_documents(docs)
+                groups = await group_store.list_groups()
+            except Exception as e:
+                logger.warning("[Quill] 文档分组信息获取失败: %s", e, exc_info=True)
+        return ok({"documents": docs, "groups": groups,
+                   "index_status": index_status, "astrbot_kbs": astrbot_kbs})
     except Exception as e:
         return err(error_text("查询失败", e))
 
 
-async def handle_rag_delete(vector_store, source):
-    """删除文档。"""
+async def handle_rag_kb_documents(kb_source, kb_name, limit: int = 200):
+    """列出某个 AstrBot 内置知识库里的文档（面板子知识库组展开时懒加载）。
+
+    kb_source 不可达 / 库不存在 → documents 为空列表，同时用 available
+    告诉前端是「功能不可达」还是「这个库确实没有文档」。
+    """
+    if not kb_name or not str(kb_name).strip():
+        return err("缺少 kb_name 参数")
+    try:
+        available = bool(kb_source is not None and getattr(kb_source, "available", False))
+        docs: list = []
+        if available:
+            docs = await kb_source.list_documents(str(kb_name).strip(), limit=int(limit) or 200)
+        return ok({"kb_name": str(kb_name).strip(), "available": available, "documents": docs})
+    except Exception as e:
+        return err(error_text("查询失败", e))
+
+
+async def handle_rag_group_action(group_store, action, name="", new_name="", sources=None, group=""):
+    """插件文档分组的增删改与归组（面板「知识库」页与角色卡绑定共用）。
+
+    ``action``：
+
+    - ``create``：新建分组（``name``）；
+    - ``rename``：改名（``name`` → ``new_name``），组内文档跟着走；
+    - ``delete``：删除分组（``name``），组内文档回到「未分组」；
+    - ``assign``：把 ``sources`` 移入 ``group``（``group`` 空串 = 移出到未分组）。
+      只允许操作插件内上传的文档（``sources`` 就是插件的 doc source）。
+
+    失败一律返回可读的 ``message``（分组名非法/重名/不存在都是用户输入问题，
+    不该在日志里刷 traceback）。
+    """
+    if group_store is None:
+        return err("文档分组功能不可用（本地 RAG 组件未初始化）")
+    from .quill_rag.doc_groups import normalize_group_name
+    act = str(action or "").strip().lower()
+    try:
+        if act == "create":
+            groups = await group_store.create(name)
+            return ok({"action": act, "group": normalize_group_name(name), "groups": groups})
+        if act == "rename":
+            moved = await group_store.rename(name, new_name)
+            return ok({"action": act, "group": normalize_group_name(new_name),
+                       "moved": moved, "groups": await group_store.list_groups()})
+        if act == "delete":
+            freed = await group_store.delete(name)
+            return ok({"action": act, "group": normalize_group_name(name),
+                       "freed": freed, "groups": await group_store.list_groups()})
+        if act == "assign":
+            srcs = [str(s).strip() for s in (sources or []) if str(s or "").strip()]
+            if not srcs:
+                return err("缺少要移动的文档（sources）")
+            target = str(group or "").strip()
+            changed = await group_store.assign(srcs, target)
+            return ok({"action": act, "group": target, "changed": changed,
+                       "sources": srcs})
+        return err(f"未知的分组操作: {action}")
+    except ValueError as e:
+        return err(str(e))
+    except Exception as e:
+        return err(error_text("分组操作失败", e))
+
+
+async def handle_rag_delete(vector_store, source, group_store=None):
+    """删除文档（顺手清掉它的分组记录）。"""
     try:
         deleted = await vector_store.delete_by_source(source)
+        if group_store is not None:
+            try:
+                # 移出分组＝删除 assign 条目（等价于回到「未分组」）
+                await group_store.assign([source], "")
+            except Exception as e:  # noqa: BLE001 — 文档已删，清分组失败只是残留
+                logger.warning("[Quill] 删除文档后清理分组记录失败: %s", e)
         return ok({"deleted": deleted, "source": source})
     except Exception as e:
         return err(error_text("删除失败", e))
 
 
-async def handle_rag_search(vector_store, embedding_provider, reranker, query, top_k=3):
-    """语义检索测试。"""
+async def handle_rag_search(vector_store, embedding_provider, reranker, query, top_k=3, kb_source=None):
+    """语义检索测试（本地 FAISS + AstrBot 内置知识库两路合并）。"""
     try:
         from .quill_rag.retrieval import QuillRetriever
-        retriever = QuillRetriever(
-            embedding_provider=embedding_provider,
-            vector_store=vector_store,
-            reranker=reranker,
-            top_k=top_k,
-        )
-        results = await retriever.search_documents(query)
+        results: list = []
+        # 本地路：embedding/vector_store 任一缺失就跳过（组件为 None 时
+        # search_documents 会走异常路径，与其空跑不如不发请求）
+        if vector_store is not None and embedding_provider is not None:
+            retriever = QuillRetriever(
+                embedding_provider=embedding_provider,
+                vector_store=vector_store,
+                reranker=reranker,
+                top_k=top_k,
+            )
+            results.extend(await retriever.search_documents(query))
+        # 内置库路：不依赖本地组件，embedding/reranker 未配置也能检索
+        if kb_source is not None and getattr(kb_source, "available", False):
+            try:
+                kb_results = await kb_source.search(query)
+                results.extend(kb_results)
+            except Exception as e:
+                logger.warning("[Quill] 内置知识库检索测试失败: %s", e, exc_info=True)
         return ok({"results": results, "query": query})
     except Exception as e:
         return err(error_text("检索失败", e))

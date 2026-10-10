@@ -41,6 +41,13 @@
 .scrim.is-open .modal { transform: translateY(0) scale(1); opacity: 1; }
 .scrim.is-closing .modal { transform: translateY(-8px) scale(.99); opacity: 0; transition-duration: var(--dur-exit); }
 .modal--sm { max-width: 420px; }
+/* 内容少的弹窗（如「由人格导入」）：贴合内容高度，别在底部留一大片空白。
+   macOS sheet 语义就是「窗口包住内容」，固定高度只适合内容会撑满的表单。 */
+.modal--hug {
+  height: auto;
+  max-height: min(calc(100vh - 80px), calc(var(--modal-body-h) + 112px));
+}
+.modal--hug .modal-body { min-height: 0; }
 .modal-head {
   display: flex;
   align-items: center;

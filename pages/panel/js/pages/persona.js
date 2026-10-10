@@ -8,7 +8,7 @@ import { updateBadge } from "../pages/config.js";
 import { _wbFilterQuery } from "../pages/worldbook.js";
 import { $, $$, b64ToBlob, downloadBlob, esc, fileToB64, withBusy } from "../utils.js";
 
-export { MODE_LABEL, MODE_TONE, _personaRenderToken, applyWBEntryFilter, closeImportTextModal, deletePersona, exportPersona, filterCheckboxes, filterWBEntries, filteredPersonas, importPersona, importPersonaFromText, loadPersonas, openImportTextModal, openPersonaModal, reapplyWBEntryFilter, renderExtBlock, renderPersonaPage, savePersona, setWBTip, switchPersonaView, syncExtList, updatePersonaStats, wbEntryHit };
+export { MODE_LABEL, MODE_TONE, _personaRenderToken, applyWBEntryFilter, closeAstrbotImportModal, closeImportTextModal, deletePersona, exportPersona, filterCheckboxes, filterWBEntries, filteredPersonas, importFromAstrbot, importPersona, importPersonaFromText, loadAstrbotPersonas, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openImportTextModal, openPersonaModal, reapplyWBEntryFilter, renderAstrbotPersonas, renderExtBlock, renderRagExtBlock, selectAstrbotPersona, setAstrbotStatus, syncRagGroup, toggleExtBig, toggleExtGroup, renderPersonaPage, savePersona, setWBTip, switchPersonaView, syncExtList, updatePersonaStats, wbEntryHit };
 
 
 
@@ -163,9 +163,241 @@ function filterCheckboxes(input, listId) {
   const q = (input.value || "").toLowerCase().trim();
   const list = document.getElementById(listId);
   if (!list) return;
+  // 文档知识库是「大组 → 子知识库组 → 文档」三级结构（见 renderRagExtBlock）：
+  // 组名命中→整组留下；只有文档名命中→自动展开该组与所在大组并只留命中项。
+  // 未展开过的内置库组还没拉文档，只能按组名匹配。
+  const groups = $$(".ext-group", list);
+  if (groups.length) {
+    groups.forEach(g => {
+      const head = g.querySelector(".ext-group-head");
+      const nameHit = (head?.textContent || "").toLowerCase().includes(q);
+      let kidHit = 0;
+      $$("label", g.querySelector(".ext-group-docs") || g).forEach(lbl => {
+        const hit = !q || nameHit || lbl.textContent.toLowerCase().includes(q);
+        lbl.style.display = hit ? "" : "none";
+        if (hit && q) kidHit++;
+      });
+      g.style.display = (!q || nameHit || kidHit > 0) ? "" : "none";
+      if (q && !nameHit && kidHit > 0) openExtGroup(g);
+    });
+    // 大组级：内部一个子组都没留下就整块隐藏；大组名自己命中则整块照原样展开
+    $$(".ext-big", list).forEach(b => {
+      const head = b.querySelector(".ext-big-head");
+      const bigHit = !q || (head?.textContent || "").toLowerCase().includes(q);
+      if (bigHit && q) {
+        $$(".ext-group", b).forEach(g => {
+          g.style.display = "";
+          $$("label", g.querySelector(".ext-group-docs") || g).forEach(l => { l.style.display = ""; });
+        });
+      }
+      const anyVisible = bigHit || $$(".ext-group", b).some(g => g.style.display !== "none");
+      b.style.display = anyVisible ? "" : "none";
+      if (q && anyVisible && !bigHit) openExtBig(b);
+    });
+    return;
+  }
   $$("label", list).forEach(lbl => {
     lbl.style.display = lbl.textContent.toLowerCase().includes(q) ? "" : "none";
   });
+}
+
+/* ── 文档知识库：大组 → 子知识库组 → 文档 三级勾选 ────────────────── */
+
+const RAG_BIG_PLUGIN = "__plugin_lib__";
+const RAG_BIG_KB = "__astrbot_kb__";
+/** 会写进 bound_rag_docs 的组勾选框类型：kb:库名（AstrBot 整库）/ grp:组名（插件分组）。 */
+const RAG_GROUP_KINDS = new Set(["kb", "grp"]);
+
+const RAG_GROUP_CARET = `<button type="button" class="ext-group-caret" data-action="ext-group-toggle" aria-expanded="false" aria-label="展开或收起文档">
+  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-chevron-right"/></svg>
+</button>`;
+
+const RAG_BIG_CARET = `<button type="button" class="ext-big-caret" data-action="ext-big-toggle" aria-expanded="true" aria-label="展开或收起知识库大组">
+  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-chevron-right"/></svg>
+</button>`;
+
+/** 一篇插件文档的勾选行。 */
+function ragDocLabel(d, bound) {
+  return `<label class="check"><input type="checkbox" class="cb-rag-bind" value="${esc(d.source)}" ${bound.includes(d.source) ? "checked" : ""}><span class="nowrap">${esc(d.source)}</span><span class="ext-doc-meta">${d.chunk_count || 0} 段</span></label>`;
+}
+
+/** 一个插件分组（name 为空即「未分组」，它没有组勾选框）的子知识库组卡片。 */
+function ragPluginGroupHtml(name, docs, bound) {
+  const key = name ? `grp:${name}` : "__ungrouped__";
+  const chunks = docs.reduce((s, d) => s + (d.chunk_count || 0), 0);
+  const subs = docs.filter(d => bound.includes(d.source)).length;
+  const head = name
+    ? `<label class="check"><input type="checkbox" class="cb-rag-grp" data-kind="grp" value="${esc(key)}" ${bound.includes(key) ? "checked" : ""}><span class="nowrap">📁 ${esc(name)}</span></label>`
+    : `<span class="check" style="cursor:default"><span class="nowrap">📄 未分组</span></span>`;
+  return `<div class="ext-group" data-key="${esc(key)}" data-kind="${name ? "grp" : "ungrouped"}">
+    <div class="ext-group-head">
+      ${RAG_GROUP_CARET}
+      ${head}
+      <span class="ext-group-meta">${docs.length} 个文档 · ${chunks} 个分块${subs ? ` · 已选 ${subs} 篇` : ""}</span>
+    </div>
+    <div class="ext-group-docs" ${name ? "hidden" : ""} data-loaded="1">
+      ${docs.length ? docs.map(d => ragDocLabel(d, bound)).join("") : '<div class="fs-13 t3">这个分组还没有文档</div>'}
+    </div>
+  </div>`;
+}
+
+/**
+ * 知识库绑定块的组态渲染：与「文档知识库」页同构的三级结构。
+ * 大组（.ext-big）＝「插件文档库」/「AstrBot 兼容」，各带一个纯 UI 的全选开关
+ * （cb-rag-all，value 固定为空、不参与提交）；子知识库组（.ext-group）里的
+ * 组勾选框 cb-rag-grp 才是可提交项：插件分组写 grp:组名，内置库写 kb:库名；
+ * 文档级 cb-rag-bind：插件文档写 source，内置库文档写 kb:库名/文档名。
+ */
+function renderRagExtBlock(plugins, groups, kbs, bound, selectHtml, hint, emptyText) {
+  const pChunks = plugins.reduce((s, d) => s + (d.chunk_count || 0), 0);
+  const kbChunks = kbs.reduce((s, k) => s + (k.chunk_count || 0), 0);
+  const ungrouped = plugins.filter(d => !d.group || !groups.includes(d.group));
+
+  const pluginBody = groups.map(name =>
+    ragPluginGroupHtml(name, plugins.filter(d => d.group === name), bound)
+  ).concat(ragPluginGroupHtml("", ungrouped, bound)).join("");
+
+  const kbBody = kbs.length
+    ? kbs.map(k => {
+        const whole = bound.includes(k.source);
+        const subs = bound.filter(b => b.startsWith(`${k.source}/`)).length;
+        const seg = (k.chunk_count || 0) ? `${k.chunk_count} 个分块` : "空库";
+        return `<div class="ext-group" data-key="${esc(k.source)}" data-kind="kb">
+          <div class="ext-group-head">
+            ${RAG_GROUP_CARET}
+            <label class="check"><input type="checkbox" class="cb-rag-grp" data-kind="kb" value="${esc(k.source)}" ${whole ? "checked" : ""}><span class="nowrap">${esc(k.emoji || "📚")} ${esc(k.kb_name || k.source)}</span></label>
+            <span class="ext-group-meta">${k.doc_count || 0} 个文档 · ${seg}${subs ? ` · 已选 ${subs} 篇` : ""}</span>
+          </div>
+          <div class="ext-group-docs" hidden data-loaded="0" data-kb="${esc(k.kb_name || "")}"><div class="skeleton skeleton-row"></div></div>
+        </div>`;
+      }).join("")
+    : '<div class="fs-13 t3">AstrBot 面板里还没有配置知识库</div>';
+
+  const big = (key, kind, title, meta, inner) => `<div class="ext-big" data-key="${key}">
+    <div class="ext-big-head">
+      ${RAG_BIG_CARET}
+      <label class="check"><input type="checkbox" class="cb-rag-all" data-big="${kind}" value=""><span class="nowrap">${title}</span></label>
+      <span class="ext-big-meta">${meta}</span>
+    </div>
+    <div class="ext-big-body">${inner}</div>
+  </div>`;
+
+  const body = (plugins.length || kbs.length)
+    ? big(RAG_BIG_PLUGIN, "plugin", "🗂️ 插件文档库", `${plugins.length} 个文档 · ${pChunks} 个分块 · ${groups.length} 个分组`, pluginBody)
+      + big(RAG_BIG_KB, "kb", "🔗 AstrBot 兼容", `${kbs.length} 个库 · ${kbChunks} 个分块`, kbBody)
+    : `<div class="fs-13 t3">${esc(emptyText)}</div>`;
+
+  return `<div class="form-group">
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <label style="margin:0">文档知识库</label>
+      ${selectHtml}
+    </div>
+    <label class="search" style="width:100%;margin-bottom:6px">
+      <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+      <input type="search" placeholder="搜索知识库、分组或文档…" data-ext-filter="pf-rag-list" aria-label="搜索知识库、分组或文档">
+    </label>
+    <div class="ext-list" id="pf-rag-list">${body}</div>
+    <span class="hint">${esc(hint)}</span>
+  </div>`;
+}
+
+/** 组勾选态与子项勾选态互相同步：勾整库/整组＝覆盖组内全部文档。 */
+function syncRagGroup(group) {
+  if (!group) return;
+  const grpCb = group.querySelector(".cb-rag-grp");
+  if (!grpCb) return;
+  const kids = $$(".cb-rag-bind", group);
+  const on = kids.filter(cb => cb.checked).length;
+  if (grpCb.checked && RAG_GROUP_KINDS.has(grpCb.dataset.kind)) {
+    // 整库/整组已勾选：清掉单独勾的文档，避免出现「整库 + 其中几篇」这种
+    // 后端不支持的表达（split_bound_ex 会把它们并成整库/整组）
+    kids.forEach(cb => { cb.checked = false; });
+    grpCb.indeterminate = false;
+    return;
+  }
+  grpCb.indeterminate = on > 0 && on < kids.length;
+}
+
+/** 勾选框变化：大组＝全选（插件侧勾到每篇文档，AstrBot 侧勾到每个库）；组＝整组开关。 */
+function onRagGroupToggle(cb) {
+  if (cb.classList.contains("cb-rag-all")) {
+    const big = cb.closest(".ext-big");
+    if (!big) return;
+    if (cb.dataset.big === "kb") {
+      // 「AstrBot 兼容」全选＝每个库整库（kb:库名）：比逐篇勾文档更省事，
+      // 也避免把「整库」和「库内几篇」混在一条绑定里
+      $$(".cb-rag-grp", big).forEach(k => { k.checked = cb.checked; });
+    } else {
+      $$(".cb-rag-bind", big).forEach(k => { k.checked = cb.checked; });
+    }
+    $$(".ext-group", big).forEach(syncRagGroup);
+    return;
+  }
+  const group = cb.closest(".ext-group");
+  if (!group) return;
+  syncRagGroup(group);
+}
+
+function openExtGroup(group) {
+  const host = group?.querySelector(".ext-group-docs");
+  if (!host) return;
+  host.removeAttribute("hidden");
+  group.querySelector(".ext-group-caret")?.setAttribute("aria-expanded", "true");
+  if (host.dataset.loaded === "0" && host.dataset.kb) loadExtKbDocs(group);
+}
+
+function toggleExtGroup(btn) {
+  const group = btn.closest(".ext-group");
+  if (!group) return;
+  const host = group.querySelector(".ext-group-docs");
+  if (!host) return;
+  if (host.hasAttribute("hidden")) openExtGroup(group);
+  else {
+    host.setAttribute("hidden", "");
+    group.querySelector(".ext-group-caret")?.setAttribute("aria-expanded", "false");
+  }
+}
+
+function openExtBig(big) {
+  const body = big?.querySelector(".ext-big-body");
+  if (!body) return;
+  body.removeAttribute("hidden");
+  big.querySelector(".ext-big-caret")?.setAttribute("aria-expanded", "true");
+}
+
+function toggleExtBig(btn) {
+  const big = btn.closest(".ext-big");
+  const body = big?.querySelector(".ext-big-body");
+  if (!body) return;
+  if (body.hasAttribute("hidden")) openExtBig(big);
+  else {
+    body.setAttribute("hidden", "");
+    big.querySelector(".ext-big-caret")?.setAttribute("aria-expanded", "false");
+  }
+}
+
+/** 展开内置库组时按需拉文档；勾选态用打开弹窗时捕获的 bound 列表判定。 */
+async function loadExtKbDocs(group) {
+  const host = group.querySelector(".ext-group-docs");
+  if (!host || host.dataset.loaded === "1") return;
+  host.dataset.loaded = "1";
+  host.innerHTML = '<div class="skeleton skeleton-row"></div>';
+  const kbName = host.dataset.kb || "";
+  const bound = S._ragBound || [];
+  try {
+    const data = await api(`/rag/kb_documents?kb_name=${encodeURIComponent(kbName)}`);
+    const docs = data.documents || [];
+    host.innerHTML = docs.length
+      ? docs.map(d => {
+          const val = `kb:${kbName}/${d.doc_name}`;
+          return `<label class="check"><input type="checkbox" class="cb-rag-bind" value="${esc(val)}" ${bound.includes(val) ? "checked" : ""}><span class="nowrap">${esc(d.doc_name)}</span><span class="ext-doc-meta">${d.chunk_count || 0} 段</span></label>`;
+        }).join("")
+      : `<div class="fs-13 t3">${data.available === false ? "AstrBot 内置知识库当前不可用" : "这个库还没有文档"}</div>`;
+    syncRagGroup(group);
+  } catch (e) {
+    host.dataset.loaded = "0";
+    host.innerHTML = `<div class="fs-13" style="color:var(--red-text)">${esc(e.message)}</div>`;
+  }
 }
 
 /** 世界书「本册条目」内联搜索。
@@ -259,8 +491,10 @@ async function openPersonaModal(personaId) {
   // 扩展绑定所需的候选列表，任一失败都不阻塞表单渲染
   const info = await api("/info").catch(() => ({}));
   const allWbs = info.available_worldbooks || [];
-  const ragData = await api("/rag/documents").catch(() => ({ documents: [] }));
+  const ragData = await api("/rag/documents").catch(() => ({ documents: [], groups: [], astrbot_kbs: [] }));
   const ragDocs = ragData.documents || [];
+  const ragGroups = ragData.groups || [];
+  const astrbotKbs = ragData.astrbot_kbs || [];
   const cats = await api("/wr/categories").catch(() => ({ categories: [] }));
 
   const ext = data.quill_extensions || {};
@@ -335,9 +569,10 @@ async function openPersonaModal(personaId) {
       ${renderExtBlock("wb", "世界书", "搜索世界书…", allWbs, boundWb,
         modeSelect("pf-wb-mode", wbMode, [["auto", "全库激活"], ["custom", "隔离模式"], ["disabled", "完全禁用"]]),
         "全库激活＝所有世界书生效；隔离模式＝仅勾选的生效；完全禁用＝不加载世界书。", "暂无可用的世界书")}
-      ${renderExtBlock("rag", "文档知识库", "搜索文档…", ragDocs.map(d => d.source), boundRag,
+      ${renderRagExtBlock(ragDocs, ragGroups, astrbotKbs, boundRag,
         modeSelect("pf-rag-mode", ragMode, [["auto", "全库检索"], ["custom", "隔离模式"], ["disabled", "完全禁用"]]),
-        "全库检索＝检索所有文档；隔离模式＝仅检索勾选的文档；完全禁用＝不检索文档。", "暂无已上传的文档")}
+        "全库检索＝检索插件全部文档与非空内置知识库；隔离模式＝仅检索勾选项；完全禁用＝不检索。勾分组＝该分组的全部文档，勾库＝整库，展开后可只勾其中几篇。分组与上传在本插件「文档知识库」页管理，内置库在 AstrBot 面板管理。",
+        "暂无已上传文档与可用内置知识库")}
       ${renderExtBlock("wr", "写作素材库", "搜索分类…", cats.categories || [], boundWr,
         modeSelect("pf-wr-mode", wrMode, [["auto", "全局匹配"], ["custom", "隔离模式"], ["disabled", "完全禁用"]]),
         "全局匹配＝匹配所有素材；隔离模式＝仅匹配勾选分类；完全禁用＝不检索素材。", "暂无可用的素材分类")}
@@ -353,6 +588,9 @@ async function openPersonaModal(personaId) {
     });
   });
   ["wb", "rag", "wr"].forEach(syncExtList);
+  // 知识库组的「整库 / 部分选中」初始态（子项懒加载后会在 loadExtKbDocs 里再同步一次）
+  S._ragBound = boundRag.slice();
+  $$("#pf-rag-list .ext-group").forEach(syncRagGroup);
   // modeSelect 生成的三处平台模式下拉同样走自绘（模板字符串本身不改）
   enhanceSelects($("#modalBody"));
 
@@ -376,8 +614,11 @@ async function openPersonaModal(personaId) {
 }
 
 function renderExtBlock(sys, title, ph, options, bound, selectHtml, hint, emptyText) {
-  const body = options.length
-    ? options.map(o => `<label class="check"><input type="checkbox" class="cb-${sys}-bind" value="${esc(o)}" ${bound.includes(o) ? "checked" : ""}><span class="nowrap">${esc(o)}</span></label>`).join("")
+  // options 支持字符串或 {value, label}：kb: 内置库源复选框 value 仍是
+  // 绑定标识（kb:库名），label 额外带上分段数
+  const norm = options.map(o => (typeof o === "string" ? { value: o, label: o } : o));
+  const body = norm.length
+    ? norm.map(o => `<label class="check"><input type="checkbox" class="cb-${sys}-bind" value="${esc(o.value)}" ${bound.includes(o.value) ? "checked" : ""}><span class="nowrap">${esc(o.label)}</span></label>`).join("")
     : `<div class="fs-13 t3">${esc(emptyText)}</div>`;
   return `<div class="form-group">
     <div class="row" style="justify-content:space-between;margin-bottom:6px">
@@ -397,6 +638,14 @@ async function savePersona() {
   const name = $("#pf-name")?.value.trim() || "";
   if (!name) { showToast("角色名称不能为空", "warning"); return; }
   const checked = (cls) => $$(`.${cls}:checked`).map(cb => cb.value);
+  // 文档知识库的粒度可以是整库（cb-rag-grp[data-kind=kb]，值＝kb:库名）、
+  // 整个插件分组（cb-rag-grp[data-kind=grp]，值＝grp:组名）或单个文档
+  // （cb-rag-bind，值＝kb:库名/文档名 或 插件文档的 source）。
+  // 两个大组的全选开关（cb-rag-all）只是 UI 全选，value=""，不参与提交。
+  const boundRagDocs = [...new Set([
+    ...checked("cb-rag-bind"),
+    ...$$(".cb-rag-grp:checked").filter(cb => RAG_GROUP_KINDS.has(cb.dataset.kind)).map(cb => cb.value),
+  ])];
   const body = {
     id: S._personaMode === "edit" && S._personaEditing ? S._personaEditing.id : name,
     name,
@@ -412,7 +661,7 @@ async function savePersona() {
       wb_mode: $("#pf-wb-mode")?.value || "disabled",
       bound_worldbooks: checked("cb-wb-bind"),
       rag_mode: $("#pf-rag-mode")?.value || "disabled",
-      bound_rag_docs: checked("cb-rag-bind"),
+      bound_rag_docs: boundRagDocs,
       wr_mode: $("#pf-wr-mode")?.value || "disabled",
       bound_writing_resource: checked("cb-wr-bind"),
     },
@@ -489,5 +738,160 @@ async function importPersonaFromText(btn) {
       showToast(`角色卡「${res.name}」导入成功`, "success");
       loadPersonas();
     } catch (e) { showErrorDetail("文本导入失败", e.message); }
+  });
+}
+
+/* ── 由 AstrBot 人格导入 ────────────────────────────────────────────
+   数据面：/persona/astrbot_list 只读 AstrBot 的 persona_manager，
+   /persona/astrbot_import 用「摘要模型」（配置里的 LLM 提供商）把人格正文
+   整理成角色卡四段式后落卡。
+   转换要等一次真实 LLM 调用（长人格十几秒），所以：
+   · 期间把「导入」按钮切成 spinner + 「转换中…」并禁用，避免重复提交造出多张卡；
+   · 失败信息同时写进弹窗内的状态块（弹窗不关，用户可以直接改名字重试）。 */
+let _abPersonas = [];
+let _abMeta = null;
+let _abSelected = "";
+
+function setAstrbotStatus(text, tone = "") {
+  const box = $("#abStatus");
+  if (!box) return;
+  box.hidden = !text;
+  box.className = "ab-status note" + (tone ? ` note--${tone}` : "");
+  box.innerHTML = text
+    ? `<svg class="icon" aria-hidden="true"><use href="#i-${tone === "warn" ? "warn" : "info"}"/></svg><span>${esc(text)}</span>`
+    : "";
+}
+
+function setAstrbotImportEnabled(on) {
+  const btn = $("#abImportBtn");
+  if (btn) btn.disabled = !on;
+}
+
+async function openAstrbotImportModal() {
+  const scrim = $("#astrbotScrim");
+  if (!scrim) return;
+  _abSelected = "";
+  _abPersonas = [];
+  _abMeta = null;
+  const nameInput = $("#abName");
+  if (nameInput) nameInput.value = "";
+  setAstrbotStatus("");
+  setAstrbotImportEnabled(false);
+  openScrim(scrim);
+  await loadAstrbotPersonas();
+}
+
+function closeAstrbotImportModal() {
+  closeScrim($("#astrbotScrim"));
+  _abPersonas = [];
+  _abMeta = null;
+  _abSelected = "";
+  const list = $("#abList");
+  if (list) list.innerHTML = "";
+  const nameInput = $("#abName");
+  if (nameInput) nameInput.value = "";
+  setAstrbotStatus("");
+}
+
+async function loadAstrbotPersonas() {
+  const list = $("#abList");
+  if (list) list.innerHTML = '<div class="ab-empty">正在读取 AstrBot 人格…</div>';
+  try {
+    const res = await api("/persona/astrbot_list");
+    _abMeta = res || {};
+    _abPersonas = (_abMeta && _abMeta.personas) || [];
+  } catch (e) {
+    _abMeta = null;
+    _abPersonas = [];
+    setAstrbotStatus(`读取人格失败：${e.message}`, "warn");
+  }
+  renderAstrbotPersonas();
+}
+
+function astrbotPersonaRow(p) {
+  const pid = String(p.persona_id || "");
+  const selected = pid === _abSelected;
+  const bits = [];
+  if (p.folder) bits.push(esc(p.folder));
+  bits.push(`${Number(p.prompt_chars) || 0} 字`);
+  if (Number(p.begin_dialog_count) > 0) bits.push(`${Number(p.begin_dialog_count)} 条开场对话`);
+  const tag = p.name_taken ? '<span class="ab-tag">已有同名角色卡</span>' : "";
+  return `<button type="button" class="ab-item${selected ? " is-selected" : ""}" role="option"
+    aria-selected="${selected ? "true" : "false"}" data-action="astrbot-pick" data-pid="${esc(pid)}">
+    <span class="ab-item-main">
+      <span class="ab-item-name">${esc(pid)}${tag}</span>
+      <span class="ab-item-sub">${bits.join(" · ")}</span>
+    </span>
+    <svg class="icon icon--sm ab-item-check" aria-hidden="true"><use href="#i-check"/></svg>
+  </button>`;
+}
+
+function renderAstrbotPersonas() {
+  const list = $("#abList");
+  if (!list) return;
+  const meta = _abMeta || {};
+  if (!meta.available) {
+    list.innerHTML = "";
+    setAstrbotStatus(meta.reason || "当前 AstrBot 未向插件提供人格管理器，无法读取人格", "warn");
+    setAstrbotImportEnabled(false);
+    return;
+  }
+  // 摘要模型没配好就别让用户白点一次（后端也会拒，但提示在这里更早）
+  if (!meta.provider_ready) {
+    setAstrbotStatus(meta.provider_id
+      ? `摘要模型 ${meta.provider_id} 不可用：请到「配置 → RAG 与动态记忆」检查 LLM 提供商`
+      : "尚未配置用于生成摘要的模型：请到「配置 → RAG 与动态记忆」选择 LLM 提供商", "warn");
+  } else {
+    setAstrbotStatus("");
+  }
+  if (!_abPersonas.length) {
+    list.innerHTML = '<div class="ab-empty">AstrBot 里还没有创建过人格</div>';
+    setAstrbotImportEnabled(false);
+    return;
+  }
+  list.innerHTML = _abPersonas.map(astrbotPersonaRow).join("");
+  setAstrbotImportEnabled(Boolean(meta.provider_ready));
+  // 只有一个候选时直接选中，省一次点击
+  if (_abPersonas.length === 1) selectAstrbotPersona(_abPersonas[0].persona_id);
+}
+
+function selectAstrbotPersona(pid) {
+  _abSelected = String(pid || "");
+  $$("#abList .ab-item").forEach(btn => {
+    const on = btn.dataset.pid === _abSelected;
+    btn.classList.toggle("is-selected", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  const item = _abPersonas.find(p => String(p.persona_id) === _abSelected);
+  const nameInput = $("#abName");
+  // AstrBot 人格名就是 persona_id，直接当默认角色卡名；已重名的留空让摘要模型
+  // 自己取名（后端在撞名时会加「（导入）」后缀），免得用户先撞一次 400。
+  if (nameInput) nameInput.value = item && item.name_taken ? "" : _abSelected;
+  if (item && item.name_taken) {
+    setAstrbotStatus(`已有一张同名角色卡「${_abSelected}」：名称留空则由摘要模型起名（若仍然重名会自动加「（导入）」后缀），也可以自己填一个`, "warn");
+  } else if (_abMeta && _abMeta.provider_ready) {
+    setAstrbotStatus("");
+  }
+  setAstrbotImportEnabled(Boolean(_abMeta && _abMeta.provider_ready) && Boolean(_abSelected));
+}
+
+async function importFromAstrbot(btn) {
+  if (!_abSelected) { showToast("请先选择一个人格", "warning"); return; }
+  const name = ($("#abName")?.value || "").trim();
+  setAstrbotStatus("正在用摘要模型整理人格设定，请稍候…（长人格可能需要十几秒）");
+  await withBusy(btn || $("#abImportBtn"), "转换中…", async () => {
+    try {
+      const res = await apiPost("/persona/astrbot_import", { persona_id: _abSelected, name });
+      const card = (res && res.persona) || {};
+      const renamed = (res && res.renamed_from) || "";
+      closeAstrbotImportModal();
+      showToast(renamed
+        ? `已导入为「${card.name}」：「${renamed}」重名，已自动加后缀`
+        : `角色卡「${card.name}」导入成功`, "success");
+      loadPersonas();
+    } catch (e) {
+      setAstrbotStatus(`导入失败：${e.message}`, "warn");
+      showErrorDetail("由人格导入失败", e.message);
+    }
   });
 }

@@ -9,8 +9,8 @@ import { closeAllMenus, closeModal, toggleMoreMenu } from "./components/modal.js
 import { closeSelMenus, enhanceSelects } from "./components/select.js";
 import { discardChanges, filterConfig, initConfigNavObserver, loadGlobalSettings, loadHealth, markDirty, saveAllChanges, scrollToSection, setStreamModeAll, switchTab, syncSidebarBadges } from "./pages/config.js";
 import { changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, onMemorySessionChange, pruneMemories, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin } from "./pages/memory.js";
-import { closeImportTextModal, deletePersona, exportPersona, filterCheckboxes, filterWBEntries, importPersona, importPersonaFromText, loadPersonas, openImportTextModal, openPersonaModal, renderPersonaPage, savePersona, switchPersonaView, syncExtList } from "./pages/persona.js";
-import { deleteRAGDocument, processRAGFiles, testRAGSearch } from "./pages/rag.js";
+import { closeAstrbotImportModal, closeImportTextModal, deletePersona, exportPersona, filterCheckboxes, filterWBEntries, importFromAstrbot, importPersona, importPersonaFromText, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openImportTextModal, openPersonaModal, renderPersonaPage, savePersona, selectAstrbotPersona, switchPersonaView, syncExtList, syncRagGroup, toggleExtBig, toggleExtGroup } from "./pages/persona.js";
+import { deleteRAGDocument, deleteRAGGroup, moveRAGDocument, newRAGGroup, processRAGFiles, renameRAGGroup, setRAGKbEnabled, testRAGSearch, toggleRAGBig, toggleRAGGroup } from "./pages/rag.js";
 import { deleteWB, deleteWBEntry, exportWBSt, importWBSt, onWBSearchInput, openWBCreateModal, openWBEntryModal, reloadWB, saveWBCreate, saveWBEntry, setWBOnlyConst, toggleWB } from "./pages/worldbook.js";
 import { _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, saveWREntry, toggleWREntry, updateWRBatchBar, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState } from "./pages/writing.js";
 import { $, debounce, withBusy } from "./utils.js";
@@ -40,7 +40,15 @@ const ACTIONS = {
   "modal-close": () => closeModal(),
   "modal-save": () => saveModal(),
   "text-close": () => closeImportTextModal(),
+  // 背景点击只在点中 scrim 本体时关闭：委托用 closest("[data-action]")，
+  // 不守卫的话点弹窗内部的 textarea / 标题也会冒泡到遮罩上把弹窗关掉。
+  "text-scrim": (el, e) => { if (e.target === el) closeImportTextModal(); },
   "text-import": (el) => importPersonaFromText(el),
+  // 由 AstrBot 人格导入：背景点击只在点中 scrim 本体时关闭（同 scrim-close 守卫）
+  "astrbot-scrim": (el, e) => { if (e.target === el) closeAstrbotImportModal(); },
+  "astrbot-close": () => closeAstrbotImportModal(),
+  "astrbot-pick": (el) => selectAstrbotPersona(el.dataset.pid),
+  "astrbot-import": (el) => importFromAstrbot(el),
   "alert-cancel": () => closeAlert(),
   "crop-close": () => closeCropDialog(),
 
@@ -93,12 +101,23 @@ const ACTIONS = {
   "persona-refresh": (el) => withBusy(el, "", loadPersonas),
   "persona-view": (el) => switchPersonaView(el.dataset.value),
   "persona-import-text": () => openImportTextModal(),
+  "persona-import-astrbot": () => openAstrbotImportModal(),
   "persona-recrop": () => recropAvatar(),
 
   // 文档知识库
   "rag-pick": () => $("#ragFile")?.click(),
   "rag-search": (el) => testRAGSearch(el),
   "rag-delete": (el) => deleteRAGDocument(el.dataset.value, el),
+  // 大组（插件文档库 / AstrBot 兼容）与子知识库组的展开
+  "rag-big-toggle": (el) => toggleRAGBig(el),
+  "rag-group-toggle": (el) => toggleRAGGroup(el),
+  // 插件文档分组：新建 / 改名 / 删除（仅插件内上传的文档）
+  "rag-group-new": () => newRAGGroup(),
+  "rag-group-rename": (el) => renameRAGGroup(el),
+  "rag-group-delete": (el) => deleteRAGGroup(el),
+  // 角色卡「高级扩展」里的子知识库组展开 / 大组（插件文档库、AstrBot 兼容）展开
+  "ext-group-toggle": (el) => toggleExtGroup(el),
+  "ext-big-toggle": (el) => toggleExtBig(el),
 
   // 动态记忆
   "mem-page": (el) => changeMemoryPage(el.dataset.value),
@@ -219,6 +238,13 @@ function bindEvents() {
     if (t.id === "wrCat" && t.tagName === "SELECT") { wrState.page = 1; loadWR(); return; }
     if (t.id === "wbOnlyConst") { setWBOnlyConst(t.checked); return; }
     if (t.id === "memSession") { onMemorySessionChange(); return; }
+    // 文档知识库页的「兼容 AstrBot 知识库」开关：单独落盘一个配置键
+    if (t.id === "ragKbToggle") { setRAGKbEnabled(t.checked, t); return; }
+    // 文档行里的「移动到分组」下拉（仅插件内上传的文档）
+    if (t.classList.contains("doc-group-select")) { moveRAGDocument(t); return; }
+    // 角色卡高级扩展：子知识库组勾选（整库/全选）与组内文档勾选联动
+    if (t.classList.contains("cb-rag-grp") || t.classList.contains("cb-rag-all")) { onRagGroupToggle(t); return; }
+    if (t.classList.contains("cb-rag-bind") && t.closest(".ext-group")) { syncRagGroup(t.closest(".ext-group")); return; }
     // 配置表单变化 → 标记未保存
     if (t.closest("#pane-config") && t.matches("input, select, textarea")) markDirty();
   });
@@ -272,13 +298,14 @@ function bindEvents() {
       if ($("#cropScrim")?.classList.contains("is-open")) { closeCropDialog(); return; }
       if ($("#alertScrim")?.classList.contains("is-open")) { closeAlert(); return; }
       if ($("#textScrim")?.classList.contains("is-open")) { closeImportTextModal(); return; }
+      if ($("#astrbotScrim")?.classList.contains("is-open")) { closeAstrbotImportModal(); return; }
       if ($("#scrim")?.classList.contains("is-open")) { closeModal(); return; }
       return;
     }
     // Tab 循环：有弹层打开时把焦点限制在最上层弹窗内（focus trap）。
     // 必须放在 typing 早返回之前，否则输入框内 Tab 不受约束。
     if (e.key === "Tab") {
-      const scrim = ["cropScrim", "alertScrim", "textScrim", "scrim"]
+      const scrim = ["cropScrim", "alertScrim", "textScrim", "astrbotScrim", "scrim"]
         .map(id => document.getElementById(id))
         .find(s => s && s.classList.contains("is-open"));
       if (scrim) {

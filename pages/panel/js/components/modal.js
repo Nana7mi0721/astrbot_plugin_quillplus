@@ -45,7 +45,7 @@ function closeScrim(scrim) {
   setTimeout(() => {
     scrim.classList.remove("is-open", "is-closing");
     // 仍有多层弹层打开时，不解锁滚动、不归还焦点
-    const stillOpen = ["cropScrim", "alertScrim", "textScrim", "scrim"]
+    const stillOpen = ["cropScrim", "alertScrim", "textScrim", "astrbotScrim", "scrim"]
       .some(id => { const s = document.getElementById(id); return s && s.classList.contains("is-open"); });
     if (stillOpen) return;
     const c = $("#content");

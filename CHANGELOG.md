@@ -1,5 +1,39 @@
 # Changelog
 
+## [5.3.2] - 2026-10-11 — AstrBot 人格导入 + 内置知识库兼容
+
+### 新增
+
+- **由 AstrBot 人格导入角色卡**：角色卡页工具条新增「由人格导入」按钮。弹窗列出 AstrBot 面板「人格」页里已创建的人格（名称、设定字数、开场对话条数；与现有角色卡同名时标注「已有同名角色卡」），选中后用**你自己配置的摘要模型**（「配置 → RAG 与动态记忆 → LLM 提供商」，即 `rag.llm_provider_id`）把人格正文整理成角色卡格式并落卡——`name` / `summary` 与四段核心设定 `personality` / `scenario` / `examples_of_dialogue` / `first_message`。**人格本体只读**：不修改、不删除、不迁移 AstrBot 里的人格，只读出来转成角色卡。
+  - 后端：新增 `persona_import.py`（`AstrBotPersonaSource` 只读适配 `context.persona_manager`；`PersonaCardConverter` 走 `provider.text_chat(prompt=…, system_prompt=…)`，90 秒超时、JSON 容错解析（能吃 ```json 包裹与前后说明）、中文键名/列表值兼容、每种失败都给中文可读原因）；新增路由 `GET /persona/astrbot_list`（附 `provider_ready`，未配摘要模型时前端直接提示去配置）与 `POST /persona/astrbot_import`。
+  - 名称冲突自动加后缀（`X（导入）`、`X（导入2）`…，最多 6 次），也可以在弹窗里手动填名称；**显式指定的名称撞重名会在调用模型之前就报错**，不白花一次转换。
+  - 长人格按 `PERSONA_PROMPT_LIMIT`（12000 字）截断、开场对话最多带 `BEGIN_DIALOG_LIMIT`（8 条）进 prompt，并在 prompt 里标注「已截断」。
+  - 新增回归测试 `tests/test_persona_import.py`（39 项）：列举/取值/截断与容错、脏 JSON 与中文键名、五类失败分支、名称冲突与后缀耗尽、路由各分支（400/404/500）、只读约束（导入过程不触碰 persona_manager 的写方法）、前端接线静态断言（按钮、弹窗结构、`ACTIONS` 注册、Esc 链、focus trap、`closeScrim` 白名单、导出列表与两个接口路径）。
+
+- **Doc RAG 兼容 AstrBot 内置知识库**：AstrBot 面板「知识库」页创建的知识库作为「可绑定源」（标识 `kb:库名`）并入插件现有人设绑定体系，与本地文档同权参与检索与注入。本地 RAG（Embedding）未配置时内置库路仍可独立工作（检索用 AstrBot 自身的 Embedding 配置）。
+  - **绑定与检索**：`/doc list` 统一编号列出本地文档与内置库（`[内置库]` 标注、附分段数）；`/doc bind <序号>` 直接绑定（隐式切换为隔离模式，语义与本地文档一致）；`/doc search` 两路合并展示（内置库命中追加源文档名）。`auto`（全库）模式一并检索全部**非空**内置库；隔离（custom）模式只检索勾选项；完全禁用不检索。
+  - **Web 面板**：角色卡编辑器「文档知识库」勾选列表加入内置库（标注分段数）；文档知识库页新增内置库只读区块（新建/删除/文档管理仍在 AstrBot 面板进行）；检索测试两路合并。
+  - **配置开关** `rag.astrbot_kb_enabled`（默认开启）：关闭后完全不触碰 kb_manager，行为与 v5.3.1 一致；面板保存即时生效，无需重载插件。
+  - **兼容性降级**：AstrBot 版本过旧（无 `kb_manager`）或测试 stub 环境下功能自动隐藏，其余行为不变；内置库全部不可用（init_error）按检索失败计入健康度，不影响正常对话。
+  - 实现：新增 `quill_rag/astrbot_kb.py`（`AstrBotKBSource` 适配层 + `split_bound` 绑定拆分，复刻 `kb_manager.retrieve` 的 ValueError/None/{}/dict 四态语义）；`QuillRetriever` 增加 `kb_source` 组件与 `search_astrbot_kb` 入口；`format_for_prompt` 提为模块级纯函数（KB-only 模式无实例可挂方法）。
+- **文档级绑定（可只挂一个库里的某几篇）**：绑定标识支持 `kb:库名/文档名`，与整库绑定 `kb:库名` 同权。`kb_manager.retrieve` 没有文档级参数，故带文档级过滤时把候选池放大到 `KB_DOC_FILTER_FETCH`（30）再按 `doc_name` 过滤、最后仍截回 `rag.top_k`；整库绑定不算过滤，开销与原来一致（`top_k_fusion` 仍是 `top_k`）。同一库既有整库条目又有文档条目时整库优先（语义更宽，不会少注入）；过滤后一篇都没命中按「成功但空」处理，不计检索失败。
+- **插件内子知识库（文档分组）**：插件文档可以在面板里新建分组归类——「文档知识库」页每个分组是一张子知识库卡片，上传时在「插件文档库」卡片上选目标分组，文档行右侧的下拉可随时改组（含移出到「未分组」）；分组可改名、可删除（组内文档回到「未分组」，不会跟着分组一起消失）。**没有进入任何分组的文档依然合法存在**，就是「未分组」卡片里的那些。分组是**纯元数据**（`state_dir/rag_doc_groups.json`）：所有插件文档共用同一份 embedding/FAISS 索引，改名/删组/改组都不需要重算向量，也不改 chunks 表结构（旧库与新版本可互相回滚）。后端：新增 `quill_rag/doc_groups.py`（`DocGroupStore`，原子写 + 损坏自愈 + 分组名校验）、路由 `POST /rag/groups`（create/rename/delete/assign）、`handle_rag_upload/documents/delete` 增加 `group_store` 参数（归组失败只回 `group_error`，绝不吞掉已入库的文档）。
+- **面板「文档知识库」页改为「大组 → 子知识库组 → 文档」**：新增「兼容 AstrBot 知识库」开关（即 `rag.astrbot_kb_enabled`，面板保存即时生效）。页面分两个平级大组：「插件文档库」（本插件上传的文档，含分组卡片与「未分组」）与「AstrBot 兼容」（AstrBot 面板里配置的知识库，只读）。点开组才懒加载该库的文档清单（`GET /rag/kb_documents`）；统计条新增「分组」与「内置知识库」两格；原「文档管理」卡拆为「知识库」与「添加文档」两张。
+- **分组下拉换成面板自绘控件（对齐 macOS 设计语言）**：「插件文档库」卡片上的上传目标下拉与每篇文档右侧的分组下拉，从系统原生 `<select>` 改为与配置页「模型选择」同款的自绘下拉（`.sel-wrap / .sel-btn / .sel-menu`，复用 `components/select.js` 的 `enhanceSelects`）——触发器 32px 高、150px 宽、圆角描边 + chevron，浮层宽度跟随锚点、当前项带勾号、展开/收起带动画。原生 select 仍留在 DOM 中（`hidden`）承担取值与 `change` 委托，落库格式不变；窄屏（≤760px）自动收窄到 104px。
+- **角色卡「高级扩展 → 文档知识库」三级勾选**：大组（插件文档库 / AstrBot 兼容）各带一个全选开关；子知识库组的勾选框才是可提交项——插件分组写 `grp:组名`，内置库写 `kb:库名`；展开后还能只勾其中几篇文档（插件文档写文件名，内置库写 `kb:库名/文档名`）。勾整库/整组会清掉组内文档级勾选（避免「整库 + 其中几篇」的叠加态），只勾部分文档时组框显示半选。搜索框同时按大组名、组名与文档名过滤，命中子项时自动展开所在组与大组。
+- 绑定标识 `grp:组名` 由 `split_bound_ex(bound, group_resolver=...)` 在检索前展开成文档 source 列表（分组不存在→忽略；组存在但为空→展开成空，不会退化成「不过滤」），检索层因此完全不需要知道分组的存在。
+- 新增回归测试 `tests/test_doc_groups.py`（42 项）：标识与分组名校验、存储增删改/原子写/损坏自愈/幽灵文档清理、`split_bound_ex` 的分组展开、四条路由分支与上传归组、面板三级结构对拍。
+- 新增回归测试 `tests/test_kb_doc_binding.py`（27 项）：绑定标识解析与三路拆分、文档级过滤的候选池放大与截断、`list_documents` 字段映射与容错、`/rag/kb_documents` 路由、面板结构（开关与组列表、三级勾选、`data-action` 全部在 `app.js` 的 `ACTIONS` 注册）。
+
+### 修复
+
+- **面板「文本导入」弹窗点内部也会被关掉**：遮罩 `#textScrim` 挂的是无守卫的 `data-action="text-close"`，而点击委托用 `closest("[data-action]")`（`pages/panel/js/app.js:152`），于是点弹窗里的 textarea 或标题都会冒泡上去被判成「点了空白处」。改成 `data-action="text-scrim"` + `if (e.target === el)` 守卫（与主弹窗 `scrim-close` 同款写法），并加回归测试 `test_scrim_actions_are_guarded_by_target`：所有带 `data-action` 的遮罩都必须有 target 守卫，防止同类问题再犯。
+- **模型漏填开场白/对话示例时角色卡丢字段**：实测在一个 1816 字设定 + 38 条开场对话的真实人格上，摘要模型会把 `first_message` 留空。现用 AstrBot 的 `begin_dialogs` 兜底——`first_message` 取第 2 条（AstrBot 约定奇数位是角色台词，只有 1 条时退回第 1 条），`examples_of_dialogue` 用带「用户：」「角色：」前缀的交替行拼出；**模型已产出的字段不覆盖**。
+- **`first_message` 与 `examples_of_dialogue` 被填成同一段内容**：`build_prompt` 现在把开场对话标注成「用户：/角色：」并写明两个字段的区别（前者是完整对话样例，后者只是角色开口的第一句话），system prompt 里也点明「不要填成同一段内容」。
+- 面板细节：弹窗新增 `.modal--hug`（贴合内容高度），「由人格导入」这类内容不多的弹窗不再在底部留一大片空白。
+- **面板保存 `rag.astrbot_kb_enabled` 报「不支持的配置项」**：该键漏在 `web_routes._ALLOWED_CONFIG_KEYS` 白名单外，插件面板保存一律 HTTP 400、`config/all` 也不下发它，于是上面那句「面板保存即时生效，无需重载插件」实际走不到（`main.py` 里同步 `kb_src.enabled/top_k` 的分支永远不被触发），唯一入口只剩 AstrBot 原生插件配置页——而那条路是**保存 + 热重载**。现补进白名单，并在「RAG 与动态记忆」节加上开关控件。
+- 新增回归测试 `test_panel_config_fields_allowed_and_have_widgets`：校验 `config.js` 的 `CFG_FIELDS` 每一项都在保存白名单内、且 `index.html` 里有对应控件。同类漏项此前也发生过（`enable_autonomous_reflection`），现由测试兜住。
+
 ## [5.3.1] - 2026-09-30 — 安全/稳定性修复 + JEV 模式 + 会话状态清理端点
 
 ### 新增
