@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.3.2-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.3.3-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -53,7 +53,6 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 - SQLite + FTS5 全文检索，关键词毫秒级命中
 - 四层 Prompt 装配（协议层 → 素材层 → 触发层 → 安全层），自动截断
 - 不同角色可绑定不同分类，避免设定串扰
-- 反拒绝协议：检测 LLM 拒绝行为后注入应急提示
 
 ### 文档知识库 (Doc RAG)
 
@@ -274,7 +273,6 @@ Web 依赖（fastapi、quart）通常由 AstrBot 自带，缺失时手动安装�
 | RAG | Embedding/Rerank 提供商、本地模型、分块参数、检索数量、记忆开关 |
 | 性能 | Prompt 截断上限、最低回复字数 |
 | 状态栏 | 开关、字段定义、格式模板、剧情走向选项 |
-| 反拒绝 | 开关、匹配模式 |
 | 调试 | 调试日志开关、全量备份导出/恢复 |
 | 权限 | 管理员 ID 白名单（仅群聊写指令需要） |
 
@@ -324,7 +322,6 @@ astrbot_plugin_quillplus/
 ├── worldbook.py             # 世界书 JSON 管理
 ├── kb.py                    # 写作素材库 SQLite（文件名保留历史兼容；内部类名 WritingResourceManager）
 ├── prompt_builder.py        # 四层 Prompt 装配
-├── encryption.py            # Base64 编解码
 ├── state.py                 # 用户状态管理（session_vars 持久化）
 ├── activation.py            # 激活检测
 ├── commands.py              # 指令业务逻辑
@@ -351,7 +348,7 @@ on_llm_request (priority=100)  →  检测激活 + 注入 System Prompt + 改写
         ↓
 on_using_llm_tool (priority=200)  →  Markdown 清理 + 状态栏解析/格式化/剥离
         ↓
-on_llm_response (priority=10)  →  Base64 解密 + 状态栏兜底/剥离 + 拒绝检测
+on_llm_response (priority=10)  →  状态栏兜底/剥离
         ↓
 on_llm_tool_respond (priority=10)  →  停止 agent loop + 记忆存储
 ```
@@ -363,6 +360,7 @@ on_llm_tool_respond (priority=10)  →  停止 agent loop + 记忆存储
 QuillPlus 遵循持续迭代的开发路线，当前（v5.3）已完成以下里程碑：
 
 - ✅ **v5.3.2** — 双向兼容 AstrBot 原生配置：AstrBot「人格」只读导入为角色卡（用你配置的摘要模型转换，同名自动加后缀，人格本体不改不删）；Doc RAG 兼容 AstrBot 内置知识库（`kb:库名` 绑定，文档级 `kb:库名/文档名`）；插件文档新增子知识库分组与面板/角色卡三级勾选；分组下拉改为面板自绘控件；顺带修复文本导入弹窗遮罩无守卫导致的误关窗
+- ✅ **v5.3.3** — 面板按 macOS 27 重建；移除「反拒绝/应急反拒绝协议」「拒绝语扫描闭环」与 `[B:…]` 输出编码层，Layer 0 改为只约束写作格式的「叙事完整性要求」（并写明模型自身的安全策略与判断始终有效）
 - ✅ **v5.3.0** — 结构重构：main.py 六钩子薄化为注册桩 + `interfaces/` 适配层，业务下沉 `quill/` 服务分层（与 AstrBot 解耦、可独立测试）；配套真机端到端验证链路（本地运行）；统一上传通道与路径安全加固；热路径历史清洗 O(历史长度)→O(增量)；修复真机实测与自查的 10 项正确性缺陷（详见 CHANGELOG）
 - ✅ **v5.0** — 重构首发版：平行宇宙双轴隔离、JSON 原子化状态机、全链路异步化、Character Card V2 全量支持
 - ✅ **v5.1** — 全自动自迭代记忆：闲时反思守护进程、核心记忆更新、混合检索 (FTS5+Vector+RRF)、LRU 会话缓存

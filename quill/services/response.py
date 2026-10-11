@@ -20,7 +20,7 @@ on_using_llm_tool，经 interfaces/astrbot_hooks.py 委托调用）：
 搬移纪律：三段在原 main.py 中即为零 self 依赖的模块级纯函数/自由段，
 逐字照搬；logger 经 logbridge 桥接（M2.1 以来 quill/ 侧统一做法）。
 H2 内与控制流交织、不宜下沉的段落（JSON 解析-回写、状态栏链调用、
-注入报告、拒绝扫描）不住本模块——决策记录见
+注入报告）不住本模块——决策记录见
 interfaces/astrbot_hooks.py 的 handle_using_llm_tool docstring。
 """
 

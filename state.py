@@ -30,8 +30,6 @@ class UserState:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     round_count: int = 0
-    refusal_detected: bool = False
-    last_refusal_time: str = ""
     quill_rounds: int = 0
     stream_mode: str = "auto"
     # 状态栏的会话级覆盖：auto=跟随面板全局开关，on/off=强制。
@@ -89,7 +87,15 @@ class StateManager:
                 raw = json.load(f)
             for key, val in raw.items():
                 try:
-                    self._states[key] = UserState(**val)
+                    # 只取当前 dataclass 声明过的字段：旧版本写进文件的已废弃键
+                    # （如 refusal_detected / last_refusal_time）必须被忽略。
+                    # 否则 UserState(**val) 抛 TypeError，整条状态被当作「损坏
+                    # 条目」丢弃——会话隔离映射 / session_vars / last_learned_id
+                    # 一起丢，升级一次等于清空所有用户状态。
+                    known = UserState.__dataclass_fields__
+                    self._states[key] = UserState(
+                        **{k: v for k, v in val.items() if k in known}
+                    )
                 except Exception as e:
                     # S3-15: 补日志，便于发现损坏的状态条目
                     logger.warning("[Quill State] 跳过损坏的状态条目 %s: %s", key, e)
@@ -334,27 +340,6 @@ class StateManager:
     # ── Public state API ───────────────────────────────────────────
 
 
-    async def mark_refusal(self, user_id: str) -> None:
-        async with self._lock:
-            if user_id not in self._states:
-                self._states[user_id] = UserState(user_id=user_id)
-            st = self._states[user_id]
-            st.refusal_detected = True
-            st.last_refusal_time = datetime.now(timezone.utc).isoformat()
-
-        await self._persist()
-
-    async def clear_refusal(self, user_id: str) -> None:
-        # F13 降级：clear 是幂等操作，丢失可由下次 mark_refusal 覆盖；on_llm_response 每轮调，写放大严重
-        async with self._lock:
-            if user_id in self._states:
-                self._states[user_id].refusal_detected = False
-            self._mark_dirty()
-
-    async def should_inject_emergency(self, user_id: str) -> bool:
-        async with self._lock:
-            return self._states.get(user_id, UserState(user_id=user_id)).refusal_detected
-
     async def increment_quill_rounds(self, user_id: str) -> int:
         async with self._lock:
             st = self._states.get(user_id)
@@ -578,11 +563,6 @@ if __name__ == "__main__":
         s = await mgr.get_state("u1")
         assert s.round_count == 1 and s.last_active != "", "update_activity failed"
 
-        await mgr.mark_refusal("u1")
-        assert (await mgr.should_inject_emergency("u1")) is True, "refusal not detected"
-        await mgr.clear_refusal("u1")
-        assert (await mgr.should_inject_emergency("u1")) is False, "refusal not cleared"
-
         # 2. Concurrent access — 100 coroutines
         await asyncio.gather(*[mgr.update_activity(f"user_{i}") for i in range(100)])
         total = sum(1 for _ in mgr._states)
@@ -593,20 +573,14 @@ if __name__ == "__main__":
             await mgr.update_activity(f"evict_{i}")
         assert len(mgr._states) == 501, f"expected 501 users, got {len(mgr._states)}"
 
-        # 4. Refusal lifecycle
-        await mgr.mark_refusal("lifecycle_user")
-        assert (await mgr.should_inject_emergency("lifecycle_user")) is True
-        await mgr.clear_refusal("lifecycle_user")
-        assert (await mgr.should_inject_emergency("lifecycle_user")) is False
-
-        # 5. All entries retained — no eviction even beyond old cap
+        # 4. All entries retained — no eviction even beyond old cap
         small_dir = tempfile.mkdtemp(prefix="quill_small_")
         small = StateManager(data_dir=small_dir)
         await small.update_activity("old_a")
         await asyncio.sleep(0.01)
         await small.update_activity("old_b")
         await asyncio.sleep(0.01)
-        await small.mark_refusal("fresh")
+        await small.get_state("fresh")
         assert "fresh" in small._states, "fresh entry was wrongly removed"
         assert "old_a" in small._states, "old_a should be retained"
         assert "old_b" in small._states, "old_b should be retained"

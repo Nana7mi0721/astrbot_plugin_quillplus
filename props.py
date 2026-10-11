@@ -100,18 +100,6 @@ class QuillConfigProperties:
             self._prompt_builder_config = config
         return self._prompt_builder
 
-    # ── refusal ───────────────────────────────────────────────────
-
-    @property
-    def refusal_enabled(self) -> bool:
-        """拒绝语扫描总开关（config.refusal.enabled）。"""
-        return self._plugin.config.refusal_enabled
-
-    @property
-    def refusal_patterns(self) -> list:
-        """拒绝语模式列表（config.refusal.patterns）。"""
-        return self._plugin.config.refusal_patterns
-
     # ── status_bar ────────────────────────────────────────────────
 
     @property

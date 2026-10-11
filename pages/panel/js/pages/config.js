@@ -61,8 +61,6 @@ const CFG_FIELDS = [
   ["status_bar", "jev_enabled", "#c-sb-jev", "bool"],
   ["status_bar", "jev_provider_id", "#c-sb-jev-provider", "str"],
   ["status_bar", "jev_confidence_floor", "#c-sb-jev-floor", "float"],
-  ["refusal", "enabled", "#c-ref-enabled", "bool"],
-  ["refusal", "patterns", "#c-ref-pat", "str"],
   ["permissions", "admin_users", "#c-perm-admins", "str"],
   ["debug", "enabled", "#c-debug-enabled", "bool"],
   ["debug", "show_inject_report", "#c-debug-report", "bool"],
@@ -90,8 +88,6 @@ const CFG_DEFAULTS = {
   "status_bar.show_delta": true,
   "status_bar.jev_confidence_floor": 0.6,
   "debug.show_inject_report": false,
-  "refusal.enabled": true,
-  "refusal.patterns": "我不能\n我无法\n这违反\n我不应该\n这不合适\n我拒绝",
 };
 
 function cfgGet(group, key, fallback) {

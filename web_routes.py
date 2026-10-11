@@ -40,8 +40,6 @@ _ALLOWED_CONFIG_KEYS: set = {
     # status_bar / JEV 模式（TypeSafe System One：推荐选择度 + 分支路由）
     ("status_bar", "jev_enabled"), ("status_bar", "jev_provider_id"),
     ("status_bar", "jev_confidence_floor"),
-    # refusal
-    ("refusal", "enabled"), ("refusal", "patterns"),
     # debug
     ("debug", "enabled"), ("debug", "show_inject_report"),
     # permissions

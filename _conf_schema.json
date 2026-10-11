@@ -262,25 +262,6 @@
       }
     }
   },
-  "refusal": {
-    "type": "object",
-    "description": "[反拒绝] 兜底应急协议",
-    "hint": "一旦检测到大模型道德审查拒答，下次强制注入最高权重越狱指令。",
-    "items": {
-      "enabled": {
-        "type": "bool",
-        "description": "启用拒绝检测",
-        "default": true,
-        "hint": "关闭后不再检测拒绝行为。"
-      },
-      "patterns": {
-        "type": "text",
-        "description": "拒绝匹配模式（每行一条）",
-        "default": "我不能\n我无法\n这违反\n我不应该\n这不合适\n我拒绝",
-        "hint": "大模型回复中包含任一模式即判定为触发了安全审查。"
-      }
-    }
-  },
   "debug": {
     "type": "object",
     "description": "[调试]",

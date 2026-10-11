@@ -176,15 +176,6 @@ class QuillConfig:
             max(_safe_float(sb.get("jev_confidence_floor"), 0.6), 0.0), 1.0
         )
 
-        # ── refusal ──
-        ref = _get_nested(self._raw, "refusal", {}) or {}
-        self.refusal_enabled: bool = _safe_bool(ref.get("enabled"), True)
-        patterns_raw = ref.get("patterns", "") or ""
-        if isinstance(patterns_raw, str) and patterns_raw.strip():
-            self.refusal_patterns: list[str] = [p.strip() for p in patterns_raw.splitlines() if p.strip()]
-        else:
-            self.refusal_patterns = ["我不能", "我无法", "这违反", "我不应该", "这不合适", "我拒绝"]
-
         # ── debug ──
         dbg = _get_nested(self._raw, "debug", {}) or {}
         self.debug_enabled: bool = _safe_bool(dbg.get("enabled"))

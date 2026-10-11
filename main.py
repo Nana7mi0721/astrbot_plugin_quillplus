@@ -304,7 +304,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             self.paths["personas_dir"], avatar_dir=self.paths["avatars_dir"]
         )
 
-        # --- Prompt builder / refusal / status bar / debug ---
+        # --- Prompt builder / status bar / debug ---
         # v5.2.5 在此逐属性复制 config（prompt_builder 也在此构造）；
         # M2.3 起统一走 self.props（prompt_builder 为按 config 代缓存的
         # 访问器），运行期读法见各消费点。该段实例属性赋值已删除。
@@ -1490,7 +1490,6 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
           （handled 后 set ``_quill_status_handled``，后续只清残留），关闭时
           整套 ``_strip_status_artifacts``；注入报告追加到最后一条 plain；
         * messages 为 JSON 字符串时解析-修改-回写（解析失败原样放行）；
-        * 拒绝模式补充扫描（S3-2，只扫首条 plain）；
         * F4 同回合循环拦截（M3.0b）：JSON 解析后、其余处理前——已发正文
           精确/子串重复、整段状态栏痕迹且 ``_quill_status_handled`` 已置位、
           发送预算（``_SMT_MAX_SENDS_PER_TURN = 2``）任一命中 → messages
@@ -1781,8 +1780,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         ``_sanitize_extra`` 脱敏摘要——只记 persona_id/长度字段/
         skip_constants，不泄 user_input/context_text 原文）+ 放行。
 
-        搬移注记（降级日志保真度）：委托后降级日志中的 emergency/
-        extra_summary 字段恒为预初始化值（原实现记录失败时刻的中间值）；
+        搬移注记（降级日志保真度）：委托后降级日志中的 extra_summary
+        字段恒为预初始化值（原实现记录失败时刻的中间值）；
         异常消息与堆栈不受影响，行为语义（不注入、闸门不置位、放行）
         逐字保真——快照 test_h3_top_level_exception_degrades 钉住。
 
@@ -1793,7 +1792,6 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         """
         try:
             # P1-3 修复：提前初始化，避免 except 块引用未定义变量掩盖原始异常
-            emergency = False
             extra_info = {}
             await _quill_hooks.handle_llm_request(self, event, req)
         except Exception as e:
@@ -1805,7 +1803,6 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     "user_input_len": len(str(info.get("user_input", ""))),
                     "context_text_len": len(str(info.get("context_text", ""))),
                     "skip_constants": info.get("skip_constants"),
-                    "emergency": emergency,
                 }
 
             logger.error(
@@ -1816,7 +1813,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
     @filter.on_llm_response(priority=10)
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
-        """LLM 响应拦截：前置清洗、状态栏提取渲染、注入报告、落日志与拒绝扫描。
+        """LLM 响应拦截：前置清洗、状态栏提取渲染、注入报告与落日志。
 
         注册桩（M2.2 第四轮）：装饰器/签名/priority 不变（框架以
         ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
@@ -1824,7 +1821,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         段序与下沉决策见彼处 docstring；验证走 E2E
         .build/harness/quilltest/run.py --tier2）。行为契约：
 
-        * 前置清洗：``[B:...]`` Base64 解密安全网、用户中断标记擦除；
+        * 前置清洗：用户中断标记擦除；
         * **状态栏段不受 ``_quill_activated`` gate 限制**（BASELINE §2.1
           不对称点，快照钉住）——开启时 ``_quill_status_handled`` 已置位
           则只剥残留（不二次渲染），否则六级链提取渲染 + 无栏兜底；
@@ -1844,7 +1841,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
           去重，H2 工具路径与本路径共用）；
         * gate 后：未激活 return；助手回复落 chat_logs（
           ``rag_enable_chat_logging`` 开关 + ``_quill_assistant_logged``
-          防双写标记原样保留）；拒绝模式扫描命中 ``mark_refusal``。
+          防双写标记原样保留）。
 
         顶层降级留在桩内（与原 H4 同层）：任何异常吞掉 + error 日志放行，
         resp 保持已改到一半的状态（降级语义 = 放行当前响应）。

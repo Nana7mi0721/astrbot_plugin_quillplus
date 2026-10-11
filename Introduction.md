@@ -16,7 +16,7 @@
 | **激活门控** | `activation.py` + `state.py` | 判断是否进入 RP 模式 |
 | **Prompt 装配** | `prompt_builder.py` + `quill/services/prompt.py` | 4 层 Prompt 结构化组装 |
 | **内容注入源** | `kb.py`(WR) + `worldbook.py`(WB) + `persona_manager.py` + `quill_rag/*` | 提供素材/设定/记忆/文档 |
-| **输出后处理** | `main.py` 转发的 hook + `quill/services/statusbar/*` | 状态栏解析、拒绝检测、Markdown 清理 |
+| **输出后处理** | `main.py` 转发的 hook + `quill/services/statusbar/*` | 状态栏解析、Markdown 清理 |
 | **状态持久化** | `state.py` + `persona_manager.py` | 双轴隔离 + 原子写入 |
 | **Web 面板** | `web_routes.py`(HTTP) + `_route_core.py`(纯逻辑) + `pages/panel/` | 配置与内容管理界面 |
 
@@ -56,13 +56,11 @@
 
 **2.5 工具描述重写**：仅当有 persona_id 时重写 `send_message_to_user` 工具描述为强约束版本。
 
-**2.6 emergency 检测**：若上一轮检测到 refusal，本轮注入 `emergency_protocol`。
+**2.6 构建 extra_info**：包含 11 个字段（`user_input`、`context_text`、`persona_data` 等）。
 
-**2.7 构建 extra_info**：包含 11 个字段（`user_input`、`context_text`、`persona_data` 等）。
+**2.7 调用 PromptBuilder**：返回 `(stable_prompt, dynamic_prompt)`。
 
-**2.8 调用 PromptBuilder**：返回 `(stable_prompt, dynamic_prompt)`。
-
-**2.9 RAG 检索注入**：追加文档 RAG + 动态记忆到 `dynamic_prompt`。文档源的绑定标识（`source`）
+**2.8 RAG 检索注入**：追加文档 RAG + 动态记忆到 `dynamic_prompt`。文档源的绑定标识（`source`）
 有四种形态，`allowed_sources` 为精确字符串匹配：
 
 | 绑定写法 | 含义 |
@@ -100,13 +98,11 @@
 （例如 `降级链命中: LOVE_DATA inline×3`）。单级抛异常只降级该级、
 继续往下走，不会让整条链失效。
 
-**4.3 拒绝检测**：扫描 `tool_args.messages` 中的 refusal patterns。
-
-**4.4 状态栏变量持久化**：`update_session_vars` 更新到 `quill_state.json`。
+**4.3 状态栏变量持久化**：`update_session_vars` 更新到 `quill_state.json`。
 
 ### 阶段 5：响应后处理 — `on_llm_response`
 
-Base64 解密 + 状态栏二次处理 + 兜底注入 + refusal 扫描。
+状态栏二次处理 + 兜底注入。
 
 ### 阶段 6：Agent Loop 终止 + 反思触发 — `on_llm_tool_respond`
 
@@ -118,7 +114,7 @@ Base64 解密 + 状态栏二次处理 + 兜底注入 + refusal 扫描。
 
 | 层 | 优先级 | 内容 | 稳定/动态 |
 |----|--------|------|-----------|
-| Layer 0 | 0（永不截断）| anti_refusal 协议 + send_message_guide + status_bar_guide + session_state + persona_card + emergency_protocol | stable |
+| Layer 0 | 0（永不截断）| narrative_integrity 协议 + send_message_guide + status_bar_guide + session_state + persona_card | stable |
 | Layer 1 | 3 | WR 常驻素材 + WB 常驻条目 + 随机池采样 | stable（常驻）+ dynamic（随机池）|
 | Layer 2 | 10（先丢弃）| WR 关键词匹配 + WB 关键词匹配 | dynamic |
 | Layer 3 | 1 | safety_wrapper（强调工具使用） | dynamic |
@@ -211,13 +207,6 @@ Base64 解密 + 状态栏二次处理 + 兜底注入 + refusal 扫描。
 > JEV 三个键由面板「配置 → 状态栏」卡片写入（`_ALLOWED_CONFIG_KEYS` 放行），AstrBot 原生配置页
 > 不显示它们。JEV 只做结构化判定（`noul` / `choice` / `score`），不生成文本；失败一律 fail-open。
 
-### `[refusal]` — 反拒绝
-
-| 配置项 | 默认 | 作用 |
-|--------|------|------|
-| `enabled` | `true` | 拒绝检测开关 |
-| `patterns` | 见配置 | 命中任一模式 → 下轮注入 emergency_protocol |
-
 ### `[debug]` / `[permissions]`
 
 | 配置项 | 默认 | 作用 |
@@ -253,7 +242,7 @@ target_id（会话维度：群+用户）
 
 | 策略 | 字段 | 原因 |
 |------|------|------|
-| 即时落盘 | `persona_id`、`first_message_injected`、`refusal_detected` 等 | 丢失会导致行为异常 |
+| 即时落盘 | `persona_id`、`first_message_injected` 等 | 丢失会导致行为异常 |
 | 批量 autoflush（5s） | `round_count`、`quill_rounds`、`session_vars` 等 | 高频字段，写放大严重 |
 
 **原子写入四连**：`tmp` → `flush` → `fsync` → `os.replace`，拔电源级防损坏。

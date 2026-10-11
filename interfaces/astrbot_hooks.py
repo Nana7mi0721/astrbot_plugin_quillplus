@@ -44,7 +44,6 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.agent.tool import FunctionTool
 
 from ..commands import _check_group_permission
-from ..encryption import decrypt_output
 from ..quill.services import history_scrub as _history_scrub_mod
 from ..quill.services import memory as _memory_mod
 from ..quill.services import prompt as _prompt_mod
@@ -271,19 +270,15 @@ async def handle_using_llm_tool(
        plain（``_append_inject_report``）；每个 plain 段追加 F5 剧情分支
        箭头全角归一（M3.0b，``_response_mod.normalize_plot_markers``）；
     6. JSON 回写（was_string 时序列化回去）；
-    7. 拒绝模式补充扫描（S3-2：completion_text 为空时拒绝内容藏于
-       tool_args.messages，只扫首条 plain，命中 mark_refusal）；
-    8. F4 记录段（M3.0b 新增）：放行路径登记已发正文（重算处理后的
+    7. F4 记录段（M3.0b 新增）：放行路径登记已发正文（重算处理后的
        plain concat 经 ``_normalized_reply_body`` 归一，与 F1 回声比对
        共用同一函数）与发送次数（恒 +1，含媒体调用）。
 
     下沉决策（本轮评估记录）：telegram 剥离（``strip_markdown`` 正则组与
     逐段套用循环）在原 main.py 即为零 self 依赖的模块级纯函数/自由段，
-    已下沉 quill/services/response.py；**JSON 解析-回写与拒绝扫描留在本
-    函数**——前者与控制流交织（解析失败的早退 return 卡在解析与回写
-    之间），后者在守卫内重算 target_id（提取成服务函数需要改变求值
-    时序或传参形态），两段强搬都会把「逐字搬移」变成「重写」，违背本轮
-    "不增加行为风险"的准绳。
+    已下沉 quill/services/response.py；**JSON 解析-回写留在本函数**——
+    它与控制流交织（解析失败的早退 return 卡在解析与回写之间），强搬会
+    把「逐字搬移」变成「重写」，违背本轮"不增加行为风险"的准绳。
     """
     if tool.name != "send_message_to_user":
         return
@@ -435,22 +430,6 @@ async def handle_using_llm_tool(
     if was_string:
         tool_args["messages"] = json.dumps(messages, ensure_ascii=False)
 
-    # S3-2: Agent 模式下 LLM 输出可能经由 tool_args.messages 传递，
-    # completion_text 为空时拒绝内容藏于此，需在此补充扫描。
-    if plugin.props.refusal_enabled and isinstance(messages, list):
-        target_id = plugin._get_target_id(event)
-        for msg in messages:
-            if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:
-                scan_text = msg.get("text") or ""
-                if not scan_text:
-                    continue
-                for pattern in plugin.props.refusal_patterns:
-                    if pattern in scan_text:
-                        await plugin.state_manager.mark_refusal(target_id)
-                        logger.info(f"[Quill] (tool_args) 检测到拒绝模式 '{pattern}' (target={target_id})")
-                        break
-                break  # 只扫首条 plain 文本
-
     # ── F4 记录段（M3.0b）：放行路径的已发正文/次数登记 ────────────────
     # 重算**处理后**的 plain concat（本函数已在各段改写 msg["text"]），
     # 经 _normalized_reply_body 归一后非空才登记；发送次数恒 +1（含媒体
@@ -483,7 +462,7 @@ async def handle_using_llm_tool(
 async def handle_llm_response(
     plugin, event: AstrMessageEvent, resp: LLMResponse
 ) -> None:
-    """LLM 响应拦截：前置清洗、状态栏提取渲染、注入报告、落日志与拒绝扫描（H4）。
+    """LLM 响应拦截：前置清洗、状态栏提取渲染、注入报告与落日志（H4）。
 
     （业务逻辑自 main.py 逐字搬移，M2.2 第四轮；``self`` → ``plugin``。
     验证走 E2E：.build/harness/quilltest/run.py --tier2，行为契约与顶层降级
@@ -494,8 +473,8 @@ async def handle_llm_response(
     段序（搬移前后一致，不得重排——顺序即行为；M3.0 在段 2 与段 3 之间
     新增 F1 回声置空段，为**有意行为变更**，BASELINE §8.2 F1 / PLAN §M3.0）：
 
-    1. 前置清洗：``[B:...]`` Base64 解密安全网（agent loop 续写尾部文本
-       的混淆层的逆变换，``decrypt_output``）；用户中断系统标记擦除；
+    1. 前置清洗：用户中断系统标记擦除（``resp.completion_text`` 里的
+       框架中断标记）；
     2. **状态栏段不受 ``_quill_activated`` gate 限制**（BASELINE §2.1
        不对称点：本段在 gate 检查之前执行，未激活也始终处理——刻意
        怪癖，快照钉住，勿"顺手"收紧）：
@@ -550,27 +529,17 @@ async def handle_llm_response(
     5. 助手回复落 chat_logs（直接文本流路径——H5 只覆盖工具调用路径；
        ``rag_enable_chat_logging`` 开关 + retriever/memory_store 存在性
        前置判断 + ``_quill_assistant_logged`` 防双写标记**原样保留**；
-       ``plugin._spawn`` 后台任务不阻塞响应）；
-    6. 拒绝模式扫描：``refusal_enabled`` 开且正文命中任一模式 →
-       ``mark_refusal`` 一次即 break。
+       ``plugin._spawn`` 后台任务不阻塞响应）。
 
     下沉决策（本轮评估记录）：**无新增下沉**。状态栏六级链/剥离器/兜底
     栏/会话开关解析均已在 M2.1 住 quill/services/statusbar/（经
     ``plugin._*`` 动态分发，与搬移前 ``self._*`` 同一路径）；其余各段——
-    前置清洗、分支派发、chat_logs 落库判断、拒绝扫描——是 resp /
+    前置清洗、分支派发、chat_logs 落库判断——是 resp /
     event extra / config / retriever 上的框架对象胶水与控制流：拆成
     服务函数需要把 event extra 读写、防双写标记置位与短路求值时序一并
     拆出调用点（或改传参形态），强搬会把「逐字搬移」变成「重写」，违背
-    本轮"不增加行为风险"的准绳（同 H2 轮对 JSON 回写/拒绝扫描的裁定）。
+    本轮"不增加行为风险"的准绳（同 H2 轮对 JSON 回写的裁定）。
     """
-    # [B:...] Base64 解码——安全网
-    text = resp.completion_text or ""
-    if text:
-        decrypted = decrypt_output(text)
-        if decrypted != text:
-            resp.completion_text = decrypted
-            logger.info(f"[Quill] 解密 [B:...]: {len(text)} -> {len(decrypted)}")
-
     content = resp.completion_text or ""
     sys_msg = "[SYSTEM: User actively interrupted the response generation. Partial output before interruption is preserved.]"
     if sys_msg in content:
@@ -633,7 +602,7 @@ async def handle_llm_response(
     #
     # 宁漏勿误（只拦高置信回声）：已发列表缺失/非 list/无记录/正文为空/
     # 归一后不等 → 一律放行原路径。位置在状态栏段之后、注入报告段之前：
-    # 置空后报告段对空文本天然跳过，gate 后的落库/拒绝扫描同样短路。
+    # 置空后报告段对空文本天然跳过，gate 后的落库同样短路。
     # 本会话工具未发过消息（模型直接纯文本输出，extra 无记录）时判定
     # 天然不触发，行为与本段加入前完全一致。
     try:
@@ -668,7 +637,7 @@ async def handle_llm_response(
     # 形态（元叙述、变体复述）——本轮已用工具发过消息（count≥1）后，
     # completion 直出文本按契约一律不送达。F1 保留（F4 记录段异常等极端
     # 情况下仍有一道）。置空后：注入报告段对空文本天然跳过，gate 后的
-    # 落库/拒绝扫描同样短路——垃圾不进记忆库。
+    # 落库同样短路——垃圾不进记忆库。
     _smt_count = event.get_extra(_SMT_SEND_COUNT_KEY)
     if (isinstance(_smt_count, int) and _smt_count >= 1
             and (resp.completion_text or "").strip()):
@@ -705,19 +674,6 @@ async def handle_llm_response(
             "assistant", (resp.completion_text or "").strip()
         ))
         event.set_extra("_quill_assistant_logged", True)
-
-    if not plugin.props.refusal_enabled:
-        return
-
-    scan_text = resp.completion_text or ""
-    if not scan_text:
-        return
-
-    for pattern in plugin.props.refusal_patterns:
-        if pattern in scan_text:
-            await plugin.state_manager.mark_refusal(target_id)
-            logger.info(f"[Quill] 检测到拒绝模式 '{pattern}' (target={target_id})")
-            break
 
 
 async def handle_llm_tool_respond(
@@ -936,8 +892,8 @@ async def handle_llm_request(
     （业务逻辑自 main.py 逐字搬移，M2.2 第六轮；``self`` → ``plugin``。
     验证走 E2E：.build/harness/quilltest/run.py --tier2，行为契约与顶层降级
     语义见 main.py 注册桩 docstring 与 BASELINE §2 H3 行。顶层
-    try/except **不在本函数内**——降级层位在注册桩：``emergency``/
-    ``extra_info`` 预初始化与 ``_sanitize_extra`` 脱敏摘要是降级语义的
+    try/except **不在本函数内**——降级层位在注册桩：``extra_info``
+    预初始化与 ``_sanitize_extra`` 脱敏摘要是降级语义的
     组成部分，随桩留在 main.py，任何异常由桩吞掉 + error 日志放行。）
 
     核心职责（原 H3 docstring 逐字保留）：
@@ -974,7 +930,7 @@ async def handle_llm_request(
     11. **未激活 → reset_quill_rounds + return**（gate 本体，编排控制流）；
     12. ``increment_quill_rounds``；quill_rounds>1 → ``skip_constants``；
     13. ``_rewrite_smt_tool_description``（仅激活路径；无角色卡跳过）；
-    14. emergency 检查 + extra_info（含 session_vars）；
+    14. extra_info 组装（含 session_vars）；
     15. ``_prompt_builder_for_request(_sb_effective)``（浅拷贝对齐状态栏开关）；
     16. ``build_system_prompt``——世界书+WR 注入点（``worldbook_enabled``
         死开关的唯一消费点：关→传 None 整段跳过）；
@@ -986,7 +942,7 @@ async def handle_llm_request(
         提醒；关：禁止状态栏文案；幂等）；
     21. **``event.set_extra("_quill_activated", True)``**（闸门唯一点位，
         全部注入成功之后——快照 master 用例钉住其相对时序）；
-    22. ``update_activity`` / ``clear_refusal``。
+    22. ``update_activity``。
 
     下沉决策（本轮评估记录，宁可少下沉不可重排顺序）：
 
@@ -1010,9 +966,9 @@ async def handle_llm_request(
     * **步 9-12 gate 块不下沉**：步 11 是早退 return（编排控制流本体），
       下沉需要哨兵返回值改变控制流形状；顺序即行为的核心段。
     * **步 6 核心记忆块不下沉**：权限校验经根包 commands 模块函数
-      （``_check_group_permission``，本模块顶部直接 import——同
-      ``..encryption`` 先例；quill/services 依赖根包会反转分层，故整块
-      留此）；步 1/4/9/13/17 的既有方法仍住 main.py 类上（经 plugin
+      （``_check_group_permission``，本模块顶部直接 import；quill/services
+      依赖根包会反转分层，故整块留此）；步 1/4/9/13/17 的既有方法仍住
+      main.py 类上（经 plugin
       动态分发，与搬移前 self.* 同一路径）。
     * **步 20 tail 块不下沉**：req.prompt 的幂等拼接 + 空 prompt 分支是
       req 对象胶水；契约文本已由 PromptBuilder 单一来源生成（步 20 无
@@ -1147,8 +1103,6 @@ async def handle_llm_request(
         except Exception:
             logger.debug("[Quill] 调试 WR 匹配失败", exc_info=True)
 
-    emergency = await plugin.state_manager.should_inject_emergency(target_id)
-
     extra_info = {
         "user_input": user_input,
         "context_text": context_text,
@@ -1185,7 +1139,7 @@ async def handle_llm_request(
         plugin.config, "worldbook_enabled", True
     ) else None
     stable_prompt, dynamic_prompt = await _pb.build_system_prompt(
-        plugin.wr_manager, _wb_for_request, extra_info, emergency=emergency,
+        plugin.wr_manager, _wb_for_request, extra_info,
         stats=inject_stats,
     )
 
@@ -1240,7 +1194,6 @@ async def handle_llm_request(
     event.set_extra("_quill_activated", True)
 
     await plugin.state_manager.update_activity(target_id)
-    await plugin.state_manager.clear_refusal(target_id)
 
     trigger = "激活词" if activated else ("括号" if has_bracket else "WR关键词")
     _es = event.get_extra("enable_streaming")
@@ -1252,5 +1205,5 @@ async def handle_llm_request(
         streaming_status = "默认"
     logger.info(
         f"[Quill] 触发:{trigger} | 流式:{streaming_status} | "
-        f"prompt_len={len(req.system_prompt)} | emergency={emergency}"
+        f"prompt_len={len(req.system_prompt)}"
     )
