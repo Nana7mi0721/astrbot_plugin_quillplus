@@ -19,10 +19,8 @@
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  /* 与 .page-head-bar-inner 同一套盒子：1180px 居中 + 左右 24px，
+  /* 与 .page-head-bar-inner 同一套盒子：铺满宽度 + 左右 24px，
      五个标签和搜索框因此与下方表单卡片严格共享同一条左基线。 */
-  max-width: 1180px;
-  margin: 0 auto;
   padding: var(--sp-2) var(--sp-6);
   /* 导航条与搜索框必须始终同排：搜索框掉到第二行会把吸顶高度改掉，
      滚动锚点跟着漂。 */
@@ -79,8 +77,8 @@
 /* 页面第一个节的顶距交给页头，避免双重空隙 */
 .page .cfg-section:first-of-type { margin-top: 0; }
 .cfg-section-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: var(--sp-3); flex-wrap: wrap; }
-.cfg-section-head h2 { font-size: 20px; font-weight: 700; letter-spacing: -.015em; }
-.cfg-section-head .cfg-section-sub { font-size: 12.5px; color: var(--label-3); }
+.cfg-section-head h2 { font-size: 17px; font-weight: 700; letter-spacing: -.015em; }
+.cfg-section-head .cfg-section-sub { font-size: 12px; color: var(--label-3); }
 /* 节副标题里的警示词（如「实验性」）——与 .is-bad / .badge--red 同一红色 token */
 .cfg-section-head .cfg-section-sub .cfg-sub-danger { color: var(--red-text); }
 
@@ -101,9 +99,10 @@
   height: .5px; background: var(--separator); transform: scaleY(.5);
 }
 .cfg-row-text { flex: 1; min-width: 0; }
-.cfg-row-title { font-size: 14px; }
-.cfg-row-desc { margin-top: 2px; font-size: 12px; line-height: 1.6; color: var(--label-2); }
-.cfg-row-desc.warn { color: var(--orange-text); }
+.cfg-row-title { font-size: 13px; }
+.cfg-row-desc { margin-top: 2px; font-size: 12px; line-height: 16px; color: var(--label-2); }
+.cfg-row-desc.warn { display: flex; gap: 4px; align-items: flex-start; color: var(--orange-text); }
+.cfg-row-desc.warn .icon { margin-top: 1px; }
 .cfg-row-control { flex: none; display: flex; align-items: center; gap: var(--sp-2); }
 /* 长说明行不再把控件换行到左侧：控件始终贴尾边并与文字块垂直居中，
    与同卡片内其它开关行保持同一条右边缘（此前 .cfg-row--stack 让开关
@@ -146,7 +145,7 @@
   position: absolute; top: 0; left: 0; right: 0;
   height: .5px; background: var(--separator); transform: scaleY(.5);
 }
-.health-name { flex: 1; font-size: 13.5px; }
+.health-name { flex: 1; font-size: 13px; }
 .health-rate { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .health-detail { font-size: 12px; color: var(--label-3); font-variant-numeric: tabular-nums; min-width: 62px; text-align: right; }
 .is-good { color: var(--green-text); }

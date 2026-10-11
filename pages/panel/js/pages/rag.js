@@ -19,6 +19,15 @@ const PLUGIN_BIG = "__plugin_lib__";
 const KB_BIG = "__astrbot_kb__";
 /** 「不属于任何分组」的文档所在的虚拟组（不可改名/删除）。 */
 const UNGROUPED_KEY = "__ungrouped__";
+
+/* 图标：统一取 index.html 的 #icon-sprite，不用 emoji 当图标
+   （emoji 的渲染随字体/平台而变，也不是 macOS 的图标语言）。 */
+const ICON_INBOX = '<svg class="icon" aria-hidden="true"><use href="#i-inbox"/></svg>';
+const ICON_DOC = '<svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>';
+const ICON_BOOKS = '<svg class="icon" aria-hidden="true"><use href="#i-books"/></svg>';
+const ICON_LAYERS = '<svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>';
+const ICON_LINK = '<svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>';
+const ICON_WARN = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-warn"/></svg>';
 /** 组展开状态：模块级 Map，重渲染（上传/删除/切页）后保留用户的选择。 */
 const _ragExpanded = new Map();
 /** 大组展开状态（同样跨重渲染保留）。 */
@@ -155,7 +164,7 @@ function pluginBigHtml(docs, groups) {
       ${groups.map(g => `<option value="${esc(g)}">${esc(g)}</option>`).join("")}
     </select>`;
   return bigHtml({
-    key: PLUGIN_BIG, kind: "plugin", icon: "🗂️",
+    key: PLUGIN_BIG, kind: "plugin", icon: ICON_LAYERS,
     title: "插件文档库",
     badge: ' <span class="badge badge--accent">本插件</span>',
     desc: "上传到本插件的文档，共用插件自己的向量库与嵌入模型；分组只是归类，检索预算仍是全局的",
@@ -173,7 +182,7 @@ function docGroupHtml(name, docs) {
   const key = `grp:${name}`;
   const chunks = docs.reduce((s, d) => s + (d.chunk_count || 0), 0);
   return groupHtml({
-    key, kind: "grp", icon: "📁",
+    key, kind: "grp", icon: ICON_INBOX,
     title: name,
     badge: "",
     desc: "",
@@ -190,7 +199,7 @@ function docGroupHtml(name, docs) {
 function ungroupedHtml(docs) {
   const chunks = docs.reduce((s, d) => s + (d.chunk_count || 0), 0);
   return groupHtml({
-    key: UNGROUPED_KEY, kind: "ungrouped", icon: "📄",
+    key: UNGROUPED_KEY, kind: "ungrouped", icon: ICON_DOC,
     title: "未分组",
     badge: "",
     desc: "不属于任何分组的独立文档，仍然可以单独绑定到角色卡",
@@ -207,7 +216,7 @@ function kbBigHtml(kbs) {
   const chunks = kbs.reduce((s, k) => s + (k.chunk_count || 0), 0);
   const docs = kbs.reduce((s, k) => s + (k.doc_count || 0), 0);
   return bigHtml({
-    key: KB_BIG, kind: "kb", icon: "🔗",
+    key: KB_BIG, kind: "kb", icon: ICON_LINK,
     title: "AstrBot 兼容",
     badge: ' <span class="badge">只读</span>',
     desc: "AstrBot 面板「知识库」页里配置的库；每个库的嵌入模型可与插件不同，管理与上传在 AstrBot 面板里",
@@ -226,10 +235,10 @@ function kbGroupHtml(k) {
   const cached = _ragKbDocs.get(key);
   const expanded = isGroupExpanded(key, false);
   const metaHtml = k.init_error
-    ? `<span style="color:var(--orange-text)">⚠ ${esc(k.init_error)}</span>`
+    ? `<span style="color:var(--orange-text)">${ICON_WARN} ${esc(k.init_error)}</span>`
     : `${k.doc_count || 0} 个文档 · ${k.chunk_count || 0} 个分块`;
   return groupHtml({
-    key, kind: "kb", icon: esc(k.emoji || "📚"),
+    key, kind: "kb", icon: ICON_BOOKS,
     title: k.kb_name || key,
     badge: ' <span class="badge">内置库</span>',
     desc: k.description || "",

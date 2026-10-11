@@ -216,6 +216,15 @@ const RAG_BIG_CARET = `<button type="button" class="ext-big-caret" data-action="
   <svg class="icon icon--sm" aria-hidden="true"><use href="#i-chevron-right"/></svg>
 </button>`;
 
+/* 图标：统一取 index.html 的 #icon-sprite，不用 emoji 当图标
+   （emoji 的渲染随字体/平台而变，也不是 macOS 的图标语言）。 */
+const ICON_INBOX = '<svg class="icon" aria-hidden="true"><use href="#i-inbox"/></svg>';
+const ICON_DOC = '<svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>';
+const ICON_BOOKS = '<svg class="icon" aria-hidden="true"><use href="#i-books"/></svg>';
+const ICON_LAYERS = '<svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>';
+const ICON_LINK = '<svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>';
+const ICON_WARN = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-warn"/></svg>';
+
 /** 一篇插件文档的勾选行。 */
 function ragDocLabel(d, bound) {
   return `<label class="check"><input type="checkbox" class="cb-rag-bind" value="${esc(d.source)}" ${bound.includes(d.source) ? "checked" : ""}><span class="nowrap">${esc(d.source)}</span><span class="ext-doc-meta">${d.chunk_count || 0} 段</span></label>`;
@@ -227,8 +236,8 @@ function ragPluginGroupHtml(name, docs, bound) {
   const chunks = docs.reduce((s, d) => s + (d.chunk_count || 0), 0);
   const subs = docs.filter(d => bound.includes(d.source)).length;
   const head = name
-    ? `<label class="check"><input type="checkbox" class="cb-rag-grp" data-kind="grp" value="${esc(key)}" ${bound.includes(key) ? "checked" : ""}><span class="nowrap">📁 ${esc(name)}</span></label>`
-    : `<span class="check" style="cursor:default"><span class="nowrap">📄 未分组</span></span>`;
+    ? `<label class="check"><input type="checkbox" class="cb-rag-grp" data-kind="grp" value="${esc(key)}" ${bound.includes(key) ? "checked" : ""}><span class="nowrap">${ICON_INBOX} ${esc(name)}</span></label>`
+    : `<span class="check" style="cursor:default"><span class="nowrap">${ICON_DOC} 未分组</span></span>`;
   return `<div class="ext-group" data-key="${esc(key)}" data-kind="${name ? "grp" : "ungrouped"}">
     <div class="ext-group-head">
       ${RAG_GROUP_CARET}
@@ -265,7 +274,7 @@ function renderRagExtBlock(plugins, groups, kbs, bound, selectHtml, hint, emptyT
         return `<div class="ext-group" data-key="${esc(k.source)}" data-kind="kb">
           <div class="ext-group-head">
             ${RAG_GROUP_CARET}
-            <label class="check"><input type="checkbox" class="cb-rag-grp" data-kind="kb" value="${esc(k.source)}" ${whole ? "checked" : ""}><span class="nowrap">${esc(k.emoji || "📚")} ${esc(k.kb_name || k.source)}</span></label>
+            <label class="check"><input type="checkbox" class="cb-rag-grp" data-kind="kb" value="${esc(k.source)}" ${whole ? "checked" : ""}><span class="nowrap">${ICON_BOOKS} ${esc(k.kb_name || k.source)}</span></label>
             <span class="ext-group-meta">${k.doc_count || 0} 个文档 · ${seg}${subs ? ` · 已选 ${subs} 篇` : ""}</span>
           </div>
           <div class="ext-group-docs" hidden data-loaded="0" data-kb="${esc(k.kb_name || "")}"><div class="skeleton skeleton-row"></div></div>
@@ -283,8 +292,8 @@ function renderRagExtBlock(plugins, groups, kbs, bound, selectHtml, hint, emptyT
   </div>`;
 
   const body = (plugins.length || kbs.length)
-    ? big(RAG_BIG_PLUGIN, "plugin", "🗂️ 插件文档库", `${plugins.length} 个文档 · ${pChunks} 个分块 · ${groups.length} 个分组`, pluginBody)
-      + big(RAG_BIG_KB, "kb", "🔗 AstrBot 兼容", `${kbs.length} 个库 · ${kbChunks} 个分块`, kbBody)
+    ? big(RAG_BIG_PLUGIN, "plugin", `${ICON_LAYERS} 插件文档库`, `${plugins.length} 个文档 · ${pChunks} 个分块 · ${groups.length} 个分组`, pluginBody)
+      + big(RAG_BIG_KB, "kb", `${ICON_LINK} AstrBot 兼容`, `${kbs.length} 个库 · ${kbChunks} 个分块`, kbBody)
     : `<div class="fs-13 t3">${esc(emptyText)}</div>`;
 
   return `<div class="form-group">

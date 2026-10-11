@@ -2,9 +2,9 @@
 import { S } from "../state.js";
 import { closeCtxMenu } from "../components/contextmenu.js";
 import { closeSelMenus } from "../components/select.js";
-import { $, $$, esc } from "../utils.js";
+import { $, esc } from "../utils.js";
 
-export { EMPTY_ICON, autoSizeModalTextareas, closeAllMenus, closeModal, closeScrim, openModal, openScrim, renderEmptyState, toggleMoreMenu };
+export { EMPTY_ICON, autoSizeModalTextareas, closeModal, closeScrim, openModal, openScrim, renderEmptyState };
 
 /* ── D. 模态框 ─────────────────────────────────────────────────────── */
 
@@ -77,27 +77,6 @@ function closeModal() {
    面板没有需要跨刷新记住的界面偏好。（localStorage 在面板沙箱内不可用，
    故「无需持久化」意味着这段逻辑可以直接删除，而不是换一种存储。）
    插件侧 /panel/ui_state 接口保留，供旧客户端平滑过渡。 */
-
-/* ── 溢出菜单（⋯） ─────────────────────────────────────────────────── */
-/* 同一时刻只允许一个菜单展开；开关由点击委托驱动，不逐菜单绑事件。 */
-
-function closeAllMenus(except) {
-  $$(".menu-wrap > .menu").forEach(menu => {
-    if (menu === except) return;
-    menu.hidden = true;
-    const btn = menu.parentElement.querySelector("[data-action='more-menu']");
-    if (btn) btn.setAttribute("aria-expanded", "false");
-  });
-}
-
-function toggleMoreMenu(btn) {
-  const menu = btn.parentElement.querySelector(".menu");
-  if (!menu) return;
-  const willOpen = menu.hidden;
-  closeAllMenus(willOpen ? menu : null);
-  menu.hidden = !willOpen;
-  btn.setAttribute("aria-expanded", willOpen ? "true" : "false");
-}
 
 /* ── 空状态 ────────────────────────────────────────────────────────── */
 

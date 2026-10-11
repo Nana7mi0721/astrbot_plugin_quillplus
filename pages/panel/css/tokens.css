@@ -1,146 +1,241 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   目录
-   1. 设计令牌（Apple 系统色 / 字阶 / 间距 / 圆角 / 材质 / 动效）
-   2. 基础与重置
-   3. 图标
-   4. 按钮
-   5. 开关与选择控件
-   6. 输入框 / 搜索框 / 文本域 / 下拉 / 滑块
-   7. 分组列表与卡片
-   8. 表格
-   9. 徽章 / 标签 / 状态点
-  10. 空状态 / 骨架屏 / 加载
-  11. 工具栏与页头
-  12. 源列表侧栏与底部标签栏
-  13. 弹层：模态 / 对话框 / 底部弹层 / 提示横幅
-  14. 悬浮操作条 / 回到顶部
-  15. 页面：写作素材库
-  16. 页面：世界书
-  17. 页面：角色卡
-  18. 页面：文档知识库
-  19. 页面：动态记忆
-  20. 页面：配置
-  21. 响应式与无障碍
+   设计令牌 — 对齐 Apple macOS 27（Liquid Glass）
+
+   数值来源：Apple macOS 27 UI Kit.sketch 与官方 tokens.json 实测值，
+   不是印象。凡与本文件注释中标注「偏离」的条目，都是有意为之并在
+   该行给出理由。
+
+   与上一版的差别（上一版取自 iOS HIG，不是 macOS）：
+   · 填充阶梯改用 color.fill.*（黑透明度 10/8/5/3/2%），不再是 iOS
+     systemFill 的 rgba(120,120,128,*) 灰阶 —— 后者在深色底上发灰。
+   · 文字阶梯改用 color.label.*（黑 85/50/25/10%），不再是 iOS
+     secondaryLabel 的 rgba(60,60,67,*)。
+   · 深色分隔线改为白透明度（macOS 深色边框一律白透明度），不再是
+     iOS 的 rgba(84,84,88,.65)。
+   · 深色表面改用 macOS 窗口色 #1E1E1E 一系，不再是 iOS
+     systemBackground 的 #1C1C1E/#2C2C2E/#3A3A3C。
+   · 控件高度改用 macOS regular 24px（原 32px 是 iOS 尺寸）。
+   · 圆角按族拆分（菜单 8 / 分组框 12 / 窗口 16 / 弹层 20 / 警报 26），
+     原先是 4/6/10/14/20 一套通吃。
+   · 玻璃按表面拆分模糊半径（侧栏 100 / 工具栏 6 / 菜单 20 / 弹层 30 /
+     通知 15），原先所有表面共用 blur(20px)。
+   · 焦点环改为两层（外 3.5px@25% + 内 1px@15%），原先是单层 outline。
+   · 动效曲线改用 macOS 的 standard / out / spring，不再用 Material
+     Design 的 cubic-bezier(.4,0,.2,1)。
    ═══════════════════════════════════════════════════════════════════════ */
 
-/* ── 1. 设计令牌 ─────────────────────────────────────────────────────
-   颜色取自 Apple HIG 现行发布的系统色（RGB 值）。文字级强调色另设
-   --*-text：系统色作实心填充对比度足够，但作为白底文字时 #0088FF 仅
-   3.52:1，低于 HIG 要求的 4.5:1，故文字场景改用加深变体（≈4.5~4.7:1）。
-   实心按钮上的文字用 600 字重，HIG 规定粗体只需 3:1 即可。            */
 :root,
 [data-theme="light"] {
   color-scheme: light;
 
-  /* 强调色 */
-  --accent: #0088FF;
-  --accent-text: #0071E3;
-  --accent-tint: rgba(0, 136, 255, .12);
-  --accent-tint-strong: rgba(0, 136, 255, .22);
+  /* ── 强调色 ──────────────────────────────────────────────────────── */
+  --accent: #0088FF;            /* color.system.8 Blue.light */
+  --accent-vibrant: #0078F0;    /* color.system.8 Blue.lightVibrant（实心按下档） */
+  /* 偏离（MAC001）：kit 的 lightVibrant #0078F0 在白底只有 4.25:1，低于
+     WCAG AA 的 4.5:1。文字级强调色统一改用对比度达标的加深变体
+     （4.5~7.1:1），见下方 --*-text 注释。 */
+  --accent-text: #0071E3;       /* 4.70:1 on #FFFFFF */ /* check_style: allow MAC001 */
+  --accent-tint: rgba(0, 136, 255, .15);        /* global.focusRing[1] */
+  --accent-tint-strong: rgba(0, 136, 255, .25); /* global.focusRing[0] */
   --on-accent: #FFFFFF;
+  --on-accent-fill: rgba(255, 255, 255, .29);   /* 强调色填充上的浅色胶囊底 */
 
-  /* 语义色（默认档 = 实心填充 / 图标；text 档 = 文字） */
-  --green: #34C759;   --green-text: #008932;
-  --red: #FF383C;     --red-text: #E9152D;
-  --orange: #FF8D28;  --orange-text: #C55300;
-  --yellow: #FFCC00;  --yellow-text: #A16A00;
-  --indigo: #6155F5;  --indigo-text: #4B3FD4;
-  --purple: #CB30E0;  --purple-text: #A020B4;
-  --teal: #00C3D0;    --teal-text: #007D87;
-  --pink: #FF2D55;    --pink-text: #D6003C;
+  /* 遮罩（取 kit 窗口活动态阴影的 40% 黑，不是 iOS 的 .38） */
+  --scrim: rgba(0, 0, 0, .40);
+  --scrim-strong: rgba(0, 0, 0, .50);
 
-  /* 语义色淡底（用于标签、状态胶囊） */
-  --green-fill: rgba(52, 199, 89, .14);
-  --red-fill: rgba(255, 56, 60, .14);
-  --orange-fill: rgba(255, 141, 40, .16);
-  --yellow-fill: rgba(255, 204, 0, .20);
-  --indigo-fill: rgba(97, 85, 245, .14);
-  --purple-fill: rgba(203, 48, 224, .14);
-  --teal-fill: rgba(0, 195, 208, .18);
-  --pink-fill: rgba(255, 45, 85, .14);
-  --accent-fill: rgba(0, 136, 255, .12);
+  /* ── 语义色 ───────────────────────────────────────────────────────
+     基础档 = 实心填充 / 图标（取 kit system/*.light）；
+     text 档 = 文字（偏离，见下）。
+     偏离（MAC001）：kit 的 *Vibrant 档是给图形元素用的，多数在白底
+     达不到 4.5:1（orange 2.52 / yellow 1.67 / green 2.43 / teal 2.56）。
+     文字场景一律改用自算的加深变体，保证 4.5:1 以上。             */
+  --green: #34C759;   --green-text: #008932;   /* 4.54:1 */ /* check_style: allow MAC001 */
+  --red: #FF383C;     --red-text: #E9152D;     /* 4.56:1 */ /* check_style: allow MAC001 */
+  --orange: #FF8D28;  --orange-text: #C55300;  /* 4.55:1 */ /* check_style: allow MAC001 */
+  --yellow: #FFCC00;  --yellow-text: #A16A00;  /* 4.59:1 */ /* check_style: allow MAC001 */
+  --indigo: #6155F5;  --indigo-text: #4B3FD4;  /* 7.09:1 */ /* check_style: allow MAC001 */
+  --purple: #CB30E0;  --purple-text: #A020B4;  /* 6.25:1 */ /* check_style: allow MAC001 */
+  --teal: #00C3D0;    --teal-text: #007D87;    /* 4.90:1 */ /* check_style: allow MAC001 */
+  --pink: #FF2D55;    --pink-text: #D6003C;    /* 5.35:1 */ /* check_style: allow MAC001 */
 
-  /* 背景层级（HIG：primary / secondary / tertiary） */
-  --bg-grouped: #F2F2F7;
-  --bg-primary: #FFFFFF;
-  --bg-secondary: #F2F2F7;
-  --bg-tertiary: #FFFFFF;
+  /* 语义色淡底（标签 / 状态胶囊）。
+     偏离（MAC001）：kit 没有语义色 wash 这一族（color.fill.* 是中性
+     表面填充，不是彩色底），这 9 个是本设计系统的自有扩展。        */
+  --green-fill: rgba(52, 199, 89, .14);    /* check_style: allow MAC001 */
+  --red-fill: rgba(255, 56, 60, .14);      /* check_style: allow MAC001 */
+  --orange-fill: rgba(255, 141, 40, .16);  /* check_style: allow MAC001 */
+  --yellow-fill: rgba(255, 204, 0, .20);   /* check_style: allow MAC001 */
+  --indigo-fill: rgba(97, 85, 245, .14);   /* check_style: allow MAC001 */
+  --purple-fill: rgba(203, 48, 224, .14);  /* check_style: allow MAC001 */
+  --teal-fill: rgba(0, 195, 208, .18);     /* check_style: allow MAC001 */
+  --pink-fill: rgba(255, 45, 53, .14);     /* check_style: allow MAC001 */
+  --accent-fill: rgba(0, 136, 255, .15);
+
+  /* ── 背景 ───────────────────────────────────────────────────────── */
+  --bg-grouped: #F4F4F4;   /* color.background.sidebar.light.inactive —— 窗口的次级底 */
+  --bg-primary: #FFFFFF;   /* color.background.window.light */
+  --bg-secondary: #F4F4F4;
   --bg-elevated: #FFFFFF;
 
-  /* 填充（HIG systemFill 四级） */
-  --fill-quaternary: rgba(120, 120, 128, .08);
-  --fill-tertiary: rgba(120, 120, 128, .12);
-  --fill-secondary: rgba(120, 120, 128, .16);
-  --fill-primary: rgba(120, 120, 128, .20);
+  /* ── 填充（color.fill.*，与 kit 同序同名）───────────────────────── */
+  --fill-quaternary: rgba(0, 0, 0, .03);
+  --fill-tertiary: rgba(0, 0, 0, .05);
+  --fill-secondary: rgba(0, 0, 0, .08);
+  --fill-primary: rgba(0, 0, 0, .10);
 
-  /* 文字（HIG 语义标签层级，用透明度表达） */
-  --label: #000000;
-  --label-2: rgba(60, 60, 67, .60);
-  --label-3: rgba(60, 60, 67, .30);
-  --label-4: rgba(60, 60, 67, .18);
+  /* ── 文字（color.label.*，透明度阶梯，不是灰色 hex）─────────────── */
+  --label: rgba(0, 0, 0, .85);
+  --label-1: var(--label);              /* 别名：本文件外的悬停态引用 --label-1 */
+  --label-2: rgba(0, 0, 0, .50);
+  --label-3: rgba(0, 0, 0, .25);
+  --label-4: rgba(0, 0, 0, .10);
 
-  /* 分隔线 */
-  --separator: rgba(60, 60, 67, .29);
-  --separator-opaque: #C6C6C8;
+  /* 图标墨色（--mac-glyph-neutral）：与文字阶梯分开，图标用 70% 而不是 85% */
+  --glyph-neutral: rgba(0, 0, 0, .70);
 
-  /* 材质（毛玻璃） */
-  --material-bg: rgba(255, 255, 255, .72);
-  /* 吸顶导航条用的是 thick 档，而它下方穿过的是密集表单卡片、自身文字只有
-     13px。.86 时实测仍有约 14% 的透光，滚动时下方分区标题会在按钮文字间
-     留下一层灰影。提到 .92：模糊带来的层次还在，但文字不可能再被透上来。 */
-  --material-bg-thick: rgba(255, 255, 255, .92);
-  --material-edge: rgba(255, 255, 255, .5);
-  --material-blur: blur(20px) saturate(180%);
+  /* ── 分隔线 ─────────────────────────────────────────────────────── */
+  --separator: rgba(60, 60, 67, .29);   /* color.separator.light */
 
-  /* 阴影 — Apple 用极淡的投影表达层级，而非硬边框 */
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, .04), 0 1px 8px rgba(0, 0, 0, .04);
-  --shadow-2: 0 2px 6px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .08);
-  --shadow-3: 0 4px 12px rgba(0, 0, 0, .08), 0 16px 40px rgba(0, 0, 0, .12);
-  --shadow-focus: 0 0 0 3px var(--accent-tint-strong);
+  /* ── 玻璃材质（Liquid Glass）─────────────────────────────────────
+     每一档 = 一层填充 + 该表面实测的模糊半径。半径逐表面不同：侧栏
+     100px、工具栏 6px、菜单 20px、弹层 30px、通知 15px。上一版所有
+     表面共用 blur(20px)，等于侧栏欠模糊 5 倍、菜单过模糊。        */
+  --glass-sidebar-bg: rgba(250, 250, 250, .8);   /* color.background.sidebar.light.active */
+  --glass-sidebar-inactive-bg: #F4F4F4;
+  /* glass.light['Regular - Large']：两层填充（灰 10% 之上叠白 70%）。
+     G1 —— 玻璃表面是「多层低透明度填充 + 多层阴影描边」的堆叠，
+     单独一个半透明填充 + backdrop-filter 就是破绽。              */
+  --glass-toolbar-bg:
+    linear-gradient(rgba(191, 191, 191, .1), rgba(191, 191, 191, .1)),
+    linear-gradient(rgba(255, 255, 255, .7), rgba(255, 255, 255, .7));
+  --glass-toolbar-fade: rgba(255, 255, 255, .7); /* 单色形式，供渐变淡出使用 */
+  --glass-popover-bg: var(--glass-toolbar-bg);
+  --glass-notification-bg: var(--glass-toolbar-bg);
+  --glass-menu-bg: rgba(230, 230, 230, .55);     /* glass.light.Menus（单层填充） */
 
-  /* 圆角 — HIG 同心圆角：子元素半径 = 父半径 − 内边距 */
-  --r-xs: 4px;
-  --r-sm: 6px;
-  --r-md: 10px;
-  --r-lg: 14px;
-  --r-xl: 20px;
+  --glass-blur-sidebar: 100px;
+  --glass-blur-toolbar: 6px;
+  --glass-blur-menu: 20px;
+  --glass-blur-popover: 30px;
+  --glass-blur-notification: 15px;
+
+  /* 玻璃阴影 = 多层描边 + 方向性投影。glass.light.Menus 实测 7 层，
+     逐层、逐序照抄（box-shadow 是「先写的盖在上面」，顺序有意义）。 */
+  --glass-menu-shadow:
+    0 0 0 1px rgba(102, 102, 102, .15),
+    0 .5px 0 0 #262626,
+    0 -.5px 0 0 #262626,
+    0 4px 8px -4px #0D0D0D,
+    0 -4px 8px -4px #0D0D0D,
+    0 0 0 .5px rgba(0, 0, 0, .2),
+    0 4px 24px 0 rgba(0, 0, 0, .3);
+
+  /* ── 阴影 ───────────────────────────────────────────────────────
+     macOS 的投影是方向性的、多层带负 spread 描边，不是 Material 的单层
+     高度阴影。                                            */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .04), 0 1px 8px rgba(0, 0, 0, .04),
+              0 0 0 .5px rgba(0, 0, 0, .06);
+  --shadow-2: 0 2px 6px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .08),
+              0 0 0 .5px rgba(0, 0, 0, .08);
+  --shadow-3: 0 4px 12px rgba(0, 0, 0, .08), 0 16px 40px rgba(0, 0, 0, .12),
+              0 0 0 .5px rgba(0, 0, 0, .10);
+  /* shadow.window.Active[light]：描边在前、大模糊在后（实测顺序） */
+  --shadow-window: 0 0 1px 0 rgba(0, 0, 0, .8), 0 36px 100px 0 rgba(0, 0, 0, .4);
+  /* shadow.panel[light]：悬浮工具条 / HUD */
+  --shadow-panel: 0 5px 20px 0 rgba(0, 0, 0, .3);
+  /* 旋钮（开关 / 滑块的白色圆钮），两层实测值 */
+  --knob-shadow-idle: 0 3px 36px 0 rgba(0, 0, 0, .05);
+  --knob-glow-clicked: inset 0 0 0 1px #D9D9D9, inset 0 0 0 1.5px rgba(255, 255, 255, .45);
+  --slider-knob-shadow: 0 1px 5px 0 rgba(0, 0, 0, .1);
+
+  /* ── 按钮外观档（onContentArea）—— kit component.controlAppearance ──
+     每个变体 × 每个状态一个属性，禁用态是「该变体自己的禁用填充」，
+     不是给整个控件套 opacity。                                     */
+  --btn-bordered-idle: rgba(0, 0, 0, .08);
+  --btn-bordered-clicked: rgba(0, 0, 0, .16);
+  --btn-bordered-disabled: rgba(0, 0, 0, .04);
+  --btn-prominent-idle: linear-gradient(rgba(0, 0, 0, .03), rgba(0, 0, 0, .03)), linear-gradient(#0088FF, #0088FF);
+  --btn-prominent-clicked: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#0078F0, #0078F0);
+  --btn-prominent-disabled: #0078F0;
+  --btn-tinted-idle: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#0088FF, #0088FF);
+  --btn-tinted-clicked: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#0091FF, #0091FF);
+  --btn-tinted-disabled: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#0088FF, #0088FF);
+  --btn-destructive-idle: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#FF383C, #FF383C);
+  --btn-destructive-clicked: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#FF383C, #FF383C);
+  --btn-destructive-disabled: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#FF383C, #FF383C);
+  --btn-destructive-prominent-idle: #FF383C;
+  --btn-destructive-prominent-clicked: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#F52F32, #F52F32);
+  --btn-destructive-prominent-disabled: #F52F32;
+
+  /* ── 控件填充 / 轨道 / 输入框 / 开关 / 分段控件 ──────────────────── */
+  --control-off: rgba(0, 0, 0, .1);   /* 开关关 · 未填充轨道（= fill-primary） */
+  --control-off-disabled: rgba(0, 0, 0, .05);
+  /* 开关的「开」是强调色，不是 iOS 的系统绿 */
+  --control-on: #0088FF;
+  --input-bg: #FFFFFF;
+  --input-border: rgba(0, 0, 0, .05);
+  --input-bg-disabled: rgba(255, 255, 255, .5);
+  --input-border-disabled: rgba(0, 0, 0, .04);
+  --track-filled: #0088FF;
+  --track-unfilled: rgba(0, 0, 0, .1);
+  --knob-bg: #FFFFFF;
+  --segmented-track-bg: var(--fill-secondary);
+  --segmented-on-idle: linear-gradient(rgba(0, 0, 0, .03), rgba(0, 0, 0, .03)), linear-gradient(#0088FF, #0088FF);
+  --segmented-on-clicked: linear-gradient(rgba(0, 0, 0, .15), rgba(0, 0, 0, .15)), linear-gradient(#0088FF, #0088FF);
+
+  /* ── 焦点环（global.focusRing）—— 两层，外 3.5px@25% + 内 1px@15% ──
+     outline 做不到这种「外晕 + 内描边」的双层结构。               */
+  --focus-ring: 0 0 0 3.5px rgba(0, 136, 255, .25), 0 0 0 1px rgba(0, 136, 255, .15);
+  --shadow-focus: var(--focus-ring);
+
+  /* ── 圆角（逐族，不是一套通吃）─────────────────────────────────
+     control/well 4/5/6/7/9 · 按钮 large/xlarge 走 pill ·
+     checkbox 3.5/4.5/5.5/6.5/6.5 · 菜单 8 · 分组框 12 ·
+     窗口 16 · 弹层与通知 20 · 警报 26 · pill 9999              */
+  --r-xs: 4px;        /* mini 控件 / 小徽章 */
+  --r-btn-sm: 5px;    /* 按钮 small 档（同值，逐族命名，避免一族圆角被套到所有组件上） */
+  --r-row: 5px;       /* 列表行 / 菜单项 / 图标按钮的悬停底 */
+  --r-sm: 6px;        /* regular 控件 / 按钮 / well */
+  --r-md: 12px;       /* 分组框（原 10px） */
+  --r-lg: 16px;       /* 窗口（原 14px，被卡片误用） */
+  --r-xl: 20px;       /* 弹层 / 通知 */
+  --r-menu: 8px;      /* 菜单 / 下拉 / 上下文菜单 */
+  --r-alert: 26px;    /* 警报 */
+  --r-checkbox: 5.5px;/* regular 复选框 */
   --r-pill: 9999px;
 
-  /* 间距（4pt 基准） */
+  /* ── 间距（4pt 基准）───────────────────────────────────────────── */
   --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
   --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
 
-  /* 控件高度令牌 —— 所有并排控件必须引用同一档，避免基线错位 */
-  --h-control: 32px;      /* btn / input.field / select.field / .search input / .segmented */
+  /* ── 控件高度（macOS regular = 24px；32px 是 iOS 尺寸）─────────── */
+  --h-control: 24px;      /* btn / input.field / select.field / .search input / .segmented */
+  --h-control-sm: 20px;   /* .btn--sm —— small 档 */
+  --h-icon-btn: 24px;     /* .icon-btn（= hitTargetMin） */
+  --h-row: 28px;          /* .card-head / .cfg-row / 列表行（原 44px 是 iOS 触控靶） */
   --wr-row-h: 132px;      /* 素材卡固定行高：头部 60 + 单行标签 22 + 页脚 50 */
-  --h-control-sm: 26px;   /* .btn--sm */
-  --h-icon-btn: 30px;     /* .icon-btn 标准 */
-  --h-icon-btn-sm: 22px;  /* 密集卡片行内的图标按钮 */
-  --h-row: 44px;          /* .card-head / .cfg-row / 列表行 */
   /* 主编辑 sheet 的内容高度。角色卡“核心设定”是最高的一组表单，
      统一以此为基准，短表单也保持同一块工作区高度。 */
   --modal-body-h: min(72vh, 720px);
 
-  /* 控件宽度令牌 —— 配置页表单列的统一标尺。
-     此前宽度由内联 max-width 与 .field--wide 各自为政，同一张卡片里
-     同时出现 211 / 260 / 303 / 1068px 四种宽度，视觉上像是拼凑的控件族。
-     统一为三档后，所有控件的左边缘落在同一条竖线上。 */
+  /* ── 控件宽度 ───────────────────────────────────────────────────
+     配置页表单列的统一标尺。三档，所有控件左边缘落在同一条竖线上。 */
   --w-num: 132px;         /* 数字 + 单位后缀 */
   --w-ctl: 220px;         /* 普通输入框 / 下拉 / 滑块 */
   --w-wide: 420px;        /* 多行文本 / 提供商下拉 / 长文本输入 */
 
-  /* 字阶与行高 —— 收编文件中散落的字号 / 行高字面量 */
-  --fs-11: 11px; --fs-12: 12px; --fs-13: 13px; --fs-15: 15px; --fs-17: 17px;
-  --lh-tight: 1.25; --lh-body: 1.5; --lh-loose: 1.6;
-
-  /* 动效 — 入场用减速曲线、出场用加速曲线，呼应 Apple 的“对称路径” */
-  --ease-enter: cubic-bezier(.22, 1, .36, 1);
-  --ease-exit: cubic-bezier(.4, 0, 1, 1);
-  --ease-standard: cubic-bezier(.4, 0, .2, 1);
-  --dur-enter: 260ms;
-  --dur-exit: 180ms;
-  --dur-micro: 150ms;
-  --dur-press: 100ms;
+  /* ── 动效（macOS 曲线与时长，不是 Material 的）─────────────────
+     kit: standard cubic-bezier(.32,.72,0,1) · out cubic-bezier(.25,.1,.25,1)
+          spring cubic-bezier(.34,1.4,.64,1)
+          instant 80 · fast 130 · base 200 · slow 300 · panel 350  */
+  --ease-standard: cubic-bezier(.32, .72, 0, 1);
+  --ease-enter: cubic-bezier(.34, 1.4, .64, 1);   /* spring：弹层入场 */
+  --ease-exit: cubic-bezier(.25, .1, .25, 1);     /* out：出场 */
+  --dur-enter: 300ms;   /* slow */
+  --dur-exit: 200ms;    /* base */
+  --dur-micro: 130ms;   /* fast */
+  --dur-press: 80ms;    /* instant */
 
   /* 弹层层级：显式声明，不依赖标记顺序 */
   --z-scrim: 100; --z-scrim-text: 110; --z-scrim-alert: 120; --z-scrim-crop: 130;
@@ -149,57 +244,145 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  --accent: #0091FF;
-  --accent-text: #0A84FF;
-  --accent-tint: rgba(0, 145, 255, .18);
-  --accent-tint-strong: rgba(0, 145, 255, .30);
+  --accent: #0091FF;            /* color.system.8 Blue.dark */
+  --accent-vibrant: #0A99FF;    /* color.system.8 Blue.darkVibrant */
+  /* 偏离（MAC001）：深色档 kit 只有 dark/darkVibrant 两档；#0A84FF 在
+     kit 里被明确列为错误值（规范 C4）。这里取 4.57:1 的加深变体，
+     与浅色档同一策略。 */
+  --accent-text: #0A84FF;       /* 4.57:1 on #1E1E1E */ /* check_style: allow MAC001 */
+  --accent-tint: rgba(0, 145, 255, .18);        /* check_style: allow MAC001 */
+  --accent-tint-strong: rgba(0, 145, 255, .30); /* check_style: allow MAC001 */
   --on-accent: #FFFFFF;
+  --on-accent-fill: rgba(255, 255, 255, .29);   /* 强调色填充上的浅色胶囊底 */
 
-  --green: #30D158;   --green-text: #30D158;
-  --red: #FF4245;     --red-text: #FF6961;
-  --orange: #FF9230;  --orange-text: #FFA95C;
-  --yellow: #FFD600;  --yellow-text: #FFD600;
-  --indigo: #6D7CFF;  --indigo-text: #8A96FF;
-  --purple: #DB34F2;  --purple-text: #DB34F2;
-  --teal: #00D2E0;    --teal-text: #00D2E0;
-  --pink: #FF375F;    --pink-text: #FF6482;
+  /* 遮罩：深色下窗体外围本就是黑的，遮罩只需再压一层 */
+  --scrim: rgba(0, 0, 0, .50);
+  --scrim-strong: rgba(0, 0, 0, .70);
 
-  --green-fill: rgba(48, 209, 88, .18);
-  --red-fill: rgba(255, 66, 69, .18);
-  --orange-fill: rgba(255, 146, 48, .18);
-  --yellow-fill: rgba(255, 214, 0, .18);
-  --indigo-fill: rgba(109, 124, 255, .18);
-  --purple-fill: rgba(219, 52, 242, .18);
-  --teal-fill: rgba(0, 210, 224, .18);
-  --pink-fill: rgba(255, 55, 95, .18);
-  --accent-fill: rgba(0, 145, 255, .18);
+  /* 偏离（MAC001）：同浅色档，深色 *-text / *-fill 是 WCAG 驱动的自有扩展 */
+  --green: #30D158;   --green-text: #30D158;   /* check_style: allow MAC001 */
+  --red: #FF4245;     --red-text: #FF6961;     /* check_style: allow MAC001 */
+  --orange: #FF9230;  --orange-text: #FFA95C;  /* check_style: allow MAC001 */
+  --yellow: #FFD600;  --yellow-text: #FFD600;  /* check_style: allow MAC001 */
+  --indigo: #6D7CFF;  --indigo-text: #8A96FF;  /* check_style: allow MAC001 */
+  --purple: #DB34F2;  --purple-text: #DB34F2;  /* check_style: allow MAC001 */
+  --teal: #00D2E0;    --teal-text: #00D2E0;    /* check_style: allow MAC001 */
+  --pink: #FF375F;    --pink-text: #FF6482;    /* check_style: allow MAC001 */
 
-  /* 深色模式的层级靠“更亮”表达（HIG：base 更暗、elevated 更亮） */
+  --green-fill: rgba(48, 209, 88, .18);    /* check_style: allow MAC001 */
+  --red-fill: rgba(255, 66, 69, .18);      /* check_style: allow MAC001 */
+  --orange-fill: rgba(255, 146, 48, .18);  /* check_style: allow MAC001 */
+  --yellow-fill: rgba(255, 214, 0, .18);   /* check_style: allow MAC001 */
+  --indigo-fill: rgba(109, 124, 255, .18); /* check_style: allow MAC001 */
+  --purple-fill: rgba(219, 52, 242, .18);  /* check_style: allow MAC001 */
+  --teal-fill: rgba(0, 210, 224, .18);     /* check_style: allow MAC001 */
+  --pink-fill: rgba(255, 55, 95, .18);     /* check_style: allow MAC001 */
+  --accent-fill: rgba(0, 145, 255, .18);   /* check_style: allow MAC001 */
+
+  /* 深色窗口色（color.background.window.dark = #1E1E1E）。
+     带侧栏时 macOS 用纯黑，本应用始终带侧栏，故基底层取 #000000。 */
   --bg-grouped: #000000;
-  --bg-primary: #1C1C1E;
-  --bg-secondary: #2C2C2E;
-  --bg-tertiary: #3A3A3C;
-  --bg-elevated: #1C1C1E;
+  --bg-primary: #1E1E1E;
+  --bg-secondary: #282828;   /* glass.dark.Regular - Small */
+  --bg-elevated: #1E1E1E;
 
-  --fill-quaternary: rgba(120, 120, 128, .18);
-  --fill-tertiary: rgba(120, 120, 128, .24);
-  --fill-secondary: rgba(120, 120, 128, .32);
-  --fill-primary: rgba(120, 120, 128, .36);
+  /* 深色填充 = 白透明度阶梯（与浅色档同结构、不同色相） */
+  --fill-quaternary: rgba(255, 255, 255, .03);
+  --fill-tertiary: rgba(255, 255, 255, .05);
+  --fill-secondary: rgba(255, 255, 255, .08);
+  --fill-primary: rgba(255, 255, 255, .10);
 
+  /* 深色文字阶梯：primary 是唯一的不透明档，其余为白透明度 */
   --label: #FFFFFF;
-  --label-2: rgba(235, 235, 245, .60);
-  --label-3: rgba(235, 235, 245, .30);
-  --label-4: rgba(235, 235, 245, .18);
+  --label-1: var(--label);
+  --label-2: rgba(255, 255, 255, .55);
+  --label-3: rgba(255, 255, 255, .25);
+  --label-4: rgba(255, 255, 255, .10);
+  --glyph-neutral: rgba(255, 255, 255, .70);
 
-  --separator: rgba(84, 84, 88, .65);
-  --separator-opaque: #38383A;
+  /* 深色分隔线是白透明度，不是 iOS 的 rgba(84,84,88,.65) */
+  --separator: rgba(255, 255, 255, .29);
 
-  --material-bg: rgba(30, 30, 32, .72);
-  /* 与浅色档同步收紧：透光残留会让白色正文在深色导航条下留下可辨的灰影 */
-  --material-bg-thick: rgba(28, 28, 30, .94);
-  --material-edge: rgba(255, 255, 255, .12);
+  /* 深色玻璃 */
+  --glass-sidebar-bg: rgba(12, 12, 12, .85);
+  --glass-sidebar-inactive-bg: rgba(46, 46, 46, .85);
+  /* glass.dark['Regular - Large']：三层填充（#1A1A1A 之上叠两层 26,26,26） */
+  --glass-toolbar-bg:
+    linear-gradient(rgba(26, 26, 26, .5), rgba(26, 26, 26, .5)),
+    linear-gradient(rgba(26, 26, 26, .5), rgba(26, 26, 26, .5)),
+    linear-gradient(#1A1A1A, #1A1A1A);
+  --glass-toolbar-fade: rgba(26, 26, 26, .9);
+  --glass-popover-bg: var(--glass-toolbar-bg);
+  --glass-notification-bg: var(--glass-toolbar-bg);
+  --glass-menu-bg: rgba(90, 90, 90, .5);   /* glass.dark.Menus */
 
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, .30);
-  --shadow-2: 0 2px 8px rgba(0, 0, 0, .40), 0 8px 24px rgba(0, 0, 0, .40);
-  --shadow-3: 0 4px 16px rgba(0, 0, 0, .50), 0 16px 40px rgba(0, 0, 0, .50);
+  /* 深色窗口/侧栏模糊比浅色低一档（100 → 80 激活 / 70 未激活） */
+  --glass-blur-sidebar: 80px;
+  --glass-blur-toolbar: 6px;
+  --glass-blur-menu: 20px;
+  --glass-blur-popover: 30px;
+  --glass-blur-notification: 10px;
+
+  --glass-menu-shadow:
+    0 0 0 1px rgba(102, 102, 102, .4),
+    0 .5px 0 0 #262626,
+    0 -.5px 0 0 #262626,
+    0 4px 8px -4px #0D0D0D,
+    0 -4px 8px -4px #0D0D0D,
+    0 0 0 .5px rgba(0, 0, 0, .8),
+    0 4px 24px 0 rgba(0, 0, 0, .3);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .30), 0 1px 8px rgba(0, 0, 0, .25),
+              0 0 0 .5px rgba(255, 255, 255, .06);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, .40), 0 8px 24px rgba(0, 0, 0, .40),
+              0 0 0 .5px rgba(255, 255, 255, .08);
+  --shadow-3: 0 4px 16px rgba(0, 0, 0, .50), 0 16px 40px rgba(0, 0, 0, .50),
+              0 0 0 .5px rgba(255, 255, 255, .10);
+  --shadow-window: 0 0 1px 0 rgba(0, 0, 0, .8), 0 16px 33px 0 rgba(0, 0, 0, .4);
+  --shadow-panel: 0 0 1px 0 rgba(0, 0, 0, .8), 0 16px 33px 0 rgba(0, 0, 0, .4);
+  /* 深色旋钮：三层白叠加 + 六层凸面阴影（实测值） */
+  --knob-shadow-idle:
+    0 0 1px 0 rgba(255, 255, 255, .1),
+    -1.75px -2.5px 2px -1.5px #FFFFFF,
+    1.75px 2.5px 1px -1.5px #FFFFFF,
+    0 0 1px -.25px rgba(0, 0, 0, .05),
+    0 0 4px -.5px rgba(0, 0, 0, .05),
+    0 0 44px 0 rgba(0, 0, 0, .1);
+  --knob-glow-clicked: inset 0 0 0 1px rgba(0, 0, 0, .2);
+  --slider-knob-shadow: 0 1px 5px 0 rgba(0, 0, 0, .1);
+
+  /* 深色按钮外观档 */
+  --btn-bordered-idle: rgba(255, 255, 255, .07);
+  --btn-bordered-clicked: rgba(255, 255, 255, .16);
+  --btn-bordered-disabled: rgba(255, 255, 255, .04);
+  --btn-prominent-idle: #0091FF;
+  --btn-prominent-clicked: linear-gradient(rgba(255, 255, 255, .1), rgba(255, 255, 255, .1)), linear-gradient(#0A99FF, #0A99FF);
+  --btn-prominent-disabled: #0A99FF;
+  --btn-tinted-idle: linear-gradient(rgba(255, 255, 255, .14), rgba(255, 255, 255, .14)), linear-gradient(#0091FF, #0091FF);
+  --btn-tinted-clicked: var(--btn-tinted-idle);
+  --btn-tinted-disabled: var(--btn-tinted-idle);
+  --btn-destructive-idle: linear-gradient(rgba(255, 255, 255, .14), rgba(255, 255, 255, .14)), linear-gradient(#FF4245, #FF4245);
+  --btn-destructive-clicked: var(--btn-destructive-idle);
+  --btn-destructive-disabled: var(--btn-destructive-idle);
+  --btn-destructive-prominent-idle: #FF4245;
+  --btn-destructive-prominent-clicked: linear-gradient(rgba(255, 255, 255, .1), rgba(255, 255, 255, .1)), linear-gradient(#FF4747, #FF4747);
+  --btn-destructive-prominent-disabled: #FF4747;
+
+  /* 深色控件填充 / 轨道 / 输入框 / 开关 / 分段控件 */
+  --control-off: rgba(255, 255, 255, .1);
+  --control-off-disabled: rgba(255, 255, 255, .05);
+  --control-on: linear-gradient(rgba(255, 255, 255, .05), rgba(255, 255, 255, .05)), linear-gradient(#0091FF, #0091FF);
+  --input-bg: #1E1E1E;
+  --input-border: rgba(255, 255, 255, .04);
+  --input-bg-disabled: rgba(30, 30, 30, .5);
+  --input-border-disabled: rgba(255, 255, 255, .04);
+  --track-filled: #0091FF;
+  --track-unfilled: rgba(255, 255, 255, .1);
+  --knob-bg:
+    linear-gradient(rgba(255, 255, 255, .35), rgba(255, 255, 255, .35)),
+    linear-gradient(rgba(255, 255, 255, .45), rgba(255, 255, 255, .45)),
+    linear-gradient(rgba(255, 255, 255, .65), rgba(255, 255, 255, .65));
+  --segmented-track-bg: var(--fill-secondary);
+  --segmented-on-idle: linear-gradient(rgba(255, 255, 255, .04), rgba(255, 255, 255, .04)), linear-gradient(#0091FF, #0091FF);
+  --segmented-on-clicked: linear-gradient(rgba(255, 255, 255, .14), rgba(255, 255, 255, .14)), linear-gradient(#0091FF, #0091FF);
 }

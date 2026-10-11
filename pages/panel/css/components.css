@@ -1,40 +1,48 @@
-/* ── 4. 按钮（HIG：filled / tinted / gray / plain / destructive） ───── */
+/* ── 4. 按钮（macOS 27 的五个变体：bordered / tinted / destructive-bordered
+   / prominent / destructive-prominent）─────────────────────────────────
+   默认 .btn 就是 kit 的 Bordered：填充 8% 黑、13px/16px 行高、高 24px、
+   左右内边距 16px、圆角 6px。禁用态是「每个变体自己的禁用填充」，不是给
+   整个控件套 opacity —— 后者会把文字一起冲淡，是 Web 习惯不是 macOS。 */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 32px;
-  padding: 0 var(--sp-3);
+  height: var(--h-control);
+  min-width: var(--h-control);
+  padding: 0 var(--sp-4);
   border: none;
   border-radius: var(--r-sm);
-  background: var(--fill-tertiary);
+  background: var(--btn-bordered-idle);
   color: var(--label);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
-  line-height: 1;
+  line-height: 16px;
   white-space: nowrap;
   cursor: pointer;
   -webkit-user-select: none;
   user-select: none;
   transition: background var(--dur-micro) var(--ease-standard),
-              transform var(--dur-press) var(--ease-standard),
-              opacity var(--dur-micro) var(--ease-standard);
+              color var(--dur-micro) var(--ease-standard);
 }
-/* 按下即反馈（HIG：响应必须发生在 pointer-down，而非松开后） */
-.btn:active:not(:disabled) { transform: scale(.97); }
-.btn:disabled { opacity: .38; cursor: default; }
+/* 按下即反馈（响应发生在 pointer-down）；macOS 是「填充变深」，不缩放 */
+.btn:active:not(:disabled) { background: var(--btn-bordered-clicked); }
+.btn:disabled { background: var(--btn-bordered-disabled); color: var(--label-4); cursor: default; }
 
-.btn--filled { background: var(--accent); color: var(--on-accent); font-weight: 600; }
-.btn--filled:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #000); }
-.btn--filled:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 80%, #000); }
+/* prominent：实心强调色 */
+.btn--filled { background: var(--btn-prominent-idle); color: var(--on-accent); font-weight: 600; }
+.btn--filled:active:not(:disabled) { background: var(--btn-prominent-clicked); }
+.btn--filled:disabled { background: var(--btn-prominent-disabled); color: var(--on-accent); }
 
-.btn--tinted { background: var(--accent-tint); color: var(--accent-text); }
-.btn--tinted:hover:not(:disabled) { background: var(--accent-tint-strong); }
+/* tinted：强调色 + 深色罩，白字（kit 的 Bordered Tinted 就是饱和色，不是淡底） */
+.btn--tinted { background: var(--btn-tinted-idle); color: var(--on-accent); }
+.btn--tinted:active:not(:disabled) { background: var(--btn-tinted-clicked); }
+.btn--tinted:disabled { background: var(--btn-tinted-disabled); color: var(--on-accent); }
 
-.btn--gray { background: var(--fill-tertiary); color: var(--label); }
-.btn--gray:hover:not(:disabled) { background: var(--fill-secondary); }
+/* gray = bordered（保留类名以兼容既有标记） */
+.btn--gray { background: var(--btn-bordered-idle); color: var(--label); }
+.btn--gray:active:not(:disabled) { background: var(--btn-bordered-clicked); }
 
 .btn--plain { background: transparent; color: var(--accent-text); }
 .btn--plain:hover:not(:disabled) { background: var(--accent-tint); }
@@ -42,16 +50,19 @@
 .btn--plain-muted { background: transparent; color: var(--label-2); }
 .btn--plain-muted:hover:not(:disabled) { background: var(--fill-quaternary); }
 
-.btn--destructive { background: var(--red); color: #fff; font-weight: 600; }
-.btn--destructive:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 88%, #000); }
+/* destructive-bordered：红 + 深色罩 */
+.btn--destructive { background: var(--btn-destructive-idle); color: var(--on-accent); font-weight: 600; }
+.btn--destructive:active:not(:disabled) { background: var(--btn-destructive-clicked); }
+.btn--destructive:disabled { background: var(--btn-destructive-disabled); color: var(--on-accent); }
 
 .btn--destructive-tinted { background: var(--red-fill); color: var(--red-text); }
 .btn--destructive-tinted:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 26%, transparent); }
 
-.btn--sm { height: var(--h-control-sm); padding: 0 10px; font-size: 13px; border-radius: var(--r-xs); }
+/* small 档：高 20px、左右 10px、圆角 5px、字号降到 11px（kit 的 small 档） */
+.btn--sm { height: var(--h-control-sm); padding: 0 10px; font-size: 11px; border-radius: var(--r-btn-sm); }
 .btn--block { width: 100%; }
 
-/* 纯图标按钮 — 触控区按 HIG 保证足够大 */
+/* 纯图标按钮 —— 边长取 hitTargetMin（24px） */
 .icon-btn {
   display: inline-flex;
   align-items: center;
@@ -63,95 +74,97 @@
   color: var(--label-2);
   cursor: pointer;
   transition: background var(--dur-micro) var(--ease-standard),
-              color var(--dur-micro) var(--ease-standard),
-              transform var(--dur-press) var(--ease-standard);
+              color var(--dur-micro) var(--ease-standard);
 }
 .icon-btn:hover { background: var(--fill-quaternary); color: var(--label); }
-.icon-btn:active { transform: scale(.94); }
+.icon-btn:active { background: var(--fill-tertiary); }
 .icon-btn--danger:hover { background: var(--red-fill); color: var(--red-text); }
-.icon-btn:disabled { opacity: .38; cursor: default; }
+.icon-btn:disabled { color: var(--label-4); cursor: default; }
 
 /* 文件选择伪装成按钮 */
 .file-btn { position: relative; overflow: hidden; }
 .file-btn input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
-/* 分段控件（HIG：≤6 段、等宽、纯文字或纯图标） */
+/* 分段控件 —— kit 实测：三段 regular 是 90×24，即每段 30×24、**容器无内边距**，
+   段圆角 = 容器圆角（都用按钮族的 6px），所以选中填充正好落在容器自己的曲线上。
+   选中态是强调色填充 + 白字，不是「白色凸起 + 投影」那种 Web 分段控件。 */
 .segmented {
   display: inline-flex;
+  align-items: stretch;
   height: var(--h-control);
-  padding: 2px;
-  gap: 2px;
-  background: var(--fill-tertiary);
+  background: var(--segmented-track-bg);
   border-radius: var(--r-sm);
 }
 .segmented > button {
-  flex: 1;
-  height: 28px;
-  padding: 0 var(--sp-3);
+  flex: 1 1 auto;
+  min-width: 30px;
+  padding: 0 10px;
   border: none;
-  border-radius: var(--r-xs);
+  border-radius: var(--r-sm);
   background: transparent;
-  color: var(--label-2);
+  color: var(--label);
   font-family: inherit;
   font-size: 13px;
   font-weight: 500;
-  line-height: 1;
+  line-height: 16px;
   white-space: nowrap;
   cursor: pointer;
   transition: background var(--dur-micro) var(--ease-standard),
-              color var(--dur-micro) var(--ease-standard),
-              box-shadow var(--dur-micro) var(--ease-standard);
+              color var(--dur-micro) var(--ease-standard);
 }
-.segmented > button:hover:not(.is-selected) { color: var(--label); }
+.segmented > button:hover:not(.is-selected) { background: var(--fill-quaternary); }
 .segmented > button.is-selected {
-  background: var(--bg-elevated);
-  color: var(--label);
-  box-shadow: var(--shadow-1);
+  background: var(--segmented-on-idle);
+  color: var(--on-accent);
 }
-.segmented--icon > button { width: 32px; padding: 0; }
+.segmented > button.is-selected:active { background: var(--segmented-on-clicked); }
+.segmented > button:disabled { color: var(--label-4); }
+.segmented--icon > button { min-width: 30px; padding: 0; }
 
 /* ── 5. 开关与选择控件 ──────────────────────────────────────────────── */
-/* HIG：开关放在列表行内；默认轨道为系统绿；需显式提供按下反馈 */
-.switch { position: relative; display: inline-block; flex: none; width: 51px; height: 31px; }
+/* kit 实测（Toggles - Switches/Light/Content Area/3 Rg）是 54×24：一个 pill
+   圆角的容器填充 10% 黑，里面**一个** 32×20 的白色圆钮放在 (2,2)。
+   没有「钮后面还有一条更细的轨道」，也没有第二套轨道阶梯。
+   开态是强调色（#0088FF），不是 iOS 的系统绿。                        */
+.switch { position: relative; display: inline-block; flex: none; width: 54px; height: 24px; }
 .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
 .switch-track {
   position: absolute; inset: 0;
   border-radius: var(--r-pill);
-  background: var(--fill-primary);
-  transition: background var(--dur-enter) var(--ease-standard);
+  background: var(--control-off);
+  transition: background var(--dur-micro) var(--ease-standard);
   pointer-events: none;
 }
 .switch-track::after {
   content: "";
   position: absolute; top: 2px; left: 2px;
-  width: 27px; height: 27px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 3px 8px rgba(0, 0, 0, .15), 0 1px 1px rgba(0, 0, 0, .16);
-  transition: transform var(--dur-enter) var(--ease-enter);
+  width: 32px; height: 20px;
+  border-radius: var(--r-pill);
+  background: var(--knob-bg);
+  box-shadow: var(--knob-shadow-idle);
+  transition: transform var(--dur-micro) var(--ease-standard),
+              box-shadow var(--dur-micro) var(--ease-standard);
 }
-.switch input:checked + .switch-track { background: var(--green); }
-.switch input:checked + .switch-track::after { transform: translateX(20px); }
-.switch input:disabled + .switch-track { opacity: .38; }
-.switch input:focus-visible + .switch-track { box-shadow: var(--shadow-focus); }
-.switch input:active + .switch-track::after { width: 31px; }
-.switch input:checked:active + .switch-track::after { transform: translateX(16px); }
-/* 小尺寸变体 — 用于密集的列表行（HIG：分组表单行用 mini switch） */
-.switch--sm { width: 40px; height: 24px; }
-.switch--sm .switch-track::after { width: 20px; height: 20px; }
-.switch--sm input:checked + .switch-track::after { transform: translateX(16px); }
-.switch--sm input:active + .switch-track::after { width: 24px; }
-.switch--sm input:checked:active + .switch-track::after { transform: translateX(12px); }
+.switch input:checked + .switch-track { background: var(--control-on); }
+.switch input:checked + .switch-track::after { transform: translateX(18px); }
+.switch input:disabled + .switch-track { background: var(--control-off-disabled); }
+.switch input:focus-visible + .switch-track { box-shadow: var(--focus-ring); }
+/* 按下：钮换成描边发光（kit 的 clickedGlow），几何不变 */
+.switch input:active + .switch-track::after { box-shadow: var(--knob-glow-clicked); }
+/* small 档：44×20，钮 26×16，inset 2，行程 14（kit 的 small 阶梯） */
+.switch--sm { width: 44px; height: 20px; }
+.switch--sm .switch-track::after { width: 26px; height: 16px; }
+.switch--sm input:checked + .switch-track::after { transform: translateX(14px); }
 
-/* 复选 / 单选 */
-.check { display: inline-flex; align-items: center; gap: var(--sp-2); cursor: pointer; font-size: 14px; }
+/* 复选：kit 的 regular 复选框是 16×16、圆角 5.5px（不是 18×18 / 4px） */
+.check { display: inline-flex; align-items: center; gap: var(--sp-2); cursor: pointer; font-size: 13px; }
 .check input {
   appearance: none;
-  width: 18px; height: 18px;
+  width: 16px; height: 16px;
   flex: none;
   margin: 0;
   border: 1.5px solid var(--separator);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-checkbox);
   background: var(--bg-primary);
   cursor: pointer;
   transition: background var(--dur-micro) var(--ease-standard),
@@ -170,20 +183,26 @@
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round'%3E%3Cline x1='4' y1='8' x2='12' y2='8'/%3E%3C/svg%3E");
   background-size: 100% 100%;
 }
-.check input:disabled { opacity: .38; cursor: default; }
-.check input:focus-visible { box-shadow: var(--shadow-focus); }
+.check input:disabled {
+  background: var(--fill-tertiary);
+  border-color: var(--fill-primary);
+  cursor: default;
+}
+.check input:focus-visible { box-shadow: var(--focus-ring); }
 
 /* ── 6. 输入控件 ────────────────────────────────────────────────────── */
+/* kit 的输入框是一个「well」：白底（深色 #1E1E1E）+ 5% 黑的细边 + 6px 圆角，
+   高 24px、字号 13px。禁用态是它自己的禁用填充/边框，不是整体透明。 */
 .field {
   width: 100%;
-  height: 32px;
+  height: var(--h-control);
   padding: 0 10px;
-  border: 1px solid var(--separator);
+  border: 1px solid var(--input-border);
   border-radius: var(--r-sm);
-  background: var(--bg-primary);
+  background: var(--input-bg);
   color: var(--label);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 13px;
   transition: border-color var(--dur-micro) var(--ease-standard),
               box-shadow var(--dur-micro) var(--ease-standard),
               background var(--dur-micro) var(--ease-standard);
@@ -192,28 +211,37 @@
 .field:hover:not(:disabled) { border-color: var(--label-3); }
 .field:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-tint);
+  box-shadow: var(--focus-ring);
 }
-.field:disabled, .field[readonly] { background: var(--fill-quaternary); color: var(--label-2); cursor: default; }
-textarea.field { height: auto; padding: 8px 10px; line-height: 1.55; resize: vertical; min-height: 64px; }
+.field:disabled, .field[readonly] {
+  background: var(--input-bg-disabled);
+  border-color: var(--input-border-disabled);
+  color: var(--label-4);
+  cursor: default;
+}
+textarea.field { height: auto; padding: 8px 10px; line-height: 20px; resize: vertical; min-height: 64px; }
 select.field {
   appearance: none;
   padding-right: 28px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238E8E93' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  /* 箭头颜色取自 --mac-glyph-neutral（浅 rgba(0,0,0,.7) / 深 rgba(255,255,255,.7)），
+     写成 8 位十六进制 —— data URI 里的 SVG 拿不到 CSS 变量。 */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000000B3' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 7px center;
   background-size: 14px;
   cursor: pointer;
 }
 select.field:focus-visible {
-  outline: 3px solid var(--accent-tint-strong);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 [data-theme="dark"] select.field {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2398989D' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23FFFFFFB3' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
 }
 
-/* 搜索框（HIG：前导放大镜 + 尾随清除按钮 + systemFill 底） */
+/* 搜索框 —— kit 实测：`.mac-search` 是 24px 高的**胶囊**（不是 6px 圆角），
+   白底 + 5% 黑细边，放大镜在 x=8（16×16，色用 glyph-neutral），
+   清除按钮是 16px 的槽位、距尾边 4px，有值时输入框右内边距收到 20px。 */
 .search {
   position: relative;
   display: flex;
@@ -224,65 +252,88 @@ select.field:focus-visible {
 }
 .search > .icon {
   position: absolute;
-  left: 7px;
-  width: 15px; height: 15px;
-  color: var(--label-3);
+  left: 8px;
+  width: 16px; height: 16px;
+  color: var(--glyph-neutral);
   pointer-events: none;
 }
 .search > input {
   width: 100%;
-  height: 32px;
-  padding: 0 28px 0 28px;
-  border: none;
-  border-radius: var(--r-sm);
-  background: var(--fill-tertiary);
+  height: var(--h-control);
+  padding: 0 var(--sp-4) 0 26px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--r-pill);
+  background: var(--input-bg);
   color: var(--label);
   font-family: inherit;
-  font-size: 14px;
-  transition: background var(--dur-micro) var(--ease-standard),
-              box-shadow var(--dur-micro) var(--ease-standard);
+  font-size: 13px;
+  font-weight: 500;
+  transition: border-color var(--dur-micro) var(--ease-standard),
+              box-shadow var(--dur-micro) var(--ease-standard),
+              background var(--dur-micro) var(--ease-standard);
 }
 .search > input::placeholder { color: var(--label-3); }
-.search > input:focus { background: var(--bg-primary); box-shadow: 0 0 0 3px var(--accent-tint); }
+.search > input:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.search.has-value > input { padding-right: 20px; }
 .search-clear {
   position: absolute;
-  right: 5px;
+  right: 4px;
   display: none;
   align-items: center;
   justify-content: center;
-  width: 20px; height: 20px;
+  width: 16px; height: 16px;
   border: none;
-  border-radius: 50%;
-  background: var(--fill-primary);
+  border-radius: var(--r-pill);
+  background: none;
   color: var(--label-2);
   cursor: pointer;
 }
+.search-clear:hover { color: var(--label); }
 .search-clear .icon { width: 11px; height: 11px; stroke-width: 3; }
 .search.has-value .search-clear { display: flex; }
 
-/* 滑块（HIG：即时、1:1 跟手反馈） */
+/* 滑块 —— kit 实测：轨道 6px 胶囊，已填充段是强调色、未填充段 10% 黑，
+   旋钮是 **20×16 的胶囊**（不是 22×22 的圆），偏移 -5px 居中于凹槽，
+   阴影 0 1px 5px rgba(0,0,0,.1)。已填充比例由 `--slider-progress` 驱动
+   （kit 里叫 `--mac-slider-progress`，缺省回退 50%），见 js/app.js 的同步器。 */
 .slider { display: flex; align-items: center; gap: var(--sp-3); }
 .slider input[type="range"] {
   flex: 1;
   appearance: none;
-  height: 4px;
+  height: var(--h-control);
+  margin: 0;
+  background: transparent;
+  cursor: default;
+}
+.slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
   border-radius: var(--r-pill);
-  background: var(--fill-primary);
-  cursor: pointer;
+  background: linear-gradient(to right,
+    var(--track-filled) var(--slider-progress, 50%),
+    var(--track-unfilled) var(--slider-progress, 50%));
 }
 .slider input[type="range"]::-webkit-slider-thumb {
   appearance: none;
-  width: 22px; height: 22px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, .28);
-  cursor: grab;
-  transition: transform var(--dur-press) var(--ease-standard);
+  width: 20px; height: 16px;
+  margin-top: -5px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--knob-bg);
+  box-shadow: var(--slider-knob-shadow);
 }
-.slider input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.1); cursor: grabbing; }
+.slider input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--track-unfilled);
+}
+.slider input[type="range"]::-moz-range-progress {
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--track-filled);
+}
 .slider input[type="range"]::-moz-range-thumb {
-  width: 22px; height: 22px; border: none; border-radius: 50%;
-  background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .28);
+  width: 20px; height: 16px; border: 0; border-radius: var(--r-pill);
+  background: var(--knob-bg); box-shadow: var(--slider-knob-shadow);
 }
 .slider-value {
   min-width: 34px;
@@ -298,25 +349,25 @@ select.field:focus-visible {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-1);
   min-height: var(--h-control);
-  padding: 4px 8px;
-  border: 1px solid var(--separator);
+  padding: 1px var(--sp-1);
+  border: 1px solid var(--input-border);
   border-radius: var(--r-sm);
-  background: var(--bg-primary);
+  background: var(--input-bg);
   cursor: text;
   transition: border-color var(--dur-micro) var(--ease-standard), box-shadow var(--dur-micro) var(--ease-standard);
 }
-.tagfield:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
+.tagfield:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
 .tagfield input {
   flex: 1;
   min-width: 90px;
-  height: 22px;
+  height: 20px;
   border: none;
   background: transparent;
   color: var(--label);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 13px;
 }
 .tagfield input:focus { outline: none; }
 
@@ -398,9 +449,9 @@ select.field:focus-visible {
 /* 知识库是三级树，比世界书/素材库多一层，给高一点避免频繁滚动 */
 #pf-rag-list { max-height: 280px; }
 .ext-list .check {
-  min-height: 32px;
+  min-height: var(--h-row);
   padding: 0 var(--sp-2);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-row);
 }
 .ext-list .check:hover {
   background: var(--fill-quaternary);
@@ -413,15 +464,15 @@ select.field:focus-visible {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
-  min-height: 34px;
+  min-height: var(--h-row);
   padding-right: var(--sp-2);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-row);
 }
 .ext-big-head:hover { background: var(--fill-quaternary); }
 .ext-big-head .check {
   flex: 1;
   min-width: 0;
-  min-height: 34px;
+  min-height: var(--h-row);
   padding: 0 var(--sp-1) 0 0;
   font-weight: 600;
 }
@@ -430,7 +481,7 @@ select.field:focus-visible {
   width: 24px; height: 24px;
   display: grid; place-items: center;
   border: 0;
-  border-radius: var(--r-xs);
+  border-radius: var(--r-row);
   background: transparent;
   color: var(--label-3);
   cursor: pointer;
@@ -442,7 +493,7 @@ select.field:focus-visible {
 .ext-big-caret[aria-expanded="true"] .icon { transform: rotate(90deg); }
 .ext-big-meta {
   flex: none;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--label-3);
   font-variant-numeric: tabular-nums;
 }
@@ -465,15 +516,15 @@ select.field:focus-visible {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
-  min-height: 32px;
+  min-height: var(--h-row);
   padding-right: var(--sp-2);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-row);
 }
 .ext-group-head:hover { background: var(--fill-quaternary); }
 .ext-group-head .check {
   flex: 1;
   min-width: 0;
-  min-height: 32px;
+  min-height: var(--h-row);
   padding: 0 var(--sp-1) 0 0;
 }
 .ext-group-caret {
@@ -481,7 +532,7 @@ select.field:focus-visible {
   width: 24px; height: 24px;
   display: grid; place-items: center;
   border: 0;
-  border-radius: var(--r-xs);
+  border-radius: var(--r-row);
   background: transparent;
   color: var(--label-3);
   cursor: pointer;
@@ -493,7 +544,7 @@ select.field:focus-visible {
 .ext-group-caret[aria-expanded="true"] .icon { transform: rotate(90deg); }
 .ext-group-meta {
   flex: none;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--label-3);
   font-variant-numeric: tabular-nums;
 }
@@ -505,17 +556,17 @@ select.field:focus-visible {
   border-left: .5px solid var(--separator);
 }
 .ext-group-docs[hidden] { display: none; }
-.ext-group-docs .check { min-height: 30px; padding: 0 var(--sp-2); border-radius: var(--r-xs); }
+.ext-group-docs .check { min-height: var(--h-row); padding: 0 var(--sp-2); border-radius: var(--r-row); }
 .ext-group-docs .check:hover { background: var(--fill-quaternary); }
 .ext-group-docs .check .nowrap { overflow: hidden; text-overflow: ellipsis; }
-.ext-doc-meta { margin-left: auto; padding-left: var(--sp-2); flex: none; font-size: 11.5px; color: var(--label-3); }
+.ext-doc-meta { margin-left: auto; padding-left: var(--sp-2); flex: none; font-size: 11px; color: var(--label-3); }
 
 /* ── 7. 分组列表与卡片 ───────────────────────────────────────────────
    HIG 的「内缩分组列表」是配置类界面的主力形态：卡片承载一组相关行，
    行与行之间用从文字起始处开始的内缩发丝线分隔，而非整宽边框。        */
 .card {
   background: var(--bg-primary);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   box-shadow: var(--shadow-1);
   overflow: hidden;
 }
@@ -678,15 +729,13 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   bottom: 0;
   z-index: 15;
   flex: none;
-  background: var(--material-bg-thick);
-  -webkit-backdrop-filter: var(--material-blur);
-  backdrop-filter: var(--material-blur);
+  background: var(--glass-toolbar-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur-toolbar)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur-toolbar)) saturate(180%);
   /* inset 投影代替 border-top：发丝线不占高度，分页栏高度恒定。 */
   box-shadow: inset 0 .5px 0 var(--separator);
 }
 .pager-bar-inner {
-  max-width: 1180px;
-  margin: 0 auto;
   padding: var(--sp-2) var(--sp-6);
 }
 /* 分页栏已自带上下内边距，.pager 的 margin-top 会把它顶高一截，
@@ -841,10 +890,10 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .btn .spinner { width: 13px; height: 13px; }
 
 /* ── 11. 工具栏与页头 ───────────────────────────────────────────────── */
+/* 正文容器：macOS 的窗口是**铺满宽度**的（设置面板是分组表单、列表是全宽），
+   没有「居中一列」这种 Web 阅读版式。这里只留标准内边距（§2.5 L2）。 */
 .page {
   padding: var(--sp-5) var(--sp-6) var(--sp-8);
-  max-width: 1180px;
-  margin: 0 auto;
 }
 /* 标题带已自带顶部内边距，主体不再重复留白 */
 .page--bar { padding-top: var(--sp-4); }
@@ -864,13 +913,11 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   top: 0;
   z-index: 20;
   padding: var(--sp-4) 0 var(--sp-2);
-  background: var(--material-bg);
-  -webkit-backdrop-filter: var(--material-blur);
-  backdrop-filter: var(--material-blur);
+  background: var(--glass-toolbar-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur-toolbar)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur-toolbar)) saturate(180%);
 }
 .page-head-bar-inner {
-  max-width: 1180px;
-  margin: 0 auto;
   padding: 0 var(--sp-6);
 }
 /* 标题带内的工具栏：不再自己粘住、不再铺第二层材质，交给父级统一提供。
@@ -921,9 +968,9 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   gap: var(--sp-2);
   flex-wrap: wrap;
   padding: var(--sp-2) 0 var(--sp-3);
-  background: var(--material-bg);
-  -webkit-backdrop-filter: var(--material-blur);
-  backdrop-filter: var(--material-blur);
+  background: var(--glass-toolbar-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur-toolbar)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur-toolbar)) saturate(180%);
 }
 /* 工具栏右侧动作组：必须用 flex 让纯文字按钮与带图标按钮按中线对齐，
    否则 inline-flex 的按钮会按基线排列，纯文字按钮看上去低 3~4px；
@@ -950,8 +997,8 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 }
 .wr-main-actions { margin-left: auto; }
 .wr-batch-actions .btn:disabled {
-  opacity: .38;
-  filter: saturate(.35);
+  background: var(--btn-bordered-disabled);
+  color: var(--label-4);
 }
 /* 工具栏内的搜索框可收缩：优先保证按钮不被挤到第二行 */
 .toolbar > .search { min-width: min(120px, 100%); flex: 0 1 auto; }
@@ -975,7 +1022,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   position: absolute;
   top: 100%; left: 0; right: 0;
   height: 12px;
-  background: linear-gradient(var(--material-bg), transparent);
+  background: linear-gradient(var(--glass-toolbar-fade), transparent);
   pointer-events: none;
 }
 
@@ -983,53 +1030,18 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .select-pill {
   display: inline-flex;
   align-items: center;
-  height: 22px;
+  height: 20px;
   padding: 0 8px;
   border-radius: var(--r-pill);
   background: var(--accent-tint);
   color: var(--accent-text);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
 }
 
-/* 溢出菜单（⋯）：Finder 式把低频操作收进弹出层 */
-.menu-wrap { position: relative; display: inline-flex; }
 /* ⋯ 按钮：方形图标按钮，尺寸跟同排的 .btn / .segmented 对齐（--h-control） */
 .btn.icon-btn { padding: 0; width: var(--h-control); height: var(--h-control); }
-.menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-  min-width: 180px;
-  padding: 4px;
-  border-radius: var(--r-md);
-  background: var(--material-bg-thick);
-  -webkit-backdrop-filter: var(--material-blur);
-  backdrop-filter: var(--material-blur);
-  box-shadow: var(--shadow-3);
-  z-index: 30;
-}
-.menu-item {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  width: 100%;
-  height: 28px;
-  padding: 0 var(--sp-2);
-  border: none;
-  border-radius: var(--r-xs);
-  background: transparent;
-  color: var(--label);
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-}
-.menu-item:hover { background: var(--fill-quaternary); }
-.menu-item .icon { width: 15px; height: 15px; color: var(--label-2); }
-.menu-item--danger { color: var(--red-text); }
-.menu-sep { height: .5px; margin: 4px 0; background: var(--separator); }
 
 /* 忙碌态（非表单控件容器用）：视觉上淡化并屏蔽交互，不改动内容与高度 */
 .is-busy { opacity: .6; pointer-events: none; }

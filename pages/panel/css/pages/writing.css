@@ -40,11 +40,11 @@
 /* 标题最多两行：卡片行高固定 132px，标题不限制行数时第三行会被
    .wr-card 的 overflow: hidden 直接切掉（且把标签/页脚挤出可见区）。
    line-clamp 把超长标题收成两行 + 省略号，卡片结构始终完整。
-   行高 1.35 与 --wr-row-h 的 60px 头部预算对应（2×14.5×1.35 ≈ 39px）。 */
+    行高 20px 与 --wr-row-h 的 60px 头部预算对应（2×20 = 40px）。 */
 .wr-card-name {
-  font-size: 14.5px;
+  font-size: 15px;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 20px;
   word-break: break-word;
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -54,7 +54,7 @@
 }
 .wr-card-id {
   margin-top: 1px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--label-3);
   font-family: var(--font-mono);
   /* 素材 id 是无空格长串，窄卡片里会撑破网格（实测溢出 6px）；
@@ -100,7 +100,7 @@
   cursor: pointer;
   border-radius: var(--r-xs);
 }
-.wr-card-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wr-card-title:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 /* 行内操作：默认隐藏，悬停 / 键盘聚焦时显现（Finder 范式）。
    同行的 .switch 是状态而非操作，保持常显。 */

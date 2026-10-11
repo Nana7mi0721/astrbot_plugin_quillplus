@@ -1,15 +1,15 @@
 /* ── 12. 外壳：源列表侧栏 / 底部标签栏 / 顶部工具栏 ─────────────────── */
 .layout { display: flex; height: 100%; }
 
-/* 侧栏（macOS 源列表） */
+/* 侧栏（macOS 源列表）：自己的表面 + 自己的模糊半径（100px，工具栏只有 6px） */
 .sidebar {
   width: 232px;
   flex: none;
   display: flex;
   flex-direction: column;
-  background: var(--material-bg-thick);
-  -webkit-backdrop-filter: var(--material-blur);
-  backdrop-filter: var(--material-blur);
+  background: var(--glass-sidebar-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur-sidebar)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur-sidebar)) saturate(180%);
   border-right: .5px solid var(--separator);
   overflow: hidden;
 }
@@ -25,9 +25,11 @@
   width: 30px; height: 30px;
   flex: none;
   position: relative;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   overflow: hidden;
-  background: linear-gradient(160deg, var(--accent), var(--indigo));
+  /* 回退底色用单一强调色而不是 accent→indigo 渐变：一个窗口只允许一个
+     强调色，渐变会引入第二个色相（§2.5 N5）。 */
+  background: var(--accent);
 }
 .sidebar-logo img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .sidebar-logo-glyph {
@@ -35,8 +37,8 @@
   inset: 0;
   display: grid;
   place-items: center;
-  color: #fff;
-  font-size: 16px;
+  color: var(--on-accent);
+  font-size: 15px;
   font-weight: 700;
 }
 .sidebar-title { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
@@ -58,46 +60,48 @@
 .sl-item {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   width: 100%;
-  height: 30px;
-  padding: 0 9px;
+  height: var(--h-control);
+  padding: 0 var(--sp-2);
   margin-bottom: 2px;
   border: none;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--label);
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
   text-align: left;
   cursor: pointer;
   transition: background var(--dur-micro) var(--ease-standard);
 }
-.sl-item .icon { width: 17px; height: 17px; color: var(--accent); flex: none; }
+/* 侧栏行的图标是中性墨色，不是强调色 —— 强调色在侧栏里只用于「当前项」，
+   否则一个窗口里会出现两个强调色（§2.5 N5）。 */
+.sl-item .icon { width: 16px; height: 16px; color: var(--glyph-neutral); flex: none; }
 .sl-item:hover:not(.is-selected) { background: var(--fill-quaternary); }
-.sl-item.is-selected { background: var(--accent); color: var(--on-accent); }
+.sl-item.is-selected { background: var(--control-on); color: var(--on-accent); }
 .sl-item.is-selected .icon { color: var(--on-accent); }
 .sl-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sl-badge {
   flex: none;
   min-width: 18px;
-  height: 17px;
+  height: 16px;
   padding: 0 5px;
   border-radius: var(--r-pill);
   background: var(--fill-secondary);
   color: var(--label-2);
   font-size: 11px;
   font-weight: 600;
-  line-height: 17px;
+  line-height: 16px;
   text-align: center;
 }
-.sl-item.is-selected .sl-badge { background: rgba(255, 255, 255, .28); color: #fff; }
+.sl-item.is-selected .sl-badge { background: var(--on-accent-fill); color: var(--on-accent); }
 .sidebar-foot {
   padding: var(--sp-3) var(--sp-4);
   border-top: .5px solid var(--separator);
   font-size: 11px;
-  line-height: 1.6;
+  line-height: 14px;
   color: var(--label-3);
 }
 
@@ -115,8 +119,7 @@
    让主体撑满剩余高度、分页栏 margin-top:auto 推到底，两种情况下
    按钮坐标才一致。 */
 .tab-pane.is-active { display: flex; flex-direction: column; min-height: 100%; }
-/* width:100% 不可省：.page 自带 margin:0 auto，而交叉轴上的 auto 外边距会
-   让 flex 项按 fit-content 定宽、跳过 stretch——实测页面被压到 405px，
-   卡片网格从 3 列塌成 1 列。显式给出宽度后，max-width 与 auto 外边距
-   重新按预期工作：宽屏居中、窄屏铺满。 */
+/* width:100% 不可省：交叉轴上的 auto 外边距会让 flex 项按 fit-content 定宽、
+   跳过 stretch——实测页面被压到 405px，卡片网格从 3 列塌成 1 列。
+   （.page 的居中 max-width 已按 §2.5 L2 移除，这里仍显式给宽度以防回归。） */
 .tab-pane.is-active > .page { flex: 1; width: 100%; }

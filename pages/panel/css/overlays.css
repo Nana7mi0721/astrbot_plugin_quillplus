@@ -8,7 +8,7 @@
   align-items: flex-start;
   justify-content: center;
   padding: max(48px, 6vh) var(--sp-5) var(--sp-5);
-  background: rgba(0, 0, 0, .38);
+  background: var(--scrim);
   -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
 }
@@ -30,8 +30,8 @@
   display: flex;
   flex-direction: column;
   background: var(--bg-elevated);
-  border-radius: var(--r-xl);
-  box-shadow: var(--shadow-3);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-window);
   overflow: hidden;
   transform-origin: top center;
   transform: translateY(-12px) scale(.98);
@@ -78,23 +78,24 @@
   background: var(--red-fill);
   color: var(--red-text);
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 16px;
 }
 
-/* 警告框（HIG：≤3 按钮、取消固定用词、破坏性操作红色） */
+/* 警告框（HIG：≤3 按钮、取消固定用词、破坏性操作红色）
+   kit 的警报圆角自成一族（26px），表面与阴影走通知那一档的玻璃。 */
 .alert {
   width: 100%;
   max-width: 300px;
   padding: var(--sp-5) var(--sp-4) var(--sp-4);
-  border-radius: var(--r-lg);
-  background: var(--material-bg-thick);
-  -webkit-backdrop-filter: var(--material-blur);
-  backdrop-filter: var(--material-blur);
-  box-shadow: var(--shadow-3);
+  border-radius: var(--r-alert);
+  background: var(--glass-notification-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur-notification)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur-notification)) saturate(180%);
+  box-shadow: var(--shadow-panel);
   text-align: center;
 }
-.alert-title { font-size: 16px; font-weight: 600; margin-bottom: 3px; }
-.alert-msg { font-size: 13px; line-height: 1.55; color: var(--label-2); }
+.alert-title { font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+.alert-msg { font-size: 13px; line-height: 16px; color: var(--label-2); }
 .alert-body { margin: var(--sp-3) 0 0; text-align: left; }
 .alert-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); }
 .alert-actions .btn { flex: 1; }
@@ -119,12 +120,12 @@
   align-items: center;
   gap: var(--sp-2);
   padding: 10px var(--sp-3);
-  border-radius: var(--r-md);
-  background: var(--material-bg-thick);
-  -webkit-backdrop-filter: var(--material-blur);
-  backdrop-filter: var(--material-blur);
-  box-shadow: var(--shadow-2);
-  font-size: 13.5px;
+  border-radius: var(--r-xl);
+  background: var(--glass-notification-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur-notification)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur-notification)) saturate(180%);
+  box-shadow: var(--shadow-panel);
+  font-size: 13px;
   pointer-events: auto;
   transform: translateY(-14px) scale(.98);
   opacity: 0;
@@ -133,7 +134,7 @@
 }
 .banner.is-in { transform: translateY(0) scale(1); opacity: 1; }
 .banner.is-out { transform: translateY(-8px); opacity: 0; transition-duration: var(--dur-exit); }
-.banner .banner-icon { width: 17px; height: 17px; flex: none; }
+.banner .banner-icon { width: 16px; height: 16px; flex: none; }
 .banner--success .banner-icon { color: var(--green); }
 .banner--error .banner-icon { color: var(--red); }
 .banner--warning .banner-icon { color: var(--orange); }
@@ -145,7 +146,7 @@
   background: none;
   color: var(--accent-text);
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   padding: 2px 4px;
@@ -178,10 +179,10 @@
   gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
   border-radius: var(--r-pill);
-  background: var(--material-bg-thick);
-  -webkit-backdrop-filter: var(--material-blur);
-  backdrop-filter: var(--material-blur);
-  box-shadow: var(--shadow-2);
+  background: var(--glass-popover-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur-popover)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur-popover)) saturate(180%);
+  box-shadow: var(--shadow-panel);
   transform: translate(-50%, calc(100% + 40px));
   opacity: 0;
   pointer-events: none;
@@ -198,11 +199,11 @@
   z-index: 65;
   width: 36px; height: 36px;
   border: none;
-  border-radius: 50%;
-  background: var(--material-bg-thick);
-  -webkit-backdrop-filter: var(--material-blur);
-  backdrop-filter: var(--material-blur);
-  box-shadow: var(--shadow-2);
+  border-radius: var(--r-pill);
+  background: var(--glass-popover-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur-popover)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur-popover)) saturate(180%);
+  box-shadow: var(--shadow-panel);
   color: var(--label-2);
   cursor: pointer;
   transform: scale(.8) translateY(8px);

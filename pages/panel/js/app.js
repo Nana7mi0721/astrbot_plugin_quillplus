@@ -5,7 +5,7 @@ import { bindOverlayEvents, closeCtxMenu } from "./components/contextmenu.js";
 import { closeCropDialog, handleAvatarFile, recropAvatar } from "./components/cropper.js";
 import { closeAlert, copyText, dismissBanner } from "./components/feedback.js";
 import { initListKeys } from "./components/listkeys.js";
-import { closeAllMenus, closeModal, toggleMoreMenu } from "./components/modal.js";
+import { closeModal } from "./components/modal.js";
 import { closeSelMenus, enhanceSelects } from "./components/select.js";
 import { discardChanges, filterConfig, initConfigNavObserver, loadGlobalSettings, loadHealth, markDirty, saveAllChanges, scrollToSection, setStreamModeAll, switchTab, syncSidebarBadges } from "./pages/config.js";
 import { changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, onMemorySessionChange, pruneMemories, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin } from "./pages/memory.js";
@@ -23,7 +23,6 @@ const ACTIONS = {
   // 通用
   "tab": (el) => switchTab(el.dataset.tab),
   "to-top": () => $("#content")?.scrollTo({ top: 0, behavior: "smooth" }),
-  "more-menu": (el) => toggleMoreMenu(el),
   "clear-search": (el) => {
     // 世界书内联搜索框每册一个，没法给唯一 id；用作用域就近取，
     // 否则 getElementById 只会命中展开列表里的第一个，清错别人的框。
@@ -156,13 +155,9 @@ function bindEvents() {
     const actEl = e.target.closest("[data-action]");
     if (actEl) {
       const action = actEl.dataset.action;
-      // 菜单项执行后自动收起；触发器自身由 toggleMoreMenu 管理开合
-      if (action !== "more-menu" && e.target.closest(".menu")) closeAllMenus();
       const fn = ACTIONS[action];
       if (fn) { fn(actEl, e); return; }
     }
-    // 点击菜单之外任何位置 → 关闭所有溢出菜单
-    if (!e.target.closest(".menu-wrap")) closeAllMenus();
     const tabEl = e.target.closest("[data-tab]");
     if (tabEl && tabEl.classList.contains("sl-item")) {
       switchTab(tabEl.dataset.tab);
@@ -286,6 +281,32 @@ function bindEvents() {
     if (wrap && e.target.tagName === "INPUT") wrap.classList.toggle("has-value", !!e.target.value);
   });
 
+  // 3b) 滑块进度：macOS 的滑块轨道把已填充段画成强调色，而原生 range
+  //     不会把这个比例暴露给 CSS，所以由 JS 同步 --slider-progress
+  //     （kit 里叫 --mac-slider-progress，缺省回退 50%）。
+  const syncSlider = (el) => {
+    if (!el || el.type !== "range") return;
+    const min = Number(el.min === "" ? 0 : el.min);
+    const max = Number(el.max === "" ? 100 : el.max);
+    const pct = max > min ? ((Number(el.value) - min) / (max - min)) * 100 : 0;
+    el.style.setProperty("--slider-progress", pct.toFixed(4).replace(/\.?0+$/, "") + "%");
+  };
+  const syncSlidersIn = (root) => {
+    if (!root || root.nodeType !== 1) return;
+    if (root.matches('input[type="range"]')) syncSlider(root);
+    root.querySelectorAll('input[type="range"]').forEach(syncSlider);
+  };
+  document.addEventListener("input", (e) => {
+    if (e.target && e.target.type === "range") syncSlider(e.target);
+  });
+  if (document.body) {
+    syncSlidersIn(document.body);
+    // 弹窗/配置页的滑块是动态注入的，跟着补一次
+    new MutationObserver((muts) => {
+      for (const m of muts) for (const n of m.addedNodes) syncSlidersIn(n);
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
   // 4) 键盘委托：回车触发、Esc 关闭、快捷键
   document.addEventListener("keydown", (e) => {
     const t = e.target;
@@ -294,7 +315,6 @@ function bindEvents() {
       // 自绘浮层优先于模态：它们挂得最靠前，Esc 应先收起它们
       if (S._ctxOpen) { closeCtxMenu(); return; }
       if (S._selOpen) { const b = S._selOpen.wrap.querySelector(".sel-btn"); closeSelMenus(null); if (b) b.focus({ preventScroll: true }); return; }
-      if ($(".menu-wrap > .menu:not([hidden])")) { closeAllMenus(); return; }
       if ($("#cropScrim")?.classList.contains("is-open")) { closeCropDialog(); return; }
       if ($("#alertScrim")?.classList.contains("is-open")) { closeAlert(); return; }
       if ($("#textScrim")?.classList.contains("is-open")) { closeImportTextModal(); return; }
@@ -374,8 +394,6 @@ function bindEvents() {
   document.addEventListener("change", (e) => {
     const t = e.target;
     if (t.tagName !== "INPUT" || t.type !== "file") return;
-    // 选文件即等于选定该项操作，菜单可以收起
-    closeAllMenus();
     switch (t.dataset.file) {
       case "wr-import": importWR(t); break;
       case "wb-import": importWBSt(t); break;

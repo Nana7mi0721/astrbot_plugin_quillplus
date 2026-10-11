@@ -33,7 +33,7 @@
   position: absolute; top: 0; left: 0; right: 0;
   height: .5px; background: var(--separator); transform: scaleY(.5);
 }
-.doc-name { font-size: 13.5px; font-weight: 500; word-break: break-all; }
+.doc-name { font-size: 13px; font-weight: 500; word-break: break-all; }
 .doc-meta { margin-top: 1px; font-size: 12px; color: var(--label-3); }
 
 .result-card {
@@ -57,8 +57,8 @@
 .result-score { margin-left: auto; font-size: 12px; color: var(--label-3); font-variant-numeric: tabular-nums; }
 .result-body {
   margin-top: var(--sp-2);
-  font-size: 12.5px;
-  line-height: 1.65;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--label-2);
   white-space: pre-wrap;
   word-break: break-word;
@@ -84,7 +84,7 @@
 #ragGroupList { display: flex; flex-direction: column; gap: var(--sp-3); }
 .kb-group {
   border: .5px solid var(--separator);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   background: var(--bg-secondary);
   overflow: hidden;
   transition: border-color var(--dur-micro) var(--ease-standard),
@@ -94,10 +94,10 @@
 .kb-group-head { display: flex; align-items: center; gap: var(--sp-3); padding: 12px var(--sp-3) 12px var(--sp-1); }
 .kb-group-caret {
   flex: none;
-  width: 28px; height: 28px;
+  width: 24px; height: 24px;
   display: grid; place-items: center;
   border: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-row);
   background: transparent;
   color: var(--label-3);
   cursor: pointer;
@@ -109,15 +109,17 @@
 .kb-group-caret[aria-expanded="true"] .icon { transform: rotate(90deg); }
 .kb-group-icon {
   flex: none;
-  width: 34px; height: 34px;
+  width: 28px; height: 28px;
   display: grid; place-items: center;
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   background: var(--fill-quaternary);
-  font-size: 18px;
+  color: var(--label-2);
+  font-size: 12px;
   line-height: 1;
 }
-.kb-group-name { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; word-break: break-all; }
-.kb-group-desc { margin-top: 2px; font-size: 12px; line-height: 1.55; color: var(--label-2); }
+.kb-group-icon .icon { width: 16px; height: 16px; }
+.kb-group-name { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; word-break: break-all; }
+.kb-group-desc { margin-top: 2px; font-size: 12px; line-height: 16px; color: var(--label-2); }
 .kb-group-meta { margin-top: 3px; font-size: 12px; color: var(--label-3); font-variant-numeric: tabular-nums; }
 .kb-group-actions { flex: none; display: flex; align-items: center; gap: var(--sp-2); }
 .kb-group-docs { padding: 0 var(--sp-3) var(--sp-2) 46px; border-top: .5px solid var(--separator); }
@@ -133,7 +135,7 @@
 .kb-big-head {
   display: flex; align-items: center; gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-1);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   background: var(--bg-secondary);
   border: .5px solid var(--separator);
 }
@@ -146,10 +148,10 @@
 .kb-big-body[hidden] { display: none; }
 .kb-big-caret {
   flex: none;
-  width: 30px; height: 30px;
+  width: 24px; height: 24px;
   display: grid; place-items: center;
   border: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-row);
   background: transparent;
   color: var(--label-2);
   cursor: pointer;
@@ -161,15 +163,17 @@
 .kb-big-caret[aria-expanded="true"] .icon { transform: rotate(90deg); }
 .kb-big-icon {
   flex: none;
-  width: 38px; height: 38px;
+  width: 32px; height: 32px;
   display: grid; place-items: center;
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   background: var(--fill-tertiary);
-  font-size: 20px;
+  color: var(--label-2);
+  font-size: 12px;
   line-height: 1;
 }
+.kb-big-icon .icon { width: 18px; height: 18px; }
 .kb-big-name { display: flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 650; }
-.kb-big-desc { margin-top: 2px; font-size: 12px; line-height: 1.55; color: var(--label-2); }
+.kb-big-desc { margin-top: 2px; font-size: 12px; line-height: 16px; color: var(--label-2); }
 .kb-big-meta { margin-top: 3px; font-size: 12px; color: var(--label-3); font-variant-numeric: tabular-nums; }
 .kb-big-actions { flex: none; display: flex; align-items: center; gap: var(--sp-2); }
 /* 文档行里的「移动到分组」下拉：只占内容宽度，不抢文档名的空间。

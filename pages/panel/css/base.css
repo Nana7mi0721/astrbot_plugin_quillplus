@@ -1,7 +1,7 @@
 /* ── 2. 基础与重置 ─────────────────────────────────────────────────── */
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
-/* hidden 必须压过组件的 display 声明：.menu-item{display:flex}、.search-clear
+/* hidden 必须压过组件的 display 声明：.wr-batch-actions{display:flex}
    这类规则会盖掉 hidden，导致未选中条目时批量操作条照样显示。 */
 [hidden] { display: none !important; }
 
@@ -10,9 +10,11 @@
      拉丁字形优先取系统 UI 字体（macOS 的 SF Pro / Windows 的 Segoe UI），
      中文字形交给各平台原生中文字体（苹方 / 微软雅黑 / Noto Sans SC）。
      各平台按顺序命中自己的第一个可用项，缺失即顺延，不会出现豆腐块。 */
-  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
-             "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI",
-             "Noto Sans SC", sans-serif;
+  /* 顺序照抄 kit 的 --mac-font-sans：先点名字体，再 -apple-system 兜底 */
+  --font-ui: "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont,
+             "Helvetica Neue", "PingFang SC", "Segoe UI Variable", "Segoe UI",
+             "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC",
+             system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
 }
 
@@ -21,8 +23,10 @@ html { height: 100%; -webkit-text-size-adjust: 100%; }
 body {
   height: 100%;
   font-family: var(--font-ui);
-  font-size: 14px;
-  line-height: 1.5;
+  /* macOS 的正文档是 13px / 16px 行高（kit typography.body）。
+     14px + 比例行高 1.5 是 Web 默认，不是 macOS。                  */
+  font-size: 13px;
+  line-height: 16px;
   font-weight: 400;
   background: var(--bg-grouped);
   color: var(--label);
@@ -36,11 +40,13 @@ body {
 /* 数字统一等宽，避免计数跳动 */
 .tnum, .sl-badge, .badge, table, input[type="number"] { font-variant-numeric: tabular-nums; }
 
-h1, h2, h3, h4 { font-weight: 600; line-height: 1.25; letter-spacing: -.01em; }
-h1 { font-size: 22px; }
-h2 { font-size: 20px; }
-h3 { font-size: 15px; }
-h4 { font-size: 14px; }
+/* 标题：字号与固定行高取自 kit 的 type ladder，不写比例行高。
+   h1 22/26（title1）· h2 17/22（title2）· h3 15/20（title3）· h4 13/16（headline） */
+h1, h2, h3, h4 { font-weight: 600; letter-spacing: -.01em; }
+h1 { font-size: 22px; line-height: 26px; }
+h2 { font-size: 17px; line-height: 22px; }
+h3 { font-size: 15px; line-height: 20px; }
+h4 { font-size: 13px; line-height: 16px; }
 
 a { color: var(--accent-text); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -60,10 +66,67 @@ code, pre, kbd { font-family: var(--font-mono); font-size: .92em; }
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--label-3); background-clip: content-box; }
 
+/* 焦点环：kit 的 global.focusRing —— 两层结构（外 3.5px@25% 光晕 + 内
+   1px@15% 贴边描边）。outline 画不出「外扩光晕 + 贴边描边」的组合，必须
+   用 box-shadow。带自身投影的组件（.card / .modal / 输入框）在各自
+   规则里把投影叠回来。                                                  */
 :focus { outline: none; }
 :focus-visible {
-  outline: 3px solid var(--accent-tint-strong);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── 连续圆角（squircle）──────────────────────────────────────────────
+   kit 里 5,395 处圆角全部使用 Sketch smoothing 0.6，即 Apple 的连续
+   （超椭圆）曲率，不是四分之一圆。引擎支持时用 corner-shape 表达；
+   **半径值保持实测值不变**，绝不放大约束去「模仿」squircle —— 同等半径下
+   超椭圆本身就更紧，放大半径会变成另一个形状而不是更接近。           */
+@supports (corner-shape: superellipse(1.2)) {
+  .btn,
+  .icon-btn,
+  .file-btn,
+  .segmented,
+  .segmented > button,
+  .sel-seg,
+  .sel-seg > button,
+  .switch,
+  .switch-track,
+  .switch-track::after,
+  .check input,
+  .field,
+  .search > input,
+  .search-clear,
+  .slider::-webkit-slider-thumb,
+  .slider::-moz-range-thumb,
+  .tagfield,
+  .tagfield > input,
+  .tag,
+  .badge,
+  .select-pill,
+  .card,
+  .note,
+  .danger-box,
+  .sel-menu,
+  .ctx-menu,
+  .sel-opt,
+  .ctx-item,
+  .modal,
+  .modal-head,
+  .alert,
+  .alert-btn,
+  .banner,
+  .banner-action,
+  .actionbar,
+  .to-top,
+  .sl-item,
+  .sl-badge,
+  .skeleton,
+  .dot,
+  .pager-bar,
+  .page-head-bar,
+  .toolbar {
+    corner-shape: superellipse(1.2);
+  }
 }
 
 /* 数字/文本工具类 */

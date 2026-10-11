@@ -6,12 +6,12 @@
 .dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--sp-3); }
 .dash-card {
   padding: var(--sp-4);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   background: var(--bg-primary);
   box-shadow: var(--shadow-1);
 }
-.dash-value { font-size: 28px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.dash-label { margin-top: 2px; font-size: 12.5px; color: var(--label-3); }
+.dash-value { font-size: 26px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.dash-label { margin-top: 2px; font-size: 12px; color: var(--label-3); }
 .dash-track {
   margin-top: var(--sp-3);
   height: 4px;

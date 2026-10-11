@@ -112,7 +112,7 @@ function fileToB64(file) {
 /** 按钮忙碌态：禁用 + 转圈，结束后恢复原内容。 */
 async function withBusy(el, busyText, fn) {
   if (!el) return fn();
-  // 非表单控件（如 .menu-wrap 容器）不能禁用也不该换内容：
+  // 非表单控件（如工具栏容器）不能禁用也不该换内容：
   // 替换 innerHTML 会让容器高度塌陷，整页跟着跳。改用 aria-busy 标记。
   const isFormControl = typeof el.disabled === "boolean";
   if (!isFormControl) {
