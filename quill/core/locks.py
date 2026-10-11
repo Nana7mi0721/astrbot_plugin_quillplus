@@ -27,7 +27,7 @@ vector_store、kb 三处），任何一处注释失守（比如有人好心把�
 方法是安全的。既有调用结构**保持不变**（不为"利用可重入"重构调用链），
 只是消除了自死锁风险。
 
-零 astrbot import（架构守卫 tests/arch/test_layering.py）。
+零 astrbot import（AGENT.md §三 分层约定；原架构守卫已归档）。
 """
 
 from __future__ import annotations

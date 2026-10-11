@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """quill/ 包的日志桥（M2.1 引入；M4.4 去 logging 化）。
 
-背景：架构守卫（tests/arch/test_layering.py）禁止 quill/ 包内 import
+背景：分层约定（AGENT.md §三 分层约定；原架构守卫已归档）禁止 quill/ 包内 import
 astrbot.*，而原 main.py 的方法体大量引用模块级 ``logger``（来自
 ``astrbot.api``）。搬移这些方法时若逐行改写日志调用，既违反"方法体
 一字不改"的搬移纪律，也会制造大量无谓 diff。因此：

@@ -13,8 +13,8 @@ quill_rag/memory_store.py 存储层本身按 PLAN 后续里程碑再演进归入
 ``self._spawn``、``self.config`` 与三个阈值常量（原 QuillPlugin 类属性
 ``REFLECTION_TURN_THRESHOLD`` 等）——下沉时改为**显式参数** + 模块常量，
 块内其余部分一字未改：内层 try/except 的 warning 吞掉语义、阈值判断与
-摘要/修剪/清理的调用顺序逐字保真（行为快照钉住，tests/test_hook_snapshots.py
-H5 节）。日志经 quill/core/logbridge.py 的代理 ``logger``（宿主 main.py
+摘要/修剪/清理的调用顺序逐字保真（由 .build/harness/quilltest/run.py
+--tier2 的真实钩子注入看守）。日志经 quill/core/logbridge.py 的代理 ``logger``（宿主 main.py
 注入的同一个 astrbot logger）；本模块零 astrbot import（架构守卫）。
 """
 

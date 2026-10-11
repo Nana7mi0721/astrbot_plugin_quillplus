@@ -16,7 +16,7 @@
 4. **异常链**：底层 except 块抛 ``StorageError(...) from exc``，原始异常
    永远可追溯（D4 整改的统一写法，见 quill_rag 各存储模块）。
 
-本模块零 astrbot import（架构守卫 tests/arch/test_layering.py）。
+本模块零 astrbot import（AGENT.md §三 分层约定；原架构守卫已归档）。
 """
 
 from __future__ import annotations

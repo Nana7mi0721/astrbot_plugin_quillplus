@@ -1,20 +1,38 @@
-# 羽笔 v5.2 插件架构与配置说明
+# 羽笔 v5.3 插件架构与配置说明
 
 ## 一、整体架构
 
-插件由 **5 大模块** 组成，在一次 LLM 请求生命周期中协同工作：
+运行时为「注册桩 → 适配层 → 服务层」三级结构（v5.3.0 重构），由 **5 大功能模块** 组成，
+在一次 LLM 请求生命周期中协同工作：
+
+| 层级 | 核心文件 | 职责 |
+|------|----------|------|
+| 注册桩 | `main.py` | `@register` 元数据 + 6 个 AstrBot 钩子的薄转发，不含业务逻辑 |
+| 适配层 | `interfaces/` | AstrBot API 适配：`astrbot_hooks.py` 负责注入编排，provider / `kb_manager` 等由此取用 |
+| 服务层 | `quill/` | 纯逻辑服务（配置投影、状态、Prompt 装配、状态栏、记忆…），**不 import astrbot** |
 
 | 模块 | 核心文件 | 职责 |
 |------|----------|------|
 | **激活门控** | `activation.py` + `state.py` | 判断是否进入 RP 模式 |
-| **Prompt 装配** | `prompt_builder.py` | 4 层 Prompt 结构化组装 |
-| **内容注入源** | `kb.py`(WR) + `worldbook.py`(WB) + `persona_manager.py` + `quill_rag/*` | 提供素材/设定/记忆 |
-| **输出后处理** | `main.py` 多个 hook | 状态栏解析、拒绝检测、Markdown 清理 |
+| **Prompt 装配** | `prompt_builder.py` + `quill/services/prompt.py` | 4 层 Prompt 结构化组装 |
+| **内容注入源** | `kb.py`(WR) + `worldbook.py`(WB) + `persona_manager.py` + `quill_rag/*` | 提供素材/设定/记忆/文档 |
+| **输出后处理** | `main.py` 转发的 hook + `quill/services/statusbar/*` | 状态栏解析、拒绝检测、Markdown 清理 |
 | **状态持久化** | `state.py` + `persona_manager.py` | 双轴隔离 + 原子写入 |
+| **Web 面板** | `web_routes.py`(HTTP) + `_route_core.py`(纯逻辑) + `pages/panel/` | 配置与内容管理界面 |
+
+与 AstrBot 原生数据的两处接入（v5.3.2，均为**只读**，不改动 AstrBot 侧数据）：
+
+- `quill_rag/astrbot_kb.py` —— 把 AstrBot 面板「知识库」里已配置的库并入可绑定源
+  （`kb:库名`），检索经 `context.kb_manager`；由 `rag.astrbot_kb_enabled` 总开关控制。
+- `persona_import.py` —— 把 AstrBot 面板「人格」经摘要模型转换为角色卡（「由人格导入」按钮），
+  人格本身不被修改、不被删除。
 
 ---
 
 ## 二、一次 LLM 请求的完整生命周期
+
+> 下列钩子的实现都在 `interfaces/astrbot_hooks.py`（`main.py` 只做转发）；钩子内部调用的服务
+> 位于 `quill/`（纯逻辑）与 `quill_rag/`（检索组件）。
 
 ### 阶段 1：流式决策 — `on_waiting_llm_request`
 
@@ -44,7 +62,18 @@
 
 **2.8 调用 PromptBuilder**：返回 `(stable_prompt, dynamic_prompt)`。
 
-**2.9 RAG 检索注入**：追加文档 RAG + 动态记忆到 `dynamic_prompt`。
+**2.9 RAG 检索注入**：追加文档 RAG + 动态记忆到 `dynamic_prompt`。文档源的绑定标识（`source`）
+有四种形态，`allowed_sources` 为精确字符串匹配：
+
+| 绑定写法 | 含义 |
+|----------|------|
+| `文件名` | 本插件上传的文档（走插件自己的向量库与检索预算） |
+| `grp:分组名` | 插件内子知识库（分组）。纯元数据、共用同一份 FAISS 索引，检索前展开成组内文件名列表 |
+| `kb:库名` | AstrBot 内置知识库整库（只读，需 `rag.astrbot_kb_enabled`） |
+| `kb:库名/文档名` | 内置库中的单篇文档：候选池放大到 30 再按 `doc_name` 过滤，最后截回 `rag.top_k` |
+
+本地路与内置库路**各自独立成败**：必须分别取出失败标记后再合并（`list(x)` / `extend` 会丢掉
+`RagResult` 子类上的 `_rag_ok` / `_rag_error` 标记），健康度记入 `health_tracker.record_rag`。
 
 **2.10 最终合并**：根据 `injection_position` 决定顺序（`system_end` / `user_prefix`）。
 
@@ -106,6 +135,10 @@ Base64 解密 + 状态栏二次处理 + 兜底注入 + refusal 扫描。
 | `auto` | 使用全库 |
 | `custom` | 只用绑定的列表 |
 
+`custom` 的绑定值支持**三级粒度**（角色卡「高级扩展」页的勾选树）：大组全选（纯 UI 层）→
+子知识库组（`grp:组名` / `kb:库名`）→ 单篇（`文件名` / `kb:库名/文档名`）。
+`grp:` 在检索前展开：组不存在则忽略该绑定，组为空则展开为空（**不退化**成检索全库）。
+
 ---
 
 ## 四、各配置项在流程中的作用
@@ -124,6 +157,7 @@ Base64 解密 + 状态栏二次处理 + 兜底注入 + refusal 扫描。
 | `dense_top_k` | `5` | FAISS 粗排数量 |
 | `astrbot_kb_enabled` | `true` | 把 AstrBot 内置知识库并入可绑定源（`kb:库名`）。关闭后完全不触碰 `kb_manager` |
 | `enable_memory` | `false` | 动态记忆总开关 |
+| `enable_autonomous_reflection` | `true` | 闲时反思守护进程：每小时扫描空闲会话，自动总结并提纯记忆 |
 | `enable_chat_logging` | `true` | 对话日志归档 |
 | `chat_log_retention_days` | `30` | 日志保留天数 |
 
@@ -166,6 +200,16 @@ Base64 解密 + 状态栏二次处理 + 兜底注入 + refusal 扫描。
 | `plot_paths` | `继续当前话题\|转换场景\|结束互动` | 分支选项 |
 | `llm_extract` | `false` | LLM 智能提取（实验性） |
 | `llm_provider_id` | `""` | 状态栏提取 LLM，留空回退到 RAG 摘要 LLM |
+| `default_placeholder` | `未设置` | 字段缺位时的占位文案 |
+| `show_delta` | `true` | 与上一轮比较并标注变化（↑↓） |
+| `format_template_plain` | 见代码 | 纯文本平台（如 QQ）的渲染模板 |
+| `plain_platforms` | `""` | 强制走纯文本模板的平台列表，留空用内置默认 |
+| `jev_enabled` | `false` | JEV 判定模式开关（**面板专有键**，不在 `_conf_schema.json`） |
+| `jev_provider_id` | `""` | JEV 判定所用 AstrBot 提供商（需指向 `api.typesafe.ai`、模型 `jev-latest`） |
+| `jev_confidence_floor` | `0.6` | 置信度下限，低于此值判定作废、静默跳过 |
+
+> JEV 三个键由面板「配置 → 状态栏」卡片写入（`_ALLOWED_CONFIG_KEYS` 放行），AstrBot 原生配置页
+> 不显示它们。JEV 只做结构化判定（`noul` / `choice` / `score`），不生成文本；失败一律 fail-open。
 
 ### `[refusal]` — 反拒绝
 
@@ -179,6 +223,7 @@ Base64 解密 + 状态栏二次处理 + 兜底注入 + refusal 扫描。
 | 配置项 | 默认 | 作用 |
 |--------|------|------|
 | `debug.enabled` | `false` | 详细匹配日志 |
+| `debug.show_inject_report` | `false` | 每轮在回复末尾附注入报告（各段命中/降级情况） |
 | `permissions.admin_users` | `""` | 群聊写指令白名单，留空时 fail-close |
 
 **写指令与权限门**：所有会改动持久状态的子命令都过 `_check_group_permission`
@@ -259,3 +304,9 @@ target_id（会话维度：群+用户）
 10. **LRU 会话缓存（v5.1）**：基于 `OrderedDict` 的 LRU 缓存加速同会话反复检索，减少磁盘与序列化开销。
 
 11. **对话日志查看器（v5.2）**：Web 面板新增「对话日志」子页，按会话浏览/导出 RP 对话记录，方便复盘与调试。
+
+12. **三级运行时结构（v5.3.0）**：`main.py`（注册桩，只有 `@register` 与钩子转发）→ `interfaces/`（AstrBot 适配，唯一的框架接触面）→ `quill/`（服务层，**不 import astrbot**）。这样服务层可脱离框架推理与复用，钩子签名变化只影响适配层一处；激活判定同时改为 fail-close（检测失败按未激活处理，绝不退化成每轮全量注入）。
+
+13. **JEV 结构化判定（v5.3.1）**：剧情分支与状态栏判定交给 TypeSafe System One（复用 AstrBot 的 openai_compatible 提供商配置，直连 `/v1/systemone`，因为 Jev 没有 `chat/completions` 端点）。它只输出类型化判定与置信度、不生成文本；显式数字回复（1/2/3）本地精确匹配、零消耗；任何失败 fail-open，绝不影响正文渲染。
+
+14. **与 AstrBot 原生数据双向兼容（v5.3.2）**：① 内置知识库并入可绑定源（`kb:库名` / `kb:库名/文档名`，只读，总开关 `rag.astrbot_kb_enabled`）；② AstrBot 人格经摘要模型只读转换为角色卡（「由人格导入」，人格本身不变）；③ 插件内文档分组（`grp:组名`）作为**纯元数据**层，与单篇绑定共用同一份 FAISS 索引与检索预算，检索前才展开成文件列表。

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """quill/ — 羽笔与 AstrBot 解耦的核心包（v5.3.0 M2 渐进拆分目标位）。
 
-依赖规则（docs/v5.3/PLAN.md §2.2，tests/arch/test_layering.py 机械校验）：
+依赖规则（docs/v5.3/PLAN.md §2.2，AGENT.md §三 分层约定）：
 
     interfaces/ ──import──> quill/          （单向）
     quill/core/ ←──import── quill/services/ （core 不依赖 services）

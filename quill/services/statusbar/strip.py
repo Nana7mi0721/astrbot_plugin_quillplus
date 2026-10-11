@@ -6,8 +6,8 @@
 剥离器是「纯逻辑」：正则文本处理，零 self 依赖（原实现即 QuillPlugin 的
 类属性 + classmethod，且方法体只引用类级常量），因此整体转成模块级常量
 与纯函数，**正则/文本处理逐字未改**。main.py 的 QuillPlugin 保留同名
-类属性/类方法薄转发（M2.0 搬移期约定）——tests/legacy（t7/t8/t15/t26）
-与 probe 脚本经 ``QuillPlugin.<name>`` 的旧访问面不变，转发类属性与
+类属性/类方法薄转发（M2.0 搬移期约定）——probe 脚本与外部旧脚本经
+``QuillPlugin.<name>`` 的旧访问面不变（原 tests/legacy 已归档），转发类属性与
 本模块常量是**同一对象**（缓存 dict 亦然），任何一侧清缓存都作用于
 同一份状态，与搬移前单一代码路径等价。
 

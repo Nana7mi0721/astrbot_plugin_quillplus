@@ -10,7 +10,7 @@ M2.2 第六轮（H3 薄化）首批下沉：只收 H3 的 22 步编排中**真�
 _sb_effective），或本身是编排控制流（早退 return），强搬即重写，留在
 interfaces/astrbot_hooks.handle_llm_request（决策记录见彼处 docstring）。
 
-依赖规则：本包禁止 import astrbot（tests/arch/test_layering.py 机械校验）。
+依赖规则：本包禁止 import astrbot（AGENT.md §三 分层约定）。
 """
 
 from __future__ import annotations

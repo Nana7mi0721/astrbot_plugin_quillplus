@@ -126,15 +126,15 @@ async def handle_decorating_result(plugin, event: AstrMessageEvent) -> None:
     箭头在此归一（webchat 等 Markdown 渲染器把行首 >>> 解析为嵌套引用块
     渲染成三条竖线）；归一变化并入 cleaned 计数。**例外**：剥离后仍含
     L1/L2 渲染签名（``**状态栏**`` + ``` 围栏）的段不归一——
-    tests/legacy/test_status_bar_parsers.py 兜底钩子节（铁律：断言逐字
-    保留）把「开启时已渲染状态栏原样保留」连同 ASCII 箭头逐字钉死为本
-    钩子契约；渲染栏的正常产生路径在 H2 工具链（彼处对每个 plain 段
+    本钩子契约（原由 tests/legacy 的兜底钩子节逐字断言看守，该套件已归档）
+    要求「开启时已渲染状态栏原样保留」连同 ASCII 箭头逐字不动；
+    渲染栏的正常产生路径在 H2 工具链（彼处对每个 plain 段
     无条件归一），H6 只对非渲染栏段兜底归一。
 
     剥离器经 ``plugin._strip_*`` 调用而非直接 import：与原 ``self._strip_*``
     的动态分发路径逐字等价（转发链最终落在
-    quill/services/statusbar/strip.py 的纯函数），并让行为快照测试
-    （tests/test_hook_snapshots.py）在搬移前后命中同一注入点。
+    quill/services/statusbar/strip.py 的纯函数），并让 E2E
+    （.build/harness/quilltest/run.py --tier2）在搬移前后命中同一注入点。
     """
     # 会话级覆盖 > 面板全局：关闭方向必须清，开启方向只清原始标记
     enabled = await plugin._effective_status_bar_enabled(
@@ -187,7 +187,7 @@ async def handle_waiting_llm_request(plugin, event: AstrMessageEvent) -> None:
     """LLM 请求等待期：切换角色卡专属对话并控制流式模式（H1）。
 
     （业务逻辑自 main.py 逐字搬移，M2.2 第二轮；``self`` → ``plugin``。
-    行为快照见 tests/test_hook_snapshots.py H1 节，行为契约与降级怪癖
+    验证走 E2E：.build/harness/quilltest/run.py --tier2，行为契约与降级怪癖
     见 main.py 注册桩 docstring 与 BASELINE §2 H1 行。）
 
     与 H6 的关键差异（降级怪癖，刻意保真）：本函数**没有**钩子级顶层
@@ -245,7 +245,7 @@ async def handle_using_llm_tool(
     """工具调用前拦截：改写 send_message_to_user 的工具参数（H2）。
 
     （业务逻辑自 main.py 逐字搬移，M2.2 第三轮；``self`` → ``plugin``。
-    行为快照见 tests/test_hook_snapshots.py H2 节，行为契约与顶层降级
+    验证走 E2E：.build/harness/quilltest/run.py --tier2，行为契约与顶层降级
     语义见 main.py 注册桩 docstring 与 BASELINE §2 H2 行。顶层
     try/except **不在本函数内**——降级层位在注册桩，与 H6 同形态。）
 
@@ -486,7 +486,7 @@ async def handle_llm_response(
     """LLM 响应拦截：前置清洗、状态栏提取渲染、注入报告、落日志与拒绝扫描（H4）。
 
     （业务逻辑自 main.py 逐字搬移，M2.2 第四轮；``self`` → ``plugin``。
-    行为快照见 tests/test_hook_snapshots.py H4 节，行为契约与顶层降级
+    验证走 E2E：.build/harness/quilltest/run.py --tier2，行为契约与顶层降级
     语义见 main.py 注册桩 docstring 与 BASELINE §2 H4 行。顶层
     try/except **不在本函数内**——降级层位在注册桩，与 H2/H6 同形态：
     任何异常吞掉 + error 日志放行，resp 保持已改到一半的状态。）
@@ -727,7 +727,7 @@ async def handle_llm_tool_respond(
     """工具调用后拦截：Agent Loop 终止信号、动态记忆存储与多轮反思调度（H5）。
 
     （业务逻辑自 main.py 逐字搬移，M2.2 第五轮；``self`` → ``plugin``。
-    行为快照见 tests/test_hook_snapshots.py H5 节，行为契约与降级怪癖见
+    验证走 E2E：.build/harness/quilltest/run.py --tier2，行为契约与降级怪癖见
     main.py 注册桩 docstring 与 BASELINE §2 H5 行。）
 
     **降级怪癖（全插件唯一，与 H1 同款"无 try 保留"形态，刻意保真）**：
@@ -934,7 +934,7 @@ async def handle_llm_request(
     """LLM 请求拦截：22 步注入编排本体（H3，BASELINE §4，顺序即行为）。
 
     （业务逻辑自 main.py 逐字搬移，M2.2 第六轮；``self`` → ``plugin``。
-    行为快照见 tests/test_hook_snapshots.py H3 节，行为契约与顶层降级
+    验证走 E2E：.build/harness/quilltest/run.py --tier2，行为契约与顶层降级
     语义见 main.py 注册桩 docstring 与 BASELINE §2 H3 行。顶层
     try/except **不在本函数内**——降级层位在注册桩：``emergency``/
     ``extra_info`` 预初始化与 ``_sanitize_extra`` 脱敏摘要是降级语义的

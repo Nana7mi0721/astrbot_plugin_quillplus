@@ -8,7 +8,7 @@
   Mixin 基类（解析侧六级降级链 / 渲染侧模板与兜底栏）；
 - ``LOVE_DATA_TAG`` / ``STATUS_TAG`` / ``STATUS_END_TAG``：协议标记常量；
 - 解析侧模块级正则与纯函数（带下划线前缀，供 main.py 保持旧 import 面与
-  tests/legacy、probe 脚本兼容——M2.0 约定：搬移期旧位置保留 re-export）。
+  probe 脚本与外部旧脚本兼容——M2.0 约定：搬移期旧位置保留 re-export）。
 """
 
 from .tokens import LOVE_DATA_TAG, STATUS_END_TAG, STATUS_TAG

@@ -7,7 +7,7 @@
 契约文案（prompt_builder.build_status_contract）、解析正则（parsers.py）、
 剥离器（main.py 的 _strip_* 系列）引用的都是同一字符串。此前各处手写
 字面量，现收敛到这里作为单一来源——改动标记值只需改这一处
-（并同步契约文案与 tests/legacy 的全部回归 fixture）。
+（并同步契约文案与解析/剥离两侧正则）。
 
 正则侧不重复手写转义形态（``\\[LOVE_DATA\\]``），而是用
 ``re.escape(标记常量)`` 从本模块拼装——``re.escape("[LOVE_DATA]")``

@@ -14,7 +14,7 @@
 * :func:`resolve_safe`  —— 用户名 → ``base`` 目录下的安全落点。
 
 依赖规则：本文件属 ``quill/core``（最底层），**禁止 import astrbot 与
-quill.services**（tests/arch/test_layering.py 机械校验），只依赖标准库。
+quill.services**（AGENT.md §三 分层约定，原由架构守卫机械校验），只依赖标准库。
 M3.2 落地 ``QuillError`` 体系后，:func:`resolve_safe` 的异常可换族；
 当前用 ``ValueError``（调用方按"参数不合法"处理，正对应 400 语义）。
 """

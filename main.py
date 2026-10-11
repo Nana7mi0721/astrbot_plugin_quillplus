@@ -42,7 +42,8 @@ from .kb import WritingResourceManager
 from .worldbook import WorldbookManager
 from .props import QuillConfigProperties
 # PromptBuilder 本体已由 props.py 直接构造（M2.3）；此处保留 re-export 是
-# M2.0 搬移期约定——tests/legacy 与 probe 脚本经 main 模块取旧导入面。
+# M2.0 搬移期约定——probe 脚本与外部旧脚本经 main 模块取旧导入面
+# （原 tests/legacy 已归档，见 .backup/tests_v5.3.2_unit_regression/）。
 from .prompt_builder import PromptBuilder  # noqa: F401  (legacy/probe 导入面)
 from . import commands as _cmds
 from .web_routes import QuillRoutes
@@ -68,7 +69,8 @@ from .quill.services.statusbar import (
     StatusbarRenderMixin,
     # ── 搬移期 re-export（M2.0 约定）：状态栏解析侧常量/纯函数已搬至
     # quill/services/statusbar/parsers.py，这里保留旧模块级名字，
-    # 供 tests/legacy、probe 脚本的旧 import 面使用（t8 与各处 M.<name> 断言）。
+    # 供 probe 脚本与外部旧脚本的旧 import 面使用（原 tests/legacy 的
+    # t8 与各处 M.<name> 断言随该套件一并归档）。
     # 标签常量（LOVE_DATA_TAG/STATUS_TAG/STATUS_END_TAG）与剥离器侧常量
     # （_STRIP_LOVE_DATA_RE 等）无任何外部引用，故不在本列表内。
     _DEFAULT_LOVE_FIELDS_RAW,
@@ -330,13 +332,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     # 代码一律走 self.props.*。
     #
     # 为什么用 __getattr__ 兜底而不是 @property：property 是数据描述符，
-    # 会挡掉实例属性赋值——tests/legacy/test_status_bar_parsers.py 的轻量
-    # 宿主（object.__new__(QuillPlugin) 后直接 setattr，见 t24/t25/t26）
-    # 与既有外部脚本都会因此失效。__getattr__ 只在**常规
+    # 会挡掉实例属性赋值——外部脚本用 object.__new__(QuillPlugin) 造轻量
+    # 宿主后直接 setattr 的用法（原 tests/legacy 的 t24/t25/t26 即此类）
+    # 会因此失效。__getattr__ 只在**常规
     # 属性查找失败**时触发：实例字典里已有的同名属性照常生效（与 v5.2.5
     # 的可写实例属性行为完全一致），默认路径实时读 props，不留第二真源。
     # 运行期自身代码没有任何对这些名字的赋值点
-    # （tests/legacy/test_config_projection.py 看守）。
+    # （现由 docs/probe_config_effects.py 的真机键效应探测 +
+    # .build/harness/quilltest/run.py --api 的 api_config_write_roundtrip 看守）。
     _MIXIN_CONFIG_ATTRS = frozenset({
         "love_fields",
         "status_bar_enabled",
@@ -1156,8 +1159,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         注册桩（M2.2 第二轮）：装饰器/签名/priority 不变（框架以
         ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
         ``interfaces.astrbot_hooks.handle_waiting_llm_request``（完整
-        设计理由见彼处 docstring；行为快照见 tests/test_hook_snapshots.py
-        H1 节）。行为契约：
+        设计理由见彼处 docstring；验证走 E2E
+        .build/harness/quilltest/run.py --tier2）。行为契约：
 
         * 先切角色卡专属对话（必须早于框架 ``_get_session_conv()``，
           下一事件才切换就要晚一轮生效），实现见
@@ -1183,8 +1186,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     # quill/services/statusbar/strip.py，正则/文本处理一字未改，仅由
     # 类属性/classmethod 转为模块级常量/函数（原实现本就零 self 依赖）。
     # 此处保留同名类属性/类方法薄转发（M2.0 搬移期约定）：
-    #   - tests/legacy（t7/t8/t15/t26）与 probe 脚本经
-    #     QuillPlugin.<name> 的旧访问面不变；
+    #   - probe 脚本与外部旧脚本经
+    #     QuillPlugin.<name> 的旧访问面不变（原 tests/legacy 已归档）；
     #   - 钩子/服务侧经 self._strip_* 的动态分发路径与搬移前一致。
     # 下面的类属性与 strip 模块常量是**同一对象**的别名：任何一侧改表都作用
     # 于同一份状态，与搬移前单一代码路径等价。
@@ -1476,8 +1479,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         注册桩（M2.2 第三轮）：装饰器/签名/priority 不变（框架以
         ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
         ``interfaces.astrbot_hooks.handle_using_llm_tool``（完整设计理由与
-        下沉决策见彼处 docstring；行为快照见 tests/test_hook_snapshots.py
-        H2 节）。行为契约：
+        下沉决策见彼处 docstring；验证走 E2E
+        .build/harness/quilltest/run.py --tier2）。行为契约：
 
         * 三重闸门原样放行（不修改 tool_args）：非 send_message_to_user
           工具 → 未激活（``_quill_activated``）→ 空 tool_args；
@@ -1547,8 +1550,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         相反——移植该层时（M3.3+）不得把 fail-open 带回来。
 
         正常判定逻辑（``should_activate`` / ``check_brackets`` / WR match）
-        一行未动：异常路径之外的行为与 v5.2.5 逐字相同（快照
-        tests/test_hook_snapshots.py H3 节钉住）。
+        一行未动：异常路径之外的行为与 v5.2.5 逐字相同（由
+        .build/harness/quilltest/run.py --tier2 的真实注入看守）。
         """
         try:
             activated = self.activation_detector.should_activate(user_input)
@@ -1762,7 +1765,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
         ``interfaces.astrbot_hooks.handle_llm_request``（22 步注入编排
         本体，BASELINE §4——顺序即行为；完整设计理由、段序与下沉决策见
-        彼处 docstring；行为快照见 tests/test_hook_snapshots.py H3 节）。
+        彼处 docstring；验证走 E2E：.build/harness/quilltest/run.py --tier2）。
         核心职责：
 
         - 平行宇宙双轴隔离 (target_id::persona_id)：按群+角色切分独立状态
@@ -1818,8 +1821,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         注册桩（M2.2 第四轮）：装饰器/签名/priority 不变（框架以
         ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
         ``interfaces.astrbot_hooks.handle_llm_response``（完整设计理由、
-        段序与下沉决策见彼处 docstring；行为快照见
-        tests/test_hook_snapshots.py H4 节）。行为契约：
+        段序与下沉决策见彼处 docstring；验证走 E2E
+        .build/harness/quilltest/run.py --tier2）。行为契约：
 
         * 前置清洗：``[B:...]`` Base64 解密安全网、用户中断标记擦除；
         * **状态栏段不受 ``_quill_activated`` gate 限制**（BASELINE §2.1
