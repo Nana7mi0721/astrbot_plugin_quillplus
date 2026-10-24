@@ -30,8 +30,55 @@ from __future__ import annotations
 import re
 
 from ...core.logbridge import logger  # noqa: F401  # 方法体 logger 引用经 logbridge 桥接
-from . import jev_client as _jev_mod
+from . import decision_client as _dec_mod
 from .tokens import LOVE_DATA_TAG, STATUS_END_TAG, STATUS_TAG
+
+
+def _round_options_match(owner, rd: dict) -> bool:
+    """轮次缓存里的选项表是否仍与当前配置一致。
+
+    M8 附带修复：``annotate_plot_probs`` 按行首序号匹配概率，而缓存里存的是
+    **判定当时**的选项文字。用户在判定之后改了选项表（增删/换序）时，旧概率
+    会被贴到新的第 N 项上——百分比看着合理，含义已经完全错了。
+    缓存条目出自 ``decision_client.round_cache_entry``，旧版本可能没有 ``options``
+    字段，此时按「一致」处理（保持旧行为，不因缺字段而丢标注）。
+    """
+    opts = rd.get("options")
+    if not isinstance(opts, list):
+        return True
+    current = [
+        str(p).strip()
+        for p in (getattr(owner, "status_bar_plot_paths", None) or [])
+        if str(p).strip()
+    ]
+    cached = [str(p).strip() for p in opts]
+    if cached == current:
+        return True
+    logger.info(
+        "[Quill] Decision 轮次缓存的选项表已过期（缓存 %d 项 / 当前 %d 项），本轮不标注推荐选择度",
+        len(cached), len(current),
+    )
+    return False
+
+
+def apply_template(template: str, content: str) -> str:
+    """把渲染内容套进平台模板；模板缺 ``{content}`` 时**不丢内容**。
+
+    L4 修复：六级降级链与渲染侧共 6 处写 ``template.replace("{content}", ...)``，
+    而 ``str.replace`` 找不到占位符时原样返回模板——用户把 format_template 改成
+    不含 ``{content}`` 的文本（比如只想留一条分隔线）时，状态栏内容被**静默丢弃**：
+    面板看着正常，栏里永远没有值，也没有任何日志。占位符缺失属于配置错误，
+    这里降级为「把内容补在模板之后 + 一条可检索的 warning」，而不是丢数据。
+    """
+    if "{content}" in template:
+        return template.replace("{content}", content)
+    logger.warning(
+        "[Quill] 状态栏模板缺少 {content} 占位符，已把内容追加到模板之后；"
+        "请在插件配置面板 → 状态栏 → 格式模板中补回 {content}"
+    )
+    if not template.strip():
+        return content
+    return template + "\n" + content
 
 # ── 解析侧正则 ────────────────────────────────────────────────────
 # 协议标记经 tokens.py 收敛：re.escape(标记) 与原转义字面量逐字节一致。
@@ -353,20 +400,25 @@ class StatusbarParsersMixin:
                 handled = True
                 break
 
-        # JEV 推荐选择度（第二档）：链条结束后对**最终文本**统一标注一次。
+        # Decision 推荐选择度（第二档）：链条结束后对**最终文本**统一标注一次。
         # 各级对剧情块的处理不同（L4 会把块搬进重建栏，L1/L2/L3 原样保留），
         # 在链后按最终文本拼接（start(1)/end(1) 精确切片）覆盖所有级别，
         # 且天然不会重复标注。缺料（未启用/低置信/结构对不上）原样返回——
         # annotate_plot_probs 内部已做全部 fail-open。
-        _rd = (getattr(self, "_jev_round_cache", None) or {}).get(target_id)
-        if isinstance(_rd, dict) and _rd.get("probs"):
+        # M8 修复：消费侧此前只看缓存有没有值，不看开关——用户在会话中途关掉
+        # 决策模式后，缓存最长还能活 5 分钟（decision_client 的 max_age_s），
+        # 这期间新生成的栏仍会带上「▸ N%」，看起来像开关没生效。写入侧
+        # （interfaces/astrbot_hooks.py）本就有这道门，这里补齐同一判据。
+        _dec_on = bool(getattr(self, "status_bar_decision_enabled", False))
+        _rd = (getattr(self, "_decision_round_cache", None) or {}).get(target_id)
+        if _dec_on and isinstance(_rd, dict) and _rd.get("probs") and _round_options_match(self, _rd):
             _pm = _PLOT_PATH_RE.search(new_text)
             if _pm:
-                _annotated = _jev_mod.annotate_plot_probs(
+                _annotated = _dec_mod.annotate_plot_probs(
                     _pm.group(1),
                     _rd["probs"],
                     float(_rd.get("confidence", 0.0)),
-                    floor=getattr(self, "status_bar_jev_confidence_floor", 0.6),
+                    floor=getattr(self, "status_bar_decision_confidence_floor", 0.6),
                 )
                 if _annotated != _pm.group(1):
                     new_text = new_text[:_pm.start(1)] + _annotated + new_text[_pm.end(1):]
@@ -457,10 +509,13 @@ class StatusbarParsersMixin:
             # 按未命中处理，让降级链继续往下走。
             return None
         annotated = _annotate_changes(love_formatted, ctx.mk_changed(love_updates))
-        # 套用本平台模板，与其余五级一致
-        new_text = ctx.text.replace(
-            raw_line, ctx.template.replace("{content}", annotated)
-        )
+        # 套用本平台模板，与其余五级一致（L4：占位符缺失不丢内容）
+        # L5 修复：原来是 `str.replace(raw_line, ...)`，会把文本里**所有**同一
+        # 行替换掉。模型偶尔会连写两遍 `[LOVE_DATA]`（正文一段、状态栏一段），
+        # 那一行就会被插两次渲染栏。这里改成只替换**第一个**匹配（它正是
+        # `_format_love_data` 用来解析的那一处），其余行留给下一轮剥离器处理。
+        rendered = apply_template(ctx.template, annotated)
+        new_text = ctx.text.replace(raw_line, rendered, 1)
         logger.info("[Quill] 状态栏已处理 (LOVE_DATA inline)")
         return _StatusLevelResult(new_text, love_updates)
 
@@ -476,7 +531,7 @@ class StatusbarParsersMixin:
         status_content = m.group(1).strip()
         updates = self._parse_legacy_status(status_content)
         annotated = _annotate_changes(status_content, ctx.mk_changed(updates))
-        formatted = ctx.template.replace("{content}", annotated)
+        formatted = apply_template(ctx.template, annotated)
         new_text = _STATUS_RE.sub(formatted, ctx.text)
         logger.info("[Quill] 状态栏已处理 (STATUS legacy)")
         return _StatusLevelResult(new_text, updates)
@@ -531,7 +586,7 @@ class StatusbarParsersMixin:
                 new_text = new_text.replace(pm.group(0), "").strip()
                 plot_str = f"\n\n【剧情走向】\n{plot_content}\n【请选择】"
             block_content = _annotate_changes("\n".join(parsed_lines), changed) + plot_str
-            beautiful_bar = ctx.template.replace("{content}", block_content)
+            beautiful_bar = apply_template(ctx.template, block_content)
             new_text = new_text.strip() + "\n\n" + beautiful_bar
             logger.info("[Quill] 状态栏已处理 (raw key:value, 动态字段)")
             return _StatusLevelResult(new_text, updates)
@@ -563,8 +618,8 @@ class StatusbarParsersMixin:
                 ctx.prev_vars.get(f, "") or self.status_bar_default_placeholder
             )
         lines = [f"{f}：{merged[f]}" for f in self.love_fields]
-        bar = ctx.template.replace(
-            "{content}", _annotate_changes("\n".join(lines), ctx.mk_changed(merged))
+        bar = apply_template(
+            ctx.template, _annotate_changes("\n".join(lines), ctx.mk_changed(merged))
         )
         logger.info(
             f"[Quill] 状态栏已处理 (lenient + 部分提取 "
@@ -587,8 +642,8 @@ class StatusbarParsersMixin:
                 or self.status_bar_default_placeholder
             )
         lines = [f"{f}：{merged[f]}" for f in self.love_fields]
-        bar = ctx.template.replace(
-            "{content}", _annotate_changes("\n".join(lines), ctx.mk_changed(merged))
+        bar = apply_template(
+            ctx.template, _annotate_changes("\n".join(lines), ctx.mk_changed(merged))
         )
         logger.info("[Quill] 状态栏已处理 (LLM 智能提取)")
         return _StatusLevelResult(ctx.new_text + "\n\n" + bar, merged)

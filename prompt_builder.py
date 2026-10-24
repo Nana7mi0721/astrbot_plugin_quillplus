@@ -401,12 +401,28 @@ class PromptBuilder:
             except Exception as exc:
                 logger.warning("[PromptBuilder] WR constant entries failed: %s", exc)
 
+        # M12 修复：Token 预算提到 Layer 1 之前求值，让**常驻条目**与
+        # 关键词命中条目共用同一个累加器。旧写法把 max_token 只用在下方
+        # Layer 2 的 wb_matched 循环里，于是 `worldbook.max_token_limit`
+        # 对「常驻世界书」完全失效——用户把上限调到 800，十几条常驻条目
+        # 依旧全量拼进 system prompt，预算形同虚设。常驻优先消费预算
+        # （它们是世界观底座），剩多少给关键词命中。
+        wb_max_token = extra_info.get("wb_max_token", 0)
+        wb_accumulated_tokens = 0.0
+
         if not skip_constants and wb_manager and wb_mode != "disabled":
             try:
                 wb_constants = await asyncio.to_thread(wb_manager.get_constant_entries, bound_worldbooks=bound_worldbooks)
                 for entry in wb_constants:
                     content = entry.get("content", "")
                     if content:
+                        # 与 Layer 2 同一判据：预算用尽即停，不再注入后续条目
+                        token_count = self._estimate_tokens(content)
+                        if wb_max_token > 0 and wb_accumulated_tokens + token_count > wb_max_token:
+                            logger.info("[PromptBuilder] WB 常驻 Token 上限已达 (%.0f/%d)，截断后续常驻条目",
+                                        wb_accumulated_tokens, wb_max_token)
+                            break
+                        wb_accumulated_tokens += token_count
                         layer1_parts.append(
                             "\u3010\u4e16\u754c\u89c2\u3011\n" + content
                         )
@@ -470,19 +486,18 @@ class PromptBuilder:
                     matching_text, bound_worldbooks=bound_worldbooks,
                     top_k=wb_top_k, sensitivity=sensitivity
                 )
-                # Token \u6ce8\u5165\u4e0a\u9650\uff08\u914d\u7f6e\u6ce8\u5165\uff09
-                max_token = extra_info.get("wb_max_token", 0)
-                accumulated_tokens = 0.0
+                # Token 注入上限（配置注入）——沿用 Layer 1 的累加器，
+                # 常驻条目已消费的部分在此继续扣减（M12 修复）。
                 for entry in wb_matched:
                     content = entry.get("content", "")
                     if content:
                         # Token 估算：CJK ≈ 1 token/字，ASCII ≈ 0.25 token/字
                         token_count = self._estimate_tokens(content)
-                        if max_token > 0 and accumulated_tokens + token_count > max_token:
+                        if wb_max_token > 0 and wb_accumulated_tokens + token_count > wb_max_token:
                             logger.info("[PromptBuilder] WB Token \u4e0a\u9650\u5df2\u8fbe (%.0f/%d)\uff0c\u622a\u65ad\u540e\u7eed\u6761\u76ee",
-                                        accumulated_tokens, max_token)
+                                        wb_accumulated_tokens, wb_max_token)
                             break
-                        accumulated_tokens += token_count
+                        wb_accumulated_tokens += token_count
                         layer2_parts.append(
                             "\u3010\u4e16\u754c\u89c2\u3011\n" + content
                         )
@@ -547,7 +562,11 @@ class PromptBuilder:
 
         # If still too long after dropping all non-zero sections, truncate last
         if len(result) > max_length:
-            result = result[: max_length - 20] + "\n\n...[\u5df2\u622a\u65ad]"
+            # L20 修复：`max_length - 20` 在 max_length < 20 时是负数，Python 负
+            # 切片会从**末尾**取，于是「截断」反而把整段文本接在尾巴上越截越长。
+            # max_prompt_length 理论上可配到 20 以下（面板是数字输入，无下限校验），
+            # 这里用 max(0, ...) 保证切片端点非负。
+            result = result[: max(0, max_length - 20)] + "\n\n...[已截断]"
         return result
 
     # ----------------------------------------------------------
@@ -589,6 +608,16 @@ class PromptBuilder:
             "  节奏递进：铺垫 → 发展 → 高潮 → 收尾，不允许省略任何阶段\n"
             "  连续性规则：用户说“继续”时，从上一段最后一句的位置继续写，禁止跳场景、跳时间\n"
         )
+        # M11 修复：`performance.max_output_length` 此前只有面板控件与读入，
+        # 没有任何消费点（对照 min_output_length 在上一行被真消费），用户把它
+        # 设成 2000 也不会有任何效果。这里与下限同一形态消费：写成写作要求，
+        # 而不是对已生成文本做硬截断——硬截断会在句子中间断开，且会把
+        # 已经渲染好的状态栏一起切掉。0 表示不限，与 schema 语义一致。
+        if self.max_output_length > 0:
+            guide += (
+                f"  长度上限 {self.max_output_length} 汉字，超出视为任务失败"
+                "（在到达上限前收束情节，不要把句子写一半）\n"
+            )
 
         # 动态判定：如果开启了状态栏，就强制它一起打包塞进工具里
         if self.status_bar_enabled:

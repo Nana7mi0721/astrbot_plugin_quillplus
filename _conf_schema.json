@@ -259,6 +259,43 @@
         "description": "按纯文本渲染的平台（管道分隔）",
         "default": "",
         "hint": "填 AstrBot 的适配器名，多个用 | 分隔，如 aiocqhttp|qq_official。留空使用内置默认：aiocqhttp、qq_official、qq_official_webhook、wecom、wecom_ai_bot、weixin_oc、weixin_official_account、dingtalk、line。未知平台一律走 Markdown 模板（不破坏原生渲染）。"
+      },
+      "decision_enabled": {
+        "type": "bool",
+        "description": "剧情走向决策模式",
+        "default": false,
+        "hint": "开启后，剧情选项会附带决策模型给出的推荐选择度（形如「▸ 72%」），自由文本回复也会按判定结果路由到最接近的分支。判定模型（TypeSafe Jev / OpenAI GPT-6 Luna Decisions / Inception Mercury / Cloudflare Clef 等）在下方独立配置，不经过 AstrBot 提供商——决策模型没有 chat/completions 端点，AstrBot 的 openai_compatible 提供商对它们不可用。全链失败开放：判定失败或置信度偏低时保持普通渲染，不影响正常回复。"
+      },
+      "decision_base_url": {
+        "type": "string",
+        "description": "决策模型 API 地址",
+        "default": "https://openrouter.ai/api/v1",
+        "hint": "推荐 OpenRouter（https://openrouter.ai/api/v1，一个密钥通吃 13+ 家决策模型）。也支持直连：TypeSafe 填 https://api.typesafe.ai/v1、OpenAI 填 https://api.openai.com/v1、Hal-X 填 https://api.hal-x.ai/v1、云知声填 https://maas-api.unisound.com/v1。直接填完整端点（…/v1/systemone 或 …/v1/decisions）也可以，不会重复拼接。"
+      },
+      "decision_api_key": {
+        "type": "string",
+        "description": "决策模型 API 密钥",
+        "default": "",
+        "hint": "对应服务的 API Key（OpenRouter Key / TypeSafe Key / OpenAI Key，Bearer 鉴权）。Hal-X（THX-01）免鉴权可留空；Baseten 的 Api-Key 鉴权会按地址自动适配。开启决策模式即表示你知悉：对话文本将发送至所配置的决策服务做结构化判定。"
+      },
+      "decision_model": {
+        "type": "string",
+        "description": "决策模型 ID",
+        "default": "",
+        "hint": "OpenRouter 填模型全名，如 inception/mercury-decide:free（免费）、typesafe/jev-1.14、openai/gpt-6-luna-decisions、cloudflare/clef；直连 TypeSafe 填 jev-latest；直连 OpenAI 填 gpt-6-luna。"
+      },
+      "decision_api_format": {
+        "type": "string",
+        "description": "决策 API 格式",
+        "default": "auto",
+        "options": ["auto", "systemone", "openai"],
+        "hint": "auto 按地址自动判断：api.openai.com 走 OpenAI Decisions 格式（/v1/decisions），其余一律走 System One 格式（/v1/systemone，TypeSafe 定义的事实基准，绝大多数服务兼容）。只有使用 OpenAI Decisions 格式的第三方网关（如 LLM Gateway）才需要手动指定 openai。"
+      },
+      "decision_confidence_floor": {
+        "type": "float",
+        "description": "推荐选择度置信度下限",
+        "default": 0.6,
+        "hint": "低于该置信度时既不标百分比、也不做分支路由——判定分布过于平坦时，那个数字没有信息量。（0.0 ~ 1.0）"
       }
     }
   },

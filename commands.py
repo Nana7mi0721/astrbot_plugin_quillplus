@@ -10,9 +10,8 @@
 import asyncio
 import json
 
-from astrbot.api.event import AstrMessageEvent
-from astrbot.core.message.message_event_result import MessageEventResult
-from astrbot.core.platform.message_type import MessageType
+from astrbot.api.event import AstrMessageEvent, MessageEventResult
+from astrbot.api.platform import MessageType
 
 from ._route_core import error_text
 
@@ -725,9 +724,13 @@ async def quill_help(event: AstrMessageEvent):
         "  /quill help        本帮助",
         "  /quill debug       注入构成、匹配详情、会话状态、降级链命中分布  🔒",
         "  /quill reset       重开本角色卡剧情（清对话+日志，保留长期记忆）  🔒",
-        "  /quill statusbar [on|off|auto]  状态栏开关（仅本会话；不带参数看当前生效值）",
+        # L2 修复：这两条写操作与其余条目一样过 _check_group_permission
+        # （/quill statusbar 在下方 statusbar_dispatch、/stream 在 stream_dispatch），
+        # 帮助文本原先漏了 🔒，与同列表其它写操作标法不一致——群聊里非管理员
+        # 照着帮助敲会被拒，用户看不出为什么。这里补齐标记。
+        "  /quill statusbar [on|off|auto]  状态栏开关（仅本会话；不带参数看当前生效值）  🔒",
         "  /quill test <wr|wb|mem> <文字>  测试检索命中",
-        "  /stream [on|off|auto]  流式模式开关（不带参数看当前值）",
+        "  /stream [on|off|auto]  流式模式开关（不带参数看当前值）  🔒",
         "  /reinject          重置注入状态，下次激活重新注入全部常驻素材  🔒",
         "",
         "━━━ 🔒 = 写操作，群聊需管理员（私聊不受限）━━━",
@@ -1035,8 +1038,13 @@ async def quill_debug(plugin, event: AstrMessageEvent):
         report = plugin._format_inject_report(plugin._get_inject_report(target_id))
         lines.append(f"  注入: {report or '（无命中记录）'}")
 
-    # JEV 轮次判定（内存态，仅最近一轮；未启用/本轮无判定时无此行）
-    rd = (getattr(plugin, "_jev_round_cache", None) or {}).get(target_id)
+    # Decision 轮次判定（内存态，仅最近一轮；未启用/本轮无判定时无此行）
+    # M8 修复：加开关判据。缓存最长活 5 分钟（decision_client 的 max_age_s），
+    # 关掉决策模式后 `/quill debug` 仍会打印「Decision 推荐选择度: …」，用户会
+    # 以为开关没生效（写入侧本就有这道门，消费侧原先三处都没有）。
+    rd = None
+    if getattr(plugin.config, "status_bar_decision_enabled", False):
+        rd = (getattr(plugin, "_decision_round_cache", None) or {}).get(target_id)
     if isinstance(rd, dict) and rd.get("probs"):
         opts = rd.get("options") or []
         dist = " / ".join(
@@ -1044,10 +1052,20 @@ async def quill_debug(plugin, event: AstrMessageEvent):
             for k, v in sorted(rd["probs"].items(), key=lambda kv: str(kv[0]))
         )
         pick = rd.get("pick")
-        pick_txt = f" → 分支 {pick}（{opts[pick - 1]}）" if pick and 1 <= pick <= len(opts) else ""
-        lines.append(f"  JEV 推荐选择度: {dist}{pick_txt}（置信度 {float(rd.get('confidence', 0)):.2f}）")
-    elif getattr(plugin.config, "status_bar_jev_enabled", False):
-        lines.append("  JEV: 已启用，本轮无判定（未触发/低置信/判定失败均静默跳过）")
+        # M8：缓存里存的是**判定当时**的选项文字。用户在这一轮之后改了剧情走向
+        # 选项表时，直接按下标取 opts 会把旧文字贴到新选项上（debug 报告与真实
+        # 选项不符）。与当前配置不一致时只报分支号，不报文字。
+        _cur_opts = [str(p).strip() for p in (getattr(plugin.props, "status_bar_plot_paths", None) or [])]
+        pick_txt = ""
+        if pick and 1 <= pick <= len(opts):
+            _label = str(opts[pick - 1])
+            if pick <= len(_cur_opts) and _cur_opts[pick - 1] == _label:
+                pick_txt = f" → 分支 {pick}（{_label}）"
+            else:
+                pick_txt = f" → 分支 {pick}（选项已变更，判定时文字：{_label}）"
+        lines.append(f"  Decision 推荐选择度: {dist}{pick_txt}（置信度 {float(rd.get('confidence', 0)):.2f}）")
+    elif getattr(plugin.config, "status_bar_decision_enabled", False):
+        lines.append("  Decision: 已启用，本轮无判定（未触发/低置信/判定失败均静默跳过）")
 
     event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
 

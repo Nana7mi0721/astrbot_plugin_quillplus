@@ -123,7 +123,12 @@ class QuillConfig:
 
         # ── status_bar ──
         sb = _get_nested(self._raw, "status_bar", {}) or {}
-        self.status_bar_enabled: bool = _safe_bool(sb.get("enabled"))
+        # L12 修复：这里漏传了默认值。`_safe_bool(v)` 在 v 为 None（配置里没有
+        # 该键）时返回 False，而 _conf_schema.json 给该键的默认值是 true ——
+        # 从旧版升级上来、用户又没动过这个开关时，面板显示「启用」而代码按
+        # 「关闭」跑，状态栏整条链路被静默关掉。姊妹键（下方 plain_platforms
+        # 一档及 performance 各键）都显式写了默认值，这里补齐同一口径。
+        self.status_bar_enabled: bool = _safe_bool(sb.get("enabled"), True)
         self.status_bar_format: str = str(sb.get("format_template", "**状态栏**\n```\n{content}\n```"))
         # 纯文本平台的渲染模板：QQ/微信这类不渲染 Markdown 的平台，
         # `**` 与 ``` 会原样显示，用户看到的是「**状态栏** ```」这种噪声。
@@ -164,16 +169,34 @@ class QuillConfig:
         # 状态栏数值变化标注（相对上一轮的 ↑↓ 幅度）
         self.status_bar_show_delta: bool = _safe_bool(sb.get("show_delta", True))
 
-        # ── JEV 模式（TypeSafe System One 结构化判定）──
+        # ── Decision 决策模式（结构化判定：推荐选择度 + 分支路由）──
         # 剧情走向「推荐选择度」（选项后追加 ▸ N%）+ 自由文本回复的分支路由。
-        # 判定模型走 AstrBot 自带提供商（须指向 api.typesafe.ai 的 Jev 类模型），
-        # 插件从 provider_config 提取 api_base/key 直连 /v1/systemone。
+        # 判定模型凭据独立配置（status_bar.decision_*），不经过 AstrBot 提供商
+        # ——决策模型没有 chat/completions 端点，openai_compatible 不可用；
+        # System One / OpenAI Decisions 两族 wire format 由 decision_client 适配。
         # 全链 fail-open：判定失败/低置信/模型不对 → 维持普通渲染。
-        self.status_bar_jev_enabled: bool = _safe_bool(sb.get("jev_enabled"))
-        self.status_bar_jev_provider_id: str = str(sb.get("jev_provider_id", "") or "").strip()
+        # 迁移：v5.3.x 的 jev_enabled / jev_confidence_floor 在新键缺省时回退读取
+        # （AstrBot 升级时会把 schema 默认值合并进旧配置，但老用户开过 JEV 的
+        # 意愿不该被默认 false 覆盖）。
+        _dec_enabled = sb.get("decision_enabled")
+        if _dec_enabled is None:
+            _dec_enabled = sb.get("jev_enabled")
+        self.status_bar_decision_enabled: bool = _safe_bool(_dec_enabled)
+        self.status_bar_decision_base_url: str = str(
+            sb.get("decision_base_url", "https://openrouter.ai/api/v1") or ""
+        ).strip() or "https://openrouter.ai/api/v1"
+        self.status_bar_decision_api_key: str = str(sb.get("decision_api_key", "") or "").strip()
+        self.status_bar_decision_model: str = str(sb.get("decision_model", "") or "").strip()
+        _dec_fmt = str(sb.get("decision_api_format", "auto") or "auto").strip().lower()
+        self.status_bar_decision_api_format: str = (
+            _dec_fmt if _dec_fmt in ("auto", "systemone", "openai") else "auto"
+        )
+        _dec_floor = sb.get("decision_confidence_floor")
+        if _dec_floor is None:
+            _dec_floor = sb.get("jev_confidence_floor")
         # 置信度低于该值不标百分比、不路由（分布平坦时数字没有信息量）
-        self.status_bar_jev_confidence_floor: float = min(
-            max(_safe_float(sb.get("jev_confidence_floor"), 0.6), 0.0), 1.0
+        self.status_bar_decision_confidence_floor: float = min(
+            max(_safe_float(_dec_floor, 0.6), 0.0), 1.0
         )
 
         # ── debug ──

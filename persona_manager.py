@@ -417,6 +417,13 @@ class QuillPersonaManager:
         else:
             v2_json = json.loads(raw_data.decode('utf-8'))
 
+        # L13 修复：JSON 根不是对象时原先直接 `v2_json.get(...)` → 抛
+        # `AttributeError: 'list' object has no attribute 'get'`，经面板冒出去
+        # 是一句英文 Python 错误串。这里提前归一成明确的中文格式错误，
+        # 与下方已有的 `raise ValueError("不是有效的 V2 角色卡格式")` 同一口径。
+        if not isinstance(v2_json, dict):
+            raise ValueError("不是有效的 V2 角色卡格式：JSON 根必须是对象")
+
         # 验证 V2 格式（标准格式 + 扁平化格式 + 最小字段集）
         has_spec = v2_json.get("spec") == "chara_card_v2"
         has_data = "data" in v2_json
@@ -426,18 +433,36 @@ class QuillPersonaManager:
             raise ValueError("不是有效的 V2 角色卡格式")
 
         data = v2_json.get("data", v2_json)
+        # L13：`data` 允许是扁平化写法里的任意值，仍需是对象才能取键。
+        if not isinstance(data, dict):
+            raise ValueError("不是有效的 V2 角色卡格式：data 字段必须是对象")
 
         # V2 → Quill 字段映射
-        name = (data.get("name") or "未命名角色").strip()
+        # L13 修复：name 为数字/列表时 `(data.get("name") or "未命名角色").strip()`
+        # 会抛 `int.strip()`/`list.strip()` 的 AttributeError（英文错误串直接
+        # 冒到面板）。这里统一先转字符串再 strip，并只在结果非空时采用。
+        _raw_name = data.get("name")
+        name = (str(_raw_name).strip() if _raw_name is not None else "") or "未命名角色"
         description = data.get("description", "")
         personality = data.get("personality", "")
         scenario = data.get("scenario", "")
         first_mes = data.get("first_mes", "")
         mes_example = data.get("mes_example", "")
 
-        # 智能映射：如果 description 存在但 personality 为空，尝试拆分
+        # 智能映射：description 是 V2 的「设定主体」，personality 是「性格摘要」。
+        # M9：**不再截断 description**。旧实现 `personality = description[:2000]`
+        # 把 2000 字之后的内容永久丢弃（SillyTavern 角色卡普遍远超 2000 字），
+        # 而导出时又用 `summary + "\n\n" + personality` 拼回 description，
+        # 使前 500 字重复出现（实测 1800 字 → 2302 字）。
         if description and not personality:
-            personality = description[:2000] if len(description) > 2000 else description
+            personality = description
+        elif description and personality and description != personality:
+            # 两个字段都写了：旧实现只把 personality 当人设、description 仅留
+            # 前 500 字进 summary —— 角色设定主体整段不会进提示词。这里把
+            # description 作为主体、personality 追加在后，两者都不丢；
+            # 若 personality 已被包含在 description 里则不重复拼接。
+            if personality.strip() not in description:
+                personality = f"{description}\n\n{personality}"
 
         # 清理 mes_example 中的 V2 格式标记
         if mes_example:
@@ -474,8 +499,17 @@ class QuillPersonaManager:
             val = img.info.get(key, '')
             if not val:
                 continue
+            # L14 修复：原先写 `val.encode('ascii')`——tEXt 块里含中文时直接抛
+            # UnicodeEncodeError，此时 `raw` **尚未绑定**；而 except 分支又引用
+            # `raw`。循环变量跨迭代存活，所以它不抛 NameError，而是静默拿**上一个
+            # key 的字节**去解码（key 顺序固定时等于拿错了数据）。这里先安全地把
+            # 值转成 bytes（bytes 原样、str 用 utf-8），保证 raw 一定与当前 val 对应。
             try:
-                raw = val if isinstance(val, bytes) else val.encode('ascii')
+                raw = val if isinstance(val, bytes) else str(val).encode('utf-8')
+            except Exception:
+                logger.debug("[QuillPersona] V2 tEXt 块 %s 取值无法转为字节，跳过", key, exc_info=True)
+                continue
+            try:
                 decoded = base64.b64decode(raw).decode('utf-8')
                 return json.loads(decoded)
             except Exception:
@@ -484,7 +518,7 @@ class QuillPersonaManager:
                     if s.startswith('{'):
                         return json.loads(s)
                 except Exception:
-                    logger.debug("[QuillPersona] V2 tEXt 块解析失败", exc_info=True)
+                    logger.debug("[QuillPersona] V2 tEXt 块解析失败 (key=%s)", key, exc_info=True)
 
         # 2. 检查 EXIF tag 37510 (UserComment) 和 270 (ImageDescription)
         try:
@@ -593,6 +627,11 @@ class QuillPersonaManager:
         # 1. 尝试解析为 V2 JSON
         try:
             data = json.loads(text)
+            # L13：JSON 根可能是数组/数字/字符串，`data.get` 会直接抛
+            # AttributeError 并穿透 except 元组（只捕 JSONDecodeError/ValueError/
+            # UnicodeDecodeError）→ 面板收到英文错误串。先判类型。
+            if not isinstance(data, dict):
+                raise ValueError("剪贴板 JSON 根不是对象")
             if data.get("spec") == "chara_card_v2":
                 return self.parse_v2_card(text.encode('utf-8'), is_image=False)
         except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
@@ -618,9 +657,9 @@ class QuillPersonaManager:
         examples = extract_block(r'Example\s*Dialogs|Example_Dialog|mes_example|Examples', text)
         description = extract_block(r'Description|Summary', text)
 
-        # 2.3 智能合并 description → personality
+        # 2.3 智能合并 description → personality（M9：不截断，理由同 parse_v2_card）
         if not personality and description:
-            personality = description[:2000] if len(description) > 2000 else description
+            personality = description
 
         return {
             "name": name,
@@ -640,13 +679,33 @@ class QuillPersonaManager:
         如果没有头像图片，返回纯 JSON。
         """
         # 构建 V2 JSON 结构
+        # M9：description 只放「角色设定主体」= personality，**不再拼接 summary**。
+        # 旧实现把 description 一拆为二（summary=前 500 字、personality=前 2000 字），
+        # 导出时再拼回 `summary + "\n\n" + personality`，于是前 500 字重复出现、
+        # 2000 字以后的内容直接消失 —— 一张卡在 Quill 里导入再导出就不再是原来
+        # 那张卡了（且原文件已被覆盖，不可恢复）。现在 description 与 personality
+        # 保持同一份全量文本，summary 仅作为列表用的短摘要留在 Quill 侧，
+        # 不再参与 V2 往返。
+        cp = persona.get("core_prompts", {})
+        personality = cp.get("personality", "")
+        summary = persona.get("summary", "")
+        if personality and summary:
+            if personality.startswith(summary):
+                # 本修复后导入的卡：summary 只是 personality 的前缀摘要 →
+                # 直接用全量 personality，往返零膨胀、零丢失。
+                description = personality
+            else:
+                # summary 是用户独立填写的简介（面板可单独改）→ 两段都保留。
+                description = summary + "\n\n" + personality
+        else:
+            description = personality or summary
         v2_data = {
             "spec": "chara_card_v2",
             "spec_version": "2.0",
             "data": {
                 "name": persona.get("name", ""),
-                "description": persona.get("summary", ""),
-                "personality": persona.get("core_prompts", {}).get("personality", ""),
+                "description": description,
+                "personality": personality,
                 "scenario": persona.get("core_prompts", {}).get("scenario", ""),
                 "first_mes": persona.get("core_prompts", {}).get("first_message", ""),
                 "mes_example": persona.get("core_prompts", {}).get("examples_of_dialogue", ""),
@@ -661,13 +720,6 @@ class QuillPersonaManager:
                 "character_book": None,
             }
         }
-
-        # 合并 description：如果 personality 和 summary 不同，将 personality 也加入 description
-        cp = persona.get("core_prompts", {})
-        personality = cp.get("personality", "")
-        summary = persona.get("summary", "")
-        if personality and personality != summary:
-            v2_data["data"]["description"] = summary + "\n\n" + personality if summary else personality
 
         # 清理空字段
         v2_data["data"] = {k: v for k, v in v2_data["data"].items() if v not in (None, "", [], {})}

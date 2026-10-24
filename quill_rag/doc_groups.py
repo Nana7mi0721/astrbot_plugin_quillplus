@@ -175,11 +175,42 @@ class DocGroupStore:
             fh.write(text)
         os.replace(tmp, self.path)
 
-    async def _persist(self) -> None:
+    async def _persist(self) -> bool:
+        """把内存里的分组写盘；返回是否成功。
+
+        L16 修复：原先只 `logger.warning` 就返回，调用方（create/rename/delete/
+        assign）因此在**写盘失败时仍向面板报成功**——用户看到分组建好了，重启
+        插件后分组消失。这里把成败回给调用方，由调用方回滚内存并向上抛错，
+        让面板拿到「保存失败」而不是假的成功。
+        """
         try:
             await asyncio.to_thread(self._write_file)
+            return True
         except OSError as exc:
             logger.warning("[Quill RAG] 分组文件写入失败: %s", exc)
+            return False
+
+    def _snapshot(self) -> tuple:
+        """变更前的内存快照，供写盘失败时回滚（L16）。"""
+        return list(self._groups), dict(self._assign)
+
+    def _restore(self, snap: tuple) -> None:
+        self._groups, self._assign = list(snap[0]), dict(snap[1])
+
+    async def _persist_or_raise(self, snap: tuple) -> None:
+        """写盘；失败则回滚到 ``snap`` 并抛出可读错误（L16）。
+
+        抛 ``ValueError`` 是刻意的——``_route_core.handle_rag_group_action``
+        对 ValueError 走 ``err(str(e))``（可读文案、不刷 traceback），与分组名
+        非法/重名等用户输入错误同一条通道。
+        """
+        if await self._persist():
+            return
+        self._restore(snap)
+        raise ValueError(
+            "分组保存失败：数据目录不可写（详见服务端日志）。"
+            "本次改动未生效，请检查数据目录权限或磁盘空间后重试。"
+        )
 
     async def load(self) -> None:
         """懒加载（幂等）。"""
@@ -232,8 +263,9 @@ class DocGroupStore:
                 raise ValueError(f"分组「{clean}」已存在")
             if len(self._groups) >= MAX_GROUPS:
                 raise ValueError(f"分组数量已达上限（{MAX_GROUPS} 个）")
+            _snap = self._snapshot()
             self._groups.append(clean)
-            await self._persist()
+            await self._persist_or_raise(_snap)
             return list(self._groups)
 
     async def rename(self, name: str, new_name: str) -> int:
@@ -247,13 +279,14 @@ class DocGroupStore:
                 return 0
             if new in self._groups:
                 raise ValueError(f"分组「{new}」已存在")
+            _snap = self._snapshot()
             self._groups[self._groups.index(old)] = new
             moved = 0
             for src, grp in list(self._assign.items()):
                 if grp == old:
                     self._assign[src] = new
                     moved += 1
-            await self._persist()
+            await self._persist_or_raise(_snap)
             return moved
 
     async def delete(self, name: str) -> int:
@@ -262,12 +295,13 @@ class DocGroupStore:
         async with self._lock:
             if clean not in self._groups:
                 raise ValueError(f"分组「{clean}」不存在")
+            _snap = self._snapshot()
             self._groups.remove(clean)
             # 组内文档回到「未分组」，而不是跟着分组一起消失。
             freed = [src for src, grp in self._assign.items() if grp == clean]
             for src in freed:
                 self._assign.pop(src, None)
-            await self._persist()
+            await self._persist_or_raise(_snap)
             return len(freed)
 
     async def assign(self, sources: Iterable[str], group: str = "") -> int:
@@ -279,6 +313,7 @@ class DocGroupStore:
         async with self._lock:
             if clean and clean not in self._groups:
                 raise ValueError(f"分组「{clean}」不存在")
+            _snap = self._snapshot()
             changed = 0
             for raw in sources or []:
                 src = str(raw or "").strip()
@@ -291,7 +326,7 @@ class DocGroupStore:
                 elif self._assign.pop(src, None) is not None:
                     changed += 1
             if changed:
-                await self._persist()
+                await self._persist_or_raise(_snap)
             return changed
 
     async def prune(self, existing: Iterable[str]) -> int:

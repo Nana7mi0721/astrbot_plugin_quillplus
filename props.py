@@ -141,19 +141,34 @@ class QuillConfigProperties:
         return self._plugin.config.status_bar_plot_paths
 
     @property
-    def status_bar_jev_enabled(self) -> bool:
-        """JEV 模式总开关（config.status_bar.jev_enabled）。"""
-        return self._plugin.config.status_bar_jev_enabled
+    def status_bar_decision_enabled(self) -> bool:
+        """Decision 决策模式总开关（config.status_bar.decision_enabled）。"""
+        return self._plugin.config.status_bar_decision_enabled
 
     @property
-    def status_bar_jev_provider_id(self) -> str:
-        """JEV 判定模型对应的 AstrBot 提供商 id（config.status_bar.jev_provider_id）。"""
-        return self._plugin.config.status_bar_jev_provider_id
+    def status_bar_decision_base_url(self) -> str:
+        """决策模型 API 地址（config.status_bar.decision_base_url）。"""
+        return self._plugin.config.status_bar_decision_base_url
 
     @property
-    def status_bar_jev_confidence_floor(self) -> float:
-        """JEV 推荐选择度显示/分支路由的置信度下限（config.status_bar.jev_confidence_floor）。"""
-        return self._plugin.config.status_bar_jev_confidence_floor
+    def status_bar_decision_api_key(self) -> str:
+        """决策模型 API 密钥（config.status_bar.decision_api_key）。"""
+        return self._plugin.config.status_bar_decision_api_key
+
+    @property
+    def status_bar_decision_model(self) -> str:
+        """决策模型 ID（config.status_bar.decision_model）。"""
+        return self._plugin.config.status_bar_decision_model
+
+    @property
+    def status_bar_decision_api_format(self) -> str:
+        """决策 API 格式 auto/systemone/openai（config.status_bar.decision_api_format）。"""
+        return self._plugin.config.status_bar_decision_api_format
+
+    @property
+    def status_bar_decision_confidence_floor(self) -> float:
+        """Decision 推荐选择度显示/分支路由的置信度下限（config.status_bar.decision_confidence_floor）。"""
+        return self._plugin.config.status_bar_decision_confidence_floor
 
     @property
     def status_bar_default_placeholder(self) -> str:

@@ -42,6 +42,14 @@ _SKIP_SUFFIXES = (".tmp", ".tmp.bak", "-wal", "-shm", "-journal")
 _SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 
+class BackupTooLarge(ValueError):
+    """归档产物超过调用方给定的字节上限（M6）。
+
+    单独成型是为了让 Web 层能把它转成「用户看得懂」的失败文案，
+    而不是落进通用 500 分支（那里只有「生成备份归档失败」）。
+    """
+
+
 def is_sqlite_file(path: str) -> bool:
     """True if *path* starts with the SQLite file header."""
     try:
@@ -123,7 +131,7 @@ def _snapshot_to_temp(src: str, tmp_dir: str) -> str:
     return tmp_path
 
 
-def build_backup_zip(sources: list, buf: io.BytesIO) -> tuple[int, list[str]]:
+def build_backup_zip(sources: list, buf: io.BytesIO, max_bytes: int | None = None) -> tuple[int, list[str]]:
     """Write a zip of *sources* into *buf*.
 
     *sources* is a list of ``(archive_prefix, directory)`` pairs; in the new
@@ -137,6 +145,10 @@ def build_backup_zip(sources: list, buf: io.BytesIO) -> tuple[int, list[str]]:
     verbatim.  A database that cannot be snapshotted falls back to a raw byte
     copy and is recorded in ``warnings`` so callers can surface the risk
     instead of silently shipping a snapshot that may be missing WAL commits.
+
+    *max_bytes*（M6）限制归档产物的字节数。整个 zip 是构建在内存里的
+    ``BytesIO``，数据根膨胀（大量原图、无上限的 RAG 文档）时备份本身就会把
+    进程内存吃光；超过上限抛 ValueError，由调用方转成对用户可见的失败。
     """
     pairs: list[tuple[str, str]] = []
     for item in sources:
@@ -170,6 +182,12 @@ def build_backup_zip(sources: list, buf: io.BytesIO) -> tuple[int, list[str]]:
         zf.write(fpath, arcname)
         count += 1
 
+    def _over_limit() -> bool:
+        # M6：缓冲区是内存里的 BytesIO，写入量即进程内存占用。
+        # 归档每条之后就地比对，超限立刻中断（已写入的部分随异常一起丢弃，
+        # 调用方不会拿到半截 zip）。
+        return max_bytes is not None and buf.tell() > max_bytes
+
     try:
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for prefix, base in pairs:
@@ -186,7 +204,20 @@ def build_backup_zip(sources: list, buf: io.BytesIO) -> tuple[int, list[str]]:
                             # A single unreadable file must not abort the backup.
                             warnings.append(f"{arcname}: 读取失败 ({type(exc).__name__})")
                             logger.warning("[Quill Backup] 归档 %s 失败: %s", arcname, exc)
+                        if _over_limit():
+                            raise BackupTooLarge(
+                                f"备份内容超过上限（{max_bytes} 字节），已中止"
+                                "——请先清理过期的对话日志/记忆或 RAG 文档后重试"
+                            )
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
+
+    # 中央目录写完后体积还会再涨一点（每条目的名字/偏移），这里补一次终检，
+    # 否则「刚好卡在上限内」的归档仍会以上限之外的体积返回给调用方。
+    if _over_limit():
+        raise BackupTooLarge(
+            f"备份内容超过上限（{max_bytes} 字节），已中止"
+            "——请先清理过期的对话日志/记忆或 RAG 文档后重试"
+        )
 
     return count, warnings

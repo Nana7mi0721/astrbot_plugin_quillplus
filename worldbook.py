@@ -85,6 +85,13 @@ def _validate_name(name: str) -> bool:
 # ── Manager ──────────────────────────────────────────────────────────────────
 
 class WorldbookManager:
+    #: M15 灵敏度分档边界，与 `_conf_schema.json` 的滑块说明一一对应。
+    #: <0.3 严格、0.3–0.7 平衡（默认 0.7）、>0.7 宽松。
+    _SENS_STRICT_MAX = 0.3
+    _SENS_LOOSE_MIN = 0.7
+    #: 宽松档里「多词关键词」的切分符（中英混排时都可能出现）
+    _KEY_SEG_SPLIT_RE = re.compile(r'[\s,，、/|;；:：·\-—]+')
+
     def __init__(self, worldbooks_dir: str):
         self.worldbooks_dir: str = worldbooks_dir
         os.makedirs(worldbooks_dir, exist_ok=True)
@@ -106,7 +113,35 @@ class WorldbookManager:
             try:
                 with open(path, 'r', encoding='utf-8') as fh:
                     wb = json.load(fh)
+                # M10：此前只校验 name，文件里任何结构异常都留到后面某处才炸。
+                # 典型：JSON 根是数组（手改/导出工具产物）→ `wb.get` 直接
+                # AttributeError，该世界书在本进程内**整体不可用**，且报错
+                # 点在 `_load_all` 之外时连日志都没有。这里统一做结构归一：
+                # 根必须是对象、entries 必须是列表，缺则补空。
+                if not isinstance(wb, dict):
+                    logger.warning(
+                        "[WorldbookManager] 跳过 %s：JSON 根应为对象，实际为 %s",
+                        f, type(wb).__name__,
+                    )
+                    continue
+                if wb.get('entries') is None:
+                    wb['entries'] = []
+                elif not isinstance(wb['entries'], list):
+                    # 个别导出工具会把 entries 写成「下标 → 条目」的对象形态
+                    if isinstance(wb['entries'], dict):
+                        wb['entries'] = [v for v in wb['entries'].values() if isinstance(v, dict)]
+                    else:
+                        logger.warning(
+                            "[WorldbookManager] %s 的 entries 类型异常（%s），按空处理",
+                            f, type(wb['entries']).__name__,
+                        )
+                        wb['entries'] = []
                 name = wb.get('name', f.replace('.json', ''))
+                # M10：文件里的 name 也可能是数字/null（手改产物）。不归一的话
+                # `_validate_name` 里的 `'..' in name` 会对 int 抛 TypeError，
+                # 整本在这一轮启动里消失。
+                if not isinstance(name, str):
+                    name = f.replace('.json', '')
                 # 拒绝包含路径穿越/非法字符的名字
                 if not _validate_name(name):
                     logger.warning("[WorldbookManager] Skipping %s: invalid name %r", f, name)
@@ -167,8 +202,24 @@ class WorldbookManager:
             try:
                 with open(path, 'r', encoding='utf-8') as fh:
                     wb = json.load(fh)
+                # M10：reload 走的是与 _load_all 不同的读取路径，同样要挡
+                # 「根不是对象」——否则 `wb.get` 抛 AttributeError，reload 静默
+                # 失败而缓存里仍留着旧内容，用户以为已重新加载。
+                if not isinstance(wb, dict):
+                    logger.warning(
+                        "[WorldbookManager] reload 跳过 %s：JSON 根应为对象，实际为 %s",
+                        f, type(wb).__name__,
+                    )
+                    continue
                 wb_name = wb.get('name', f.replace('.json', ''))
                 if wb_name == name:
+                    # 与 _load_all 同一套归一，避免 reload 后 entries 缺失/类型错
+                    if wb.get('entries') is None:
+                        wb['entries'] = []
+                    elif isinstance(wb['entries'], dict):
+                        wb['entries'] = [v for v in wb['entries'].values() if isinstance(v, dict)]
+                    elif not isinstance(wb['entries'], list):
+                        wb['entries'] = []
                     with self._lock:
                         self.worldbooks[name] = wb
                     return True
@@ -180,6 +231,39 @@ class WorldbookManager:
         return False
 
     # ── active / matching entries ────────────────────────────────────────
+
+    @classmethod
+    def _min_match_required(cls, sensitivity: float, key_count: int) -> int:
+        """按灵敏度算出「至少命中几个关键词」，M15 的三档实现。
+
+        ``key_count`` 是条目**实际可用**的关键词个数（已剔除非字符串/空串），
+        因此不会出现「条目只有 1 个关键词却要求命中 2 个 → 永远不触发」的
+        死条目：关键词不足时把门槛降到该条目能达到的上限。
+        """
+        if key_count <= 0:
+            return 0
+        if sensitivity < cls._SENS_STRICT_MAX:
+            # 严格档：关键词少就 2 个，堆到 4 个以上按半数递增（向上取整），
+            # 这样「写更多关键词」不再变成「更容易被误触发」。
+            need = max(2, (key_count + 1) // 2) if key_count >= 4 else 2
+        else:
+            need = 1
+        return min(need, key_count)
+
+    @classmethod
+    def _key_segments(cls, key: str) -> List[str]:
+        """把多词关键词切成片段，供宽松档做局部命中。
+
+        只切长度 ≥2 的片段（单字片段在中文里几乎必然误命中，等于把宽松档
+        变成「凡事都注入」）。整条 key 本身不重复返回——主匹配路径已经查过。
+        """
+        low = key.lower()
+        out: List[str] = []
+        for seg in cls._KEY_SEG_SPLIT_RE.split(low):
+            seg = seg.strip()
+            if len(seg) >= 2 and seg != low and seg not in out:
+                out.append(seg)
+        return out
 
     def get_active_worldbooks(self, bound_worldbooks: Optional[List[str]] = None) -> List[dict]:
         """获取活跃世界书
@@ -225,12 +309,22 @@ class WorldbookManager:
         Entries already marked ``is_constant`` are skipped — those come from
         ``get_constant_entries()`` instead.
 
+        M15：灵敏度此前**只有两档**（`<0.3` 要 2 个命中，其余全走同一分支），
+        于是面板上把滑块从 0.3 拖到 0.7 再到 1.0 注入结果完全一样 ——
+        而配置 schema 的说明明确承诺「0.0 = 极其严格，1.0 = 极其宽松」。
+        现在按 schema 承诺落成三档真实行为：
+        - 严格（<0.3）：至少 2 个关键词命中；关键词多（≥4）的条目按半数递增，
+          避免「关键词堆得越多越容易被触发」。
+        - 平衡（0.3–0.7，含默认 0.7）：单个**完整**关键词子串命中即可，
+          与旧行为逐字一致（默认档的行为不变，升级不改变既有世界书的表现）。
+        - 宽松（>0.7）：在平衡之上再放开两点 —— 多词关键词允许按词片段命中
+          （`"魔法 学院"` 命中 `"学院"` 也算），以及条目标题命中。
+
         Args:
             user_input: text to match keywords against
             bound_worldbooks: optional worldbook filter (None = Auto, [] = zero, [...] = Custom)
             top_k: max entries to return (0 = no limit)
-            sensitivity: 0.0-1.0, 匹配灵敏度。<0.3 严格(需多关键词命中)；
-                0.3-0.7 平衡(子串匹配)；>0.7 宽松(单关键词即可)
+            sensitivity: 0.0-1.0，匹配灵敏度。0.0 极其严格，1.0 极其宽松，默认 0.7
         """
         entries: List[dict] = []
         msg_lower = user_input.lower()
@@ -240,11 +334,16 @@ class WorldbookManager:
         # 获取活跃世界书快照（get_active_worldbooks 内部已加锁）
         active_wbs = self.get_active_worldbooks(bound_worldbooks)
 
-        # 灵敏度门控：最低匹配关键词数
-        if sensitivity < 0.3:
-            min_match_required = 2  # 严格：至少 2 个关键词命中
-        else:
-            min_match_required = 1  # 平衡/宽松：1 个即可
+        try:
+            sens = float(sensitivity)
+        except (TypeError, ValueError):
+            sens = 0.7
+        # 配置面板滑块是 0.1 步进；越界值按边界档处理而不是当成异常
+        if sens < 0.0:
+            sens = 0.0
+        elif sens > 1.0:
+            sens = 1.0
+        loose_mode = sens > self._SENS_LOOSE_MIN
 
         for wb in active_wbs:
             wb_name = wb.get('name', '')
@@ -254,15 +353,34 @@ class WorldbookManager:
                 if entry.get('is_constant', False):
                     continue
                 keys = entry.get('keys', [])
+                if not isinstance(keys, (list, tuple)):
+                    keys = [keys]
+                str_keys = [k for k in keys if isinstance(k, str) and k.strip()]
+                # 灵敏度门控：最低匹配关键词数（在「有几个可用关键词」之后才能算）
+                min_match_required = self._min_match_required(sens, len(str_keys))
+                if min_match_required <= 0:
+                    continue
                 matched_count = 0
                 matched_keys: List[str] = []
-                for key in keys:
+                for key in str_keys:
                     # 容错：导入的世界书可能含有非字符串 key（数字、null 等），跳过
-                    if not isinstance(key, str):
-                        continue
                     if key.lower() in msg_lower:
                         matched_count += 1
                         matched_keys.append(key)
+                    elif loose_mode:
+                        # 宽松档：多词关键词的任一片段独立命中即可
+                        for seg in self._key_segments(key):
+                            if seg in msg_lower:
+                                matched_count += 1
+                                matched_keys.append(key)
+                                break
+                # 宽松档再补一路「标题命中」：条目标题本身是作者写的主题词，
+                # 用户真的聊到该主题时标题往往先于关键词出现在文本里。
+                if loose_mode and matched_count < min_match_required:
+                    title = entry.get('title', '')
+                    if isinstance(title, str) and len(title.strip()) >= 2 and title.strip().lower() in msg_lower:
+                        matched_count += 1
+                        matched_keys.append(title.strip())
                 if matched_count >= min_match_required:
                     entry_id = entry.get('id', '')
                     dup_key = f"{wb_name}:{entry_id}"
@@ -336,6 +454,11 @@ class WorldbookManager:
             if wb is None:
                 return False
             updated = copy.deepcopy(wb)
+            # M10：面板「增条目」曾直接 KeyError: 'entries'——手改过/旧版导出的
+            # 世界书文件可以没有 entries 键，而增删改三条路径全都直接下标。
+            # _load_all 现在会归一，这里再兜一次，保证运行期任何来源的 wb
+            # 都不会把一次「加条目」变成 500。
+            updated.setdefault("entries", [])
             updated["entries"].append(entry)
             path = os.path.join(self.worldbooks_dir, name + ".json")
             _save_json_atomic(path, updated)
@@ -351,7 +474,11 @@ class WorldbookManager:
             if wb is None:
                 return False
             updated = copy.deepcopy(wb)
+            # M10：同 add，缺 entries 键时按空列表处理而不是 KeyError
+            updated.setdefault("entries", [])
             for i, item in enumerate(updated["entries"]):
+                if not isinstance(item, dict):
+                    continue
                 if item.get("id") == entry_id:
                     updated["entries"][i].update(patch)
                     path = os.path.join(self.worldbooks_dir, name + ".json")
@@ -368,9 +495,11 @@ class WorldbookManager:
             wb = self.worldbooks.get(name)
             if wb is None:
                 return False
-            before = len(wb["entries"])
             updated = copy.deepcopy(wb)
-            updated["entries"] = [e for e in updated["entries"] if e.get("id") != entry_id]
+            # M10：同 add/update，缺 entries 键时按空列表处理（结果自然是 False）
+            updated.setdefault("entries", [])
+            before = len(updated["entries"])
+            updated["entries"] = [e for e in updated["entries"] if not isinstance(e, dict) or e.get("id") != entry_id]
             if len(updated["entries"]) == before:
                 return False
             path = os.path.join(self.worldbooks_dir, name + ".json")
@@ -379,6 +508,96 @@ class WorldbookManager:
         return True
 
     # ── ST Lorebook import ───────────────────────────────────────────────
+
+    @staticmethod
+    def _coerce_str_list(raw) -> List[str]:
+        """把世界书里「键集合」的各种形态归一成字符串列表。
+
+        H4：ST 生态里 keys/key/keys 的实际类型五花八门（list、逗号分隔字符串、
+        单个字符串、null、嵌套 list）。旧实现只判 list/str 两支，其余一律丢成
+        空键集——条目还在但永远匹配不上，等于静默失效。这里补上嵌套与
+        非字符串元素的处理：数字键转成字符串（ST 里 `"key": 2024` 很常见）。
+        """
+        out: List[str] = []
+        if isinstance(raw, str):
+            return [k.strip() for k in raw.split(',') if k.strip()]
+        if isinstance(raw, (list, tuple)):
+            for item in raw:
+                if isinstance(item, str):
+                    if item.strip():
+                        out.append(item.strip())
+                elif isinstance(item, (int, float)) and not isinstance(item, bool):
+                    out.append(str(item))
+                elif isinstance(item, (list, tuple)):
+                    # 嵌套一层的形态（部分导出工具会把主/次键套在一起）
+                    out.extend(WorldbookManager._coerce_str_list(item))
+        elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            out.append(str(raw))
+        return out
+
+    @staticmethod
+    def _safe_inject_position(raw, default: int = 1) -> int:
+        """归一注入位置为 1（常驻位置）或 2（按需位置）。
+
+        H4：旧写法 `1 if e.get('position', 2) <= 1 else 2` 直接把 JSON 值和
+        整数比大小。ST 导出里有 `"position": "0"` 这类字符串取值（也有
+        `"before_char"` 这类枚举名），字符串与 int 比较会抛 TypeError，
+        **整本**世界书跟着导入失败。这里统一走数值归一，认不出来就退回默认值。
+        """
+        try:
+            return 1 if int(raw) <= 1 else 2
+        except (TypeError, ValueError):
+            # 枚举名形态：ST 的 before_char/after_char 都是常驻位
+            if isinstance(raw, str) and raw.strip().lower() in ("before_char", "after_char"):
+                return 1
+            return default
+
+    def _map_quill_entry(self, e: dict, index: int) -> dict:
+        """Quill 原生条目 → 内部条目。字段缺省或类型异常都不抛，按兜底值走。"""
+        return {
+            # L8：id 可能是数字（round-trip 过 ST 工具/hand-edit 后很常见），
+            # 直接 [:50] 会 TypeError；而异常被外层宽 except 吞掉 ⇒ 不是
+            # 跳过这一条，而是**整本**世界书导入失败。
+            "id": str(e.get('id') or f"entry_{index}")[:50],
+            "title": str(e.get('title', '') or ''),
+            "content": str(e.get('content', '') or ''),
+            "is_constant": bool(e.get('is_constant', False)),
+            "inject_position": self._safe_inject_position(e.get('inject_position', 1)),
+            "keys": self._coerce_str_list(e.get('keys', [])),
+            "enabled": bool(e.get('enabled', True)),
+        }
+
+    def _map_st_entry(self, e: dict, index: int) -> dict:
+        """SillyTavern 条目 → 内部条目。
+
+        H4：三个历史崩溃点都在这里——`e.get('comment','')[:50]`（comment 是数字
+        时 `'int' object is not subscriptable`）、`e.get('position',2) <= 1`
+        （position 是字符串时 `'<=' not supported between 'str' and 'int'`）、
+        以及 keys 拼接。三者都会把异常抛到外层宽 except，导致**一条畸形条目
+        废掉整本世界书**。现在统一先归一类型再取值。
+        """
+        keys_raw = self._coerce_str_list(e.get('key') or e.get('keys', []))
+        keys_raw.extend(self._coerce_str_list(e.get('keysecondary') or []))
+
+        # comment/uid 都可能是数字；title 与 id 都以字符串形态落库
+        comment = e.get('comment', '')
+        title = '' if comment is None else str(comment)
+        uid = e.get('uid', '')
+        # 先定 id：comment 优先，退回 uid（数字 uid 也要 str 化再截断），
+        # 两者都没有才用序号兜底（序号用 index 而非 len(entries)，
+        # 避免同一本里出现重复 id）
+        eid_source = title or ('' if uid is None else str(uid))
+        entry_id = eid_source[:50] if eid_source else f"st_import_{index}"
+
+        return {
+            "id": entry_id,
+            "title": title,
+            "content": str(e.get('content', '') or ''),
+            "is_constant": bool(e.get('constant', False)),
+            "inject_position": self._safe_inject_position(e.get('position', 2), default=2),
+            "keys": keys_raw,
+            "enabled": not bool(e.get('disable', False)),
+        }
 
     def import_from_st(self, st_json_path: str, worldbook_name: str) -> bool:
         """Import a worldbook JSON file. Auto-detects format:
@@ -390,6 +609,17 @@ class WorldbookManager:
         try:
             with open(st_json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+
+            # H4：根不是对象就直接判失败。此前 `data.get` 会在 JSON 根是数组
+            # （ST 工具有导成裸 entries 数组的形态）时抛 AttributeError，
+            # 被外层宽 except 吞成「Import 时发生未知错误」，用户只看到一句
+            # 无信息量的失败——现在拿得到准确的失败原因。
+            if not isinstance(data, dict):
+                logger.warning(
+                    "[WorldbookManager] Import 失败: JSON 根应为对象，实际为 %s",
+                    type(data).__name__,
+                )
+                return False
 
             raw_entries = data.get('entries', [])
             entries: List[dict] = []
@@ -413,60 +643,45 @@ class WorldbookManager:
             if is_quill_native:
                 # Quill 原生格式 → 直接映射字段
                 for e in items_list:
+                    # H4：把「这一条能不能用」与「整本能不能进」解耦。此前任何一条
+                    # 触发异常（字段类型不对、取值越界）都会冒泡到外层宽 except，
+                    # 结果是**整本**世界书导入失败——一条畸形条目废掉一本是用户
+                    # 无法接受的失败放大。现在逐条 try：坏条目跳过并留日志，
+                    # 好条目照常进，最后若一条都没成就返回 False。
                     if not isinstance(e, dict) or not e.get('content'):
                         continue
-                    raw_keys = e.get('keys', [])
-                    if isinstance(raw_keys, list):
-                        keys_raw = raw_keys
-                    elif isinstance(raw_keys, str):
-                        keys_raw = [k.strip() for k in raw_keys.split(',') if k.strip()]
-                    else:
-                        keys_raw = []
-                    entries.append({
-                        # L8：id 可能是数字（round-trip 过 ST 工具/hand-edit 后很常见），
-                        # 直接 [:50] 会 TypeError；而异常被外层宽 except 吞掉 ⇒ 不是
-                        # 跳过这一条，而是**整本**世界书导入失败。
-                        "id": str(e.get('id') or f"entry_{len(entries)}")[:50],
-                        "title": e.get('title', ''),
-                        "content": e.get('content', ''),
-                        "is_constant": e.get('is_constant', False),
-                        "inject_position": e.get('inject_position', 1),
-                        "keys": keys_raw,
-                        "enabled": e.get('enabled', True),
-                    })
+                    try:
+                        entry = self._map_quill_entry(e, len(entries))
+                    except Exception as exc:
+                        logger.warning(
+                            "[WorldbookManager] 跳过无法解析的 Quill 条目 #%d: %s",
+                            len(entries), exc,
+                        )
+                        continue
+                    entries.append(entry)
             else:
                 # SillyTavern 格式
                 items = raw_entries.values() if isinstance(raw_entries, dict) else raw_entries if isinstance(raw_entries, list) else []
                 for e in items:
                     if not isinstance(e, dict):
                         continue
-                    raw_keys = e.get('key') or e.get('keys', [])
-                    if isinstance(raw_keys, list):
-                        keys_raw = raw_keys
-                    elif isinstance(raw_keys, str):
-                        keys_raw = [k.strip() for k in raw_keys.split(',') if k.strip()]
-                    else:
-                        keys_raw = []
-                    raw_secondary = e.get('keysecondary') or []
-                    if isinstance(raw_secondary, list):
-                        secondary = raw_secondary
-                    elif isinstance(raw_secondary, str):
-                        secondary = [k.strip() for k in raw_secondary.split(',') if k.strip()]
-                    else:
-                        secondary = []
-                    keys_raw.extend(secondary)
-
-                    eid_source = e.get('comment', '') or str(e.get('uid', ''))
-                    entry_id = eid_source[:50] if eid_source else f"st_import_{len(entries)}"
-                    entries.append({
-                        "id": entry_id,
-                        "title": e.get('comment', ''),
-                        "content": e.get('content', ''),
-                        "is_constant": e.get('constant', False),
-                        "inject_position": 1 if e.get('position', 2) <= 1 else 2,
-                        "keys": keys_raw,
-                        "enabled": not e.get('disable', False),
-                    })
+                    # H4：无正文的条目没有任何可注入内容，落库只会变成
+                    # 「匹配得上但什么都不注入」的幽灵条目。与 Quill 原生分支
+                    # 保持同一判据（那边一直有 content 判空）。
+                    if not e.get('content'):
+                        continue
+                    # H4：同上的逐条隔离。ST 导出工具的字段类型很不统一
+                    # （comment 可能是数字、position 可能是字符串 "0"、
+                    # key 可能是嵌套结构），旧写法直接下标/比较，一崩就是整本。
+                    try:
+                        entry = self._map_st_entry(e, len(entries))
+                    except Exception as exc:
+                        logger.warning(
+                            "[WorldbookManager] 跳过无法解析的 ST 条目 #%d: %s",
+                            len(entries), exc,
+                        )
+                        continue
+                    entries.append(entry)
 
             if not entries:
                 return False

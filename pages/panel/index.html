@@ -508,10 +508,15 @@
             <div class="card-head"><h3>对话日志</h3><span class="card-head-sub">最近 200 条</span></div>
             <div class="card-body"><div class="card-body-inner">
               <div class="cfg-inline" style="margin-bottom:var(--sp-3)">
-                <input class="field grow" type="text" id="logSession" placeholder="Session ID（target 或 target::persona）" aria-label="Session ID" style="max-width:none">
+                <input class="field grow" type="text" id="logSession" list="logSessionList" placeholder="Session ID（target 或 target::persona）" aria-label="Session ID" style="max-width:none">
+                <datalist id="logSessionList"></datalist>
                 <button type="button" class="btn btn--filled" data-action="log-load">加载</button>
                 <button type="button" class="btn btn--gray" data-action="log-export" data-value="markdown">导出 Markdown</button>
                 <button type="button" class="btn btn--gray" data-action="log-export" data-value="txt">导出 TXT</button>
+              </div>
+              <div class="note" style="margin-bottom:var(--sp-3)">
+                L9：这里读的是本机 bot 上**任意会话**的原始对话记录与记忆——输入框可自由粘贴 Session ID，
+                后端不会校验它是否属于当前操作者（面板为单管理员模型）。输入时会给出已知会话的候选列表。
               </div>
               <div class="note" style="margin-bottom:var(--sp-3)">
                 需先在「配置 → RAG 与动态记忆」开启「保存原始对话日志」，激活中的 RP 对话才会按会话记录于此，供断点续传与回看。
@@ -604,9 +609,7 @@
             <span class="cfg-section-sub">世界书 · 素材库 · 输出控制</span>
           </div>
 
-          <div class="cfg-cols">
-            <div class="cfg-col">
-  <div class="card">
+          <div class="card">
                 <div class="card-head">
                   <h3>世界书注入策略</h3>
                 </div>
@@ -662,7 +665,8 @@
                 </div></div>
               </div>
 
-  <div class="card">
+          <div class="cfg-cols" style="margin-top:var(--sp-4)">
+            <div class="card">
                 <div class="card-head">
                   <h3>表现控制</h3>
                 </div>
@@ -684,9 +688,8 @@
                   </div>
                 </div></div>
               </div>
-            </div>
-            <div class="cfg-col">
-  <div class="card">
+
+            <div class="card">
                 <div class="card-head">
                   <h3>写作素材库控制</h3>
                 </div>
@@ -712,8 +715,8 @@
                 </div></div>
               </div>
 
-            </div>
           </div>
+        </section>
 
         <!-- ══ 2. 状态栏 ══ -->
         <section class="cfg-section" id="sec-statusbar">
@@ -779,27 +782,6 @@
                     <select class="field field--wide" id="c-sb-llm"></select>
                     <span class="hint">留空则回退到 RAG 摘要 LLM。建议选择轻量、便宜的模型。</span>
                   </div>
-                  <!-- ── JEV 模式（TypeSafe System One 结构化判定）── -->
-                  <div class="cfg-row cfg-row--stack">
-                    <div class="cfg-row-text">
-                      <div class="cfg-row-title">JEV 模式（剧情走向推荐选择度）</div>
-                      <div class="cfg-row-desc">开启后，剧情走向选项会附带「剧情倾向」百分比（如「2. 转换场景 ▸ 62%」）；你用自由文字回复时，插件会自动判定你选择了哪个分支并明确告知模型，不再靠模型自己猜。判定由 TypeSafe Jev（System One）结构化模型完成，每轮回复前多一次判定调用（约 1–3 秒）；判定失败或置信度不足时自动回退普通渲染，不影响聊天。</div>
-                      <div class="cfg-row-desc warn"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-warn"/></svg> 必须选择指向 TypeSafe（api.typesafe.ai）的 Jev 类模型提供商（模型名如 jev-latest / jev-1.13）。普通对话模型没有 /systemone 接口，选错会静默降级为普通渲染。开启即表示你知悉并接受：对话文本将发送至 api.typesafe.ai 做结构化判定。</div>
-                    </div>
-                    <div class="cfg-row-control">
-                      <label class="switch"><input type="checkbox" id="c-sb-jev"><span class="switch-track"></span></label>
-                    </div>
-                  </div>
-                  <div class="cfg-field">
-                    <label class="cfg-field-label" for="c-sb-jev-provider">JEV 判定模型（AstrBot 提供商）</label>
-                    <select class="field field--wide" id="c-sb-jev-provider"></select>
-                    <span class="hint">先在 AstrBot「模型提供商」新建一个 openai_compatible 提供商：API 地址填 <code>https://api.typesafe.ai/v1</code>，密钥填 TypeSafe API Key，模型填 <code>jev-latest</code>，再回到这里选中它。</span>
-                  </div>
-                  <div class="cfg-field">
-                    <label class="cfg-field-label" for="c-sb-jev-floor">推荐选择度显示阈值</label>
-                    <input class="field" type="number" id="c-sb-jev-floor" min="0" max="1" step="0.05" value="0.6">
-                    <span class="hint">判定置信度低于该值时不显示百分比、不做分支路由（分布平坦时数字没有信息量）。范围 0–1，默认 0.6。</span>
-                  </div>
                 </div>
                 <div class="sb-col sb-col--tpl">
                   <div class="cfg-field">
@@ -818,6 +800,54 @@
                     <span class="hint">AstrBot 适配器名，用 <code>|</code> 分隔。留空默认包含 aiocqhttp、qq_official、wecom、dingtalk 等；未知平台一律走 Markdown 模板。</span>
                   </div>
                 </div>
+              </div>
+            </div></div>
+          </div>
+
+          <!-- ── 决策模式（与状态栏配置平级的全长卡）── -->
+          <div class="card">
+            <div class="card-head">
+              <h3>决策模式（剧情走向推荐选择度）</h3>
+            </div>
+            <div class="card-body"><div class="card-body-inner">
+              <div class="cfg-row">
+                <div class="cfg-row-text">
+                  <div class="cfg-row-title">启用决策模式</div>
+                  <div class="cfg-row-desc">剧情选项附带「▸ 62%」倾向百分比；自由文字回复自动路由到最接近的分支。判定失败或置信度不足时保持普通渲染，不影响聊天。</div>
+                  <div class="cfg-row-desc warn"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-warn"/></svg> 决策模型没有对话接口，不能走 AstrBot 提供商，须在下方单独配置。开启即知悉：对话文本将发送至所配置的决策服务。</div>
+                </div>
+                <div class="cfg-row-control">
+                  <label class="switch"><input type="checkbox" id="c-sb-decision"><span class="switch-track"></span></label>
+                </div>
+              </div>
+              <div class="cfg-field">
+                <label class="cfg-field-label" for="c-sb-decision-url">API 地址</label>
+                <input class="field field--wide" type="text" id="c-sb-decision-url" spellcheck="false" autocomplete="off" placeholder="https://openrouter.ai/api/v1">
+                <span class="hint">推荐 OpenRouter（默认已填）。也支持 TypeSafe / OpenAI / Hal-X / 云知声直连，可直接填完整端点。</span>
+              </div>
+              <div class="cfg-field">
+                <label class="cfg-field-label" for="c-sb-decision-key">API 密钥</label>
+                <input class="field field--wide" type="password" id="c-sb-decision-key" autocomplete="new-password" spellcheck="false" placeholder="sk-…">
+                <span class="hint">对应服务的 API Key。Hal-X 免鉴权可留空。</span>
+              </div>
+              <div class="cfg-field">
+                <label class="cfg-field-label" for="c-sb-decision-model">模型 ID</label>
+                <input class="field field--wide" type="text" id="c-sb-decision-model" spellcheck="false" autocomplete="off" placeholder="inception/mercury-decide:free">
+                <span class="hint">如 <code>inception/mercury-decide:free</code>、<code>typesafe/jev-1.14</code>、<code>openai/gpt-6-luna-decisions</code>。</span>
+              </div>
+              <div class="cfg-field">
+                <label class="cfg-field-label" for="c-sb-decision-format">API 格式</label>
+                <select class="field field--wide" id="c-sb-decision-format">
+                  <option value="auto">自动（推荐）</option>
+                  <option value="systemone">System One</option>
+                  <option value="openai">OpenAI Decisions</option>
+                </select>
+                <span class="hint">自动即可；仅 OpenAI Decisions 格式的第三方网关需手动指定。</span>
+              </div>
+              <div class="cfg-field">
+                <label class="cfg-field-label" for="c-sb-decision-floor">显示阈值</label>
+                <input class="field" type="number" id="c-sb-decision-floor" min="0" max="1" step="0.05" value="0.6">
+                <span class="hint">置信度低于该值不显示百分比、不路由。0–1，默认 0.6。</span>
               </div>
             </div></div>
           </div>

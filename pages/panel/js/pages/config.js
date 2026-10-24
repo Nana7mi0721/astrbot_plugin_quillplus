@@ -57,10 +57,13 @@ const CFG_FIELDS = [
   ["status_bar", "plot_paths", "#c-sb-plots", "str"],
   ["status_bar", "llm_extract", "#c-sb-llm-extract", "bool"],
   ["status_bar", "llm_provider_id", "#c-sb-llm", "str"],
-  // JEV 模式（TypeSafe System One：剧情走向推荐选择度 + 分支路由）
-  ["status_bar", "jev_enabled", "#c-sb-jev", "bool"],
-  ["status_bar", "jev_provider_id", "#c-sb-jev-provider", "str"],
-  ["status_bar", "jev_confidence_floor", "#c-sb-jev-floor", "float"],
+  // Decision 决策模式（结构化判定模型：剧情走向推荐选择度 + 分支路由）
+  ["status_bar", "decision_enabled", "#c-sb-decision", "bool"],
+  ["status_bar", "decision_base_url", "#c-sb-decision-url", "str"],
+  ["status_bar", "decision_api_key", "#c-sb-decision-key", "str"],
+  ["status_bar", "decision_model", "#c-sb-decision-model", "str"],
+  ["status_bar", "decision_api_format", "#c-sb-decision-format", "str"],
+  ["status_bar", "decision_confidence_floor", "#c-sb-decision-floor", "float"],
   ["permissions", "admin_users", "#c-perm-admins", "str"],
   ["debug", "enabled", "#c-debug-enabled", "bool"],
   ["debug", "show_inject_report", "#c-debug-report", "bool"],
@@ -86,7 +89,9 @@ const CFG_DEFAULTS = {
   "status_bar.plot_paths": "继续当前话题|转换场景|结束互动",
   "status_bar.default_placeholder": "未设置",
   "status_bar.show_delta": true,
-  "status_bar.jev_confidence_floor": 0.6,
+  "status_bar.decision_base_url": "https://openrouter.ai/api/v1",
+  "status_bar.decision_api_format": "auto",
+  "status_bar.decision_confidence_floor": 0.6,
   "debug.show_inject_report": false,
 };
 
@@ -108,7 +113,6 @@ function applySettings(providers, cfg) {
   fillProviderSelect($("#c-rag-rerank"), providers.rerank, "（不使用重排）");
   fillProviderSelect($("#c-rag-llm"), providers.llm, "（退化为文本截断）");
   fillProviderSelect($("#c-sb-llm"), providers.llm, "（回退到 RAG 摘要 LLM）");
-  fillProviderSelect($("#c-sb-jev-provider"), providers.llm, "（未选择——JEV 模式不会生效）");
 
   CFG_FIELDS.forEach(([group, key, sel, kind]) => {
     const el = $(sel);
@@ -118,6 +122,15 @@ function applySettings(providers, cfg) {
     if (kind === "bool") el.checked = !!v;
     else if (kind === "placeholder") el.value = (v === undefined || v === null || v === "") ? "未设置" : v;
     else el.value = v === undefined || v === null ? "" : v;
+  });
+
+  // 蓝条错位修复：滑块填充条（--slider-progress）只在 input 事件时由
+  // app.js 的同步器重算；上面程序化写 value 不触发 input，首次打开配置页
+  // 时填充条停留在 HTML 缺省值的位置（0.7 → 70%），与实际保存值对应的
+  // 滑块位置错开，拖动一下才对齐。这里补发一次冒泡 input 让同步器重画
+  // （仍在 _applyingSettings 微任务窗口内，不会误判为用户编辑）。
+  document.querySelectorAll('input[type="range"]').forEach((el) => {
+    el.dispatchEvent(new Event("input", { bubbles: true }));
   });
 
   // 滑块旁的数值展示与后端值同步

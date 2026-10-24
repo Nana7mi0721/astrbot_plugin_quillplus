@@ -284,6 +284,12 @@ def strip_status_history(plugin, target_id: str, contexts: list) -> list:
     逐字保持：清洗后文本**未变化**时原 dict 对象原样透传（不重建）；
     ``clean`` 可为空串——命中判定用 ``is None`` 而非真值测试，空串作为
     合法清洗结果同样入缓存、同样命中。
+
+    M13 修复：``clean`` 为空串时**丢弃该条消息**，不再写回。历史里存在
+    「整条只有状态栏」的助手消息（模型把状态栏单独发过一次），剥离后它的
+    content 变成 ``""``；空 content 会被下一轮拼进 prompt，表现为上下文里
+    凭空多出若干空消息，部分 provider 还会直接判为非法请求。丢弃是唯一
+    语义正确的处理——这条消息剥离后本就不含任何可回放内容。
     """
     cursor = _cursors_for(plugin).cursor_for(target_id).strip
     gen = _inputs_fingerprint(plugin)
@@ -303,6 +309,9 @@ def strip_status_history(plugin, target_id: str, contexts: list) -> list:
                 if len(cache) < MAX_PASS_CACHE:
                     cache[key] = clean
             new_seq.append(key)
+            if not clean:
+                # M13：整条被剥离干净（或本来就是空串）→ 丢弃，不写回空内容。
+                continue
             out.append({**c, "content": clean} if clean != raw else c)
         else:
             out.append(c)

@@ -258,6 +258,7 @@ class MemoryStore:
             
         vectors = []
         valid_rows = []
+        _decode_failed = 0  # L15：损坏向量计数（见下方汇总 warning）
         import numpy as np
         for row in rows:
             # 核心记忆行（update_core_memory 写入 vector=b''、dim=0）不携带向量，
@@ -269,9 +270,24 @@ class MemoryStore:
                 vec = self._decode_vector(row[3], row[4])
                 vectors.append(vec)
                 valid_rows.append(row)
-            except Exception:
-                pass
-                
+            except Exception as e:
+                # L15 修复：原先 `except Exception: pass` 零日志——某一行向量损坏
+                # （BLOB 截断、dim 与实际长度不符）时该条记忆被静默踢出候选，
+                # 用户只看到「检索结果变少」，没有任何线索可查。改为计数 + 结束时
+                # 汇总一条 warning（逐行 warning 会在坏行多时刷屏）。
+                _decode_failed += 1
+                if _decode_failed <= 3:
+                    logger.warning(
+                        "[Quill Memory] 会话 %s 有条目向量解码失败，已跳过（mem_id=%s）: %s",
+                        session_id, row[0], e,
+                    )
+
+        if _decode_failed:
+            logger.warning(
+                "[Quill Memory] 会话 %s 共 %d 条记忆向量解码失败被跳过；重建该会话记忆索引可修复",
+                session_id, _decode_failed,
+            )
+
         if not vectors:
             return None, None
 
@@ -318,7 +334,11 @@ class MemoryStore:
                     # 与下方 LIKE 路径的分数量纲保持同一个方向。
                     scores[row[0]] = -row[1]
             except Exception as e:
-                logger.debug("[Quill Memory] _fts_scores FTS 检索失败，回落 LIKE: %s", e, exc_info=True)
+                # M5：FTS 通道失效只在 debug 级留痕，等于**静默降级**。FTS 挂了
+                # 会退回「只覆盖 1-2 字短词的 LIKE」路径，长关键词直接召不回，
+                # 而用户看到的只是「记忆检索变差了」——没有任何可排查的线索。
+                # 这是功能通道整条失效，按 warning 记。
+                logger.warning("[Quill Memory] _fts_scores FTS 检索失败，回落 LIKE: %s", e, exc_info=True)
 
         # ── 路径 2：短词 LIKE 兜底 ──
         # 即便 FTS 已有命中，短词仍可能带来额外结果（混合查询「生日的猫」），
@@ -422,7 +442,15 @@ class MemoryStore:
                     now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
                     age_days = (now_utc - ts).total_seconds() / 86400.0
                 except Exception:
-                    age_days = 0.0
+                    # L15 修复：时间戳解析失败时原先 `age_days = 0.0` → `decay = exp(0)
+                    # = 1.0`，也就是**权重拉满**——一条时间戳坏掉的记忆反而比刚写入的
+                    # 更占优。这里给它一个「按最旧处理」的保守值（衰减到底，但仍保留
+                    # 在候选里，不至于因为一个字段格式问题就让这条记忆彻底查不到）。
+                    age_days = 3650.0
+                    logger.warning(
+                        "[Quill Memory] 记忆时间戳格式异常（mem_id=%s, ts=%r），本轮按最旧值参与排序",
+                        row[0] if row else "?", row[5] if len(row) > 5 else None,
+                    )
                 decay = np.exp(-0.02 * age_days)
                 
                 # Frequency score
@@ -449,6 +477,31 @@ class MemoryStore:
                     "fts_score": fts_scores.get(row_id, 0.0)
                 })
                 
+        # L17 修复：把「FTS 命中但不在向量候选集里」的记忆补进结果。
+        #
+        # 候选集受两条限制：`_get_cached_vectors` 的活跃度判据
+        # （`is_core=1 OR is_active=1 OR 30 天内`）与 LIMIT 1000。于是**30 天前写、
+        # 从未被引用过**的记忆即使被关键词精确命中，也永远进不了 results ——
+        # 只有向量通道整体不可用时才会经 `_keyword_only_search` 回表。
+        # 这与本类「至少还能按关键词召回」的设计承诺不符：用户明确打出的关键词
+        # 反而查不到自己很久以前说过的事。
+        # 补入的行只带关键词名次（vec_score=0，向量名次自然落到队尾），因此不会
+        # 挤掉向量命中的排序，只是让 RRF 把「关键词强命中」这一路信号算进去。
+        seen_ids = {r["id"] for r in results}
+        missing_ids = []
+        for raw_id in fts_scores.keys():
+            try:
+                kid = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if kid not in seen_ids:
+                missing_ids.append(kid)
+        if missing_ids:
+            for extra in await self._fetch_memories_by_ids(
+                session_id, missing_ids, fts_scores
+            ):
+                results.append(extra)
+
         if not results:
             return []
             
@@ -469,6 +522,53 @@ class MemoryStore:
         non_core = [r for r in results if not r["is_core"]]
         non_core.sort(key=lambda x: x["rrf_score"], reverse=True)
         return non_core[:top_k]
+
+    async def _fetch_memories_by_ids(
+        self, session_id: str, ids: list, fts_scores: dict
+    ) -> list[dict]:
+        """按 id 回表取记忆行，只带关键词名次（L17 补召回）。
+
+        与 :meth:`_keyword_only_search` 的区别：这里用于「向量通道可用、但候选集
+        因活跃度/条数上限漏掉了 FTS 命中」的补齐，返回项没有向量名次，只让
+        `fts_score` 参与 RRF，不会篡改向量通道的排序。
+        """
+        if not ids:
+            return []
+        out: list[dict] = []
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            try:
+                rows = await self._exec_fetchall(
+                    "SELECT id, summary, chat_summary, timestamp, strength, "
+                    "useful_count, is_core FROM memories "
+                    f"WHERE session_id = ? AND id IN ({placeholders})",
+                    (session_id, *chunk),
+                )
+            except Exception as e:
+                # 补召回是「锦上添花」路径，失败不应把已经算好的向量结果一起废掉
+                # （对照 _keyword_only_search：那是唯一的召回通道，必须抛）。
+                logger.warning(
+                    "[Quill Memory] 关键词补召回回表失败（本次仅返回向量候选集）: %s", e
+                )
+                return out
+            for r in rows:
+                out.append({
+                    "id": r[0],
+                    "summary": r[1],
+                    "chat_summary": r[2],
+                    "timestamp": r[3],
+                    "strength": r[4],
+                    "useful_count": r[5],
+                    "age_days": 0.0,
+                    "is_core": r[6],
+                    "sim": 0.0,
+                    "vec_score": 0.0,
+                    "fts_score": fts_scores.get(r[0], 0.0),
+                    # 关键词侧补召回标记：面板/日志可据此区分「向量没命中但词命中」
+                    "keyword_only": True,
+                })
+        return out
 
     async def _keyword_only_search(
         self, session_id: str, fts_scores: dict, top_k: int
@@ -943,11 +1043,17 @@ class MemoryStore:
         return {"total_memories": total, "total_sessions": sessions, "today_count": today}
 
     async def list_all_memories(self, limit: int = 200, offset: int = 0) -> list[dict]:
-        """列出全部记忆（跨 session），按创建时间倒序，支持分页。"""
+        """列出全部记忆（跨 session），按创建时间倒序，支持分页。
+
+        M4：排序缺 tiebreaker。timestamp 是秒级字符串，同一秒里写入的多条记忆
+        之间顺序未定义，而 SQLite 对「顺序未定义」不保证两次查询一致 ——
+        面板翻到第 2 页时，第 1 页出现过的记录可能再出现一次，另一条则**任何
+        一页都看不到**。加 id 作次级排序键，让分页成为确定的全序切分。
+        """
         try:
             rows = await self._exec_fetchall(
                 "SELECT id, session_id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active, is_core FROM memories "
-                "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                "ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
                 (limit, offset)
             )
             return [
@@ -1010,22 +1116,45 @@ class MemoryStore:
 
         P2-7 修复：新增可选 session_ids 白名单参数。传入时仅检索指定会话的记忆，
         None 表示全量（保持向后兼容，仅限管理面板等受信任调用方使用）。
+
+        M1：行级维度校验不足以守住这里。切换 Embedding 提供商（维度从 768 变
+        1024 等）后，库里同时存在两种维度的 BLOB，每行自己都和自己的 dim 自洽，
+        于是旧代码把 `row[5]`（每行自己的 dim）当校验依据全部放行，直到
+        `np.stack` 才发现形状不一致 —— 整个面板全局检索直接 500，用户看到的是
+        「向量检索失败」而不知道原因。现在以**查询向量**的维度为准做过滤，
+        并带上丢弃条数告警（提示需重建索引），而不是让用户对着一个纯 500 猜。
         """
         if not query_vector:
             return []
         try:
+            query_dim = len(query_vector)
+        except TypeError:
+            return []
+        # M1-2：与 search() 保持同一套活跃度判据。此前这里不带任何过滤条件，
+        # 退役（is_active=0）与陈旧记忆都会挤进候选、占掉 top_k 名额，
+        # 而对话内的 search() 根本不会返回它们——同一个查询在面板与会话里
+        # 得到不同结果，用户无法解释。
+        _active_where = (
+            " AND (is_core = 1 OR is_active = 1 "
+            "OR (julianday('now') - julianday(timestamp)) < 30)"
+        )
+        try:
             if session_ids:
                 placeholders = ",".join("?" for _ in session_ids)
+                # M1-3：ORDER BY 带 id 兜底。timestamp 是秒级字符串，同秒写入的
+                # 多条记忆之间的先后由 SQLite 决定（不稳定），面板重复查询可能
+                # 看到同一条反复出现、另一条从不出现。
                 rows = await self._exec_fetchall(
                     f"SELECT id, session_id, summary, chat_summary, vector, dim, timestamp FROM memories "
-                    f"WHERE session_id IN ({placeholders}) "
-                    f"ORDER BY timestamp DESC LIMIT 2000",
+                    f"WHERE session_id IN ({placeholders}){_active_where} "
+                    f"ORDER BY timestamp DESC, id DESC LIMIT 2000",
                     list(session_ids)
                 )
             else:
                 rows = await self._exec_fetchall(
                     "SELECT id, session_id, summary, chat_summary, vector, dim, timestamp FROM memories "
-                    "ORDER BY timestamp DESC LIMIT 2000"
+                    f"WHERE 1=1{_active_where} "
+                    "ORDER BY timestamp DESC, id DESC LIMIT 2000"
                 )
         except Exception as e:
             # D4（M3.2）：面板向量检索失败上抛（六类高频路径之一：search），
@@ -1048,11 +1177,16 @@ class MemoryStore:
 
             valid_rows = []
             vectors = []
+            dim_mismatch = 0
             for row in rows:
                 try:
-                    vec = np.frombuffer(row[4], dtype=np.float32)
-                    if len(vec) != row[5]:
+                    # M1：以查询维度为准。row[5] 是本行自己的 dim，只用来校验
+                    # BLOB 长度与声明是否一致；这一行**能不能与本次查询比较**
+                    # 由查询向量决定。
+                    if row[5] != query_dim:
+                        dim_mismatch += 1
                         continue
+                    vec = self._decode_vector(row[4], row[5])
                     norm = np.linalg.norm(vec)
                     if norm < 1e-9:
                         continue
@@ -1061,6 +1195,13 @@ class MemoryStore:
                 except Exception:
                     continue
 
+            if dim_mismatch:
+                logger.warning(
+                    "[Quill Memory] 全局向量检索跳过 %d 条维度不匹配的记忆"
+                    "（查询维度 %d；通常是更换 Embedding 提供商后旧向量残留，"
+                    "重建记忆索引可消除）",
+                    dim_mismatch, query_dim,
+                )
             if not vectors:
                 return []
 

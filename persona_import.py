@@ -116,19 +116,35 @@ def _extract_json(text: str) -> Optional[dict]:
     与 ``QuillSummarizer._extract_json`` 同口径：``raw_decode`` 从每个 ``{``
     开始尝试——贪婪正则/整体 ``json.loads`` 在输出带思考过程、被 ``` 包裹或
     尾随说明文字时都会失败，而模型这三种情况都会出。
+
+    L18 修复：每个 ``{`` 都做一次 ``raw_decode(text[i:])``，而每次尝试都会先把
+    剩余串复制/扫描一遍 → 输出里 ``{`` 越多越慢（O(n²)）。模型把 JSON 输出成
+    一行行缩进的对象、或先写一段含大量花括号的思考过程时，这里的耗时随长度平方
+    增长。两处收敛：
+    1. 命中过 ``{`` 但解不开时，跳到**下一个** ``{`` 而不是下一个字符（原实现对
+       非 ``{`` 字符也要走一遍 enumerate，本身不慢，慢的是每次 raw_decode 的开销）；
+    2. 先用 ``rfind("}")`` 限定候选区间：JSON 对象必然以 ``}`` 收尾，最后一个
+       ``}`` 之后的 ``{`` 不可能解出完整对象，直接不试。
     """
     if not text:
         return None
     decoder = json.JSONDecoder()
-    for i, ch in enumerate(text):
-        if ch != "{":
-            continue
+    # L18：只扫到最后一个 `}`——它之后的 `{` 一定解不出完整对象。
+    limit = text.rfind("}")
+    if limit < 0:
+        return None
+    i = text.find("{")
+    while 0 <= i <= limit:
         try:
-            obj, _ = decoder.raw_decode(text[i:])
+            # 传起始下标而不是切片：原实现 `raw_decode(text[i:])` 每次都要复制
+            # 一遍剩余串，`{` 多时是 O(n²)（L18）。
+            obj, _ = decoder.raw_decode(text, i)
         except json.JSONDecodeError:
+            i = text.find("{", i + 1)
             continue
         if isinstance(obj, dict):
             return obj
+        i = text.find("{", i + 1)
     try:
         obj = json.loads(text)
     except json.JSONDecodeError:

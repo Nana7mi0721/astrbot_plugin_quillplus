@@ -69,10 +69,24 @@ def plugin_data_root(plugin_dir: str) -> str:
     reports the legacy layout only when the directory cannot be created at all.
     """
     try:
-        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+        # C1：改用公开的 ``StarTools.get_data_dir``。它落到同一个
+        # ``data/plugin_data/<插件名>``，显式传插件名时不需要 StarTools 已初始化，
+        # 因此不再直接 import ``astrbot.core.utils.astrbot_path``（内部私有层）。
+        from astrbot.api.star import StarTools
 
-        base = os.path.join(get_astrbot_plugin_data_path(), PLUGIN_NAME)
-    except Exception:
+        base = str(StarTools.get_data_dir(PLUGIN_NAME))
+    except Exception as exc:
+        # L11：这里此前是**完全静默**的退化路径。它只在取不到 AstrBot 数据目录时
+        # 触发（单文件自测属预期，但框架改名/重排公开 API 同样会落到这里），而
+        # 后果是运行数据重新写回插件目录 —— 正是本模块 docstring 描述的 WinError 32
+        # 更新中断场景。保持降级不阻断启动，但必须留下可排查的线索。
+        logger.warning(
+            "[Quill Paths] 无法从 AstrBot 解析插件数据目录（%s: %s），"
+            "已退化为在插件目录内读写数据；此状态下插件更新可能因文件占用而失败，"
+            "请改用带 astrbot 依赖的解释器运行，或检查 AstrBot 版本兼容性。",
+            type(exc).__name__,
+            exc,
+        )
         # Standalone / test context: keep data out of the plugin dir anyway so
         # the "don't write inside the plugin" invariant still holds.
         base = os.path.join(plugin_dir, "data_runtime")
@@ -84,8 +98,12 @@ def plugin_data_root(plugin_dir: str) -> str:
         os.remove(probe)
         return base
     except OSError as exc:
+        # L11：第二条静默退化路径。写探针失败意味着数据盘满/只读/权限不足，
+        # 而回退结果是「把 SQLite 与状态写回插件目录」，与上面同属更新中断场景，
+        # 且用户只会在下次更新失败时才察觉。把可操作的排查方向一并写进日志。
         logger.warning(
-            "[Quill Paths] 无法使用外部数据目录 %s（%s），回退到插件内旧路径",
+            "[Quill Paths] 外部数据目录 %s 不可写（%s），回退到插件内旧路径；"
+            "插件更新前请先停用插件，并检查该目录所在磁盘的空间与权限。",
             base,
             exc,
         )

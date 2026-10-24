@@ -16,7 +16,7 @@
 v5.0 变化:
 - 配置由 AstrBot 通过 _conf_schema.json 注入（不再读 config.yaml）
 - 全部行为由 QuillConfig 控制
-- admin_users 收窄为仅群聊写指令权限控制，Web 面板信任 AstrBot 鉴权
+- admin_users 同时用于群聊写指令权限与 Web 面板写/删路由校验
 """
 
 import asyncio
@@ -28,8 +28,13 @@ import re
 from astrbot.api.star import Context, Star, register
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.provider import ProviderRequest, LLMResponse
-from astrbot.core.agent.tool import FunctionTool
-from astrbot.core.star.register import register_command
+# C1：FunctionTool / register_command 都有公开导出面，不再从 astrbot.core.* 取，
+# 避免内部模块改名时跟随断裂（astrbot.api 是框架承诺稳定的那一层）。
+from astrbot.api import FunctionTool
+from astrbot.api.event.filter import command as register_command
+# GreedyStr 例外保留 core 路径：框架在 `validate_and_convert_params` 里用
+# **身份比较**（`param_type_or_default_val is GreedyStr`）判定「吃掉剩余文本」，
+# 公开面没有导出它，自造同名类不会生效。此处依赖的是该标记类本身而非内部实现。
 from astrbot.core.star.filter.command import GreedyStr
 
 from astrbot.api import logger
@@ -257,11 +262,17 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         self._rag_reinit_task: asyncio.Task | None = None
         # P1-4: 健康度追踪器（内存滑动窗口，重启清零）
         self.health_tracker = HealthTracker(window_size=20)
-        # JEV 剧情走向轮次缓存（内存态，按 target_id 一轮一条，5 分钟过期自动清）：
+        # Decision 剧情走向轮次缓存（内存态，按 target_id 一轮一条，5 分钟过期自动清）：
         # H4 请求钩子写入（推荐选择度分布 + argmax 分支），H6 装饰（parsers/render
         # 追加「▸ N%」）与 /quill debug 读取。不落盘——百分比只服务当前轮回复，
         # 持久化反而会把过期分布带进下一轮。
-        self._jev_round_cache: dict[str, dict] = {}
+        self._decision_round_cache: dict[str, dict] = {}
+
+        # H1：框架 send_message_to_user 的原文描述快照。必须在 __init__ 就赋初值——
+        # AGENT.md 运行期约束要求「读可能未初始化的属性必须 getattr(self, ...)」，
+        # 但 _restore_smt_tool 在每次 on_llm_request 开头都会跑，靠 getattr 兜底
+        # 会让「initialize 尚未执行」这段时间的还原静默失效；显式初始化更直白。
+        self._smt_orig_desc: str | None = None
 
         # --- 运行数据位置 ---
         # 数据库/世界书/状态原先放在插件目录内（knowledge/、worldbooks/、data/），
@@ -347,7 +358,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         "status_bar_format_plain",
         "status_bar_plain_platforms",
         "status_bar_plot_paths",
-        "status_bar_jev_confidence_floor",
+        "status_bar_decision_enabled",
+        "status_bar_decision_confidence_floor",
         "status_bar_default_placeholder",
         "status_bar_show_delta",
     })
@@ -606,6 +618,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 and self.rag_retriever and self.rag_retriever.memory_store:
             self._spawn(self._reflection_loop())
             logger.info("[Quill Reflection] 闲时反思守护进程已启动")
+
+        # H1：复位进程级 send_message_to_user 单例描述并快照框架原文。
+        # 必须在这里（而非首次改写时）做：热重载会复用同一个 singletons，
+        # 旧版本写下的 Quill 版描述若不主动复位，新代码会继承旧污染。
+        self._reset_smt_tool_singleton()
 
         logger.info(
             f"[Quill] 插件初始化完成 | 激活词: {self.activation_detector.get_word_count()} 个"
@@ -1416,29 +1433,96 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
     # _parse_status_block 已搬至 quill/services/statusbar/parsers.py（M2.1）。
 
-    # ── FunctionTool 描述泄漏防护 ─────────────────────────────
-    _QUILL_SMT_DESC_MARKER = "MUST use this tool to send ALL reply text"
-    _QUILL_ORIG_DESC_KEY = "_quill_orig_desc_saved"
+    # ── FunctionTool 描述泄漏防护（H1）─────────────────────────
+    # 旧实现有两个致命缺陷，二者叠加导致「还原」是永不可达的死代码、
+    # 而「改写」每轮都重复执行（线上 backend.log 里同一行出现 366 次）：
+    #   1. marker 写的是一句**从未被写入过**的文案（"MUST use this tool to
+    #      send ALL reply text"），既不在框架原文里、也不在 Quill 改写版里，
+    #      于是 "marker in description" 恒为 False —— 守卫恒真，还原永不触发；
+    #   2. 原件存在**每请求新建**的 req 上，而被改写的是
+    #      FunctionToolManager 里注册的**进程级缓存单例**
+    #      （func_tool_manager.get_builtin_tool 命中 builtin_func_list 直接
+    #      返回同一对象，且 ToolSet 只持引用不复制），所以改写会跨请求、
+    #      跨会话、跨并发永久沉淀；等下一个请求拿到同一个单例时，
+    #      req 上那份「原件」早已随上一个 req 一起被丢弃。
+    # 新契约：**永不修改共享单例**。改写走 copy.copy 出来的请求级副本，
+    # 只把副本塞回本请求的 ToolSet（ToolSet.add_tool 同名覆盖）。
+    # 这里仍保留一个复位函数，用于兜住两种残留：热重载前遗留的脏单例，
+    # 以及 func_tool 与别的请求共享 ToolSet 时被塞进来的旧改写副本。
+    _QUILL_SMT_DESC_MARKER = "THIS IS THE ONLY TOOL for sending replies"
+    _QUILL_SMT_TOOL_NAME = "send_message_to_user"
+
+    def _pristine_smt_description(self) -> str | None:
+        """取框架原文描述：优先用 initialize() 快照，退回复位后的单例。
+
+        返回 None 表示两条路都拿不到（框架改版/单例尚未注册），
+        调用方按「宁可不还原也不要写坏」处理。
+        """
+        snap = getattr(self, "_smt_orig_desc", None)
+        if isinstance(snap, str) and snap:
+            return snap
+        return None
+
+    def _reset_smt_tool_singleton(self) -> None:
+        """把进程级 SMT 单例复位成框架原文，并快照原文备用。
+
+        为什么在 initialize() 做：旧版本的改写直接落在共享单例上，
+        插件热重载（面板「重载插件」/开发期自动重载）时单例仍是脏的，
+        不主动复位就会让新代码继承旧污染。原文从 dataclass 字段默认值取回
+        （message_tools.SendMessageToUserTool 的 description 默认值即框架原文），
+        这样无需新增 astrbot.core.* 导入（合规 C1）。
+        """
+        try:
+            ctx = getattr(self, "context", None)
+            if ctx is None:
+                return
+            mgr = ctx.get_llm_tool_manager()
+            tool = mgr.get_builtin_tool(self._QUILL_SMT_TOOL_NAME)
+        except Exception as e:
+            # 组件初始化失败不阻断插件加载（AGENT.md 运行期约束）
+            logger.warning("[Quill] 获取 send_message_to_user 单例失败: %s", e)
+            return
+        try:
+            desc = getattr(tool, "description", "") or ""
+            if self._QUILL_SMT_DESC_MARKER in desc:
+                field = getattr(type(tool), "__dataclass_fields__", {}).get("description")
+                default = getattr(field, "default", None)
+                if not (isinstance(default, str) and default):
+                    logger.warning(
+                        "[Quill] send_message_to_user 描述已被写成 Quill 版，"
+                        "但取不回框架原文，暂不复位（H1）"
+                    )
+                    return
+                tool.description = default
+                desc = default
+                logger.info("[Quill] 已复位 send_message_to_user 工具描述（H1，进程级单例）")
+            self._smt_orig_desc = desc
+        except Exception as e:
+            logger.warning("[Quill] 复位 send_message_to_user 描述失败: %s", e)
 
     def _restore_smt_tool(self, req: ProviderRequest) -> None:
-        """若 send_message_to_user 描述被 Quill 改写过，恢复原件。
+        """若本请求工具集里的 send_message_to_user 是 Quill 改写版，换回原文副本。
 
-        将原始描述存储在 req 对象上而非共享的 FunctionTool 实例，
-        防止多请求并发时互相覆盖。"""
+        只替换 req.func_tool 里的那一个引用，绝不就地改共享单例的属性
+        （就地改正是 H1 的成因）。取不到原文时保持原样：宁可描述被改写，
+        也不能把描述写成空串让模型失去唯一的发送出口。
+        """
         if not req or not req.func_tool or req.func_tool.empty():
             return
-        tool = req.func_tool.get_tool("send_message_to_user")
+        tool = req.func_tool.get_tool(self._QUILL_SMT_TOOL_NAME)
         if tool is None:
             return
-        if self._QUILL_SMT_DESC_MARKER not in (tool.description or ""):
+        if self._QUILL_SMT_DESC_MARKER not in (getattr(tool, "description", "") or ""):
             return
-        orig = getattr(req, self._QUILL_ORIG_DESC_KEY, None)
-        if orig is not None:
-            tool.description = orig
-            try:
-                delattr(req, self._QUILL_ORIG_DESC_KEY)
-            except AttributeError:
-                pass
+        orig = self._pristine_smt_description()
+        if orig is None:
+            return
+        try:
+            fresh = copy.copy(tool)
+            fresh.description = orig
+            req.func_tool.add_tool(fresh)
+        except Exception as e:
+            logger.warning("[Quill] 还原 send_message_to_user 描述失败: %s", e)
 
     def _get_target_id(self, event: AstrMessageEvent) -> str:
         if hasattr(event, "unified_msg_origin") and event.unified_msg_origin:
@@ -1733,20 +1817,28 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         return dynamic_prompt
 
     async def _rewrite_smt_tool_description(self, req: ProviderRequest, persona_id: str = "") -> None:
-        """改写 send_message_to_user 工具描述。状态栏指令通过 system prompt + tail message 注入。
+        """改写本请求工具集里的 send_message_to_user 描述。状态栏指令通过 system prompt + tail message 注入。
 
         无角色卡时不重写：原始描述不会强制 "MUST call IMMEDIATELY"，
         避免 LLM 在无人设约束时进入 Agent 死循环（连续调用工具）。
+
+        H1：改写**只落在 copy.copy 出来的请求级副本**上，原始单例一个字节都不动。
+        这样每次请求都从框架原文出发重新改写（幂等，不再需要 marker 守卫），
+        并发请求之间也互不干扰——旧实现直接改共享单例，晚到的请求会读到
+        早先请求写下的文案，而它自己 req 上那份"原件"又是另一个对象的，
+        还原逻辑永远够不着被改的那个。
         """
         if not persona_id:
             # 无角色卡时跳过重写，避免 LLM 失控循环
             return
         if not (req.func_tool and not req.func_tool.empty()):
             return
-        smt_tool = req.func_tool.get_tool("send_message_to_user")
-        if smt_tool and self._QUILL_SMT_DESC_MARKER not in (smt_tool.description or ""):
-            setattr(req, self._QUILL_ORIG_DESC_KEY, smt_tool.description)
-            smt_tool.description = (
+        smt_tool = req.func_tool.get_tool(self._QUILL_SMT_TOOL_NAME)
+        if smt_tool is None:
+            return
+        try:
+            fresh = copy.copy(smt_tool)
+            fresh.description = (
                 "THIS IS THE ONLY TOOL for sending replies. Output text DIRECTLY in your response will be DISCARDED. "
                 "You MUST call this tool to send ANY reply text — do NOT output text in the content field. "
                 "Call this tool IMMEDIATELY as your first action — do not call any other tools before sending your message."
@@ -1754,7 +1846,19 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 " Send the COMPLETE reply — all story segments AND the status bar — in ONE single call. "
                 "NEVER call this tool more than once per reply; repeated calls are rejected."
             )
-            logger.info(f"[Quill] 已重写 send_message_to_user 描述 (persona={persona_id})")
+            req.func_tool.add_tool(fresh)
+        except Exception as e:
+            # 改写失败不阻断本轮：模型仍能用框架原文调用工具
+            logger.warning("[Quill] 改写 send_message_to_user 描述失败（H1）: %s", e)
+            return
+        # 每请求只该记一次：旧实现每轮无条件重写，日志里同一行刷了 366 次。
+        # 这里用 req 上的标记做去重，同一 req 被多条 hook 路径处理时不重复刷。
+        if not getattr(req, "_quill_smt_rewritten", False):
+            try:
+                setattr(req, "_quill_smt_rewritten", True)
+            except Exception:
+                pass
+            logger.debug(f"[Quill] 已改写 send_message_to_user 描述 (persona={persona_id})")
 
     @filter.on_llm_request(priority=100)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -1954,7 +2058,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 system = "wr"
                 test_text = text
             if not test_text:
-                from astrbot.core.message.message_event_result import MessageEventResult
+                from astrbot.api.event import MessageEventResult
                 event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem> <文字>"))
                 return
             await _cmds.quill_test(self, event, system, test_text)

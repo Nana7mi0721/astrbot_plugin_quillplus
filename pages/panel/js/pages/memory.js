@@ -63,6 +63,13 @@ async function loadMemorySessions() {
     const sessions = data.sessions || [];
     sel.innerHTML = '<option value="">全部会话</option>' +
       sessions.map(s => `<option value="${esc(s.session_id)}">${esc(s.session_id)}（${s.mem_count} 条）</option>`).join("");
+    // L9：对话日志那两个输入框此前是纯自由文本，用户只能靠记忆手打 Session ID。
+    // 会话列表本来就在这次响应里，顺手填进 datalist 做候选（不额外发请求）。
+    const dl = $("#logSessionList");
+    if (dl) {
+      dl.innerHTML = sessions
+        .map(s => `<option value="${esc(s.session_id)}"></option>`).join("");
+    }
   } catch (_) { /* 保留「全部会话」 */ }
 }
 

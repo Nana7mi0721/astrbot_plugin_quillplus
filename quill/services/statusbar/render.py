@@ -21,8 +21,8 @@ QuillPlugin 提供。
 from __future__ import annotations
 
 from ...core.logbridge import logger  # noqa: F401  # 方法体 logger 引用经 logbridge 桥接
-from . import jev_client as _jev_mod
-from .parsers import _LOVE_DATA_RE
+from . import decision_client as _dec_mod
+from .parsers import _LOVE_DATA_RE, _round_options_match, apply_template
 
 
 class StatusbarRenderMixin:
@@ -135,16 +135,21 @@ class StatusbarRenderMixin:
         plot_content = "\n".join(
             f"{i+1}. {p}" for i, p in enumerate(self.status_bar_plot_paths)
         )
-        # JEV 推荐选择度：与解析侧（parsers L4）同一份轮次缓存、同一 fail-open
-        # 语义——兜底栏也带「▸ N%」，避免同一轮两条路径显示不一致。
-        rd = (getattr(self, "_jev_round_cache", None) or {}).get(target_id)
-        if isinstance(rd, dict) and rd.get("probs"):
-            plot_content = _jev_mod.annotate_plot_probs(
+        # Decision 推荐选择度：与解析侧（parsers L4）同一份轮次缓存、同一
+        # fail-open 语义——兜底栏也带「▸ N%」，避免同一轮两条路径显示不一致。
+        # M8 修复：与解析侧同步补开关判据——缓存可以比开关多活 5 分钟，
+        # 关掉决策模式后兜底栏不该继续出现百分比（细节见 parsers.py 同处注释）。
+        rd = None
+        if getattr(self, "status_bar_decision_enabled", False):
+            rd = (getattr(self, "_decision_round_cache", None) or {}).get(target_id)
+        if isinstance(rd, dict) and rd.get("probs") and _round_options_match(self, rd):
+            plot_content = _dec_mod.annotate_plot_probs(
                 plot_content,
                 rd["probs"],
                 float(rd.get("confidence", 0.0)),
-                floor=getattr(self, "status_bar_jev_confidence_floor", 0.6),
+                floor=getattr(self, "status_bar_decision_confidence_floor", 0.6),
             )
         plot_section = "\n\n【剧情走向】\n" + plot_content + "\n【请选择】"
         full_content = love_section + plot_section
-        return template.replace("{content}", full_content)
+        # L4：模板缺 {content} 时补在末尾而不是丢内容（见 parsers.apply_template）
+        return apply_template(template, full_content)

@@ -37,9 +37,10 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("status_bar", "llm_extract"), ("status_bar", "llm_provider_id"),
     ("status_bar", "default_placeholder"), ("status_bar", "show_delta"),
     ("status_bar", "format_template_plain"), ("status_bar", "plain_platforms"),
-    # status_bar / JEV 模式（TypeSafe System One：推荐选择度 + 分支路由）
-    ("status_bar", "jev_enabled"), ("status_bar", "jev_provider_id"),
-    ("status_bar", "jev_confidence_floor"),
+    # status_bar / Decision 决策模式（结构化判定：推荐选择度 + 分支路由）
+    ("status_bar", "decision_enabled"), ("status_bar", "decision_base_url"),
+    ("status_bar", "decision_api_key"), ("status_bar", "decision_model"),
+    ("status_bar", "decision_api_format"), ("status_bar", "decision_confidence_floor"),
     # debug
     ("debug", "enabled"), ("debug", "show_inject_report"),
     # permissions
@@ -70,6 +71,7 @@ from starlette.responses import Response
 from astrbot.api import logger
 
 from ._backup_util import (
+    BackupTooLarge,
     build_backup_zip,
     is_sqlite_bytes,
     remove_sidecars,
@@ -134,7 +136,6 @@ from .interfaces.web.upload import (
     decode_base64,
     read_upload,
 )
-from .quill.core.paths import sanitize_name
 
 # AstrBot 人格 → 角色卡（只读人格、用摘要模型做语义切分，见 persona_import.py）
 from .persona_import import (
@@ -157,6 +158,10 @@ def _clip_name(name: str, limit: int = CARD_NAME_MAX) -> str:
 #: 512MB 已远超正常规模；上限存在的意义是挡住「用一个高压缩比 zip 撑爆内存
 #: 与事件循环」的构造请求。
 _MAX_RESTORE_BYTES = 512 * 1024 * 1024
+
+#: M6 修复：备份恢复的流式拷贝块大小。1MB 在「不整条进内存」与「系统调用次数」
+#: 之间取平衡；单独提出来是为了让上限检查的粒度与块大小解耦。
+_RESTORE_CHUNK_BYTES = 1024 * 1024
 
 
 class _BytesUpload:
@@ -185,6 +190,62 @@ async def _json_body() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+#: H2 修复：会改变插件状态的 handler 名单（写/删/导入/恢复/开关）。
+#:
+#: 为什么用名单而不是按 HTTP 方法判定：路由注册表里的方法（GET/POST）与实际语义
+#: 并不对应——`wb/get`、`wr/get`、`memory/vector_search`、`wr/test` 都是 POST 但只读，
+#: 而 `backup/export` 是 GET。按名字点名才是唯一可靠的判据。
+#: 新增写/删类 handler 时必须同时登记到这里，否则该路由不设防。
+_MUTATING_ROUTES: frozenset = frozenset({
+    "config_save", "config_save_batch",
+    "stream_set_all", "state_cleanup",
+    "rag_upload", "rag_delete", "rag_groups",
+    "memory_import", "memory_prune", "memory_delete", "memory_pin",
+    "wr_create", "wr_update", "wr_delete", "wr_toggle", "wr_import",
+    "wr_batch_delete", "wr_batch_toggle",
+    "wb_create", "wb_delete", "wb_entry_create", "wb_entry_update",
+    "wb_entry_delete", "wb_import_st", "wb_import_json", "wb_reload",
+    "persona_create", "persona_update", "persona_delete", "upload_avatar",
+    "persona_import", "persona_import_text", "persona_astrbot_import",
+    "backup_restore", "backup_restore_base64",
+})
+
+#: H2 修复：AstrBot 用该前缀把「API Key 调用」与「Dashboard 登录会话」区分开
+#: （框架 `astrbot.core.workspace.API_KEY_USERNAME_PREFIX`，由
+#: `dashboard/api/auth.py::_require_api_key_scope` 拼进 AuthContext.username）。
+#: 这里复制字面量而不 import `astrbot.core.*`，是为了不新增合规债（见 C1）；
+#: 下方 `_request_carries_api_key_marker()` 同时按请求头识别，即使该前缀将来变动
+#: 也不会静默放行 API Key。
+_API_KEY_USERNAME_PREFIX = "api_key:"
+
+
+def _request_carries_api_key_marker() -> bool:
+    """请求是否自带 API Key 凭据（与框架 `_extract_raw_api_key` 同判据）。
+
+    只认「只有 API Key 才会出现」的形态：`Authorization: ApiKey`、`X-API-Key`、
+    `?api_key=`、`?key=`。`Authorization: Bearer` 不算——面板降级路径正是用
+    Bearer 传 Dashboard JWT，那属于登录会话。
+    """
+    try:
+        headers = request.headers
+        if (headers.get("Authorization", "") or "").strip().startswith("ApiKey "):
+            return True
+        if (headers.get("X-API-Key", "") or "").strip():
+            return True
+        query = request.query
+        getter = getattr(query, "get", None)
+        if callable(getter):
+            if (getter("api_key") or "").strip():
+                return True
+            if (getter("key") or "").strip():
+                return True
+    except Exception:
+        # 取不到请求元数据时按「不是 API Key」处理：身份判定仍由 username 兜底，
+        # 这里只是加固，不该因为它失败而拒绝正常面板请求。
+        return False
+    return False
+
+
 def _api_handler(handler):
     """统一的 handler 异常捕获装饰器。
 
@@ -194,9 +255,22 @@ def _api_handler(handler):
     与 `to_payload` 零调用，所有失败一律 500——参数/冲突类错误也报成服务端故障，
     还陪一条 logger.exception 噪音）。这里只回 `message`（类文档约定它是对用户
     可见的中文摘要，`detail` 才是不外泄的内部上下文）。
+
+    H2：写/删类 handler 在进入业务逻辑之前先过管理校验（见 `_MUTATING_ROUTES`）。
+    放在这一层是因为 73 条路由**全部**经过它，是唯一没有漏网可能的收口点。
     """
     @wraps(handler)
     async def wrapper(*args, **kwargs):
+        if getattr(handler, "__name__", "") in _MUTATING_ROUTES:
+            owner = args[0] if args else None
+            guard = getattr(owner, "_require_admin_request", None)
+            if not callable(guard):
+                # 理论上不可达（这些 handler 都是 QuillRoutes 的方法）。真出现
+                # 说明装饰器被用在了别处，宁可拒绝也不放行。
+                return error_response("拒绝访问：写操作缺少鉴权入口。", status_code=403)
+            denied = await guard(handler.__name__)
+            if denied:
+                return error_response(denied, status_code=403)
         try:
             return await handler(*args, **kwargs)
         except QuillError as e:
@@ -233,6 +307,80 @@ class QuillRoutes:
         # 备份导出与恢复互斥：此前两个并发恢复会各自解压/重建组件，互相覆盖文件
         # 与路由引用，没有任何保护。
         self._maintenance_lock = asyncio.Lock()
+
+    # ── H2：Web 层管理校验 ────────────────────────────────────
+
+    def _admin_users(self) -> list:
+        """读取当前 admin_users 白名单（与群聊指令同一份配置）。
+
+        `QuillConfig` 已把原始文本解析成 list（config.py 的 `admin_users`），
+        这里只在它仍是字符串/其他形态时兜底，不做二次正则解析。
+        """
+        plugin = getattr(self, "plugin", None)
+        cfg = getattr(plugin, "config", None) or getattr(self, "config", None)
+        raw = getattr(cfg, "admin_users", None)
+        if isinstance(raw, (list, tuple, set)):
+            return [str(u).strip() for u in raw if str(u).strip()]
+        if isinstance(raw, str):
+            parts = []
+            for chunk in raw.replace("|", ",").replace("\n", ",").split(","):
+                chunk = chunk.strip()
+                if chunk:
+                    parts.append(chunk)
+            return parts
+        return []
+
+    async def _require_admin_request(self, route: str) -> str | None:
+        """H2：写/删类 Web 路由的管理校验。返回 None 放行，否则返回拒绝文案。
+
+        背景：插件的 73 条路由此前零插件级校验。面板走的 `/api/plug/*` 那条要求
+        Dashboard JWT（安全），但 `/api/v1/plugins/extensions/*` 只要求 `plugin`
+        作用域，而框架 `_require_api_key_scope` 只比对 key hash 与 scopes、**从不
+        校验密码** —— 一枚 `plugin` 作用域的 API Key 就能无密码覆盖全部 SQLite
+        （`backup/restore_base64`）、改写含权限表的配置（`config/save_batch`）。
+
+        判据：框架已经把身份注入了 `astrbot.api.web.request.username` ——
+        Dashboard 登录会话是登录用户名，API Key 调用是 `api_key:<key_id>`
+        （`dashboard/api/auth.py` 拼 `API_KEY_USERNAME_PREFIX`）。因此：
+
+        - 身份缺失 → 拒绝（`/api/plug/*` 与 `/api/v1/*` 都必然带凭据，取不到
+          说明分派链路异常，不能默认放行）。
+        - API Key 调用 → **默认拒绝**（fail-close）。要放行必须把该 Key 的完整
+          身份串 `api_key:<key_id>` 显式填进 `admin_users`，属于知情选择。
+        - Dashboard 登录会话 → 放行。它等同于「已通过 Dashboard 密码认证」，
+          与框架其余管理面同一信任级；这里再要求它出现在 `admin_users` 会误伤
+          只配了聊天平台 UID 的用户，把面板写操作全部锁死。
+        """
+        try:
+            username = (getattr(request, "username", None) or "").strip()
+        except Exception:
+            username = ""
+        if not username:
+            logger.warning("[Quill Web] 拒绝 %s：无法确认请求身份（无 Dashboard 会话，也无 API Key）", route)
+            return "拒绝访问：无法确认请求身份，请从面板登录后操作。"
+        is_api_key = username.startswith(_API_KEY_USERNAME_PREFIX)
+        if not is_api_key and _request_carries_api_key_marker():
+            # 前缀变了（框架改过常量）但请求确实带 API Key → 仍按 API Key 处理。
+            is_api_key = True
+        if not is_api_key:
+            return None
+        allowed = self._admin_users()
+        if username in allowed:
+            return None
+        if not allowed:
+            logger.warning(
+                "[Quill Web] 拒绝 %s：API Key 调用且 admin_users 未配置（fail-close）。"
+                "如需放行，请在插件配置面板 → 权限 → admin_users 中填入该 Key 的身份串。",
+                route,
+            )
+            return (
+                "拒绝访问：API Key 无权执行写操作。\n"
+                "当前 admin_users 未配置。如确需用 API Key 调用，请在插件配置面板 → "
+                "权限 → admin_users 中填入该 Key 的身份串（可在 Dashboard 的 API Key "
+                "列表查看其 ID，形如 api_key:<ID>）。"
+            )
+        logger.warning("[Quill Web] 拒绝 %s：API Key 身份不在 admin_users 白名单内", route)
+        return "拒绝访问：该 API Key 不在 admin_users 白名单内。"
 
     # ── 路由注册入口 ──────────────────────────────────────────
 
@@ -288,7 +436,10 @@ class QuillRoutes:
         # AstrBot 人格导入：list 供面板选人，import 走摘要模型转换后落卡
         _r(f"/{PLUGIN_NAME}/persona/astrbot_list",       self.persona_astrbot_list, ["GET"], "列出 AstrBot 人格")
         _r(f"/{PLUGIN_NAME}/persona/astrbot_import",     self.persona_astrbot_import, ["POST"], "由 AstrBot 人格导入角色卡")
-        _r(f"/{PLUGIN_NAME}/avatar/<path:filename>", self.serve_avatar,  ["GET"],    "获取头像文件")
+        # L7：此前还注册了一条 `/avatar/<path:filename>` 静态头像路由，但面板只用
+        # `/persona/avatar?id=`（返回 base64 data URL），全仓零调用点。它同时是本
+        # 插件路径匹配面最宽的一条（`<path:...>` 吞掉后续所有斜杠），保留只会扩大
+        # 未鉴权可达面，故直接删除该注册与对应 handler。
 
         # ── Info (世界书列表 + 触发日志) ──
         _r(f"/{PLUGIN_NAME}/info",             self.info,           ["GET"],    "插件状态信息")
@@ -373,7 +524,13 @@ class QuillRoutes:
 
     @_api_handler
     async def config_save(self):
-        """保存配置项。Web 面板已由 AstrBot 鉴权保护，无需二次校验。"""
+        """保存配置项。
+
+        H2：不再依赖「面板已由 AstrBot 鉴权保护」这一前提——同一条路由在
+        `/api/v1/plugins/extensions/*` 上只需 `plugin` 作用域的 API Key 即可调用，
+        而框架校验 API Key 时从不校验密码。鉴权改由 `_api_handler` 统一收口
+        （本 handler 已登记进 `_MUTATING_ROUTES`）。
+        """
         data = await _json_body()
         group = data.get("group", "")
         key = data.get("key", "")
@@ -487,30 +644,41 @@ class QuillRoutes:
     def _validate_cleanup_prefix(prefix: str) -> str | None:
         """校验 state/cleanup 的 session_prefix；返回错误信息，None 表示通过。
 
-        UMO 键形如 ``平台:事件:平台ID!用户ID!会话``。放行条件：
-        至少 8 字符 **且包含 '!'** —— 即前缀至少定位到某个用户/会话边界；
-        裸平台前缀（``webchat:`` 无 '!'）会被拒，防止一键清掉全部真实会话。
-        误放量的最后一道闸是 StateManager 的单次删除上限（500）。
+        M7 修复：原闸门只有「≥8 字符且含 '!'」，而 UMO 形如
+        ``平台:事件:平台ID!用户ID!会话``——只写 ``webchat:FriendMessage:webchat!``
+        就满足条件，却会命中**该平台下所有用户**的状态键（单次上限 500 条）。
+        用户以为在清自己那一条，实际清掉的是别人的。
+
+        现在只接受「精确到一个会话」的前缀：必须含 '!'（用户边界）**且**以 '!'
+        结尾（会话边界），即 ``…!用户ID!``。多一层 ``!`` 就多排除一个用户，
+        因此结尾的 '!' 之后不允许再有内容，也不允许用裸用户前缀批量清人。
         """
         if not prefix:
             return "缺少 session_prefix"
         if any(ord(c) < 32 or c == "\x7f" for c in prefix):
             return "session_prefix 含非法控制字符"
-        if len(prefix) < 8 or "!" not in prefix:
+        if "!" not in prefix or not prefix.endswith("!"):
             return (
-                "session_prefix 过宽或过短：需 ≥8 字符且包含 '!'"
-                "（至少定位到用户边界），例如 "
-                "webchat:FriendMessage:webchat!quilltest!"
+                "session_prefix 过宽：只允许精确到单个会话的前缀，必须以 '!' 结尾"
+                "（形如 webchat:FriendMessage:webchat!quilltest!）。"
+                "若只想清理自己那个会话，请到面板会话列表按当前 UMO 清理。"
             )
+        # 会话段本身不能为空（`…!user!` 合法，`webchat:x!user!!` 这种空段拒绝）。
+        if prefix.endswith("!!") or prefix.startswith("!"):
+            return "session_prefix 格式无效：存在空的用户/会话段"
         return None
 
     @_api_handler
     async def state_cleanup(self):
         """按 UMO 前缀清理 quill_state.json 里的会话状态键（管理端点）。
 
-        请求体 ``{"session_prefix": "...", "dry_run": true}``：
+        请求体 ``{"session_prefix": "...", "dry_run": true, "confirm": "DELETE"}``：
         - **dry_run 默认 true**：只返回 matched/deleted=0/sample，不改动任何数据；
-        - dry_run=false 才真删；前缀校验 + 单次 500 上限双保险；
+        - M7：真删（``dry_run=false``）额外要求 ``confirm="DELETE"`` 显式确认，
+          并把命中数回显在返回体里——此前只有 dry_run 一个开关，一次误触就是
+          不可逆删除；
+        - 前缀必须精确到单个会话（见 `_validate_cleanup_prefix`），
+          再叠加 StateManager 单次 500 上限；
         - 删除走 StateManager 锁内路径并置脏，由 autoflush 正常落盘。
         """
         plugin = self.plugin
@@ -525,12 +693,22 @@ class QuillRoutes:
         err_msg = self._validate_cleanup_prefix(prefix)
         if err_msg:
             return error_response(err_msg, status_code=400)
+        if not dry_run and str(data.get("confirm") or "").strip() != "DELETE":
+            return error_response(
+                "真删需要显式确认：请把 confirm 设为 \"DELETE\"。"
+                "建议先用 dry_run=true 查看命中数量与样例。",
+                status_code=400,
+            )
         try:
             result = await plugin.state_manager.cleanup_states_by_prefix(
                 prefix, dry_run=dry_run
             )
         except ValueError as e:
             return error_response(str(e), status_code=400)
+        if isinstance(result, dict):
+            # M7：把「命中/已删多少」明确回显，前端与调用方都能看到影响面。
+            result.setdefault("matched", 0)
+            result["dry_run"] = dry_run
         return json_response({"status": "ok", "data": result})
 
     # ── RAG ───────────────────────────────────────────────────
@@ -593,6 +771,10 @@ class QuillRoutes:
 
         body: ``{"action": "create|rename|delete|assign", "name": ..., "new_name": ...,
         "sources": [...], "group": ...}``
+
+        H2：`action` 里 create/rename/delete/assign 全部是写操作（面板同一入口
+        按 action 分派），因此整个 handler 都登记为写类——只读的列表由
+        `rag/documents` 承担。
         """
         data = await _json_body()
         return json_response(await handle_rag_group_action(
@@ -1293,37 +1475,6 @@ class QuillRoutes:
             return error_response(error_text("导出失败", e), status_code=500)
 
     @_api_handler
-    async def serve_avatar(self, filename: str):
-        """提供头像文件静态服务。"""
-        if not self.persona_manager:
-            return error_response("管理器未加载", status_code=500)
-
-        # 安全检查（M3.1）：原手工 '..'、'/'、'\\' 三连检查收敛为
-        # sanitize_name 规整比对——任何会被规整改写的名字（分隔符、..、
-        # 控制字符、Windows 保留名、首尾空白）一律 400。
-        # 对比基准用 fallback=""：空输入同样落入"无效"分支。
-        if not filename or sanitize_name(filename, fallback="") != filename:
-            return error_response("无效的文件名", status_code=400)
-
-        data = await self.persona_manager.read_avatar(filename)
-        if not data:
-            return error_response("文件未找到", status_code=404)
-
-        # 根据扩展名设置 MIME 类型
-        ext = os.path.splitext(filename)[1].lower()
-        mime_map = {
-            '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-            '.webp': 'image/webp', '.gif': 'image/gif'
-        }
-        mime = mime_map.get(ext, 'application/octet-stream')
-
-        return Response(
-            data,
-            media_type=mime,
-            headers={"Cache-Control": "public, max-age=86400"}
-        )
-
-    @_api_handler
     async def persona_import_text(self):
         """从剪贴板文本导入角色卡（text 直传 / b64_text 绕沙箱，M3.1 收敛）。
 
@@ -1345,7 +1496,13 @@ class QuillRoutes:
         if not text:
             return error_response("缺少 text 参数", status_code=400)
         try:
-            persona_data = self.persona_manager.parse_clipboard_text(text)
+            # L10 修复：`parse_clipboard_text` 是纯同步函数，里面有一次
+            # `json.loads` 加多条正则匹配；SillyTavern 角色卡正文动辄几万字，
+            # 直接在这里调用会**阻塞事件循环**（同一进程内的群聊消息、SSE
+            # 流式输出、其它面板请求全部卡住）。丢到线程池执行。
+            persona_data = await asyncio.to_thread(
+                self.persona_manager.parse_clipboard_text, text
+            )
             result = await self.persona_manager.create_persona(persona_data)
             return json_response(result)
         except ValueError as e:
@@ -1519,7 +1676,16 @@ class QuillRoutes:
 
         buf = io.BytesIO()
         try:
-            zip_count, warnings = await asyncio.to_thread(build_backup_zip, sources, buf)
+            # M6：整个归档构建在内存 BytesIO 里，导出侧必须与恢复侧同一个上限，
+            # 否则「备份做得出、恢复装不回」——数据根膨胀时备份本身还会吃光内存。
+            zip_count, warnings = await asyncio.to_thread(
+                build_backup_zip, sources, buf, _MAX_RESTORE_BYTES
+            )
+        except BackupTooLarge as e:
+            # M6：超限是「用户可自行解决」的失败（清数据再试），文案直接透出，
+            # 不落进下面的通用 500 分支。
+            note_storage_error("backup", e)
+            raise StorageError(str(e), detail=f"_build_backup_zip: {e}") from e
         except Exception as e:
             # M3.2 D4：备份失败抛 StorageError（六类高频路径之一：backup），
             # 由上层 @_api_handler 转为 500 信封——与改前未捕获异常路径一致，
@@ -1690,6 +1856,12 @@ class QuillRoutes:
 
         def _extract():
             nonlocal extracted_count, skipped_count
+            # M6 修复：解压总量上限。请求体上限（_MAX_RESTORE_BYTES）管的是
+            # **压缩包**大小，而 zip 的压缩比可以做到 1000:1 —— 一个 1MB 的
+            # 包能解出 1GB。此前用 `f.write(zf.read(info))` 把每条一次性读进
+            # 内存，再叠加「解压总量无上限」，等于给了一个内存耗尽的入口。
+            # 这里两件事一起改：流式拷贝（不再整条进内存）+ 累计解压字节上限。
+            total_written = 0
             with zipfile.ZipFile(io.BytesIO(raw), 'r') as zf:
                 for info in zf.infolist():
                     if info.is_dir():
@@ -1700,6 +1872,11 @@ class QuillRoutes:
                         skipped_count += 1
                         continue
                     name = info.filename.replace("\\", "/")
+                    if total_written + info.file_size > _MAX_RESTORE_BYTES:
+                        raise ValueError(
+                            "备份解压后体积过大（超过 "
+                            f"{_MAX_RESTORE_BYTES // (1024 * 1024)}MB），已中止恢复"
+                        )
                     try:
                         os.makedirs(os.path.dirname(dest), exist_ok=True)
                         # 覆盖数据库前先删掉上一次运行留下的 -wal/-shm/-journal：
@@ -1708,8 +1885,23 @@ class QuillRoutes:
                         if dest.endswith(".db"):
                             stale_sidecars.extend(remove_sidecars(dest))
                         # 以校验后的 dest 为落点手写（不使用 zf.extract 的自有路径逻辑）
-                        with open(dest, "wb") as f:
-                            f.write(zf.read(info))
+                        written = 0
+                        with zf.open(info) as src, open(dest, "wb") as f:
+                            while True:
+                                chunk = src.read(_RESTORE_CHUNK_BYTES)
+                                if not chunk:
+                                    break
+                                written += len(chunk)
+                                # 以实际写出的字节为准（info.file_size 是压缩包里
+                                # 声明的值，不能作为唯一依据）。
+                                if total_written + written > _MAX_RESTORE_BYTES:
+                                    raise ValueError(
+                                        "备份解压后体积过大（超过 "
+                                        f"{_MAX_RESTORE_BYTES // (1024 * 1024)}MB），"
+                                        "已中止恢复"
+                                    )
+                                f.write(chunk)
+                        total_written += written
                         extracted_count += 1
                     except OSError as e:
                         failed_files.append(name)

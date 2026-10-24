@@ -38,17 +38,16 @@ from __future__ import annotations
 
 import json
 
-from astrbot.api import logger
+from astrbot.api import FunctionTool, logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.provider import LLMResponse, ProviderRequest
-from astrbot.core.agent.tool import FunctionTool
 
 from ..commands import _check_group_permission
 from ..quill.services import history_scrub as _history_scrub_mod
 from ..quill.services import memory as _memory_mod
 from ..quill.services import prompt as _prompt_mod
 from ..quill.services import response as _response_mod
-from ..quill.services.statusbar import jev_client as _jev_mod
+from ..quill.services.statusbar import decision_client as _dec_mod
 
 # F1（M3.0，BASELINE §8.2 F1）：框架 send_message_to_user 把已发送纯文本
 # 记入本 extra 键（message_tools.py:349-361，值经 strip()），respond.stage
@@ -147,7 +146,7 @@ async def handle_decorating_result(plugin, event: AstrMessageEvent) -> None:
     if not chain:
         return
 
-    from astrbot.core.message.components import Plain
+    from astrbot.api.message_components import Plain
 
     cleaned = 0
     for comp in chain:
@@ -208,12 +207,15 @@ async def handle_waiting_llm_request(plugin, event: AstrMessageEvent) -> None:
     except Exception:
         return
 
-    # 拦截 /reinject 和 /重新注入（个人行为，仍用 sender_id）
+    # 拦截 /reinject 和 /重新注入
+    # L1 修复：此处原先用 `str(event.get_sender_id())`——那是**平台用户 ID**，
+    # 而 quill_rounds 的键是 UMO（`_get_target_id`，形如
+    # `webchat:FriendMessage:webchat!xxx`）。`StateManager.reset_quill_rounds`
+    # 对未知键是纯 no-op，于是这条分支从来只回「已重置」而什么都没重置。
     if user_input.strip() in ("/reinject", "/重新注入"):
-        sender_id = str(event.get_sender_id())
-        await plugin.state_manager.reset_quill_rounds(sender_id)
+        await plugin.state_manager.reset_quill_rounds(target_id)
         logger.info("[Quill] /reinject 已重置 quill_rounds")
-        from astrbot.core.message.message_event_result import MessageEventResult
+        from astrbot.api.event import MessageEventResult
         event.set_result(MessageEventResult().message(
             "已重置注入状态。下次触发 Quill 时将重新注入全部常驻素材。"
         ))
@@ -796,61 +798,61 @@ async def handle_llm_tool_respond(
             logger.warning(f"[Quill Memory] 记忆存储调度失败: {e}")
 
 
-async def _jev_plot_route(
+async def _decision_plot_route(
     plugin, event: AstrMessageEvent, req: ProviderRequest, target_id: str, activated: bool
 ) -> None:
-    """JEV 剧情走向路由 + 推荐选择度（全链 fail-open，失败即无痕迹跳过）。
+    """Decision 剧情走向路由 + 推荐选择度（全链 fail-open，失败即无痕迹跳过）。
 
-    写 ``plugin._jev_round_cache[target_id]``，供三处消费：
+    写 ``plugin._decision_round_cache[target_id]``，供三处消费：
       1. 高置信 argmax → 本轮 system_prompt 追加确定性分支指令（主 LLM 不再猜
          用户选了哪个分支——这是现行链路里最脆的一环）；
       2. parsers/render 的【剧情走向】块重渲染 → 每个选项追加「▸ N%」；
       3. /quill debug 报告。
 
-    显式数字选择（1/2/3）直接精确匹配、不消耗 Jev 调用；自由文本先过 Noul 门
+    显式数字选择（1/2/3）直接精确匹配、不消耗判定调用；自由文本先过 Noul/predicate 门
     （用户是否在响应分支提示，<0.5 整体跳过——无视选项继续 RP 时不误路由），
-    再 Choice 选分支。判定模型 = status_bar.jev_provider_id 指向的 AstrBot
-    提供商（须为指向 api.typesafe.ai 的 Jev 类模型），凭据从 provider_config
-    提取，直连 /v1/systemone。超时 5s，任何失败静默跳过。
+    再 Choice 选分支。判定走插件独立配置的决策模型（status_bar.decision_*：
+    base_url / api_key / model / api_format，不经过 AstrBot 提供商——决策模型
+    没有 chat/completions 端点），System One 与 OpenAI Decisions 两族格式由
+    decision_client 自动适配。超时 5s，任何失败静默跳过。
     """
-    cache = getattr(plugin, "_jev_round_cache", None)
+    cache = getattr(plugin, "_decision_round_cache", None)
     if not isinstance(cache, dict):
         return
-    _jev_mod.prune_round_cache(cache)
-    if not getattr(plugin.props, "status_bar_jev_enabled", False) or not activated:
+    _dec_mod.prune_round_cache(cache)
+    if not getattr(plugin.props, "status_bar_decision_enabled", False) or not activated:
         return
     options = [str(p).strip() for p in (plugin.props.status_bar_plot_paths or []) if str(p).strip()][:3]
     if len(options) < 2:
         return
 
     user_msg = (getattr(event, "message_str", "") or "").strip()
-    pick: int | None = _jev_mod.parse_numeric_pick(user_msg, len(options))
+    pick: int | None = _dec_mod.parse_numeric_pick(user_msg, len(options))
     probs: dict[str, float] = {}
     confidence = 0.0
 
     if pick is not None:
-        # 显式数字选择零成本零风险，直接视为确定判定（不消耗 Jev 调用）。
+        # 显式数字选择零成本零风险，直接视为确定判定（不消耗判定调用）。
         confidence = 1.0
     else:
-        provider_id = getattr(plugin.props, "status_bar_jev_provider_id", "") or ""
-        provider_cfg = None
-        if provider_id and getattr(plugin, "context", None) is not None:
-            try:
-                provider = plugin.context.get_provider_by_id(provider_id)
-                provider_cfg = getattr(provider, "provider_config", None)
-            except Exception:
-                provider_cfg = None
-        if not provider_cfg:
+        base_url = (getattr(plugin.props, "status_bar_decision_base_url", "") or "").strip()
+        api_key = (getattr(plugin.props, "status_bar_decision_api_key", "") or "").strip()
+        model = (getattr(plugin.props, "status_bar_decision_model", "") or "").strip()
+        api_format = (getattr(plugin.props, "status_bar_decision_api_format", "auto") or "auto").strip()
+        if not base_url:
             return
         # state：最近对话（req.contexts 已由 Context Restoration 垫好）+ 本条消息 + 选项表
         recent = []
         for c in (getattr(req, "contexts", None) or [])[-6:]:
             if isinstance(c, dict):
                 recent.append(f"{c.get('role', 'user')}: {str(c.get('content', ''))[:400]}")
-        answers = await _jev_mod.jev_evaluate(
-            provider_cfg,
-            _jev_mod.build_route_state(user_msg, recent, options),
-            _jev_mod.build_plot_questions(options),
+        answers = await _dec_mod.decision_evaluate(
+            base_url,
+            api_key,
+            model,
+            _dec_mod.build_route_state(user_msg, recent, options),
+            _dec_mod.build_plot_questions(options),
+            api_format=api_format,
         )
         if not isinstance(answers, dict):
             return
@@ -862,8 +864,7 @@ async def _jev_plot_route(
         if responding < 0.5:
             return  # 用户无视选项自由 RP：不路由、不标百分比
         branch = answers.get("branch") or {}
-        raw_probs = branch.get("probabilities") or {}
-        probs = {str(k): float(v) for k, v in raw_probs.items() if isinstance(v, (int, float))}
+        probs = dict(branch.get("probabilities") or {})
         try:
             confidence = float(branch.get("confidence", 0.0))
         except (TypeError, ValueError):
@@ -873,16 +874,16 @@ async def _jev_plot_route(
         except (TypeError, ValueError):
             pick = None
 
-    cache[target_id] = _jev_mod.round_cache_entry(probs, pick, confidence, options)
+    cache[target_id] = _dec_mod.round_cache_entry(probs, pick, confidence, options)
 
-    floor = getattr(plugin.props, "status_bar_jev_confidence_floor", 0.6)
+    floor = getattr(plugin.props, "status_bar_decision_confidence_floor", 0.6)
     if pick and confidence >= floor and 1 <= pick <= len(options):
         label = options[pick - 1]
         req.system_prompt = (req.system_prompt or "") + (
             f"\n\n[System] 【剧情走向】用户已明确选择分支 {pick}（{label}）——"
             "本轮正文请直接沿该分支展开，不要再次询问，不要重复选项列表。"
         )
-        logger.info(f"[Quill JEV] 分支路由: {pick}（{label}）置信度 {confidence:.2f} | target={target_id}")
+        logger.info(f"[Quill Decision] 分支路由: {pick}（{label}）置信度 {confidence:.2f} | target={target_id}")
 
 async def handle_llm_request(
     plugin, event: AstrMessageEvent, req: ProviderRequest
@@ -1182,14 +1183,14 @@ async def handle_llm_request(
         elif not req.prompt:
             req.prompt = tail
 
-    # JEV 剧情走向路由 + 推荐选择度（opt-in，全链 fail-open）。放在 prompt
+    # Decision 剧情走向路由 + 推荐选择度（opt-in，全链 fail-open）。放在 prompt
     # 装配与 tail 之后：路由命中时向已定稿的 system_prompt 追加确定性分支
     # 指令；用户消息读 event.message_str（原始输入），不受 tail 污染。
     # 剧情走向块只在状态栏生效时出现（_sb_effective），关状态栏时跳过。
     try:
-        await _jev_plot_route(plugin, event, req, target_id, activated and _sb_effective)
+        await _decision_plot_route(plugin, event, req, target_id, activated and _sb_effective)
     except Exception as e:
-        logger.warning(f"[Quill JEV] 剧情走向路由失败（已跳过）: {e}")
+        logger.warning(f"[Quill Decision] 剧情走向路由失败（已跳过）: {e}")
 
     event.set_extra("_quill_activated", True)
 

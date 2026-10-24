@@ -7,3 +7,11 @@ Pillow>=10.0.0
 faiss-cpu>=1.8.0
 numpy>=1.24.0
 aiosqlite>=0.19.0
+
+# C2：以下两项此前只靠 AstrBot 运行环境间接带上，插件一旦在缺少它们的
+# 环境里加载就会 ImportError。声明成本为零（框架本就依赖它们，版本一致），
+# 但能让依赖解析器如实告诉我们缺什么。
+# 激活词配置解析（activation.py / _route_core.py）
+PyYAML>=6.0
+# Web 面板路由的原始字节响应（web_routes.py）
+starlette>=0.37.0

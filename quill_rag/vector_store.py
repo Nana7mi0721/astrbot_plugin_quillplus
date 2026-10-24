@@ -189,6 +189,18 @@ class FaissVectorStore:
             self.dim = 0
             # 损坏/不认识的索引文件是派生数据，移除后等 add() 按首批向量重建
             await asyncio.to_thread(self._remove_index_file)
+            # M3：这个兜底分支删了索引文件却**没有复位 SQLite 里的 faiss_id**，
+            # 而上面 dim 不一致的分支（:171）复位了。结果是所有 chunk 都留着
+            # 指向一个已经不存在的索引的 id：search 里 `row_map.get(faiss_id)`
+            # 全部落空、get_stats().faiss_vectors 虚高、而 add() 又以为这些
+            # chunk 已在索引里（faiss_id >= 0）不再补写 —— 文档永久检索不到，
+            # 只能靠删库重传。删文件与清映射必须成对出现。
+            try:
+                await self._exec_write(
+                    "UPDATE chunks SET faiss_id = -1 WHERE faiss_id >= 0"
+                )
+            except Exception as ue:
+                logger.warning("[Quill RAG] 复位 chunks.faiss_id 失败: %s", ue)
 
     def _read_index_file(self):
         """读取索引文件，返回 ``(index, header_dim_or_None)``。
@@ -396,6 +408,31 @@ class FaissVectorStore:
             except Exception as e:
                 # 3. FAISS 失败：回滚 SQLite（用精确 row_ids 删除 pending 行）
                 note_storage_error("add", e)
+                # M2：回滚必须**同时**覆盖 FAISS 侧。旧实现只 DELETE SQLite 行，
+                # 而 `add_with_ids` 可能已经成功、只有 `_save_index()` 落盘失败
+                # （磁盘满、文件被占用）—— 此时向量已经进了**内存索引**，
+                # SQLite 却把对应行删了。于是这些 id 变成永久幽灵：search 里
+                # `row_map.get(faiss_id)` 过滤掉它们，却照样占掉
+                # `recall_k = min(top_k*3, ntotal)` 的名额，真实结果被挤出；
+                # get_stats().faiss_vectors 也一直虚高。反过来 add_with_ids
+                # 自身失败时 remove_ids 是安全的空操作。
+                if self._index is not None and row_ids:
+                    try:
+                        async with self._lock:
+                            def _faiss_rollback():
+                                self._index.remove_ids(np.array(row_ids, dtype=np.int64))
+                                # 把「已回滚」的状态落盘，否则下次启动从旧文件
+                                # 加载回来又会带回这批幽灵 id。
+                                self._save_index()
+                            await asyncio.to_thread(_faiss_rollback)
+                    except Exception as fe:
+                        # 回滚索引失败只能降级为日志：绝不能因此掩盖原始错误，
+                        # 但也必须让用户知道索引里可能残留了无效 id。
+                        logger.warning(
+                            "[Quill RAG] FAISS 回滚 remove_ids 失败（索引可能残留 %d 个无效 id，"
+                            "重建索引可清除）: %s",
+                            len(row_ids), fe,
+                        )
                 if not row_ids:
                     logger.warning(
                         "[Quill RAG] FaissVectorStore.add FAISS 写入失败且无 row_ids 可回滚: %s",

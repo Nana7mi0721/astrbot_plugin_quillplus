@@ -157,50 +157,42 @@
 
 /* 分区内的两列布局。
    下限用 min(100%, 460px) 而非固定 320px：320px 在常见宽度下会排成 3 列，
-   而「注入引擎」有 4 张卡片、系统与安全有 2 张，3 列必然产生孤行卡片
-   （实测第 4 张单独落到下一行）。两列让卡片宽度更舒展，也消除了孤行。
+   产生孤行卡片。两列让卡片宽度更舒展，也消除了孤行。
    align-items 用 start：卡片各按内容定高。曾用默认的 stretch 追求「底边
-   对齐」，但同行两张卡内容量差得远时（实测 373 vs 621px），拉伸会在短卡
-   内部留下 233px 空洞——那比底边参差更像缺陷。设置类页面按内容定高，
-   短卡后面直接接下一条，没有假空白。 */
+   对齐」，但同行两张卡内容量差得远时，拉伸会在短卡内部留下大空洞——
+   那比底边参差更像缺陷。成对的相近高度卡片由上方选择器按需启用
+   stretch（注入引擎 / RAG 顶部 / 系统与安全）。 */
 .cfg-cols {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
   gap: var(--sp-4);
   align-items: start;
 }
-/* 成对的信息卡按行等高，消除截图里「系统健康度 / 调试与维护」和
-   RAG 顶部两卡底边参差。注入引擎使用纵向列栈，不套用此规则。 */
+/* 成对的信息卡按行等高，消除「系统健康度 / 调试与维护」、RAG 顶部两卡
+   以及注入引擎「表现控制 / 写作素材库控制」两卡底边参差。
+   注入引擎原为两列纵向栈（世界书 605px 高卡会把并排的短卡拉出大空洞）；
+   世界书注入策略改为全长卡后，剩下的两张卡高度相近（约 270/320px），
+   拉伸对齐的空洞代价极小，统一按行等高。 */
+#sec-inject > .cfg-cols,
 #sec-rag > .cfg-cols:first-of-type,
 #sec-system > .cfg-cols,
 .rag-overview {
   align-items: stretch;
 }
+#sec-inject > .cfg-cols > .card,
 #sec-rag > .cfg-cols:first-of-type > .card,
 #sec-system > .cfg-cols > .card,
 .rag-overview > .card {
   height: 100%;
 }
+#sec-inject > .cfg-cols > .card > .card-body,
 #sec-rag > .cfg-cols:first-of-type > .card > .card-body,
 #sec-system > .cfg-cols > .card > .card-body,
 .rag-overview > .card > .card-body {
   height: calc(100% - var(--h-row));
 }
-/* 注入引擎：4 张卡高度差极大（605 / 357 / 269 / 317），按行配对时
-   「写作素材库控制」被拉在 605px 的高卡旁边，下方空出 233px。
-   改成两列纵向栈：左列世界书注入策略 + 表现控制，右列素材库控制，
-   每列各自向下流动，空洞消失。
-   列用 flex 而非 grid：两张卡高度不等时无需指定行，交给 gap 即可。 */
-#sec-inject .cfg-cols {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
-  align-items: start;
-}
-#sec-inject .cfg-cols > .cfg-col {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
-  min-width: 0;
-}
+/* 注入引擎：世界书注入策略为全长卡，「表现控制 / 写作素材库控制」两张卡
+   成对按行等高（并入选用 stretch 的组，见上）。窄窗口退回单列。 */
 /* 单列时（窄窗口）列容器本身不再需要额外间距 */
 @media (max-width: 980px) {
   #sec-inject .cfg-cols { grid-template-columns: minmax(0, 1fr); }
