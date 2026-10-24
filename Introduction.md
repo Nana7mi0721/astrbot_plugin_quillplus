@@ -209,7 +209,7 @@
 
 > Decision 六键在 `_conf_schema.json` 与面板「配置 → 状态栏」卡片均可编辑。决策模型只做结构化判定
 > （`noul`/`predicate`、`choice`、`score`），不生成文本；凭据独立配置、不经过 AstrBot 提供商
-> （决策模型没有 `chat/completions` 端点）；失败一律 fail-open。v5.4 之前的 `jev_*` 三键会在
+> （决策模型没有 `chat/completions` 端点）；失败一律 fail-open。v5.3.2 及更早版本的 `jev_*` 三键会在
 > 新键缺省时被回退读取（开启状态与置信度阈值不丢）。
 
 ### `[debug]` / `[permissions]`
@@ -301,6 +301,6 @@ target_id（会话维度：群+用户）
 
 12. **三级运行时结构（v5.3.0）**：`main.py`（注册桩，只有 `@register` 与钩子转发）→ `interfaces/`（AstrBot 适配，唯一的框架接触面）→ `quill/`（服务层，**不 import astrbot**）。这样服务层可脱离框架推理与复用，钩子签名变化只影响适配层一处；激活判定同时改为 fail-close（检测失败按未激活处理，绝不退化成每轮全量注入）。
 
-13. **JEV 结构化判定（v5.3.1，v5.4 升级为 Decision 决策模式）**：剧情分支与状态栏判定交给决策模型（不生成文本，只输出类型化判定与置信度）。v5.3.1 借道 AstrBot 的 openai_compatible 提供商直连 TypeSafe `/v1/systemone`；v5.4 起凭据（地址/密钥/模型/格式）在插件内独立配置，并兼容整个决策模型生态——System One 族（TypeSafe Jev、OpenRouter 上 13+ 家、Hal-X THX-01、Baseten Elephant-1、云知声 U2 等）与 OpenAI Decisions 族（`/v1/decisions`：GPT-6 Luna 及兼容网关），两族请求/响应格式由客户端自动适配归一。显式数字回复（1/2/3）本地精确匹配、零消耗；任何失败 fail-open，绝不影响正文渲染。
+13. **JEV 结构化判定（v5.3.1 引入，v5.3.3 升级为 Decision 决策模式）**：剧情分支与状态栏判定交给决策模型（不生成文本，只输出类型化判定与置信度）。v5.3.1 借道 AstrBot 的 openai_compatible 提供商直连 TypeSafe `/v1/systemone`；v5.3.3 起凭据（地址/密钥/模型/格式）在插件内独立配置，并兼容整个决策模型生态——System One 族（TypeSafe Jev、OpenRouter 上 13+ 家、Hal-X THX-01、Baseten Elephant-1、云知声 U2 等）与 OpenAI Decisions 族（`/v1/decisions`：GPT-6 Luna 及兼容网关），两族请求/响应格式由客户端自动适配归一。显式数字回复（1/2/3）本地精确匹配、零消耗；任何失败 fail-open，绝不影响正文渲染。
 
 14. **与 AstrBot 原生数据双向兼容（v5.3.2）**：① 内置知识库并入可绑定源（`kb:库名` / `kb:库名/文档名`，只读，总开关 `rag.astrbot_kb_enabled`）；② AstrBot 人格经摘要模型只读转换为角色卡（「由人格导入」，人格本身不变）；③ 插件内文档分组（`grp:组名`）作为**纯元数据**层，与单篇绑定共用同一份 FAISS 索引与检索预算，检索前才展开成文件列表。
