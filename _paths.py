@@ -60,6 +60,12 @@ _MIGRATIONS = (
     ("data", ("quill_state.json", "quill_personas", "quill_avatars")),
 )
 
+# 素材库种子：随插件分发的预置写作指引库（145 条，README 承诺的开箱内容，
+# 全新安装的素材库不再为空）。只在运行目录里连旧版 ``quill_kb.db`` 都没有
+# 时播种一次——旧库在场说明是老用户升级，其改名迁移由 main.initialize 负责，
+# 提前播 ``quill_wr.db`` 会把旧库遮蔽成孤儿文件。已存在的用户数据一律不覆盖。
+_SEED_KNOWLEDGE_FILES = ("quill_wr.db",)
+
 
 def plugin_data_root(plugin_dir: str) -> str:
     """Return the directory that should hold this plugin's runtime data.
@@ -201,6 +207,33 @@ def migrate_legacy_data(plugin_dir: str, data_root: str) -> dict:
     return summary
 
 
+def seed_default_knowledge(plugin_dir: str, knowledge_dir: str) -> bool:
+    """首次运行时把随插件分发的素材库种子复制到运行目录。
+
+    只补缺：目标已存在（老用户数据 / 用户已自建）或旧版 ``quill_kb.db``
+    在场时不动（见 _SEED_KNOWLEDGE_FILES 注释）。种子缺失或复制失败只告警
+    不阻断——素材库为空不影响插件启动，用户仍可自行导入。
+    """
+    seeded = False
+    for name in _SEED_KNOWLEDGE_FILES:
+        src = os.path.join(plugin_dir, "seed", "knowledge", name)
+        if not os.path.isfile(src):
+            continue
+        dst = os.path.join(knowledge_dir, name)
+        if os.path.exists(dst) or os.path.exists(
+            os.path.join(knowledge_dir, "quill_kb.db")
+        ):
+            continue
+        try:
+            os.makedirs(knowledge_dir, exist_ok=True)
+            shutil.copy2(src, dst)
+            seeded = True
+            logger.info("[Quill Paths] 已播种预置写作素材库: %s", dst)
+        except OSError as exc:
+            logger.warning("[Quill Paths] 播种素材库失败 %s: %s", dst, exc)
+    return seeded
+
+
 def resolve_data_layout(plugin_dir: str) -> dict:
     """Resolve every runtime path the plugin needs, migrating legacy data once.
 
@@ -217,6 +250,7 @@ def resolve_data_layout(plugin_dir: str) -> dict:
 
     if not data_root:
         # Legacy layout, unchanged.
+        seed_default_knowledge(plugin_dir, os.path.join(plugin_dir, "knowledge"))
         return {
             "data_root": "",
             "knowledge_dir": os.path.join(plugin_dir, "knowledge"),
@@ -246,6 +280,7 @@ def resolve_data_layout(plugin_dir: str) -> dict:
             os.makedirs(paths[key], exist_ok=True)
         except OSError as exc:
             logger.warning("[Quill Paths] 无法创建 %s: %s", paths[key], exc)
+    seed_default_knowledge(plugin_dir, paths["knowledge_dir"])
     return paths
 
 

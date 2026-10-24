@@ -1,0 +1,8 @@
+# 行尾规范化：仓库内一律 LF，检出行为交给各机的 core.autocrlf。
+# 消除「常驻 modified」噪音——此前 39 个文件因工作区 CRLF / 库内 LF 且无
+# attributes 规则而永远显示为改动，稀释真实 diff。
+* text=auto
+
+# 二进制文件禁止任何行尾转换（尤其素材库种子——被误当文本转换即损坏）
+*.db binary
+*.png binary

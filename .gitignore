@@ -37,8 +37,9 @@ data/
 imports/
 data_runtime/
 
-# knowledge/ 素材库残留（v5.3 精简：KB 提案/条目文档移入 .backup/，不入公开库）
-knowledge/
+# knowledge/ 素材库运行残留（v5.3 精简：KB 提案/条目文档移入 .backup/，不入公开库）。
+# 锚定仓库根：seed/knowledge/ 的预置素材种子不受此规则影响（例外见下）。
+/knowledge/
 
 # 数据库及其 sidecar：-wal 里可能有未 checkpoint 的已提交事务，同样不能入库
 *.db
@@ -46,6 +47,9 @@ knowledge/
 *.db-shm
 *.db-journal
 *.index
+
+# 例外：素材库种子随安装包分发（145 条预置写作指引，全新安装不再是空库）
+!seed/knowledge/quill_wr.db
 
 # 世界书：只保留随仓库分发的示例模板，用户自己的世界书不入库
 worldbooks/*.json
