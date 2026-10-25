@@ -84,6 +84,9 @@ htmlcov/
 .reasonix/
 .zcode/
 
+# 本地代理说明副本（正本为 AGENT.md，此副本只留本地不入库）
+/CLAUDE.md
+
 # ── 前端重写前的原始版本备份（本地保留，不入库）──
 .backup/
 
