@@ -50,6 +50,13 @@ except ModuleNotFoundError:  # 直接运行本文件做自测：先把 AstrBot �
     ensure_astrbot_importable()
     from astrbot.api import logger
 
+# M1b 模块 6：条目条件解锁的安全求值器（纯数据入出，无 astrbot 依赖，
+# 与 logger 的引导无关，两种运行模式都可直接导入）
+try:
+    from .quill.services import condition as _condition_mod
+except ImportError:  # `python worldbook.py` 自测：无父包
+    from quill.services import condition as _condition_mod
+
 # ── Name validation ──────────────────────────────────────────────────────────
 
 _VALID_NAME_RE = re.compile(r'[a-zA-Z0-9_\-\u4e00-\u9fff]')
@@ -292,18 +299,46 @@ class WorldbookManager:
                     logger.warning("[Worldbook] 以下世界书不存在，已跳过: %s", invalid_wbs)
                 return copy.deepcopy([self.worldbooks[n] for n in valid_wbs])
 
-    def get_constant_entries(self, bound_worldbooks: Optional[List[str]] = None) -> List[dict]:
+    def get_constant_entries(self, bound_worldbooks: Optional[List[str]] = None,
+                             session_vars: Optional[dict] = None,
+                             funnel: Optional[dict] = None) -> List[dict]:
+        """常驻条目（M1b 模块 6 起：带 ``condition`` 字段的常驻条目变为
+        「条件型常驻」——条件成立才注入，条件求值器见 quill/services/
+        condition.py；无字段的存量条目行为不变）。
+
+        M1b-Fix P1-d：``funnel`` 传入 dict 时，条件不成立的常驻条目**追加**
+        进 ``funnel["filtered"]``（reason 以 condition_unmet 开头）——此前
+        静默跳过，面板只能看到常驻数变少不知道是条件拦的。只 append 不覆
+        写 candidates/matched（那些是 match_entries 的口径），也不整表替换
+        filtered（match_entries 会整体赋值，先跑的一方会被清掉——调用方
+        注意调用顺序或各用各的 dict 再合并）。
+        """
         entries: List[dict] = []
         for wb in self.get_active_worldbooks(bound_worldbooks):
             for entry in wb.get('entries', []):
-                if entry.get('enabled', True) and entry.get('is_constant', False):
-                    entries.append(entry)
+                if not (entry.get('enabled', True) and entry.get('is_constant', False)):
+                    continue
+                cond = entry.get('condition')
+                if cond:
+                    ok, _detail = _condition_mod.evaluate(str(cond), session_vars)
+                    if not ok:
+                        if funnel is not None:
+                            funnel.setdefault("filtered", []).append({
+                                "worldbook": wb.get('name', ''),
+                                "title": entry.get('title', ''),
+                                "reason": f"condition_unmet({_detail})",
+                            })
+                        continue
+                entries.append(entry)
         return entries
 
     def match_entries(self, user_input: str,
                       bound_worldbooks: Optional[List[str]] = None,
                       top_k: int = 0,
-                      sensitivity: float = 0.7) -> List[dict]:
+                      sensitivity: float = 0.7,
+                      session_vars: Optional[dict] = None,
+                      funnel: Optional[dict] = None,
+                      write_trigger_log: bool = True) -> List[dict]:
         """Return keyword-matched entries (substring, case-insensitive).
 
         Entries already marked ``is_constant`` are skipped — those come from
@@ -320,16 +355,30 @@ class WorldbookManager:
         - 宽松（>0.7）：在平衡之上再放开两点 —— 多词关键词允许按词片段命中
           （`"魔法 学院"` 命中 `"学院"` 也算），以及条目标题命中。
 
+        M1b 模块 1/6：``session_vars`` 供条目 ``condition`` 字段判定（条件
+        不成立的命中条目不注入）；``funnel`` 传入 dict 时回填三阶漏斗诊断
+        ——``candidates``（参与匹配的启用量）/``matched``（截帽前命中数）/
+        ``filtered``（近失明细：``sensitivity_unmet`` 命中数不足、
+        ``condition_unmet`` 条件不成立、``max_entries_cap`` 被 top_k 截帽）。
+        两个参数缺省时与旧签名行为逐字一致。
+
         Args:
             user_input: text to match keywords against
             bound_worldbooks: optional worldbook filter (None = Auto, [] = zero, [...] = Custom)
             top_k: max entries to return (0 = no limit)
             sensitivity: 0.0-1.0，匹配灵敏度。0.0 极其严格，1.0 极其宽松，默认 0.7
+            session_vars: 会话变量快照（条件求值用；None 时带条件的条目一律不注入）
+            funnel: 可选出参，回填漏斗诊断（None 时零开销）
+            write_trigger_log: 是否覆写 ``_last_trigger_log``（默认 True =
+                主链路行为；M1b-Fix P1-b：simulate 等只读调用方传 False，
+                不再顶掉真实会话的触发日志）
         """
         entries: List[dict] = []
         msg_lower = user_input.lower()
         seen_ids: set = set()
         trigger_log: List[dict] = []
+        _candidates = 0
+        _filtered: List[dict] = []
 
         # 获取活跃世界书快照（get_active_worldbooks 内部已加锁）
         active_wbs = self.get_active_worldbooks(bound_worldbooks)
@@ -360,6 +409,7 @@ class WorldbookManager:
                 min_match_required = self._min_match_required(sens, len(str_keys))
                 if min_match_required <= 0:
                     continue
+                _candidates += 1
                 matched_count = 0
                 matched_keys: List[str] = []
                 for key in str_keys:
@@ -381,30 +431,69 @@ class WorldbookManager:
                     if isinstance(title, str) and len(title.strip()) >= 2 and title.strip().lower() in msg_lower:
                         matched_count += 1
                         matched_keys.append(title.strip())
-                if matched_count >= min_match_required:
-                    entry_id = entry.get('id', '')
-                    dup_key = f"{wb_name}:{entry_id}"
-                    if dup_key not in seen_ids:
-                        seen_ids.add(dup_key)
-                        result_entry = entry.copy()
-                        result_entry['_match_score'] = matched_count
-                        result_entry['_matched_keys'] = matched_keys
-                        entries.append(result_entry)
-                        trigger_log.append({
+                if matched_count < min_match_required:
+                    # M1b 漏斗：近失（碰到了关键词但不够门槛）——此前静默丢弃，
+                    # 面板只能看到「没命中」不知道差多少。零命中不算近失。
+                    if matched_count > 0:
+                        _filtered.append({
                             "worldbook": wb_name,
-                            "entry_id": entry_id,
                             "title": entry.get('title', ''),
-                            "matched_keys": matched_keys,
-                            "score": matched_count,
+                            "reason": f"sensitivity_unmet(命中{matched_count}/需{min_match_required})",
                         })
+                    continue
+                # M1b 模块 6：条件解锁——关键词过了还要条件成立
+                cond = entry.get('condition')
+                if cond:
+                    cond_ok, cond_detail = _condition_mod.evaluate(str(cond), session_vars)
+                    if not cond_ok:
+                        _filtered.append({
+                            "worldbook": wb_name,
+                            "title": entry.get('title', ''),
+                            "reason": f"condition_unmet({cond_detail})",
+                        })
+                        continue
+                entry_id = entry.get('id', '')
+                dup_key = f"{wb_name}:{entry_id}"
+                if dup_key not in seen_ids:
+                    seen_ids.add(dup_key)
+                    result_entry = entry.copy()
+                    result_entry['_match_score'] = matched_count
+                    result_entry['_matched_keys'] = matched_keys
+                    # M1b 漏斗：截帽近失要报「哪本书」，沿用 _match_score 的
+                    # 下划线私键先例（不污染作者可见字段）
+                    result_entry['_source_worldbook'] = wb_name
+                    entries.append(result_entry)
+                    trigger_log.append({
+                        "worldbook": wb_name,
+                        "entry_id": entry_id,
+                        "title": entry.get('title', ''),
+                        "matched_keys": matched_keys,
+                        "score": matched_count,
+                    })
 
         entries.sort(key=lambda x: x.get('_match_score', 0), reverse=True)
-        if top_k > 0:
+        _matched = len(entries)
+        if top_k > 0 and len(entries) > top_k:
+            # M1b 漏斗：截帽掉的命中条目同样进 filtered（它们「命中了但没挤进
+            # 名额」，与近失是两种不同的失败）。
+            for dropped in entries[top_k:]:
+                _filtered.append({
+                    "worldbook": dropped.get('_source_worldbook', ''),
+                    "title": dropped.get('title', ''),
+                    "reason": "max_entries_cap",
+                })
             entries = entries[:top_k]
 
-        # 更新触发日志（show_trigger_log 开启时可供查询，加锁保护）
-        with self._lock:
-            self._last_trigger_log = trigger_log
+        # 更新触发日志（show_trigger_log 开启时可供查询，加锁保护）。
+        # P1-b：只读调用方（simulate）传 write_trigger_log=False——不顶掉
+        # 真实会话刚写的触发日志（/quill test wb 读的就是它）。
+        if write_trigger_log:
+            with self._lock:
+                self._last_trigger_log = trigger_log
+        if funnel is not None:
+            funnel["candidates"] = _candidates
+            funnel["matched"] = _matched
+            funnel["filtered"] = _filtered
         return entries
 
     # ── CRUD ─────────────────────────────────────────────────────────────
@@ -481,6 +570,11 @@ class WorldbookManager:
                     continue
                 if item.get("id") == entry_id:
                     updated["entries"][i].update(patch)
+                    # M1b-Fix（核验报告 §9.2#4）：前端条目表单恒传 condition，
+                    # 空串语义 = 清除条件。dict.update 做不到删键（旧条件会
+                    # 一直残留），这里显式 pop——「清空输入框保存」才真正生效。
+                    if "condition" in patch and not str(patch["condition"] or "").strip():
+                        updated["entries"][i].pop("condition", None)
                     path = os.path.join(self.worldbooks_dir, name + ".json")
                     _save_json_atomic(path, updated)
                     self.worldbooks[name] = updated
@@ -554,7 +648,7 @@ class WorldbookManager:
 
     def _map_quill_entry(self, e: dict, index: int) -> dict:
         """Quill 原生条目 → 内部条目。字段缺省或类型异常都不抛，按兜底值走。"""
-        return {
+        mapped = {
             # L8：id 可能是数字（round-trip 过 ST 工具/hand-edit 后很常见），
             # 直接 [:50] 会 TypeError；而异常被外层宽 except 吞掉 ⇒ 不是
             # 跳过这一条，而是**整本**世界书导入失败。
@@ -566,6 +660,12 @@ class WorldbookManager:
             "keys": self._coerce_str_list(e.get('keys', [])),
             "enabled": bool(e.get('enabled', True)),
         }
+        # P1-d：condition 只在有值时落键（空串等价于无条件，与存量条目
+        # 的键形态保持一致）。
+        cond = str(e.get('condition', '') or '').strip()
+        if cond:
+            mapped["condition"] = cond
+        return mapped
 
     def _map_st_entry(self, e: dict, index: int) -> dict:
         """SillyTavern 条目 → 内部条目。
@@ -589,7 +689,7 @@ class WorldbookManager:
         eid_source = title or ('' if uid is None else str(uid))
         entry_id = eid_source[:50] if eid_source else f"st_import_{index}"
 
-        return {
+        mapped = {
             "id": entry_id,
             "title": title,
             "content": str(e.get('content', '') or ''),
@@ -598,6 +698,13 @@ class WorldbookManager:
             "keys": keys_raw,
             "enabled": not bool(e.get('disable', False)),
         }
+        # P1-d：ST 导出（handle_wb_export_st）会把 condition 写进条目，
+        # 本插件导出的 ST 卡 re-import 时条件不丢；原生 ST 无此字段，
+        # 缺省即无条件，不受影响。
+        cond = str(e.get('condition', '') or '').strip()
+        if cond:
+            mapped["condition"] = cond
+        return mapped
 
     def import_from_st(self, st_json_path: str, worldbook_name: str) -> bool:
         """Import a worldbook JSON file. Auto-detects format:
@@ -706,6 +813,103 @@ class WorldbookManager:
         except Exception as exc:
             logger.error("[WorldbookManager] Import 时发生未知错误: %s", exc, exc_info=True)
             return False
+
+    # ── 角色卡内嵌世界书（Issue #1） ─────────────────────────────────────
+
+    @staticmethod
+    def _embedded_to_st_entry(e: dict) -> dict:
+        """character_book 条目（V2/V3 spec 形态）→ ST 条目形态。
+
+        spec 与 ST 编辑器导出的字段名不同：keys/key、secondary_keys/keysecondary、
+        标题在 name 或 comment、enabled 与 disable 语义相反。归一后复用
+        _map_st_entry 的类型兜底，不另写一套映射。spec 的注入位在
+        extensions.position（ST 导出在顶层），一并提升。
+        """
+        st = dict(e)
+        if "key" not in st and "keys" in st:
+            st["key"] = st["keys"]
+        if "keysecondary" not in st and "secondary_keys" in st:
+            st["keysecondary"] = st["secondary_keys"]
+        if not str(st.get("comment") or "").strip():
+            st["comment"] = st.get("name") or ""
+        if "disable" not in st and "enabled" in st:
+            st["disable"] = not bool(st.get("enabled"))
+        ext = st.get("extensions")
+        if isinstance(ext, dict) and "position" in ext and "position" not in st:
+            st["position"] = ext.get("position")
+        return st
+
+    def save_embedded_worldbook(self, card_name: str, book) -> Optional[dict]:
+        """角色卡内嵌世界书（data.character_book）→ 落盘为羽笔世界书。
+
+        与 import_from_st 共用条目映射（先归一成 ST 形态再走 _map_st_entry）；
+        「constant 或无关键词」的条目按常驻位落库（类脑生态用空键条目承载
+        必设设定）。书名 = 卡名清洗 + "_内嵌"——`·` 是关键词条的保留分割符，
+        世界书名不允许使用；同名覆盖（与 import_from_st 一致，重导入幂等）。
+        返回 {"name": 落盘名, "entries": 条数}（覆盖既有同名书时另带
+        "replaced_existing": True）；无可用条目返回 None。
+        """
+        if not isinstance(book, dict):
+            return None
+        raw_entries = book.get("entries")
+        if isinstance(raw_entries, dict):
+            items = list(raw_entries.values())
+        elif isinstance(raw_entries, list):
+            items = raw_entries
+        else:
+            items = []
+
+        entries: List[dict] = []
+        seen_ids: set = set()
+        for e in items:
+            # 与 import_from_st 同判据：无正文的条目落库只会变成幽灵条目
+            if not isinstance(e, dict) or not str(e.get("content") or "").strip():
+                continue
+            try:
+                entry = self._map_st_entry(self._embedded_to_st_entry(e), len(entries))
+            except Exception as exc:
+                logger.warning("[WorldbookManager] 跳过无法解析的内嵌条目 #%d: %s",
+                               len(entries), exc)
+                continue
+            if entry.get("is_constant") or not entry.get("keys"):
+                entry["is_constant"] = True
+                entry["inject_position"] = 1
+            eid = str(entry.get("id") or f"embedded_{len(entries)}")
+            if eid in seen_ids:
+                k = 2
+                while f"{eid}#{k}" in seen_ids:
+                    k += 1
+                eid = f"{eid}#{k}"
+            entry["id"] = eid
+            seen_ids.add(eid)
+            entries.append(entry)
+        if not entries:
+            return None
+
+        raw_name = str(card_name or "").strip() or "角色卡"
+        safe = re.sub(r"[^a-zA-Z0-9_\-\u4e00-\u9fff]+", "_", raw_name).strip("_")[:60] or "角色卡"
+        wb_name = f"{safe}_内嵌"
+        wb = {
+            "name": wb_name,
+            "description": f"由角色卡《{raw_name}》内嵌世界书自动转换（{len(entries)} 条）",
+            "version": "1.0",
+            "entries": entries,
+        }
+        path = os.path.join(self.worldbooks_dir, wb_name + ".json")
+        replaced = wb_name in self.worldbooks or os.path.exists(path)
+        if replaced:
+            # 重导入幂等是有意设计；但两张**不同**卡同名时，后导入会连带改写
+            # 先导入卡仍绑定的这本书——日志点名，回执带 replaced_existing。
+            logger.warning(
+                "[WorldbookManager] 内嵌世界书《%s》已存在，本次导入将覆盖原内容"
+                "（不同角色卡同名时，先导入卡的绑定会被连带改写）", wb_name)
+        _save_json_atomic(path, wb)
+        with self._lock:
+            self.worldbooks[wb_name] = wb
+        info = {"name": wb_name, "entries": len(entries)}
+        if replaced:
+            info["replaced_existing"] = True
+        return info
 
 
 # ── Self-test ─────────────────────────────────────────────────────────────────

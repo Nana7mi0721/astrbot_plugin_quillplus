@@ -5,6 +5,7 @@ import { sandboxConfirm, showToast } from "../components/feedback.js";
 import { switchMemorySub } from "../pages/memory.js";
 import { loadPersonas } from "../pages/persona.js";
 import { loadRAG, loadRAGModelInfo } from "../pages/rag.js";
+import { loadTracePage } from "../pages/trace.js";
 import { loadWB } from "../pages/worldbook.js";
 import { loadWR } from "../pages/writing.js";
 import { $, $$, compactNum, esc, withBusy } from "../utils.js";
@@ -67,6 +68,8 @@ const CFG_FIELDS = [
   ["permissions", "admin_users", "#c-perm-admins", "str"],
   ["debug", "enabled", "#c-debug-enabled", "bool"],
   ["debug", "show_inject_report", "#c-debug-report", "bool"],
+  ["trace", "enabled", "#c-trace-enabled", "bool"],
+  ["trace", "buffer_per_session", "#c-trace-buffer", "int"],
 ];
 
 /** 各字段在渲染时使用的默认值（后端缺键时的兜底）。 */
@@ -93,6 +96,7 @@ const CFG_DEFAULTS = {
   "status_bar.decision_api_format": "auto",
   "status_bar.decision_confidence_floor": 0.6,
   "debug.show_inject_report": false,
+  "trace.enabled": true, "trace.buffer_per_session": 20,
 };
 
 function cfgGet(group, key, fallback) {
@@ -353,6 +357,7 @@ function switchTab(tab) {
   else if (tab === "persona") loadPersonas();
   else if (tab === "rag") { loadRAG(); loadRAGModelInfo(); }
   else if (tab === "memory") switchMemorySub("overview");
+  else if (tab === "trace") loadTracePage();
   else if (tab === "config") { loadGlobalSettings(); loadHealth(); }
 }
 

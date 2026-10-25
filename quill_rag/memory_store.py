@@ -369,7 +369,15 @@ class MemoryStore:
 
         return scores
 
-    async def search(self, session_id: str, query_vector: list[float], top_k: int = 3, query_text: str = "") -> list[dict]:
+    async def search(self, session_id: str, query_vector: list[float], top_k: int = 3,
+                     query_text: str = "", funnel: dict | None = None) -> list[dict]:
+        """向量 × 艾宾浩斯衰减 × 引用频次 + FTS 的混合检索。
+
+        ``funnel`` 为 M1b 模块 1 的可选出参：回填 ``candidates``（RRF 排序
+        前候选数）/``matched``（top_k 内非核心条数）/``filtered``（below_top_k
+        近失——只记名次与 rrf 分数，**不携带记忆原文**，红线 7）。
+        缺省时零开销、返回值与旧签名逐字一致。
+        """
         if not session_id or not query_vector:
             return []
             
@@ -521,7 +529,21 @@ class MemoryStore:
         # Ignore core memories in top-k since they are injected automatically
         non_core = [r for r in results if not r["is_core"]]
         non_core.sort(key=lambda x: x["rrf_score"], reverse=True)
-        return non_core[:top_k]
+        kept = non_core[:top_k]
+        if funnel is not None:
+            funnel["candidates"] = len(results)
+            funnel["matched"] = len(kept)
+            # M1b-Fix P1-f：filtered 行补 id（记忆没有 title，近失条要能
+            # 对上「哪条记忆差一点入围」；rank 名次是次级回退，见
+            # trace.funnel_filtered_items 的四级回退）。
+            funnel["filtered"] = [
+                {"reason": f"below_top_k(名次{n}, rrf {r['rrf_score']:.4f})",
+                 "rank": n,
+                 **({"id": r["id"]} if r.get("id") is not None else {})}
+                for n, r in enumerate(non_core[top_k:], start=top_k + 1)
+                if n <= top_k + 5  # 近失只报头几条，长尾无诊断价值
+            ]
+        return kept
 
     async def _fetch_memories_by_ids(
         self, session_id: str, ids: list, fts_scores: dict

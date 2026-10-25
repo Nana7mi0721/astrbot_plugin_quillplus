@@ -1,0 +1,118 @@
+/* pages/trace.css — M1a/M1b 注入诊断页（最近轮次列表 + 展开明细 +
+   裁剪事件 + 脱敏预览 + 模拟检索 + 体检 + SSE 实时） */
+
+.trace-turn {
+  border: 1px solid var(--separator);
+  border-radius: var(--r-md);
+  margin-bottom: var(--sp-2);
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.trace-turn-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.trace-turn-head:hover {
+  background: var(--fill-tertiary);
+}
+
+.trace-caret {
+  flex: none;
+  transition: transform var(--dur-micro) var(--ease-standard);
+  color: var(--label-3);
+}
+
+.trace-turn.is-open .trace-caret {
+  transform: rotate(90deg);
+}
+
+.trace-turn-head .grow {
+  flex: 1;
+}
+
+.trace-turn-body {
+  padding: var(--sp-3);
+  border-top: 1px solid var(--separator);
+  background: var(--bg-secondary);
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.trace-turn-body .table-wrap {
+  margin: 0;
+}
+
+.trace-turn-body .data tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ── M1b：裁剪事件 ────────────────────────────────────────────── */
+
+.trace-trunc {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px dashed var(--separator);
+  border-radius: var(--r-sm);
+}
+
+/* ── M1b：脱敏注入预览 ─────────────────────────────────────────── */
+
+.trace-preview {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--separator);
+  border-radius: var(--r-sm);
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.trace-preview-sec {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.trace-preview-text {
+  margin: 0;
+  padding: var(--sp-2);
+  max-height: 180px;
+  overflow: auto;
+  background: var(--fill-tertiary);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-12, 12px);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── M1b：模拟检索表单 ─────────────────────────────────────────── */
+
+.trace-sim-form {
+  display: grid;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+/* ── M1b：体检结果行 ───────────────────────────────────────────── */
+
+.trace-lint-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--separator);
+  flex-wrap: wrap;
+}
+
+.trace-lint-row:last-child {
+  border-bottom: 0;
+}

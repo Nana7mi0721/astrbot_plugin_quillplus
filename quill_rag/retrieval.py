@@ -127,7 +127,8 @@ class QuillRetriever:
         t.add_done_callback(_on_done)
         return t
 
-    async def search_documents(self, query: str, allowed_sources: list[str] = None) -> list[dict]:
+    async def search_documents(self, query: str, allowed_sources: list[str] = None,
+                               funnel: dict | None = None) -> list[dict]:
         """Doc RAG 检索：FAISS 召回 + Rerank 重排（支持按源文档过滤）。
 
         失败不再静默返回 []：异常时把 0 条结果挂上 `_rag_ok=False`，
@@ -153,10 +154,46 @@ class QuillRetriever:
             )
 
             if not raw_results:
+                if funnel is not None:
+                    funnel.update({"candidates": 0, "matched": 0, "filtered": []})
                 return []
             if self.reranker:
-                return await self.reranker.rerank(query, raw_results, top_k=self.top_k)
-            return raw_results[:self.top_k]
+                kept = await self.reranker.rerank(query, raw_results, top_k=self.top_k)
+                if funnel is not None:
+                    # M1b 漏斗 + M1b-Fix P1-a：rerank 的返回可能是候选 dict 的
+                    # 浅拷贝（P3-1 修复让 provider/LLM 路都 dict(cand) 后，
+                    # id() 恒不相等——近失被误报成 100%）。改按 (source, score)
+                    # 内容键配对计数（Counter 兼顾同键多条的边角），三路返回
+                    # 形态（拷贝 / 原对象切片 / 纯排序）都命中。
+                    from collections import Counter
+                    kept_keys = Counter(
+                        (str(e.get("source", "") or ""), e.get("score"))
+                        for e in kept
+                    )
+                    funnel["candidates"] = len(raw_results)
+                    funnel["matched"] = len(kept)
+                    near_miss: list[dict] = []
+                    for n, e in enumerate(raw_results):
+                        key = (str(e.get("source", "") or ""), e.get("score"))
+                        if kept_keys.get(key, 0) > 0:
+                            kept_keys[key] -= 1
+                            continue
+                        near_miss.append({
+                            "source_ref": (str(e.get("source", "") or "").strip() or "unknown")[:40],
+                            "reason": f"rerank_dropped(粗召回名次{n + 1})",
+                        })
+                    funnel["filtered"] = near_miss
+                return kept
+            kept = raw_results[: self.top_k]
+            if funnel is not None:
+                funnel["candidates"] = len(raw_results)
+                funnel["matched"] = len(kept)
+                funnel["filtered"] = [
+                    {"source_ref": (str(e.get("source", "") or "").strip() or "unknown")[:40],
+                     "reason": "max_entries_cap"}
+                    for e in raw_results[len(kept):]
+                ]
+            return kept
         except Exception as e:
             # M3.2 D4：底层 StorageError（或 embedding 失败）在此降级为带失败
             # 标记的空结果——注入侧行为不变（本轮无文档内容），健康度能记到失败。
@@ -180,7 +217,8 @@ class QuillRetriever:
             logger.warning("[Quill RAG] search_astrbot_kb 内置知识库检索失败: %s", e, exc_info=True)
             return _rag_failed(str(e))
 
-    async def search_memories(self, session_id: str, query: str) -> list[dict]:
+    async def search_memories(self, session_id: str, query: str,
+                              funnel: dict | None = None) -> list[dict]:
         """动态记忆检索：SQLite session 隔离 + NumPy 余弦相似度（在线程池中执行）。
 
         失败语义同 search_documents：返回带 `_rag_ok=False` 的空列表。
@@ -191,7 +229,10 @@ class QuillRetriever:
             query_emb = await self.embedding.embed([query])
             if not query_emb:
                 return _rag_failed("embedding 返回空向量")
-            results = await self.memory_store.search(session_id, query_emb[0], self.top_k, query_text=query)
+            results = await self.memory_store.search(
+                session_id, query_emb[0], self.top_k,
+                query_text=query, funnel=funnel,
+            )
             if results:
                 mem_ids = [r["id"] for r in results]
                 self._spawn(self.memory_store.mark_memories_used(mem_ids, 1.5))

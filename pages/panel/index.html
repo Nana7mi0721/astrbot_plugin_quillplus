@@ -37,6 +37,7 @@
   <link rel="stylesheet" href="css/pages/persona.css">
   <link rel="stylesheet" href="css/pages/rag.css">
   <link rel="stylesheet" href="css/pages/memory.css">
+  <link rel="stylesheet" href="css/pages/trace.css">
   <link rel="stylesheet" href="css/pages/config.css">
   <link rel="stylesheet" href="css/responsive.css">
 </head>
@@ -138,6 +139,10 @@
       </div>
       <div class="sidebar-group">
         <div class="sidebar-label">系统</div>
+        <button type="button" class="sl-item" data-tab="trace">
+          <svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg>
+          <span class="sl-item-label">注入诊断</span>
+        </button>
         <button type="button" class="sl-item" data-tab="config">
           <svg class="icon" aria-hidden="true"><use href="#i-gear"/></svg>
           <span class="sl-item-label">配置</span>
@@ -567,6 +572,81 @@
               </div></div>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───── 注入诊断（M1a）───── -->
+    <section class="tab-pane" id="pane-trace" role="region" aria-label="注入诊断">
+      <div class="page">
+        <div class="page-head">
+          <h2>注入诊断</h2>
+          <span class="page-sub" id="traceSub"></span>
+        </div>
+
+        <div class="note" style="margin-bottom:var(--sp-3)">
+          <span>每轮对话的注入追踪：命中了什么、以什么顺序注入、各环节是否降级。用于排查「设定漏注入 /
+          角色失忆」类问题。纯内存记录——重启即清、不写盘；会话只以哈希标识，不含原始会话 ID 与对话内容。
+          与聊天内 <span class="mono">/quill debug</span> 的「Trace」行同源（同一 trace_id 结论一致）。</span>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>最近轮次</h3>
+            <span class="card-head-sub">点条目展开模块明细</span>
+            <span class="grow"></span>
+            <button type="button" class="btn btn--sm btn--gray" data-action="trace-live" id="traceLiveBtn" title="开启后新一轮对话的追踪实时推入列表（SSE，失败自动降级为 15 秒轮询）">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：关
+            </button>
+            <select class="field" id="traceSession" style="width:auto;min-width:220px" aria-label="选择会话">
+              <option value="">加载中…</option>
+            </select>
+            <button type="button" class="btn btn--sm btn--gray" data-action="trace-refresh">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
+            </button>
+          </div>
+          <div class="card-body"><div class="card-body-inner">
+            <div id="traceList" aria-live="polite">
+              <div class="skeleton" style="width:260px"></div>
+            </div>
+          </div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>模拟检索</h3>
+            <span class="card-head-sub">零写入沙盒——不产生模型调用，结果不进追踪列表</span>
+          </div>
+          <div class="card-body"><div class="card-body-inner">
+            <div class="trace-sim-form">
+              <textarea class="field" id="simText" rows="3" placeholder="要模拟的用户输入（可粘贴多轮对话文本充当上下文）" aria-label="模拟输入"></textarea>
+              <div class="toolbar">
+                <select class="field" id="simPersona" style="width:auto;min-width:180px" aria-label="角色卡（决定绑定模式）">
+                  <option value="">不选角色卡（各系统按 disabled）</option>
+                </select>
+                <input type="text" class="field" id="simVars" style="flex:1;min-width:180px" placeholder='会话变量覆盖（JSON，如 {"好感度": 85}；留空=条件条目按未达标）' aria-label="会话变量">
+                <button type="button" class="btn btn--sm" data-action="trace-simulate">
+                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-flask"/></svg>运行模拟
+                </button>
+              </div>
+              <div class="t3 fs-12">覆盖：激活判定 → 世界书（含条件条目）→ 素材库 → 预算画像。RAG/记忆检索需原始会话标识，面板侧不可用（模块表标 skipped）；聊天内 <span class="mono">/quill test wb|wr|mem</span> 可带会话跑并回 Trace 锚点。</div>
+            </div>
+            <div id="simResult" hidden></div>
+          </div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>体检</h3>
+            <span class="card-head-sub">世界书与角色卡的静态检查（纯本地分析）</span>
+            <span class="grow"></span>
+            <button type="button" class="btn btn--sm btn--gray" data-action="trace-lint">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-check"/></svg>运行体检
+            </button>
+          </div>
+          <div class="card-body"><div class="card-body-inner">
+            <div id="lintResult"><div class="t3 fs-12">检查重复/宽泛/不可达关键词、坏条件、幽灵绑定、常驻预算水位。</div></div>
+          </div></div>
         </div>
       </div>
     </section>
@@ -1042,6 +1122,20 @@
                   <div class="cfg-row-control">
                     <label class="switch"><input type="checkbox" id="c-debug-report"><span class="switch-track"></span></label>
                   </div>
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-row-text">
+                    <div class="cfg-row-title">启用注入追踪</div>
+                    <div class="cfg-row-desc">记录每轮对话的注入诊断（命中了什么、注入顺序、各环节耗时），供 /quill debug 与面板「注入诊断」页排查「设定漏注入 / 角色失忆」类问题。纯内存记录，不写盘、不进对话，只读取注入流程已有数据，不产生额外模型调用。关闭后零采集零记录。</div>
+                  </div>
+                  <div class="cfg-row-control">
+                    <label class="switch"><input type="checkbox" id="c-trace-enabled"><span class="switch-track"></span></label>
+                  </div>
+                </div>
+                <div class="cfg-field">
+                  <label class="cfg-field-label" for="c-trace-buffer">每会话保留轮数</label>
+                  <input class="field" type="number" id="c-trace-buffer" min="1" max="100" step="1">
+                  <span class="hint">每个会话在内存中保留的最近追踪轮数（全局上限 200 轮，超限自动淘汰最旧）。重启后清空。</span>
                 </div>
                 <div class="cfg-field">
                   <label class="cfg-field-label">全量备份</label>

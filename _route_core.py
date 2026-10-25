@@ -11,7 +11,9 @@ Each handler returns {"status": "ok", "data": ...} or {"status": "error", "messa
 
 import asyncio
 import os
+import re
 import tempfile
+import time
 import uuid
 from typing import Any
 
@@ -411,6 +413,9 @@ async def handle_wb_export_st(wb_manager, name=None):
             "comment": entry.get("title", entry.get("id", "")),
             "content": entry.get("content", ""),
             "constant": entry.get("is_constant", False),
+            # P1-d：条件字段随 ST 导出落盘（原生 ST 工具会忽略未知字段，
+            # 本插件导出的卡 re-import 时条件不丢）
+            "condition": entry.get("condition", ""),
             "selective": False, "selectiveLogic": 0, "addMemo": True,
             "order": entry.get("inject_position", 2),
             "position": entry.get("inject_position", 2),
@@ -967,3 +972,529 @@ async def handle_memory_import(memory_store, embedding_provider, data):
 
 # ── Shared helpers ───────────────────────────────────────────────
 # (save_worldbook removed — replaced by atomic WorldbookManager methods)
+
+
+# ── Trace handlers (M1a 注入诊断) ─────────────────────────────────
+
+#: 会话键/trace id 的形制守卫：hash_target_id 取 SHA-256 前 16 位、
+#: trace_id 是 uuid4().hex（32 位）。fullmatch 挡掉拼接注入与超长串。
+_TRACE_TARGET_RE = re.compile(r"[0-9a-f]{16}")
+_TRACE_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _trace_store_of(plugin):
+    """安全取插件实例上的 TraceStore（无插件/未初始化 → None）。"""
+    return getattr(plugin, "_trace_store", None) if plugin is not None else None
+
+
+def _trace_enabled_of(plugin) -> bool:
+    props = getattr(plugin, "props", None) if plugin is not None else None
+    return bool(getattr(props, "trace_enabled", False))
+
+
+async def handle_trace_recent(plugin, target=None, limit=20):
+    """M1a：最近追踪轮次。``target`` 缺省 → 有记录的会话摘要（面板下拉）；
+    给定 16 位 hash → 该会话最近 N 轮（最新在前）。
+
+    ``enabled`` 字段诚实区分「追踪关闭」与「暂无记录」——沿用注入报告
+    「采集过但零命中 ≠ 从没采集过」的口径（见 main._remember_inject_report）。
+    """
+    store = _trace_store_of(plugin)
+    if store is None:
+        return err("追踪存储未初始化")
+    enabled = _trace_enabled_of(plugin)
+    if not target:
+        return ok({"enabled": enabled, "sessions": store.sessions_summary()})
+    target = str(target).strip().lower()
+    if not _TRACE_TARGET_RE.fullmatch(target):
+        return err("target 参数须为 16 位十六进制会话哈希")
+    try:
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        limit = 20
+    # store.recent 返回旧→新；面板要最新在前，倒一下
+    items = [t.to_dict() for t in reversed(store.recent(target, limit))]
+    return ok({"enabled": enabled, "target_id_hash": target, "items": items})
+
+
+async def handle_trace_detail(plugin, trace_id=None):
+    """M1a：单轮追踪详情（含模块行/段序/token 估算/状态栏级别/inject_stats）。
+
+    M1b 模块 4：TraceStore 查不到时兜底查模拟缓存——``/quill test`` 与
+    trace/simulate 的产物不进 TraceStore（零写入红线），锚点 id 经由此处
+    与真实轮次用同一查询口。
+    """
+    store = _trace_store_of(plugin)
+    if store is None:
+        return err("追踪存储未初始化")
+    trace_id = str(trace_id or "").strip().lower()
+    if not _TRACE_ID_RE.fullmatch(trace_id):
+        return err("id 参数须为 32 位十六进制 trace id")
+    trace = store.get(trace_id)
+    simulated = False
+    if trace is None:
+        trace = _simulate_cache_of(plugin).get(trace_id)
+        simulated = trace is not None
+    if trace is None:
+        return err("未找到该追踪记录（可能已被淘汰，或实例已重启清空）")
+    data = trace.to_dict()
+    if simulated:
+        # 与 trace/simulate 响应同构：模拟轮补 simulate 标记（面板/命令
+        # 锚点凭它区分「真实轮」与「只读沙盒产物」）
+        data["simulate"] = True
+    return ok(data)
+
+
+# ── M1b 注入实验室（模拟检索 / 静态体检）─────────────────────────────
+
+#: 模拟结果缓存上限（/quill test 锚点 + 面板重复展开用；零写入红线的
+#: 例外是这块纯内存临时缓存——它不进 TraceStore、不落盘、重启即清）
+_SIMULATE_CACHE_LIMIT = 10
+
+
+def _simulate_cache_of(plugin) -> dict:
+    """按需取插件的模拟结果缓存（普通 dict + 手动淘汰最旧键）。"""
+    cache = getattr(plugin, "_quill_simulate_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            setattr(plugin, "_quill_simulate_cache", cache)
+        except Exception:
+            return {}
+    return cache
+
+
+def _persona_ext(persona_data) -> dict:
+    return (persona_data or {}).get("quill_extensions", {}) or {}
+
+
+async def handle_trace_simulate(plugin, text=None, persona_id=None,
+                                target_id_hash=None, rag=False, umo=None,
+                                session_vars=None, include_recent_context=False):
+    """M1b 模块 4：模拟检索沙盒（只读，零写入 TraceStore/state/chat_logs）。
+
+    入参 ``{text, persona_id?, target_id_hash?, rag?, umo?, session_vars?,
+    include_recent_context?}``。流程镜像 22 步的检索侧（激活 → 世界书
+    （含条件）→ WR → 可选 RAG/记忆 → 预算画像），但：
+
+    * ``rag`` 缺省 False——零 provider 请求（E2E 断言点）；显式开启且
+      提供 ``umo`` 才跑文档/记忆检索（记忆直连 memory_store.search，
+      绕过 search_memories 的 mark_memories_used 写入）；
+    * WR 检索 ``log_match=False``（不累计 match_count、不写匹配日志）；
+    * 产出临时 ``ContextTrace``（``simulate=True`` 标记），存
+      ``_quill_simulate_cache``（上限 10 条）供 trace/detail 锚点查询。
+
+    ``session_vars`` 显式覆盖 > ``umo`` 现场读取 > 空 dict（条件条目
+    fail-close，与主链路同一语义）。
+    """
+    from .quill.services import trace as _trace_mod
+
+    text = str(text or "").strip()
+    if not text:
+        return err("缺少 text 参数（要模拟的用户输入）")
+    persona_id = str(persona_id or "").strip() or None
+
+    persona_data = None
+    if persona_id and getattr(plugin, "persona_manager", None):
+        try:
+            persona_data = await plugin.persona_manager.get_persona(persona_id)
+        except Exception as e:
+            return err(error_text("读取角色卡失败", e))
+    ext = _persona_ext(persona_data)
+
+    # session_vars：显式覆盖 > umo 现场读 > 空（条件 fail-close）
+    svars = session_vars if isinstance(session_vars, dict) else None
+    if svars is None and umo:
+        try:
+            svars = await plugin.state_manager.get_session_vars(str(umo))
+        except Exception:
+            svars = None
+    svars = svars or {}
+
+    # 匹配文本：面板粘贴的多轮文本即 context；API 侧可选拼最近日志
+    matching_text = text
+    if include_recent_context and umo:
+        retriever = getattr(plugin, "rag_retriever", None)
+        if retriever and retriever.memory_store:
+            try:
+                mem_sid = plugin._get_memory_session_id(str(umo), persona_id or "")
+                logs = await retriever.memory_store.get_recent_chat_logs(mem_sid, limit=8)
+                if logs:
+                    ctx = "\n".join(
+                        f"{lg.get('role', '?')}: {str(lg.get('content', ''))[:200]}"
+                        for lg in logs if isinstance(lg, dict)
+                    )
+                    matching_text = f"{ctx}\nuser: {text}"
+            except Exception as exc:
+                logger.warning("[Quill Trace] 拼接最近上下文失败（跳过）: %s", exc)
+
+    trace = _trace_mod.ContextTrace(
+        target_id_hash=str(target_id_hash or "")[:16],
+        persona_id=persona_id or "",
+        persona_name_at_turn=str((persona_data or {}).get("name", "") or ""),
+    )
+    trace.warnings.append("模拟结果（只读沙盒，未写入追踪列表）")
+    rows: list = []
+    _t0 = time.perf_counter()
+
+    # ── 激活判定（复用 detector / WR 组件，fail-close 同主链路）──
+    activated = False
+    activation_reason = None
+    detector = getattr(plugin, "activation_detector", None)
+    if detector is not None:
+        try:
+            if detector.should_activate(text):
+                activated, activation_reason = True, "激活词"
+            elif detector.check_brackets(text):
+                activated, activation_reason = True, "括号"
+        except Exception:
+            activated, activation_reason = False, None
+    if not activated and getattr(plugin, "wr_manager", None) \
+            and ext.get("wr_mode", "disabled") != "disabled":
+        try:
+            # M1b-Fix P1-b：WR 激活匹配面与主链路对齐——主链路
+            # _check_activation 的 WR 路按 context_text（最近 4 轮拼串）
+            # 判关键词，simulate 此前只用裸 text，多轮语境触发在模拟里
+            # 永远报未激活。这里同样用 matching_text（面板粘贴的多轮文本
+            # / include_recent_context 拼串），custom 模式同样过滤绑定分类。
+            act_bound = ext.get("bound_writing_resource", []) \
+                if ext.get("wr_mode") == "custom" else None
+            act_matched = await plugin.wr_manager.match(
+                matching_text, top_k=7 if act_bound is not None else 3, log_match=False)
+            if act_bound is not None:
+                act_matched = [m for m in act_matched if m.get("category") in act_bound]
+            if act_matched:
+                activated, activation_reason = True, "WR关键词"
+        except Exception as exc:
+            logger.warning("[Quill Trace] simulate WR 激活匹配失败（按未激活处理）: %s", exc)
+    # M1b-Fix P1-b：全局常驻模式（worldbook_always_activate）主链路在步 5
+    # 直接 activated=True——simulate 此前漏这一档，常驻模式下模拟永远报
+    # 「未激活」，与真实轮相反。
+    if getattr(plugin.config, "worldbook_always_activate", False):
+        activated = True
+        activation_reason = "常驻模式"
+    trace.activated = activated
+    trace.activation_reason = activation_reason
+
+    wb_manager = getattr(plugin, "wb_manager", None)
+    wb_mode = ext.get("wb_mode", "disabled")
+    bound_worldbooks = ext.get("bound_worldbooks", []) if wb_mode == "custom" else None
+    wb_constants: list = []
+    sim_chars = 0
+
+    # ── 世界书（含条件条目；总闸关 = disabled）──
+    if wb_manager and wb_mode != "disabled" and getattr(plugin.config, "worldbook_enabled", True):
+        try:
+            wb_funnel: dict = {}
+            wb_matched = await asyncio.to_thread(
+                wb_manager.match_entries, matching_text,
+                bound_worldbooks=bound_worldbooks,
+                top_k=int(getattr(plugin.props, "wb_max_entries", 4) or 4),
+                sensitivity=float(getattr(plugin.config, "worldbook_sensitivity", 0.7) or 0.7),
+                session_vars=svars, funnel=wb_funnel,
+                # M1b-Fix P1-b：只读沙盒不覆写真实会话的触发日志
+                # （/quill test wb 读的就是 _last_trigger_log）。
+                write_trigger_log=False,
+            )
+            wb_constants = await asyncio.to_thread(
+                wb_manager.get_constant_entries,
+                bound_worldbooks=bound_worldbooks, session_vars=svars,
+                # M1b-Fix P1-d：条件不成立的常驻条目记 condition_unmet 近失
+                # （在 match_entries 之后调用，只 append 不覆写 filtered）。
+                funnel=wb_funnel,
+            )
+            items = [
+                {"source_ref": f"{e.get('_source_worldbook', '?')}/{e.get('title', '?')}",
+                 "score_or_kw": ",".join(k for k in (e.get("_matched_keys") or [])[:4])}
+                for e in wb_matched[:10]
+            ] + _trace_mod.funnel_filtered_items(wb_funnel)
+            rows.append(_trace_mod.TraceModuleResult(
+                module="worldbook", ok=True,
+                hits=len(wb_matched) + len(wb_constants),
+                candidates=int(wb_funnel.get("candidates", 0) or 0),
+                stage_ms=int((time.perf_counter() - _t0) * 1000),
+                items=items,
+            ))
+            sim_chars += sum(len(str(e.get("content", "") or "")) for e in wb_matched)
+            sim_chars += sum(len(str(e.get("content", "") or "")) for e in wb_constants)
+        except Exception as e:
+            rows.append(_trace_mod.TraceModuleResult(
+                module="worldbook", ok=False, error="simulate_error",
+                items=[{"filtered_reason": type(e).__name__}],
+            ))
+    else:
+        rows.append(_trace_mod.TraceModuleResult(
+            module="worldbook", ok=True,
+            degraded="disabled" if wb_mode == "disabled" or not getattr(
+                plugin.config, "worldbook_enabled", True) else None,
+        ))
+
+    # ── WR 素材（log_match=False：零写入）──
+    wr_manager = getattr(plugin, "wr_manager", None)
+    wr_mode = ext.get("wr_mode", "disabled")
+    bound_wrs = ext.get("bound_writing_resource", []) if wr_mode == "custom" else None
+    if wr_manager and wr_mode != "disabled":
+        try:
+            wr_funnel: dict = {}
+            fetch = int(getattr(plugin.props, "wr_max_entries", 5) or 5)
+            wr_matched = await wr_manager.match(
+                matching_text, top_k=fetch, log_match=False, funnel=wr_funnel)
+            if bound_wrs is not None:
+                wr_matched = [e for e in wr_matched if e.get("category") in bound_wrs]
+            items = [
+                {"source_ref": str(e.get("name") or e.get("entry_id") or "?")[:40],
+                 **({"score_or_kw": f"{float(e['match_score']):.1f}"}
+                    if isinstance(e.get("match_score"), (int, float)) else {}),
+                 **({"score_or_kw": ",".join(str(k) for k in (e.get("matched_keywords") or [])[:4])}
+                    if not isinstance(e.get("match_score"), (int, float)) and e.get("matched_keywords") else {})}
+                for e in wr_matched[:10]
+            ] + _trace_mod.funnel_filtered_items(wr_funnel)
+            if wr_funnel.get("fallback_pool"):
+                items.append({"source_ref": "fallback_pool",
+                              "filtered_reason": "fallback_pool(命中0，保底注入)"})
+            rows.append(_trace_mod.TraceModuleResult(
+                module="wr", ok=True, hits=len(wr_matched),
+                candidates=int(wr_funnel.get("candidates", 0) or 0),
+                stage_ms=int((time.perf_counter() - _t0) * 1000),
+                items=items,
+            ))
+            sim_chars += sum(len(str(e.get("content", "") or "")) for e in wr_matched)
+        except Exception as e:
+            rows.append(_trace_mod.TraceModuleResult(
+                module="wr", ok=False, error="simulate_error",
+                items=[{"filtered_reason": type(e).__name__}],
+            ))
+    else:
+        rows.append(_trace_mod.TraceModuleResult(module="wr", ok=True, degraded="disabled"))
+
+    # ── RAG / 记忆（rag 显式开启 + umo 才跑；记忆直连 search 避开写入）──
+    retriever = getattr(plugin, "rag_retriever", None)
+    rag_docs: list = []
+    mem_results: list = []
+    core_mems: list = []
+    if rag:
+        if umo and retriever:
+            rag_funnel: dict = {}
+            mem_funnel: dict = {}
+            # M1b-Fix Bug3（核验报告 §9.2#3）：文档路与主链 _run_rag_retrieval
+            # 对齐——按角色卡 rag_mode 判定 + custom 绑定展开（kb:/grp: 前缀、
+            # 插件文档源过滤）+ AstrBot 内置知识库路。此前无脑全库检索：
+            # custom 绑定的卡在模拟里会看到绑外内容，与真实轮相反。
+            rag_mode = ext.get("rag_mode", "disabled")
+            if rag_mode != "disabled":
+                plugin_sources: list | None = None
+                kb_names: list | None = None
+                kb_doc_filters: dict = {}
+                if rag_mode == "custom":
+                    try:
+                        from .quill_rag.astrbot_kb import split_bound_ex
+                        group_store = getattr(plugin, "rag_doc_groups", None)
+                        plugin_sources, kb_names, kb_doc_filters = split_bound_ex(
+                            ext.get("bound_rag_docs", []),
+                            group_resolver=(group_store.resolve if group_store else None),
+                        )
+                    except Exception:
+                        plugin_sources, kb_names, kb_doc_filters = None, None, {}
+                try:
+                    if retriever.embedding:
+                        rag_docs = await retriever.search_documents(
+                            matching_text, allowed_sources=plugin_sources, funnel=rag_funnel)
+                    # 内置库路（custom 模式仅绑定的 kb: 源；kb_source 解析
+                    # 顺序与主链一致：retriever 句柄优先，插件引用兜底）
+                    kb_source = getattr(retriever, "kb_source", None) \
+                        or getattr(plugin, "rag_kb_source", None)
+                    if kb_source and getattr(kb_source, "available", False) \
+                            and (rag_mode != "custom" or kb_names):
+                        kb_docs = await kb_source.search(
+                            matching_text,
+                            kb_names=kb_names if rag_mode == "custom" else None,
+                            doc_filters=kb_doc_filters if rag_mode == "custom" else None,
+                        )
+                        rag_docs.extend(kb_docs or [])
+                except Exception:
+                    rows.append(_trace_mod.TraceModuleResult(
+                        module="rag_doc", ok=False, error="simulate_error"))
+                else:
+                    rows.append(_trace_mod.TraceModuleResult(
+                        module="rag_doc", ok=True, hits=len(rag_docs),
+                        candidates=int(rag_funnel.get("candidates", 0) or 0),
+                        items=[
+                            {"source_ref": (str(r.get("source", "") or "").strip() or "unknown")[:40],
+                             **({"score_or_kw": round(float(r["score"]), 3)}
+                                if isinstance(r.get("score"), (int, float)) else {})}
+                            for r in rag_docs[:10]
+                        ] + _trace_mod.funnel_filtered_items(rag_funnel),
+                    ))
+            else:
+                rows.append(_trace_mod.TraceModuleResult(
+                    module="rag_doc", ok=True, degraded="disabled",
+                    items=[{"filtered_reason": "角色卡 rag_mode=disabled"}]))
+            try:
+                mem_sid = plugin._get_memory_session_id(str(umo), persona_id or "")
+                if retriever.memory_store and retriever.embedding:
+                    emb = await retriever.embedding.embed([matching_text])
+                    if emb:
+                        mem_results = await retriever.memory_store.search(
+                            mem_sid, emb[0], retriever.top_k,
+                            query_text=matching_text, funnel=mem_funnel)
+                core_mems = await retriever.get_core_memories(mem_sid)
+                rows.append(_trace_mod.TraceModuleResult(
+                    module="memory", ok=True, hits=len(mem_results),
+                    candidates=int(mem_funnel.get("candidates", 0) or 0),
+                    # M1b-Fix Bug3：补留存记忆命中明细（只记 id 与 rrf 分，
+                    # 不携带原文——与主链 main._run_rag_retrieval 同口径）
+                    items=[
+                        {"source_ref": f"mem#{r.get('id', '?')}",
+                         **({"score_or_kw": f"rrf {float(r['rrf_score']):.4f}"}
+                            if isinstance(r.get("rrf_score"), (int, float)) else {})}
+                        for r in mem_results[:10]
+                    ] + _trace_mod.funnel_filtered_items(mem_funnel),
+                ))
+                rows.append(_trace_mod.TraceModuleResult(
+                    module="core_memory", ok=True, hits=len(core_mems)))
+            except Exception:
+                rows.append(_trace_mod.TraceModuleResult(
+                    module="memory", ok=False, error="simulate_error"))
+                rows.append(_trace_mod.TraceModuleResult(
+                    module="core_memory", ok=True, degraded="skipped"))
+            sim_chars += sum(len(str(r.get("content", "") or "")) for r in rag_docs)
+            sim_chars += sum(len(str(r.get("summary", "") or "")) for r in mem_results)
+            sim_chars += sum(len(str(r.get("summary", "") or "")) for r in core_mems)
+        else:
+            reason = "未提供 umo" if not umo else "检索栈未初始化"
+            rows.append(_trace_mod.TraceModuleResult(
+                module="rag_doc", ok=True, degraded="skipped",
+                items=[{"filtered_reason": reason}]))
+            rows.append(_trace_mod.TraceModuleResult(
+                module="memory", ok=True, degraded="skipped",
+                items=[{"filtered_reason": reason}]))
+            rows.append(_trace_mod.TraceModuleResult(
+                module="core_memory", ok=True, degraded="skipped",
+                items=[{"filtered_reason": reason}]))
+    else:
+        # 缺省关：零 provider 请求（E2E 断言）——embedding 也不发
+        for mod in ("rag_doc", "memory", "core_memory"):
+            rows.append(_trace_mod.TraceModuleResult(
+                module=mod, ok=True, degraded="skipped",
+                items=[{"filtered_reason": "模拟默认不跑 RAG（勾选 rag 且提供 umo 才跑）"}]))
+
+    # ── 预算画像（量级参考：不含角色卡正文——那是宿主 original prompt，
+    #    模拟侧不可得；对照 max_prompt_length 给出超限预警）──
+    budget = int(getattr(plugin.config, "max_prompt_length", 0) or 0)
+    trace.token_estimate = {
+        "simulated_chars": sim_chars,
+        "est_tokens": sim_chars // 2,
+        "max_prompt_length": budget,
+        "over_budget": bool(budget > 0 and sim_chars > budget),
+    }
+    if budget > 0 and sim_chars > budget:
+        trace.truncation_events.append({
+            "where": "simulate", "kind": "budget_projection",
+            "dropped_chars": sim_chars - budget,
+            "detail": "模拟内容量已超 max_prompt_length——真实链路步 18.5 守卫会先撤触发日志、再裁 RAG 尾部",
+        })
+
+    trace.module_results = rows
+    trace.duration_ms = int((time.perf_counter() - _t0) * 1000)
+    cache = _simulate_cache_of(plugin)
+    if cache is not None:
+        cache[trace.trace_id] = trace
+        while len(cache) > _SIMULATE_CACHE_LIMIT:
+            cache.pop(next(iter(cache)), None)
+    data = trace.to_dict()
+    data["simulate"] = True
+    return ok(data)
+
+
+async def handle_worldbook_lint(plugin) -> dict:
+    """M1b 模块 5：世界书/角色卡静态体检（纯本地分析，零模型调用）。
+
+    数据全部从既有管理器**只读**读取（vector_store.list_documents 不经
+    handle_rag_documents——那会触发 group_store.prune 的清理写入）。
+    返回 ``{findings, summary}``；summary 给面板徽标（按 check 计数）。
+    """
+    from .quill.services import lint as _lint_mod
+
+    findings: list = []
+    try:
+        wb_manager = getattr(plugin, "wb_manager", None)
+        worldbooks: list = []
+        if wb_manager:
+            def _collect():
+                out = []
+                for n in wb_manager.list_worldbooks():
+                    wb = wb_manager.get_worldbook(n)
+                    if wb:
+                        wb.setdefault("name", n)
+                        out.append(wb)
+                return out
+            worldbooks = await asyncio.to_thread(_collect)
+
+        sensitivity = float(getattr(plugin.config, "worldbook_sensitivity", 0.7) or 0.7)
+        findings += _lint_mod.lint_worldbooks(worldbooks, sensitivity=sensitivity)
+
+        # 幽灵绑定：全部角色卡的绑定对照现存资源名
+        persona_manager = getattr(plugin, "persona_manager", None)
+        wr_manager = getattr(plugin, "wr_manager", None)
+        personas: list = []
+        if persona_manager:
+            wb_names = {str(wb.get("name", "")) for wb in worldbooks}
+            wr_cats: set = set()
+            if wr_manager:
+                try:
+                    wr_cats = {str(c) for c in (await wr_manager.get_categories())}
+                except Exception:
+                    wr_cats = set()
+            rag_sources: set = set()
+            vector_store = getattr(getattr(plugin, "rag_retriever", None), "vector_store", None)
+            if vector_store is not None:
+                try:
+                    docs = await vector_store.list_documents()
+                    rag_sources = {str(d.get("source", "")).removeprefix("grp:")
+                                   for d in (docs or [])}
+                except Exception:
+                    rag_sources = set()
+            personas = await persona_manager.load_all() or []
+            for p in (personas or []):
+                findings += _lint_mod.lint_persona_bindings(
+                    p, worldbook_names=wb_names,
+                    wr_categories=wr_cats, rag_sources=rag_sources)
+
+        # 常驻预算水位（素材常驻字符量由 kb 侧汇总）
+        wr_constant_chars = 0
+        if wr_manager:
+            try:
+                constants = await wr_manager.get_constant_entries()
+                wr_constant_chars = sum(len(str(e.get("content", "") or "")) for e in constants)
+            except Exception:
+                wr_constant_chars = 0
+        # M1b-Fix Bug5：按角色卡绑定集合算单卡峰值——(卡名, 绑定书 | None=auto
+        # 全量 | []=disabled, core_prompts 字符量)。core_prompts 只计进 system
+        # prompt 的三段（first_message 走聊天首条消息，不占常驻预算）。
+        persona_bindings: list = []
+        for p in personas or []:
+            pext = p.get("quill_extensions", {}) or {}
+            if pext.get("wb_mode") == "custom":
+                books = list(pext.get("bound_worldbooks", []) or [])
+            elif pext.get("wb_mode") == "disabled":
+                books = []
+            else:
+                books = None  # auto：全量书
+            cp = p.get("core_prompts", {}) or {}
+            core_chars = sum(
+                len(str(v) or "")
+                for k, v in cp.items() if k != "first_message"
+            )
+            persona_bindings.append((
+                str(p.get("name", "") or p.get("id", "?")), books, core_chars))
+        findings += _lint_mod.lint_constant_budget(
+            worldbooks, wr_constant_chars,
+            int(getattr(plugin.config, "max_prompt_length", 0) or 0),
+            persona_bindings=persona_bindings)
+
+        summary: dict = {}
+        for f in findings:
+            summary[f["check"]] = summary.get(f["check"], 0) + 1
+        return ok({"findings": findings, "summary": summary})
+    except Exception as e:
+        return err(error_text("体检失败", e))

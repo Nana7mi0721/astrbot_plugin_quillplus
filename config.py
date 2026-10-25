@@ -107,6 +107,8 @@ class QuillConfig:
         self.worldbook_injection_pos: str = str(wb.get("injection_position", "user_prefix"))
         self.worldbook_show_log: bool = _safe_bool(wb.get("show_trigger_log"))
         self.worldbook_always_activate: bool = _safe_bool(wb.get("always_activate"))
+        # Issue #1：角色卡导入自动转换内嵌世界书（character_book）并绑定
+        self.worldbook_card_embed_import: bool = _safe_bool(wb.get("card_embed_worldbook"), True)
 
         # ── writing_resource ──
         wr = _get_nested(self._raw, "writing_resource", {}) or {}
@@ -206,6 +208,17 @@ class QuillConfig:
         # 「进聊天记录」，两者受众与副作用完全不同，不能共用一个开关
         # （生产环境常开着 debug 日志排错，但绝不希望 RP 回复里多一行调试信息）。
         self.show_inject_report: bool = _safe_bool(dbg.get("show_inject_report"))
+
+        # ── trace（M1a 注入诊断：ring buffer，纯内存不落盘）──
+        tr = _get_nested(self._raw, "trace", {}) or {}
+        # 默认开：trace 是零成本采集（就地附带既有信号，不新增执行），
+        # 关闭它是排障手段而非常态——与 debug.enabled（默认关，开了刷屏）
+        # 方向相反，故默认值不同。
+        self.trace_enabled: bool = _safe_bool(tr.get("enabled"), True)
+        # 每会话保留轮数（写入侧每轮回写 store，热生效；下限 1）
+        self.trace_buffer_per_session: int = max(
+            1, _safe_int(tr.get("buffer_per_session", 20), 20)
+        )
 
         # ── permissions ──
         perm = _get_nested(self._raw, "permissions", {}) or {}

@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 
 from ...core.logbridge import logger  # noqa: F401  # 方法体 logger 引用经 logbridge 桥接
+from ..trace import hash_target_id
 from . import decision_client as _dec_mod
 from .tokens import LOVE_DATA_TAG, STATUS_END_TAG, STATUS_TAG
 
@@ -398,6 +399,7 @@ class StatusbarParsersMixin:
             self.health_tracker.record_status_level(_lv_name)
             if _res.terminal:
                 handled = True
+                self._note_status_level(target_id, _lv_name)
                 break
 
         # Decision 推荐选择度（第二档）：链条结束后对**最终文本**统一标注一次。
@@ -450,6 +452,60 @@ class StatusbarParsersMixin:
             await self._persist_status_vars(persist_updates, target_id)
 
         return new_text, updates, handled
+
+    # ── M1a trace：状态栏级别通道 ──────────────────────────────
+    # _handle_status_bar 是 H2（工具调用路径）与 H4（响应兜底路径）的共同
+    # 漏斗，在这里记级别即可同时覆盖两条路径。per-target dict、last-wins：
+    # 同一轮若两路先后解析，后一次（塑造最终交付文本的那次）为准。只在
+    # terminal 命中时记（非 terminal 的 L4 单命中没产出可用栏，落 fallback
+    # 时级别理应为空）。响应钩子收口经 _take_status_level 弹出（pop-on-take），
+    # 请求钩子 begin 时也会清一次残留（trace 关闭轮不取值）。
+    # 键是原始 target_id：这只是轮内瞬态通道、不进 trace 结构（trace 里只
+    # 落级别字符串，会话键照旧走 hash_target_id 脱敏）。
+    def _note_status_level(self, target_id: str, level: str) -> None:
+        """记录本会话本轮状态栏六级链的最终命中级别（trace 用，last-wins）。
+
+        M1a-Fix 1.2：除瞬态 dict 外顺带就地写进当前 trace。H2（工具调用
+        路径）记级别时本轮 trace 仍在 inflight，随后 Agent Loop 二次迭代
+        的 begin() 会把它按 stale 落库（不经 H4 finalize 取值）——只写
+        dict 的话级别在那一步就被丢弃，stale 轮 statusbar_level 恒为 None。
+        """
+        try:
+            d = getattr(self, "_sb_round_levels", None)
+            if d is None:
+                d = {}
+                self._sb_round_levels = d
+            d[target_id] = level
+        except Exception as e:
+            logger.warning(f"[Quill Trace] 记录状态栏级别失败（已忽略）: {e}")
+            return
+        try:
+            store = getattr(self, "_trace_store", None)
+            if store is None:
+                return
+            key = hash_target_id(target_id)
+            trace = store.inflight(key)
+            if trace is None:
+                # 极端时序（级别产生时本轮 trace 已收口落库）：回填最新一
+                # 轮，仅当其级别仍为空——不覆盖 H4 finalize 已定格的值。
+                trace = store.latest(key)
+                if trace is not None and trace.statusbar_level is not None:
+                    trace = None
+            if trace is not None:
+                trace.statusbar_level = level
+        except Exception as e:
+            logger.warning(f"[Quill Trace] 回填状态栏级别失败（已忽略）: {e}")
+
+    def _take_status_level(self, target_id: str):
+        """取出并清除本会话的状态栏级别备注（无记录 → None）。"""
+        try:
+            d = getattr(self, "_sb_round_levels", None)
+            if not d:
+                return None
+            return d.pop(target_id, None)
+        except Exception as e:
+            logger.warning(f"[Quill Trace] 读取状态栏级别失败（已忽略）: {e}")
+            return None
 
     # ── 降级链各级实现 ─────────────────────────────────────────
     # 级别名会进日志与统计，改名字要同步 docs/STATUS_BAR.md 与 harness 断言。

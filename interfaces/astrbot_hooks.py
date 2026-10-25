@@ -37,6 +37,7 @@ H1 与 H5 都**没有**钩子级顶层 try（gate 间异常会上抛框架）。
 from __future__ import annotations
 
 import json
+import time
 
 from astrbot.api import FunctionTool, logger
 from astrbot.api.event import AstrMessageEvent
@@ -47,6 +48,7 @@ from ..quill.services import history_scrub as _history_scrub_mod
 from ..quill.services import memory as _memory_mod
 from ..quill.services import prompt as _prompt_mod
 from ..quill.services import response as _response_mod
+from ..quill.services import trace as _trace_mod
 from ..quill.services.statusbar import decision_client as _dec_mod
 
 # F1（M3.0，BASELINE §8.2 F1）：框架 send_message_to_user 把已发送纯文本
@@ -65,6 +67,69 @@ _SMT_MAX_SENDS_PER_TURN = 2
 # 子串判重（规则 1）的最小候选长度：短正文（一句短对话）偶然是已发长文
 # 的子串属合法新消息，不拦；真实的残尾/分段重发形态远长于此。
 _SMT_SUBSTR_MIN_LEN = 20
+
+
+# ── M1a trace 采集辅助（R1：故障隔离，采集异常只记 warning）─────────
+# 采集原则：全部「就地附带」在 22 步/H4 段序的既有步与步之间，纯读既有
+# 信号 + 内存写，不开第二条执行链路。trace.enabled=false 或 store 未就绪
+# 时一律返回 None，采集点整体短路（零采集零记录）。
+
+def _trace_enabled(plugin) -> bool:
+    """trace 总开关（含防御读取；异常视为关，宁可零采集不抛错）。"""
+    try:
+        return bool(getattr(plugin.props, "trace_enabled", False))
+    except Exception:
+        return False
+
+
+def _trace_inflight(plugin, target_id: str):
+    """取当前会话的进行中 trace；未开启/无记录/故障 → None。"""
+    if not _trace_enabled(plugin):
+        return None
+    try:
+        store = getattr(plugin, "_trace_store", None)
+        if store is None:
+            return None
+        return store.inflight(_trace_mod.hash_target_id(target_id))
+    except Exception as e:
+        logger.warning(f"[Quill Trace] 读取进行中 trace 失败（已忽略）: {e}")
+        return None
+
+
+def _trace_note(plugin, target_id: str, filler) -> None:
+    """安全的采集回调：对进行中 trace 执行 filler(trace)，异常只记 warning。"""
+    try:
+        trace = _trace_inflight(plugin, target_id)
+        if trace is not None:
+            filler(trace)
+    except Exception as e:  # noqa: BLE001 - R1：采集故障绝不影响注入主链路
+        logger.warning(f"[Quill Trace] 采集失败（已忽略）: {e}")
+
+
+def _trace_commit(plugin, target_id: str, finalize=None) -> None:
+    """响应钩子收口：先跑 finalize(trace) 回填响应段字段（statusbar_level/
+    duration_ms——这两个值只在 H4 上下文里可得），再落库。未激活轮同样收口
+    （activated=False 的 trace 也是诊断对象）。"""
+    try:
+        if not _trace_enabled(plugin):
+            return
+        store = getattr(plugin, "_trace_store", None)
+        if store is None:
+            return
+        trace = store.inflight(_trace_mod.hash_target_id(target_id))
+        if trace is None:
+            return
+        if finalize is not None:
+            finalize(trace)
+        store.commit(trace)
+    except Exception as e:  # noqa: BLE001 - R1
+        logger.warning(f"[Quill Trace] 收口失败（已忽略）: {e}")
+
+
+def _funnel_filtered_items(funnel) -> list:
+    """M1b 模块 1：漏斗近失条（共享实现在 quill/services/trace.py——
+    simulate 端点与本处同源，防两处口径漂移）。"""
+    return _trace_mod.funnel_filtered_items(funnel)
 
 
 def _normalized_reply_body(plugin, text: str) -> str:
@@ -588,6 +653,17 @@ async def handle_llm_response(
             content, plugin.props.love_fields
         )
 
+    # ── M1a trace：响应段收口（段 2 与段 2.5 之间——此时本轮状态栏级别
+    # 已产生；未激活轮也走这里收口，gate 在其后才 return）。statusbar_level
+    # 只在状态栏开启的轮次取值：关闭轮六级链不会跑，取到的会是陈旧值。──
+    def _trace_finalize(trace):
+        trace.duration_ms = trace.elapsed_ms()
+        if _sb_effective:
+            take = getattr(plugin, "_take_status_level", None)
+            if callable(take):
+                trace.statusbar_level = take(target_id)
+    _trace_commit(plugin, target_id, finalize=_trace_finalize)
+
     # ── F1（M3.0，BASELINE §8.2 F1）：SMT 回声置空 ────────────────────
     # 框架 respond.stage 对"工具直发文本的回声"只做精确匹配去重
     # （result.get_plain_text().strip() 与已发列表逐条比对）。羽笔流程
@@ -820,18 +896,51 @@ async def _decision_plot_route(
     if not isinstance(cache, dict):
         return
     _dec_mod.prune_round_cache(cache)
+    # M1b 模块 2：决策路由入 Trace。五态 + 三个诚实边界态全部落
+    # TraceModuleResult(module="decision")：disabled（开关关/未激活）/
+    # no_options（选项不足）/ no_model（未配判定端点）/ numeric（数字直选，
+    # 已路由）/ model（模型判定——路由成功 degraded=None，未达阈值
+    # below_floor，用户自由 RP not_responding）。采集只增不改判定行为，
+    # 采集异常由 _trace_note 吞掉（R1）。
+    _t_dec0 = time.perf_counter()
+
+    def _dec_note(state: str, *, pick: int | None = None, label: str = "",
+                  confidence: float = 0.0) -> None:
+        routed = state in ("numeric", "model_routed")
+        item = None
+        if routed:
+            item = {
+                "source_ref": f"{'数字直选' if state == 'numeric' else '模型判定'}→分支{pick}（{label}）",
+                "score_or_kw": f"置信度{confidence:.2f}",
+            }
+        elif state == "below_floor":
+            item = {"source_ref": "判定完成未达路由阈值", "score_or_kw": f"置信度{confidence:.2f}"}
+        _trace_note(plugin, target_id, lambda t: t.module_results.append(
+            _trace_mod.TraceModuleResult(
+                module="decision",
+                ok=True,
+                degraded=None if routed else state,
+                hits=1 if routed else 0,
+                stage_ms=int((time.perf_counter() - _t_dec0) * 1000),
+                items=[item] if item else [],
+            )
+        ))
+
     if not getattr(plugin.props, "status_bar_decision_enabled", False) or not activated:
+        _dec_note("disabled")
         return
     options = [str(p).strip() for p in (plugin.props.status_bar_plot_paths or []) if str(p).strip()][:3]
     if len(options) < 2:
+        _dec_note("no_options")
         return
 
     user_msg = (getattr(event, "message_str", "") or "").strip()
     pick: int | None = _dec_mod.parse_numeric_pick(user_msg, len(options))
     probs: dict[str, float] = {}
     confidence = 0.0
+    numeric_direct = pick is not None
 
-    if pick is not None:
+    if numeric_direct:
         # 显式数字选择零成本零风险，直接视为确定判定（不消耗判定调用）。
         confidence = 1.0
     else:
@@ -840,6 +949,7 @@ async def _decision_plot_route(
         model = (getattr(plugin.props, "status_bar_decision_model", "") or "").strip()
         api_format = (getattr(plugin.props, "status_bar_decision_api_format", "auto") or "auto").strip()
         if not base_url:
+            _dec_note("no_model")
             return
         # state：最近对话（req.contexts 已由 Context Restoration 垫好）+ 本条消息 + 选项表
         recent = []
@@ -855,6 +965,7 @@ async def _decision_plot_route(
             api_format=api_format,
         )
         if not isinstance(answers, dict):
+            _dec_note("model_error")
             return
         resp = answers.get("responding") or {}
         try:
@@ -862,6 +973,7 @@ async def _decision_plot_route(
         except (TypeError, ValueError):
             responding = 0.0
         if responding < 0.5:
+            _dec_note("not_responding")
             return  # 用户无视选项自由 RP：不路由、不标百分比
         branch = answers.get("branch") or {}
         probs = dict(branch.get("probabilities") or {})
@@ -879,11 +991,18 @@ async def _decision_plot_route(
     floor = getattr(plugin.props, "status_bar_decision_confidence_floor", 0.6)
     if pick and confidence >= floor and 1 <= pick <= len(options):
         label = options[pick - 1]
+        _dec_note("numeric" if numeric_direct else "model_routed",
+                  pick=pick, label=label, confidence=confidence)
         req.system_prompt = (req.system_prompt or "") + (
             f"\n\n[System] 【剧情走向】用户已明确选择分支 {pick}（{label}）——"
             "本轮正文请直接沿该分支展开，不要再次询问，不要重复选项列表。"
         )
         logger.info(f"[Quill Decision] 分支路由: {pick}（{label}）置信度 {confidence:.2f} | target={target_id}")
+    else:
+        # 判定做了但没路由（置信度低于阈值 / 分支号无效）：top 分支与
+        # 置信度仍进 trace，面板可见「差一点」的距离。
+        top = pick if pick and 1 <= pick <= len(options) else 1
+        _dec_note("below_floor", pick=top, label=options[top - 1], confidence=confidence)
 
 async def handle_llm_request(
     plugin, event: AstrMessageEvent, req: ProviderRequest
@@ -938,12 +1057,28 @@ async def handle_llm_request(
     17. ``_run_rag_retrieval``——RAG 注入点（doc 检索→memory 检索→核心
         记忆无条件注入→format_for_prompt 追加 dynamic）；
     18. 世界书触发日志注入（worldbook_show_log，同步 get_trigger_log）；
+    18.5 **Post-RAG 预算守卫**（M1b 模块 3，只裁不扩）：装配后超
+        max_prompt_length 时先撤回步 18 触发日志块、再对步 17 RAG 上下文
+        尾部裁剪（</core_memory> 为硬下限）；未超预算分支不进，零改动；
     19. ``inject_prompt`` 合并（injection_position 透传）；
     20. tail message 追加 req.prompt（开：``build_status_reminder`` 契约
         提醒；关：禁止状态栏文案；幂等）；
     21. **``event.set_extra("_quill_activated", True)``**（闸门唯一点位，
         全部注入成功之后——快照 master 用例钉住其相对时序）；
     22. ``update_activity``。
+
+    M1a trace 采集（零控制流改动：只在各步就地附带读已有数据，R1 故障
+    隔离——采集异常只 warning 不影响注入）：begin 在步 2 区（最早同时拿到
+    target_id/persona_id 处，并清状态栏级别残留）；步 2 记 context_restore
+    （fresh 窗口记 degraded）；步 4 回填 persona_id/persona_name_at_turn；
+    激活判定区记 activated/activation_reason；步 11 早退轮照常收口落库
+    （activated=False 也是诊断对象）；步 16 记 worldbook/wr 模块行；步 17
+    后记 rag_dynamic 段长差；步 19-20 后记 injection_order（PromptSection
+    段名 + rag_dynamic/tail_message）与 token_estimate；RAG 三模块行
+    （rag_doc/memory/core_memory）由 main.py ``_run_rag_retrieval`` 内部经
+    ``_trace_rag_modules`` 自记；状态栏级别由 parsers 六级链 terminal 命中
+    时 ``_note_status_level`` 记、响应钩子收口时弹出。收口在
+    handle_llm_response（状态栏段与 F1 段之间，未激活轮的 gate 之前）。
 
     下沉决策（本轮评估记录，宁可少下沉不可重排顺序）：
 
@@ -984,10 +1119,38 @@ async def handle_llm_request(
     target_id = plugin._get_target_id(event)
 
     # ── 上下文恢复（重启/滑动窗口切断后无缝续传）──
-    mem_session_id = plugin._get_memory_session_id(
-        target_id,
-        await plugin.state_manager.get_persona_id(target_id)
-    )
+    _req_persona_id = await plugin.state_manager.get_persona_id(target_id)
+    mem_session_id = plugin._get_memory_session_id(target_id, _req_persona_id)
+
+    # ── M1a trace：开一条进行中记录（begin 落在步 2 区——22 步里最早能
+    # 同时拿到 target_id 与 persona_id 的位置；采集点零行为影响，R1）。
+    # M1a-Fix 1.2：take_lv 前移到 begin **之前**并作为 pending 传入——
+    # Agent Loop 二次迭代时 H2 已记下的级别，会在 begin() 把上一轮按
+    # stale 落库的瞬间被原「begin 后清残留」丢弃；先取出交给 begin 回填
+    # （parsers._note_status_level 的就地写入是主通道，这里是兜底）。
+    # 同时它仍承担「本轮开始清残留」的语义（trace 关闭轮不取值，不清
+    # 会让下一轮 fallback 轮读到陈旧级别）。──
+    prev_lv = None
+    try:
+        take_lv = getattr(plugin, "_take_status_level", None)
+        if callable(take_lv):
+            prev_lv = take_lv(target_id)
+    except Exception as e:  # noqa: BLE001 - R1：采集故障不影响注入主链路
+        logger.warning(f"[Quill Trace] 清理状态栏级别残留失败（已忽略）: {e}")
+    if _trace_enabled(plugin):
+        try:
+            store = getattr(plugin, "_trace_store", None)
+            if store is not None:
+                store.configure(plugin.props.trace_buffer_per_session)
+                store.begin(
+                    _trace_mod.hash_target_id(target_id),
+                    persona_id=_req_persona_id or "",
+                    pending_statusbar_level=prev_lv,
+                )
+        except Exception as e:  # noqa: BLE001 - R1：采集故障不影响注入主链路
+            logger.warning(f"[Quill Trace] begin 失败（已忽略）: {e}")
+    # M1a-Fix 1.4：步 2 耗时采样（context_restore 行的 stage_ms）。
+    _t_ctx0 = time.perf_counter()
     # 防御性类型守卫：AstrBot 框架契约保证 contexts 为 list，但防止异常值导致崩溃
     if not isinstance(req.contexts, list):
         req.contexts = []
@@ -1010,6 +1173,18 @@ async def handle_llm_request(
             req.contexts = recent_logs + req.contexts
             logger.info(f"[Quill Context] 恢复 {len(recent_logs)} 条上下文（Session: {mem_session_id}）")
 
+    # M1a trace：步 2 结果（fresh 判定 + 垫回条数；stage_ms 为步 2 区
+    # 耗时，M1a-Fix 1.4）。
+    _trace_note(plugin, target_id, lambda t: t.module_results.append(
+        _trace_mod.TraceModuleResult(
+            module="context_restore",
+            ok=True,
+            degraded=None if not contexts_is_fresh else "fresh_window",
+            hits=len(req.contexts),
+            stage_ms=int((time.perf_counter() - _t_ctx0) * 1000),
+        )
+    ))
+
     # 关闭状态栏时，抹掉回灌上下文里已渲染的历史状态栏。
     # 不清掉就是一边用 tail message 明令「禁止输出好感度、关系阶段、心情」，
     # 一边在历史里给模型看几轮「好感度：85」的示范，属于自己和自己拉锯：
@@ -1027,6 +1202,15 @@ async def handle_llm_request(
         )
 
     persona_id, persona_data = await plugin._inject_persona_and_first_message(req, event, target_id)
+
+    # M1a trace：步 4 返回的 persona_id/name 权威于 begin 时的 state 快照
+    # （首次绑卡/换卡轮两者可能不同），覆盖回填。
+    if persona_id or persona_data:
+        _trace_note(plugin, target_id, lambda t: (
+            setattr(t, "persona_id", persona_id or t.persona_id),
+            setattr(t, "persona_name_at_turn",
+                    str((persona_data or {}).get("name", "") or "")),
+        ))
 
     # 记录用户消息（仅已绑定角色卡且非指令时）
     if persona_id and user_input and not user_input.strip().startswith("/") \
@@ -1079,7 +1263,26 @@ async def handle_llm_request(
         activated = True
         wr_activated = False
 
+    # M1a trace：激活判定（reason 与函数尾部 trigger 日志同口径，另加常驻
+    # 模式一档——那是配置而非输入信号，单列更可诊断）。
+    _act_reason = (
+        "常驻模式" if always_activate
+        else ("激活词" if activated else ("括号" if has_bracket else "WR关键词"))
+    )
+    _trace_note(plugin, target_id, lambda t: (
+        setattr(t, "activated", True),
+        setattr(t, "activation_reason", _act_reason),
+    ))
+
     if not (activated or has_bracket or wr_activated):
+        # M1a trace：未激活轮也落库（activated=False + activation_reason=None
+        # ——规划 §四 M1a 验收 3；module_results 里只有步 2 的 context_restore，
+        # 其余模块自然缺席=未执行）。
+        _trace_commit(plugin, target_id, finalize=lambda t: (
+            setattr(t, "activated", False),
+            setattr(t, "activation_reason", None),
+            setattr(t, "duration_ms", t.elapsed_ms()),
+        ))
         await plugin.state_manager.reset_quill_rounds(target_id)
         return
 
@@ -1139,29 +1342,194 @@ async def handle_llm_request(
     _wb_for_request = plugin.wb_manager if getattr(
         plugin.config, "worldbook_enabled", True
     ) else None
+    # M1a-Fix 1.4：步 16 耗时采样（worldbook/wr 两行共用——它们产自同一次
+    # build_system_prompt 调用，面板各自显示的是这段共享耗时）。
+    _t_bsp0 = time.perf_counter()
     stable_prompt, dynamic_prompt = await _pb.build_system_prompt(
         plugin.wr_manager, _wb_for_request, extra_info,
         stats=inject_stats,
     )
+    _bsp_ms = int((time.perf_counter() - _t_bsp0) * 1000)
+
+    # M1a trace：步 16 世界书 + WR 命中（计数经既有 stats 出参透传；
+    # 世界书总开关关闭记 degraded="disabled"——那是配置态而非检索失败）。
+    # M1b 模块 1：candidates 与近失条经 _funnel_wb/_funnel_wr 出参透传
+    # （世界书行 items 先放近失，命中明细稍后由 _fill_wb_items 重排在前）。
+    _wb_funnel_snap = inject_stats.get("_funnel_wb") or {}
+    _wr_funnel_snap = inject_stats.get("_funnel_wr") or {}
+    _wr_items = _funnel_filtered_items(_wr_funnel_snap)
+    if _wr_funnel_snap.get("fallback_pool"):
+        _wr_items.append({"source_ref": "fallback_pool",
+                          "filtered_reason": "fallback_pool(命中0，保底注入)"})
+    _trace_note(plugin, target_id, lambda t: (
+        t.module_results.append(_trace_mod.TraceModuleResult(
+            module="worldbook",
+            ok=True,
+            degraded="disabled" if _wb_for_request is None else None,
+            hits=int(inject_stats.get("wb", 0) or 0),
+            candidates=int(_wb_funnel_snap.get("candidates", 0) or 0),
+            stage_ms=_bsp_ms,
+            items=_funnel_filtered_items(_wb_funnel_snap),
+        )),
+        t.module_results.append(_trace_mod.TraceModuleResult(
+            module="wr",
+            ok=True,
+            hits=int(inject_stats.get("wr", 0) or 0),
+            candidates=int(_wr_funnel_snap.get("candidates", 0) or 0),
+            stage_ms=_bsp_ms,
+            items=_wr_items,
+        )),
+    ))
 
     # ── RAG 检索（Doc RAG + 动态记忆）──
+    # M1a trace：记调用前长度，返回后按增量判定「RAG 追加段」是否出现在
+    # injection_order 里（步 17 在 main._run_rag_retrieval 内就地采集；
+    # 耗时以本调用点为界回填三行的 stage_ms——M1a-Fix 1.4，含内置知识库
+    # 检索往返）。
+    _dyn_len_pre_rag = len(dynamic_prompt)
+    _t_rag0 = time.perf_counter()
     dynamic_prompt = await plugin._run_rag_retrieval(
         event, req, user_input, persona_data, dynamic_prompt, inject_stats
     )
+    _rag_ms = int((time.perf_counter() - _t_rag0) * 1000)
+    _trace_note(plugin, target_id, lambda t: [
+        setattr(m, "stage_ms", _rag_ms) for m in t.module_results
+        if m.module in ("rag_doc", "memory", "core_memory")
+    ])
+    # 立刻定格「步 17 是否追加了内容」——步 18 触发日志同样会增长
+    # dynamic_prompt，晚比会把纯触发日志轮误标成 rag_dynamic。
+    _rag_appended = len(dynamic_prompt) > _dyn_len_pre_rag
+    # M1b-Fix P1-c：同时定格步 17 **末尾长度**——预览里 rag_dynamic 段的
+    # 字符量以它为分母（晚于此处再比，步 18 触发日志会被算成 RAG 字符，
+    # 预览超预算误报；步 18.5 若裁剪，差异由 truncation_events 解释）。
+    _dyn_len_after_rag = len(dynamic_prompt)
 
-    # 触发日志注入（show_trigger_log 开启时）
-    if (plugin.config.worldbook_show_log and _wb_for_request
-            and hasattr(_wb_for_request, 'get_trigger_log')):
-        # get_trigger_log 是同步方法（加锁读一次列表），不能 await
-        trigger_log = _wb_for_request.get_trigger_log()
-        if trigger_log:
-            log_lines = ["[触发日志]"]
-            for t in trigger_log[:10]:
-                log_lines.append(f"  {t['worldbook']}/{t['title']} ← {','.join(t['matched_keys'])}")
-            dynamic_prompt += "\n\n" + "\n".join(log_lines)
+    # ── 世界书触发日志（M1a-Fix 1.3：items 明细不再受 worldbook_show_log
+    # 门控——那只是「拼进 dynamic_prompt」的开关，面板命中明细是诊断数据，
+    # 关触发日志注入时照样要能看到世界书命中了哪些条目）。──
+    _trigger_log: list = []
+    if _wb_for_request and hasattr(_wb_for_request, 'get_trigger_log'):
+        try:
+            # get_trigger_log 是同步方法（加锁读一次列表），不能 await
+            _trigger_log = _wb_for_request.get_trigger_log() or []
+        except Exception:
+            _trigger_log = []
+    if _trigger_log:
+        # M1a trace：世界书命中条目名/匹配词（纯透传步 18 既有产出）。
+        # M1b 模块 1：命中明细在前、漏斗近失条在后——_fill_wb_items 覆写
+        # items 时保住步 16 已放进来的近失诊断。
+        _wb_log_snapshot = [dict(tg) for tg in _trigger_log[:10]]
+        _wb_near_miss = _funnel_filtered_items(inject_stats.get("_funnel_wb"))
+
+        def _fill_wb_items(trace, _log=_wb_log_snapshot, _near=_wb_near_miss):
+            for m in trace.module_results:
+                if m.module == "worldbook":
+                    m.items = [
+                        {"source_ref": f"{tg['worldbook']}/{tg['title']}",
+                         "score_or_kw": ",".join(tg.get("matched_keys", []))}
+                        for tg in _log
+                    ] + _near
+        _trace_note(plugin, target_id, _fill_wb_items)
+
+    _trig_log_appended = False
+    _trig_block = ""
+    if plugin.config.worldbook_show_log and _trigger_log:
+        log_lines = ["[触发日志]"]
+        for t in _trigger_log[:10]:
+            log_lines.append(f"  {t['worldbook']}/{t['title']} ← {','.join(t['matched_keys'])}")
+        # 步 18.5 预算守卫需要按块撤回：把追加内容整体存引用（内容与
+        # 改前逐字一致，只是多一个变量指向它）。
+        _trig_block = "\n\n" + "\n".join(log_lines)
+        dynamic_prompt += _trig_block
+        _trig_log_appended = True
+
+    # ── 步 18.5 Post-RAG 预算守卫（M1b 模块 3）──
+    # build_system_prompt 只对动态段做 _smart_truncate（预算 =
+    # max_prompt_length − stable），其后追加的 RAG 上下文（步 17）与
+    # 触发日志（步 18）绕过预算直拼。这里是最后一道闸：装配后仍超
+    # max_prompt_length 时，先撤回触发日志块（诊断性追加，价值最低），
+    # 再对 RAG 上下文做尾部裁剪（<memories> 在尾、<documents> 居中、
+    # <core_memory> 在头——裁尾天然最后才动核心记忆；守卫另以
+    # </core_memory> 为硬下限，无论超多少都不裁进核心记忆段）。
+    # 裁剪后同步重计 inject_stats 的 mem/doc 计数与 doc_sources——
+    # 注入报告行/面板显示「实际注入量」，与 trace 模块行的「检索命中量」
+    # 形成两层口径，差异由 truncation_events 解释。未超预算时分支不进，
+    # 装配结果与现状逐字节一致（E2E 用例钉住）。
+    _budget = int(getattr(plugin.config, "max_prompt_length", 0) or 0)
+    _guard_events: list = []
+    if _budget > 0:
+        _assembled = plugin.props.prompt_builder.inject_prompt(
+            req.system_prompt or "", stable_prompt, dynamic_prompt,
+            injection_position=plugin.config.worldbook_injection_pos
+        )
+        _overflow = len(_assembled) - _budget
+        if _overflow > 0:
+            if _trig_log_appended:
+                dynamic_prompt = dynamic_prompt[: len(dynamic_prompt) - len(_trig_block)]
+                _trig_log_appended = False
+                _guard_events.append({
+                    "where": "post_rag_guard", "kind": "trigger_log_withdrawn",
+                    "dropped_chars": len(_trig_block),
+                })
+                _overflow -= len(_trig_block)
+            if _overflow > 0 and len(dynamic_prompt) > _dyn_len_pre_rag:
+                _rag_block = dynamic_prompt[_dyn_len_pre_rag:]
+                _marker = "\n\n...[RAG 上下文已按预算截断]"
+                _keep = max(0, len(_rag_block) - _overflow - len(_marker))
+                _floor = 0
+                _cm_end = _rag_block.find("</core_memory>")
+                if _cm_end >= 0:
+                    # 核心记忆硬下限：整个 <core_memory> 段 + 衔接空行
+                    _floor = _cm_end + len("</core_memory>") + 2
+                _keep = max(_keep, min(_floor, len(_rag_block)))
+                if _keep < len(_rag_block):
+                    _kept = _rag_block[:_keep].rstrip()
+                    # M1b-Fix Bug2（核验报告 §9.2#2）：截断标记自身 ~20 字符。
+                    # 核心记忆硬下限之上剩余可裁空间不足一个标记时，「裁掉
+                    # 几个字符 + 贴上标记」反而比不裁更长——守卫变放水。净减
+                    # 超过标记长度才贴标记；否则保留下限段、不贴标记，事件
+                    # 记 core_memory_floor_reached（预算仍超，守卫已尽力）。
+                    _floor_capped = len(_rag_block) - len(_kept) <= len(_marker)
+                    if not _floor_capped:
+                        dynamic_prompt = (
+                            dynamic_prompt[:_dyn_len_pre_rag] + _kept + _marker
+                        )
+                    else:
+                        dynamic_prompt = dynamic_prompt[:_dyn_len_pre_rag] + _kept
+                    _trim_event = {
+                        "where": "post_rag_guard", "kind": "rag_tail_trimmed",
+                        "dropped_chars": len(_rag_block) - len(_kept),
+                        # 硬下限保证核心记忆永不入裁剪范围（无核心记忆段时
+                        # 同样「未受影响」）——恒 True 是不变量而非占位
+                        "core_memory_protected": True,
+                    }
+                    if _floor_capped:
+                        _trim_event["core_memory_floor_reached"] = True
+                    _guard_events.append(_trim_event)
+                    # 实际注入量重计（标记在每条行首，计数即存活条数；
+                    # 格式出自 quill_rag.retrieval.format_for_prompt，
+                    # 属本插件可控契约）。
+                    if "[记忆]" in _rag_block:
+                        inject_stats["mem"] = _kept.count("[记忆]")
+                    if "[文档-" in _rag_block:
+                        inject_stats["doc"] = _kept.count("[文档-")
+                        _kept_src: list = []
+                        for seg in _kept.split("[文档-")[1:]:
+                            name = seg.split("]")[0]
+                            if name and name not in _kept_src:
+                                _kept_src.append(name)
+                        inject_stats["doc_sources"] = _kept_src
+    if _guard_events:
+        _trace_note(plugin, target_id, lambda t: (
+            t.truncation_events.extend(_guard_events),
+            t.warnings.append("注入内容超预算，已按预算守卫裁剪（见裁剪事件）"),
+        ))
 
     plugin._remember_inject_report(target_id, inject_stats)
 
+    # M1b 模块 7：合并前留一份原始 system prompt（角色卡等宿主内容）——
+    # 脱敏预览要按最终段序呈现「协议 → 角色卡 → 动态」的中间那层。
+    _orig_sys_prompt = req.system_prompt or ""
     req.system_prompt = plugin.props.prompt_builder.inject_prompt(
         req.system_prompt or "", stable_prompt, dynamic_prompt,
         injection_position=plugin.config.worldbook_injection_pos
@@ -1183,14 +1551,110 @@ async def handle_llm_request(
         elif not req.prompt:
             req.prompt = tail
 
+    # M1a trace：步 19-20 终态——injection_order（stable 段名 + dynamic
+    # 段名 + RAG/触发日志追加段 + tail，与 22 步段序映射；段名来自
+    # PromptBuilder 实际组出的 PromptSection）与 token_estimate（字符量 +
+    # 粗估 token——中文按 ~2 字符/token，仅供量级参考，UI 侧标注「估算」）。
+    # M1a-Fix 1.3：段序与实际拼接一致——rag_dynamic/触发日志是步 17/18
+    # 追加在 _sections_dynamic **之后**的（此前误把 rag_dynamic 插在前、
+    # 且触发日志段缺席）；user_prefix 模式下 inject_prompt 把 dynamic 整段
+    # 翻到 stable 之前，段序同步翻转。
+    def _fill_final_prompt_state(trace):
+        stable_ord = list(inject_stats.get("_sections_stable") or [])
+        dyn_ord = list(inject_stats.get("_sections_dynamic") or [])
+        if _rag_appended:
+            dyn_ord.append("rag_dynamic")
+        if _trig_log_appended:
+            dyn_ord.append("wb_trigger_log")
+        order = (dyn_ord + stable_ord) \
+            if plugin.config.worldbook_injection_pos == "user_prefix" \
+            else (stable_ord + dyn_ord)
+        if persona_id:
+            order.append("tail_message")
+        trace.injection_order = order
+        # M1b 模块 3：截断事件全景——步 16 _smart_truncate（丢段/硬切，经
+        # stats["_truncation_events"] 带出）在前、步 18.5 守卫事件已在守卫
+        # 处就地 extend，这里只补装配侧，保持时序真实。
+        _bsp_events = list(inject_stats.get("_truncation_events") or [])
+        if _bsp_events:
+            trace.truncation_events = _bsp_events + [
+                e for e in trace.truncation_events
+                if e.get("where") != "build_system_prompt"
+            ]
+        trace.token_estimate = {
+            "stable_chars": len(stable_prompt or ""),
+            "dynamic_chars": len(dynamic_prompt or ""),
+            "system_prompt_chars": len(req.system_prompt or ""),
+            "est_tokens": (len(stable_prompt or "") + len(dynamic_prompt or "")) // 2,
+        }
+        # M1b 模块 7：脱敏注入预览——按最终段序给每段 {name, chars, text}。
+        # RAG 段（rag_dynamic）只给长度不给正文（检索原文红线 7）；其余段
+        # 是用户自配内容（协议/常驻/角色卡/命中条目），与面板编辑器同一
+        # 可见性。仅存会话最新一条（TraceStore 落库时清旧）。
+        _pair_map = {n: c for n, c in (inject_stats.get("_section_texts") or [])}
+
+        def _sec(n):
+            c = _pair_map.get(n)
+            return {"name": n, "chars": len(c or ""), "text": c or ""}
+
+        _dyn_secs = [_sec(n) for n in (inject_stats.get("_sections_dynamic") or [])]
+        _stab_secs = [_sec(n) for n in (inject_stats.get("_sections_stable") or [])]
+        _orig_sec = {"name": "persona_card(宿主)", "chars": len(_orig_sys_prompt),
+                     "text": _orig_sys_prompt}
+        if plugin.config.worldbook_injection_pos == "user_prefix":
+            preview = _dyn_secs + _stab_secs + ([_orig_sec] if _orig_sys_prompt else [])
+        else:
+            preview = _stab_secs + ([_orig_sec] if _orig_sys_prompt else []) + _dyn_secs
+        if _rag_appended:
+            preview.append({
+                # P1-c：以步 17 末尾定格长度为口径——晚于此处再比会把步 18
+                # 触发日志算进 RAG 段（预览超预算误报）。
+                "name": "rag_dynamic", "chars": _dyn_len_after_rag - _dyn_len_pre_rag,
+                "text": "",
+                "note": "RAG 检索段含记忆/文档原文，脱敏预览不展示——命中明细见模块表",
+            })
+        if _trig_log_appended:
+            preview.append({"name": "wb_trigger_log", "chars": len(_trig_block or ""),
+                            "text": _trig_block or ""})
+        # P1-c：tail_message 与 injection_order 的同名段对齐——它是角色卡
+        # 轮必有的注入段（追加在用户消息末尾），缺席会让「预览段序 ↔
+        # injection_order」对不上账。
+        if persona_id:
+            preview.append({"name": "tail_message", "chars": len(tail or ""),
+                            "text": tail or "",
+                            "note": "状态栏指令（追加在用户消息末尾，不在 system prompt 内）"})
+        if any(e.get("kind") == "char_slice" for e in trace.truncation_events):
+            preview.append({"name": "(预览注)", "chars": 0, "text": "",
+                            "note": "本轮动态段发生过尾部硬截断：上方段文本为截断前原文，实际注入以裁剪事件为准"})
+        trace.prompt_preview = preview
+    _trace_note(plugin, target_id, _fill_final_prompt_state)
+
     # Decision 剧情走向路由 + 推荐选择度（opt-in，全链 fail-open）。放在 prompt
     # 装配与 tail 之后：路由命中时向已定稿的 system_prompt 追加确定性分支
     # 指令；用户消息读 event.message_str（原始输入），不受 tail 污染。
     # 剧情走向块只在状态栏生效时出现（_sb_effective），关状态栏时跳过。
+    _sys_len_pre_decision = len(req.system_prompt or "")
     try:
         await _decision_plot_route(plugin, event, req, target_id, activated and _sb_effective)
     except Exception as e:
         logger.warning(f"[Quill Decision] 剧情走向路由失败（已跳过）: {e}")
+        # M1b 模块 2：判定链自身异常（HTTP/解析崩溃）也是诊断对象——
+        # error 只记类别，与 R1「不记内容」口径一致。
+        _trace_note(plugin, target_id, lambda t: t.module_results.append(
+            _trace_mod.TraceModuleResult(module="decision", ok=False, error="decision_crash")
+        ))
+    # M1b-Fix P1-c：决策块发生在预览定稿之后，按 system_prompt 增量补一段
+    # 预览（指令正文是插件模板，不重复展示；字符量足以对账预算）。
+    _decision_delta = len(req.system_prompt or "") - _sys_len_pre_decision
+    if _decision_delta > 0:
+
+        def _fill_decision_preview(trace, _d=_decision_delta):
+            trace.prompt_preview.append({
+                "name": "decision_plot", "chars": _d, "text": "",
+                "note": "剧情走向路由指令（追加在 system prompt 末尾）",
+            })
+
+        _trace_note(plugin, target_id, _fill_decision_preview)
 
     event.set_extra("_quill_activated", True)
 

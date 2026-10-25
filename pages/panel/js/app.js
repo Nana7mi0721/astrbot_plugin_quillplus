@@ -11,6 +11,8 @@ import { discardChanges, filterConfig, initConfigNavObserver, loadGlobalSettings
 import { changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, onMemorySessionChange, pruneMemories, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin } from "./pages/memory.js";
 import { closeAstrbotImportModal, closeImportTextModal, deletePersona, exportPersona, filterCheckboxes, filterWBEntries, importFromAstrbot, importPersona, importPersonaFromText, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openImportTextModal, openPersonaModal, renderPersonaPage, savePersona, selectAstrbotPersona, switchPersonaView, syncExtList, syncRagGroup, toggleExtBig, toggleExtGroup } from "./pages/persona.js";
 import { deleteRAGDocument, deleteRAGGroup, moveRAGDocument, newRAGGroup, processRAGFiles, renameRAGGroup, setRAGKbEnabled, testRAGSearch, toggleRAGBig, toggleRAGGroup } from "./pages/rag.js";
+import { loadTracePage, onTraceSessionChange, refreshTrace, toggleTraceTurn,
+         runSimulate, runLint, toggleTraceLive, copyPreviewText } from "./pages/trace.js";
 import { deleteWB, deleteWBEntry, exportWBSt, importWBSt, onWBSearchInput, openWBCreateModal, openWBEntryModal, reloadWB, saveWBCreate, saveWBEntry, setWBOnlyConst, toggleWB } from "./pages/worldbook.js";
 import { _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, saveWREntry, toggleWREntry, updateWRBatchBar, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState } from "./pages/writing.js";
 import { $, debounce, withBusy } from "./utils.js";
@@ -129,6 +131,15 @@ const ACTIONS = {
   "log-export": (el) => exportChatLogs(el.dataset.value, el),
   "vec-search": (el) => testMemoryVectorSearch(el),
 
+  // 注入诊断（M1a）
+  "trace-refresh": (el) => refreshTrace(el),
+  "trace-toggle": (el) => toggleTraceTurn(el),
+  // 注入实验室（M1b）：模拟检索 / 静态体检 / SSE 实时 / 预览复制
+  "trace-simulate": (el) => runSimulate(el),
+  "trace-lint": (el) => runLint(el),
+  "trace-live": (el) => toggleTraceLive(el),
+  "trace-copy-preview": (el) => copyPreviewText(el),
+
   // 配置
   "config-save": (el) => saveAllChanges(el),
   "config-discard": () => discardChanges(),
@@ -233,6 +244,7 @@ function bindEvents() {
     if (t.id === "wrCat" && t.tagName === "SELECT") { wrState.page = 1; loadWR(); return; }
     if (t.id === "wbOnlyConst") { setWBOnlyConst(t.checked); return; }
     if (t.id === "memSession") { onMemorySessionChange(); return; }
+    if (t.id === "traceSession") { onTraceSessionChange(); return; }
     // 文档知识库页的「兼容 AstrBot 知识库」开关：单独落盘一个配置键
     if (t.id === "ragKbToggle") { setRAGKbEnabled(t.checked, t); return; }
     // 文档行里的「移动到分组」下拉（仅插件内上传的文档）
@@ -341,11 +353,11 @@ function bindEvents() {
         }
       }
     }
-    // Alt+1..6 切换标签页。必须放在 typing 早返回之前：面板里几乎总有输入框持有焦点
+    // Alt+1..7 切换标签页。必须放在 typing 早返回之前：面板里几乎总有输入框持有焦点
     // （搜索框、配置项），否则用户在任意输入框内都无法用快捷键切页。
-    if (e.altKey && /^[1-6]$/.test(e.key)) {
+    if (e.altKey && /^[1-7]$/.test(e.key)) {
       e.preventDefault();
-      const tabs = ["wr", "wb", "persona", "rag", "memory", "config"];
+      const tabs = ["wr", "wb", "persona", "rag", "memory", "trace", "config"];
       switchTab(tabs[Number(e.key) - 1]);
       return;
     }
@@ -515,7 +527,7 @@ async function quillInit() {
     const hm = (location.hash || "").match(/tab=([a-zA-Z]+)/);
     if (hm) {
       const tab = hm[1].toLowerCase();
-      if (["wr", "wb", "persona", "rag", "memory", "config"].includes(tab)) switchTab(tab);
+      if (["wr", "wb", "persona", "rag", "memory", "trace", "config"].includes(tab)) switchTab(tab);
       const sm = (location.hash || "").match(/sub=([a-zA-Z]+)/);
       if (sm && tab === "memory") switchMemorySub(sm[1].toLowerCase());
     } else {

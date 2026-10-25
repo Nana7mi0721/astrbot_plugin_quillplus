@@ -135,6 +135,12 @@
         "description": "全局常驻激活",
         "default": false,
         "hint": "开启后，每次对话都会强制注入系统提示词和状态栏，无需触发激活词。适合纯RP场景。"
+      },
+      "card_embed_worldbook": {
+        "type": "bool",
+        "description": "角色卡导入自动转换内嵌世界书",
+        "default": true,
+        "hint": "导入 V2/V3 角色卡时，自动把卡内 character_book（内嵌世界书）转换为羽笔世界书并绑定到新角色（wb_mode=custom）。关闭后仅导入文本字段，内嵌世界书被忽略。"
       }
     }
   },
@@ -314,6 +320,25 @@
         "description": "在回复末尾显示注入报告",
         "default": false,
         "hint": "开启后每轮回复末尾附一行「〔注入〕世界书×2 · 记忆×3 · 素材×2 · 文档×1（来源名）」，用于核对灵敏度/top_k 等参数的调整效果。会进入聊天记录，纯沉浸 RP 时可关闭；关闭后仍可用 /quill debug 查看上一轮构成。"
+      }
+    }
+  },
+  "trace": {
+    "type": "object",
+    "description": "[诊断追踪]",
+    "hint": "记录每轮对话的注入诊断信息（命中了什么、注入顺序、各环节耗时），供 /quill debug 与面板「诊断」页排查「设定漏注入 / 角色失忆」类问题。纯内存记录，不写盘、不进对话。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用注入追踪",
+        "default": true,
+        "hint": "关闭后零采集零记录（/quill debug 的注入构成行回落旧缓存口径）。正常使用建议保持开启——追踪只读取注入流程已有的数据，不产生额外模型调用。"
+      },
+      "buffer_per_session": {
+        "type": "int",
+        "description": "每会话保留轮数",
+        "default": 20,
+        "hint": "每个会话在内存中保留的最近追踪轮数（全局上限 200 轮，超限自动淘汰最旧）。重启后清空。建议 10-50。"
       }
     }
   },

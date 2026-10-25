@@ -19,6 +19,7 @@ import time
 from collections import defaultdict
 from io import BytesIO
 from typing import Any, Optional
+from uuid import uuid4
 
 from astrbot.api import logger
 
@@ -272,7 +273,13 @@ class QuillPersonaManager:
             if await self._name_exists_locked(name):
                 raise ValueError(f"角色名 '{name}' 已存在")
 
-            persona_id = (data.get("id") or "").strip() or name
+            # M0-T1：id 缺省不再取 name——name 会渗入身份键、记忆会话键
+            # （_get_memory_session_id）与落盘文件名，改名语义虽不断绑定，但
+            # name-id 让"角色名"与"内部标识"耦合（M4 项目化要稳定 ID）。
+            # 显式传入的 id 仍优先（跨实例导进保留身份）；缺省生成 12 位 hex
+            # 短 UUID：无特殊字符（_sanitize_id 恒等，天然配合 B10 文件名判重），
+            # 48bit 碰撞对本插件量级可忽略，且下方缓存/B10 判重兜底。
+            persona_id = (data.get("id") or "").strip() or uuid4().hex[:12]
             if self._cache_loaded and persona_id in self._cache:
                 raise ValueError(f"角色 ID '{persona_id}' 已存在")
             # B10：不同 id 可能被 _sanitize_id 规整成同一个文件名
@@ -425,7 +432,8 @@ class QuillPersonaManager:
             raise ValueError("不是有效的 V2 角色卡格式：JSON 根必须是对象")
 
         # 验证 V2 格式（标准格式 + 扁平化格式 + 最小字段集）
-        has_spec = v2_json.get("spec") == "chara_card_v2"
+        # Issue #1：V3 卡（spec: chara_card_v3）与 V2 同构（嵌套 data），一并放行。
+        has_spec = v2_json.get("spec") in ("chara_card_v2", "chara_card_v3")
         has_data = "data" in v2_json
         has_v2_standard_fields = any(k in v2_json for k in ("first_mes", "mes_example", "metadata"))
         has_v2_flat_fields = any(k in v2_json for k in ("name", "description", "personality"))
@@ -468,7 +476,33 @@ class QuillPersonaManager:
         if mes_example:
             mes_example = QuillPersonaManager._clean_v2_mes_example(mes_example)
 
-        return {
+        # Issue #1：V3 规范字段此前没有导入路径，而类脑生态的卡常把
+        # system_prompt / post_history_instructions 当主要设定载体，丢弃即
+        # 「导入后设定全丢」。原字段注入位在对话两端，轻量导入带标注并入
+        # personality；alternate_greetings 是开场白变体（不是对话示例），
+        # 带标注并入 examples_of_dialogue 保数据，LLM 按标注理解语义。
+        _sp = str(data.get("system_prompt") or "").strip()
+        _ph = str(data.get("post_history_instructions") or "").strip()
+        if _sp:
+            personality = f"{personality}\n\n【系统提示】\n{_sp}".strip()
+        if _ph:
+            personality = f"{personality}\n\n【后置指令】\n{_ph}".strip()
+        _alt = [str(x).strip() for x in (data.get("alternate_greetings") or []) if str(x).strip()]
+        if _alt:
+            _alt_txt = "\n\n".join(_alt)
+            mes_example = (f"{mes_example}\n\n【备选开场白】\n{_alt_txt}" if mes_example
+                           else f"【备选开场白】\n{_alt_txt}")
+
+        # M0-T1 收口：本插件导出的卡把身份与绑定放在
+        # data.extensions.quillplus——优先读回（id 保住 = 记忆会话键/
+        # 绑定不断链）。原生 ST 卡没有该块，走既有缺省路径（id 由
+        # create_persona 生成）。
+        qp: dict = {}
+        ext_block = data.get("extensions")
+        if isinstance(ext_block, dict) and isinstance(ext_block.get("quillplus"), dict):
+            qp = ext_block["quillplus"] or {}
+
+        out = {
             "name": name,
             "summary": description[:500] if description else "",
             "core_prompts": {
@@ -478,6 +512,19 @@ class QuillPersonaManager:
                 "examples_of_dialogue": mes_example,
             }
         }
+        _qp_id = str(qp.get("id", "") or "").strip()
+        if _qp_id:
+            out["id"] = _qp_id
+        _qp_ext = qp.get("quill_extensions")
+        if isinstance(_qp_ext, dict) and _qp_ext:
+            out["quill_extensions"] = _qp_ext
+        # Issue #1：内嵌世界书原样透传给调用方（面板导入 / /char import），由
+        # attach_embedded_worldbook 落盘并写回绑定。create_persona 按固定键白名单
+        # 落库，未接线的调用路径会静默丢弃该键——保持「不认识不落库」。
+        _book = data.get("character_book")
+        if isinstance(_book, dict) and _book.get("entries"):
+            out["_character_book"] = _book
+        return out
 
     @staticmethod
     def _extract_v2_from_image(image_data: bytes) -> dict:
@@ -494,7 +541,9 @@ class QuillPersonaManager:
         img = Image.open(BytesIO(image_data))
 
         # 1. 检查 img.info（标准 tEXt 块）— 多 key 兼容
-        for key in ('chara', 'TavernAI', 'sillytavern', 'SillyTavern',
+        # Issue #1：V3 PNG 把完整卡 JSON 放在 ccv3 键（chara 里是 V2 兼容副本，
+        # 缺 V3 专属字段），优先取 ccv3。
+        for key in ('ccv3', 'chara', 'TavernAI', 'sillytavern', 'SillyTavern',
                     'character', 'comment', 'description', 'title', 'data'):
             val = img.info.get(key, '')
             if not val:
@@ -554,8 +603,9 @@ class QuillPersonaManager:
         except Exception:
             logger.debug("[QuillPersona] V2 图片元数据提取异常", exc_info=True)
 
-        # 3. 原始字节搜索 — Base64 编码的 JSON（chara\x00 标记）
-        for marker in (b'chara\x00', b'chara\x01'):
+        # 3. 原始字节搜索 — Base64 编码的 JSON（chara\x00 / ccv3\x00 标记）。
+        # Issue #1：补 ccv3（V3 PNG 的 tEXt 块 keyword\x00text 形态），优先于 chara。
+        for marker in (b'ccv3\x00', b'chara\x00', b'chara\x01'):
             idx = image_data.find(marker)
             if idx >= 0:
                 payload_start = idx + len(marker)
@@ -632,7 +682,8 @@ class QuillPersonaManager:
             # UnicodeDecodeError）→ 面板收到英文错误串。先判类型。
             if not isinstance(data, dict):
                 raise ValueError("剪贴板 JSON 根不是对象")
-            if data.get("spec") == "chara_card_v2":
+            # Issue #1：V3 卡剪贴板导入与文件导入同口径放行
+            if data.get("spec") in ("chara_card_v2", "chara_card_v3"):
                 return self.parse_v2_card(text.encode('utf-8'), is_image=False)
         except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
             logger.debug("[QuillPersona] 剪贴板文本非 V2 JSON，降级为纯文本解析", exc_info=True)
@@ -671,6 +722,42 @@ class QuillPersonaManager:
                 "examples_of_dialogue": examples,
             }
         }
+
+    async def attach_embedded_worldbook(self, persona_data: dict, wb_manager,
+                                        enabled: bool = True) -> Optional[dict]:
+        """Issue #1：把 parse_v2_card 透传的内嵌世界书（"_character_book"）落盘为
+        羽笔世界书，并把绑定写回 persona_data（wb_mode=custom + bound_worldbooks）。
+
+        必须在 create_persona **之前**调用——create_persona 按固定键白名单落库，
+        绑定要先写进 quill_extensions 才能存活。开关关闭 / wb_manager 未加载 /
+        无内嵌书时仅取出并丢弃 staging 键，返回 None。落盘异常同样降级为警告并
+        返回 None（角色卡仍导入，与头像保存失败同一姿态）。create_persona 若失败，
+        已落盘的世界书保留不回收：书名由卡名派生，可能与既有同名卡共用同一本，
+        自动删除会误伤既有绑定。
+        """
+        book = persona_data.pop("_character_book", None)
+        if not enabled or wb_manager is None or not isinstance(book, dict):
+            return None
+        try:
+            wb_info = await asyncio.to_thread(
+                wb_manager.save_embedded_worldbook, str(persona_data.get("name") or ""), book,
+            )
+        except Exception as exc:
+            logger.warning("[Quill] 内嵌世界书转换失败（角色卡仍会导入）: %s", exc)
+            return None
+        if not wb_info:
+            return None
+        qext = persona_data.get("quill_extensions")
+        if not isinstance(qext, dict):
+            qext = {}
+            persona_data["quill_extensions"] = qext
+        bound = [str(b) for b in (qext.get("bound_worldbooks") or []) if str(b)]
+        if wb_info["name"] not in bound:
+            bound.append(wb_info["name"])
+        qext["bound_worldbooks"] = bound
+        # wb_mode 缺省是 disabled，只写 bound_worldbooks 不改 mode 绑定不生效。
+        qext["wb_mode"] = "custom"
+        return wb_info
 
     def export_v2_card(self, persona: dict, avatar_data: bytes = None) -> bytes:
         """
@@ -716,7 +803,16 @@ class QuillPersonaManager:
                 "system_prompt": "",
                 "post_history_instructions": "",
                 "alternate_greetings": [],
-                "extensions": {},
+                # M0-T1 收口：身份与绑定随卡走。V2 标准的 extensions 命名空间
+                # 放本插件私有块（原生 ST 工具忽略未知键），re-import 时
+                # _v2_to_quill 优先读这里——不再因导出丢 id 导致导入方重新
+                # 生成身份键（记忆会话/世界书绑定随之断链）。
+                "extensions": {
+                    "quillplus": {
+                        "id": persona.get("id", ""),
+                        "quill_extensions": persona.get("quill_extensions", {}) or {},
+                    }
+                },
                 "character_book": None,
             }
         }

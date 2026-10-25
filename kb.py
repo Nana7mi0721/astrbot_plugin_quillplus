@@ -710,7 +710,8 @@ class WritingResourceManager:
 
         return match_score, matched_keywords
 
-    def _dedup_by_category(self, entries: List[Dict]) -> List[Dict]:
+    def _dedup_by_category(self, entries: List[Dict],
+                           dropped: Optional[List[Dict]] = None) -> List[Dict]:
         if self.category_dedup_limit <= 0:
             return entries
         category_counts: Dict[str, int] = {}
@@ -721,7 +722,30 @@ class WritingResourceManager:
             if count < self.category_dedup_limit:
                 deduped.append(entry)
                 category_counts[cat] = count + 1
+            elif dropped is not None:
+                # M1b 模块 1 漏斗：被分类上限挤掉的命中条目（不传 dropped
+                # 时行为与旧签名逐字一致）
+                dropped.append(entry)
         return deduped
+
+    @staticmethod
+    def _fill_match_funnel(funnel: Optional[dict], candidates: int,
+                           deduped: List[Dict], dedup_dropped: List[Dict],
+                           top_k: int) -> None:
+        """match 各返回点统一回填漏斗出参（funnel=None 时零开销）。"""
+        if funnel is None:
+            return
+        def _name(e: Dict) -> str:
+            return str(e.get("name") or e.get("entry_id") or "?")
+        funnel["candidates"] = candidates
+        funnel["matched"] = len(deduped[:top_k])
+        funnel["filtered"] = (
+            [{"title": _name(e),
+              "reason": f"category_dedup({e.get('category', '?')})"}
+             for e in dedup_dropped]
+            + [{"title": _name(e), "reason": "max_entries_cap"}
+               for e in deduped[top_k:]]
+        )
 
     # ------------------------------------------------------------------
     # FTS5 helpers
@@ -872,8 +896,17 @@ class WritingResourceManager:
         min_match: int = 1,
         category: Optional[str] = None,
         log_match: bool = True,
+        funnel: Optional[dict] = None,
     ) -> List[Dict]:
+        """FTS5 快路 + 兜底扫描的关键词匹配。
+
+        ``funnel`` 为 M1b 模块 1 的可选出参：传入 dict 时回填
+        ``candidates``（去重前命中数）/``matched``（返回数）/``filtered``
+        （category_dedup 分类去重近失 + max_entries_cap 截帽近失）。
+        缺省时零开销、返回值与旧签名逐字一致。
+        """
         user_input_lower = user_input.lower()
+        _dedup_dropped: List[Dict] = []
         # FTS 命中要**保留**：一旦进入下面的回退扫描，此前由一个有效的 FTS
         # 找到、但排在扫描前 2000 条之外的条目会被整表扫描的结果覆盖掉
         # （旧实现在这里重建 matched_entries = 丢弃已找到的结果）。
@@ -893,9 +926,12 @@ class WritingResourceManager:
                         fts_entries.append(entry)
 
                 fts_entries.sort(key=lambda x: x["match_score"], reverse=True)
-                fts_entries = self._dedup_by_category(fts_entries)
+                _fts_pre_dedup = len(fts_entries)
+                fts_entries = self._dedup_by_category(fts_entries, _dedup_dropped)
                 if len(fts_entries) >= top_k:
                     result = fts_entries[:top_k]
+                    self._fill_match_funnel(funnel, _fts_pre_dedup,
+                                            fts_entries, _dedup_dropped, top_k)
                     if result and log_match:
                         await self._increment_match_counts([e["id"] for e in result])
                         await self._log_match(user_input, [e["entry_id"] for e in result], len(result))
@@ -919,6 +955,8 @@ class WritingResourceManager:
                 # 会返回最多 3×top_k 条；prompt_builder 对返回的每一条都注入，且
                 # WR 路径没有 token 上限，等于 wr_max_entries 在这条路径上失效。
                 result = fts_entries[:top_k]
+                self._fill_match_funnel(funnel, _fts_pre_dedup,
+                                        fts_entries, _dedup_dropped, top_k)
                 if log_match:
                     await self._increment_match_counts([e["id"] for e in result])
                     await self._log_match(
@@ -992,8 +1030,11 @@ class WritingResourceManager:
                 matched_entries.append(entry)
 
         matched_entries.sort(key=lambda x: x["match_score"], reverse=True)
-        matched_entries = self._dedup_by_category(matched_entries)
+        _merged_pre_dedup = len(matched_entries)
+        matched_entries = self._dedup_by_category(matched_entries, _dedup_dropped)
         result = matched_entries[:top_k]
+        self._fill_match_funnel(funnel, _merged_pre_dedup,
+                                matched_entries, _dedup_dropped, top_k)
 
         if result and log_match:
             await self._increment_match_counts([e["id"] for e in result])

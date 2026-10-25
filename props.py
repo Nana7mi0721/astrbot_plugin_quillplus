@@ -195,6 +195,22 @@ class QuillConfigProperties:
         """
         return self._plugin.config.show_inject_report
 
+    # ── trace（M1a 注入诊断）───────────────────────────────────────
+
+    @property
+    def trace_enabled(self) -> bool:
+        """注入追踪开关（config.trace.enabled，默认开）。
+
+        关 = 零采集零记录（22 步编排里的采集点整体短路），注入报告行
+        回落 M1a 之前的旧 dict 行为。
+        """
+        return self._plugin.config.trace_enabled
+
+    @property
+    def trace_buffer_per_session(self) -> int:
+        """每会话保留的追踪轮数（config.trace.buffer_per_session，默认 20）。"""
+        return self._plugin.config.trace_buffer_per_session
+
     # ── rag（运行期日志/修剪参数）──────────────────────────────────
 
     @property

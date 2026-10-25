@@ -43,6 +43,8 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("status_bar", "decision_api_format"), ("status_bar", "decision_confidence_floor"),
     # debug
     ("debug", "enabled"), ("debug", "show_inject_report"),
+    # trace（M1a 注入诊断）
+    ("trace", "enabled"), ("trace", "buffer_per_session"),
     # permissions
     ("permissions", "admin_users"),
 }
@@ -481,6 +483,15 @@ class QuillRoutes:
         # ── 对话日志 ──
         _r(f"/{PLUGIN_NAME}/chatlog/list",     self.chat_log_list,  ["GET"],    "列出对话日志")
         _r(f"/{PLUGIN_NAME}/chatlog/export",   self.chat_log_export, ["GET"],   "导出对话日志")
+
+        # ── M1a 注入追踪（只读诊断；写名单 _MUTATING_ROUTES 不涉及）──
+        _r(f"/{PLUGIN_NAME}/trace/recent",     self.trace_recent,   ["GET"],    "最近注入追踪(按会话)")
+        _r(f"/{PLUGIN_NAME}/trace/detail",     self.trace_detail,   ["GET"],    "单轮注入追踪详情")
+
+        # ── M1b 注入实验室（simulate 只读沙盒；SSE 流；体检全只读）──
+        _r(f"/{PLUGIN_NAME}/trace/simulate",   self.trace_simulate, ["POST"],   "模拟检索沙盒(零写入)")
+        _r(f"/{PLUGIN_NAME}/trace/events",     self.trace_events,   ["GET"],    "追踪SSE实时流")
+        _r(f"/{PLUGIN_NAME}/worldbook/lint",   self.worldbook_lint, ["GET"],    "世界书/角色卡静态体检")
 
         # ── Panel 主题 / 界面状态：已随配置项一并移除 ──
         # 主题改由 AstrBot 面板注入 <html data-theme>（前端 app.js 读它），
@@ -1016,6 +1027,122 @@ class QuillRoutes:
             return error_response(result.get("message", "导出失败"), status_code=400)
         return json_response(result)
 
+    # ── M1a 注入追踪（只读；数据在内存 ring buffer，重启即清）──
+
+    @_api_handler
+    async def trace_recent(self):
+        """最近注入追踪轮次。
+
+        ``?target=<16位hash>`` → 该会话最近 N 轮（最新在前，limit 1-50 默认 20）；
+        缺省 → 有记录的会话摘要（面板会话下拉）。只认哈希会话键，原始
+        target_id 不出内存（trace 红线）。
+        """
+        from ._route_core import handle_trace_recent
+        return json_response(await handle_trace_recent(
+            self.plugin,
+            target=request.query.get("target", ""),
+            limit=request.query.get("limit", 20),
+        ))
+
+    @_api_handler
+    async def trace_detail(self):
+        """单轮追踪详情（``?id=<32位trace_id>``）。
+
+        id 即 /quill debug「Trace: …」锚点对应的完整轮次——两处同源，
+        结论必然一致（规划 §四 M1a 的硬验收项）。
+        """
+        from ._route_core import handle_trace_detail
+        result = await handle_trace_detail(
+            self.plugin, trace_id=request.query.get("id", "")
+        )
+        if result.get("status") == "error":
+            return error_response(result.get("message", "查询失败"), status_code=404)
+        return json_response(result)
+
+    # ── M1b 注入实验室（只读）──────────────────────────────────
+
+    @_api_handler
+    async def trace_simulate(self):
+        """模拟检索沙盒（POST，零写入 TraceStore/state/chat_logs）。
+
+        入参 ``{text, persona_id?, target_id_hash?, rag?, umo?,
+        session_vars?, include_recent_context?}``。``rag`` 缺省关——
+        零 provider 请求；面板侧拿不到原始 UMO，记忆/文档检索只有
+        API/指令侧带 ``umo`` 时可用（面板粘贴多轮文本即上下文）。
+        """
+        from ._route_core import handle_trace_simulate
+        data = await _json_body()
+        result = await handle_trace_simulate(
+            self.plugin,
+            text=data.get("text", ""),
+            persona_id=data.get("persona_id", ""),
+            target_id_hash=data.get("target_id_hash", ""),
+            rag=bool(data.get("rag", False)),
+            umo=data.get("umo", ""),
+            session_vars=data.get("session_vars"),
+            include_recent_context=bool(data.get("include_recent_context", False)),
+        )
+        if result.get("status") == "error":
+            return error_response(result.get("message", "模拟失败"), status_code=400)
+        return json_response(result)
+
+    @_api_handler
+    async def worldbook_lint(self):
+        """世界书/角色卡静态体检（纯本地分析，零模型调用）。"""
+        from ._route_core import handle_worldbook_lint
+        return json_response(await handle_worldbook_lint(self.plugin))
+
+    @_api_handler
+    async def trace_events(self):
+        """追踪 SSE 实时流（M1b 模块 7）。
+
+        宿主桥 ``subscribeSSE`` 经 ``EventSource('/api/plug/…/trace/events')``
+        连接；直接返回 Starlette StreamingResponse（经宿主
+        ``_coerce_view_result`` 原样透传——不能返回 Quart 响应，会被整体
+        缓冲）。事件为 ``data: {trace.to_dict()}\n\n``；15s 心跳注释行保活，
+        10 分钟无断开则自动收线（防僵尸连接占住队列）。每个连接注册一个
+        TraceStore 监听者，断开时移除（finally 兜底）。
+        """
+        import json as _json
+        from starlette.responses import StreamingResponse
+        plugin = self.plugin
+        store = getattr(plugin, "_trace_store", None) if plugin is not None else None
+        if store is None:
+            return error_response("追踪存储未初始化", status_code=503)
+        if not getattr(getattr(plugin, "props", None), "trace_enabled", False):
+            return error_response("注入追踪已关闭（配置 → 调试与维护）", status_code=503)
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=20)
+
+        def _on_commit(payload: dict):
+            try:
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass  # 慢消费者：丢最旧不如丢本轮——SSE 是「实时瞥一眼」通道
+
+        store.add_listener(_on_commit)
+
+        async def _gen():
+            try:
+                yield "retry: 5000\n\n"
+                idle = 0
+                while idle < 600:
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                        idle = 0
+                        yield f"data: {_json.dumps(item, ensure_ascii=False)}\n\n"
+                    except asyncio.TimeoutError:
+                        idle += 15
+                        yield ": heartbeat\n\n"
+                yield "event: bye\ndata: {}\n\n"
+            finally:
+                store.remove_listener(_on_commit)
+
+        return StreamingResponse(
+            _gen(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     # ── Provider List ─────────────────────────────────────────
 
     @_api_handler
@@ -1409,6 +1536,12 @@ class QuillRoutes:
             is_image = ext in CARD_IMAGE_EXTS
             persona_data = await asyncio.to_thread(self.persona_manager.parse_v2_card, payload.data, is_image)
 
+            # Issue #1：内嵌世界书（character_book）自动落盘并绑定（配置可关）
+            wb_info = await self.persona_manager.attach_embedded_worldbook(
+                persona_data, self.wb_manager,
+                enabled=getattr(self.config, "worldbook_card_embed_import", True),
+            )
+
             # 如果是图片，保存为头像（头像保存失败不影响角色卡导入）
             if is_image:
                 try:
@@ -1419,6 +1552,8 @@ class QuillRoutes:
                     logger.warning(f"[Quill] 头像保存失败（角色卡仍会导入）: {av_e}")
 
             result = await self.persona_manager.create_persona(persona_data)
+            if wb_info:
+                result["embedded_worldbook"] = wb_info
             return json_response(result)
 
         except ImportError as e:
@@ -1503,7 +1638,14 @@ class QuillRoutes:
             persona_data = await asyncio.to_thread(
                 self.persona_manager.parse_clipboard_text, text
             )
+            # Issue #1：V2/V3 JSON 文本同样可能携带内嵌世界书
+            wb_info = await self.persona_manager.attach_embedded_worldbook(
+                persona_data, self.wb_manager,
+                enabled=getattr(self.config, "worldbook_card_embed_import", True),
+            )
             result = await self.persona_manager.create_persona(persona_data)
+            if wb_info:
+                result["embedded_worldbook"] = wb_info
             return json_response(result)
         except ValueError as e:
             return error_response(str(e), status_code=400)

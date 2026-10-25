@@ -62,6 +62,8 @@ from .quill.services.statusbar import strip as _strip_mod
 # M2.2 第二轮：角色卡→对话隔离下沉 quill/services/character.py
 # （_ensure_persona_conversation 保留同名薄转发，见彼处）。
 from .quill.services import character as _character_mod
+# M1a：注入上下文 trace（ring buffer + 数据结构，R1 规范全见彼处 docstring）。
+from .quill.services import trace as _trace_mod
 # M2.2 第五轮：H5 反思调度下沉 quill/services/memory.py；阈值常量在类属性
 # 处 re-export（QuillPlugin.REFLECTION_* 旧访问面）。
 from .quill.services import memory as _memory_mod
@@ -132,6 +134,23 @@ _CORE_MEMORY_NL_RE = re.compile(
 
 # 注入报告行（详见 QuillPlugin._format_inject_report / _scrub_inject_report）
 _INJECT_REPORT_LINE_RE = re.compile(r"^[ \t]*〔注入〕.*$", re.MULTILINE)
+
+
+def _sanitize_extra(info: dict) -> dict:
+    """H3 降级日志的 extra 摘要：只记 persona_id/长度字段，不泄用户原文。
+
+    M1a 自 on_llm_request 注册桩的 except 闭包提升为模块级（语义逐字不变）：
+    trace 侧（target_id 脱敏键等）与降级日志共用同一「只记长度不记内容」
+    口径，防平行造第二套脱敏（红线 7）。键集合保持原样——增删键等于
+    改日志契约，须与 R1 一起评审。
+    """
+    return {
+        "persona_id": info.get("persona_id"),
+        "user_id_len": len(str(info.get("user_id", ""))),
+        "user_input_len": len(str(info.get("user_input", ""))),
+        "context_text_len": len(str(info.get("context_text", ""))),
+        "skip_constants": info.get("skip_constants"),
+    }
 
 
 class HealthTracker:
@@ -262,6 +281,13 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         self._rag_reinit_task: asyncio.Task | None = None
         # P1-4: 健康度追踪器（内存滑动窗口，重启清零）
         self.health_tracker = HealthTracker(window_size=20)
+        # M1a：注入上下文 trace ring buffer（纯内存，重启即清；每会话 20 轮、
+        # 全局 200，R1 规范与红线见 quill/services/trace.py）。采集点在
+        # interfaces/astrbot_hooks.py 的 22 步编排内就地附带；读取方（/quill
+        # debug、面板 trace 端点）一律经 _get_inject_report / _trace_latest
+        # 访问。读取处仍需 getattr 防御（AGENT.md 运行期硬约束——__init__
+        # 极端中断时属性可能缺失）。
+        self._trace_store = _trace_mod.TraceStore()
         # Decision 剧情走向轮次缓存（内存态，按 target_id 一轮一条，5 分钟过期自动清）：
         # H4 请求钩子写入（推荐选择度分布 + argmax 分支），H6 装饰（parsers/render
         # 追加「▸ N%」）与 /quill debug 读取。不落盘——百分比只服务当前轮回复，
@@ -1276,21 +1302,87 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         这条区分是实测踩出来的：RAG 未初始化时 `_run_rag_retrieval` 会提前
         return，一个键都不填，报告行随之整个消失 —— 用户无法分辨
         「确实没命中」与「开关没生效」，而开这个开关的全部意义就在于分辨它。
+
+        M1a 同源锚点：合并后的 stats **同时**镜像进 trace store 的进行中
+        trace（`inject_stats` 字段），`_get_inject_report` 优先从 trace 取数
+        ——/quill debug、回复末尾报告行、面板 trace 三处同一份数据。
+        trace 关闭（trace.enabled=false）或无进行中 trace 时回落旧 dict，
+        行为与 M1a 之前逐字一致。
         """
         cache = getattr(self, "_inject_reports", None)
         if cache is None:
             cache = {}
             self._inject_reports = cache
         merged = {"wb": 0, "mem": 0, "wr": 0, "doc": 0, "core_mem": 0}
-        merged.update(stats or {})
+        # 核验报告 P0（§4.1/§9.4）：stats 里的下划线键（_funnel_*、
+        # _sections_*、_section_texts…）是 prompt_builder 的内部诊断产物，
+        # 其中 _section_texts 携带各段**完整正文**。merged 会镜像进进行中
+        # trace 的 inject_stats（见下），经 /trace/recent、/quill debug、
+        # 面板三路对外可见——不滤掉就是正文泄露面。下游消费不受影响：
+        # hooks 步 16/18 读的是 prompt_builder 的**本地** stats dict
+        # （inject_stats.get("_funnel_wb")），不经此镜像；读侧合成键
+        # "_unactivated" 在 _get_inject_report 里现造，也不依赖这里透传。
+        merged.update({
+            k: v for k, v in (stats or {}).items()
+            if not str(k).startswith("_")
+        })
         # 重新赋值以更新插入顺序，使淘汰按「最近使用」而非「最早创建」
         cache.pop(target_id, None)
         cache[target_id] = merged
         while len(cache) > self._INJECT_REPORT_MAX:
             cache.pop(next(iter(cache)), None)
+        # 镜像进进行中 trace（采集故障隔离：任何异常只记 warning，R1）
+        try:
+            store = getattr(self, "_trace_store", None)
+            trace = store.inflight(_trace_mod.hash_target_id(target_id)) \
+                if store is not None else None
+            if trace is not None:
+                trace.inject_stats = dict(merged)
+        except Exception as e:  # noqa: BLE001 - R1 故障隔离：采集不影响主链路
+            logger.warning(f"[Quill Trace] inject_stats 镜像失败（已忽略）: {e}")
 
     def _get_inject_report(self, target_id: str) -> dict:
+        """读取某会话最近一轮注入统计（trace 同源优先，旧 dict 兜底）。
+
+        M1a-Fix 1.1：取数改走 ``latest_for_report``——inflight 已有 stats
+        （H2 实时报告行）时取本轮而非 queue[-1] 上一轮；返回的 trace 未激活
+        时给 ``{"_unactivated": True}`` 标记（渲染为「本轮未激活」）而不是
+        回退上一轮的陈旧缓存——注入行与 Trace 行永远同一条 trace。
+        """
+        try:
+            store = getattr(self, "_trace_store", None)
+            if store is not None and getattr(self.props, "trace_enabled", True):
+                trace = store.latest_for_report(
+                    _trace_mod.hash_target_id(target_id)
+                )
+                if trace is not None:
+                    if not trace.activated:
+                        return {"_unactivated": True}
+                    if trace.inject_stats:
+                        return trace.inject_stats
+        except Exception as e:  # noqa: BLE001 - R1 故障隔离
+            logger.warning(f"[Quill Trace] 读注入统计失败（回落旧缓存）: {e}")
         return (getattr(self, "_inject_reports", None) or {}).get(target_id) or {}
+
+    def _get_last_trace_id(self, target_id: str) -> str:
+        """最近一轮 trace 的 id（无记录/trace 关闭 → 空串）。
+
+        /quill debug 用它标注注入构成的来源轮次——面板「诊断」页展示同一
+        trace_id 的完整结构（段序/模块行/耗时），三处同源即由此锚定。
+        M1a-Fix 1.1：与 ``_get_inject_report`` 同用 ``latest_for_report``，
+        两行永远指向同一条 trace（未激活轮后不再跨轮错位）。
+        """
+        try:
+            store = getattr(self, "_trace_store", None)
+            if store is not None and getattr(self.props, "trace_enabled", True):
+                trace = store.latest_for_report(
+                    _trace_mod.hash_target_id(target_id)
+                )
+                if trace is not None:
+                    return trace.trace_id
+        except Exception as e:  # noqa: BLE001 - R1 故障隔离
+            logger.warning(f"[Quill Trace] 读 trace_id 失败: {e}")
+        return ""
 
     def _append_inject_report(self, text: str, target_id: str) -> str:
         """在消息末尾追加注入报告行（仅 debug 开启时）。
@@ -1336,6 +1428,10 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
         文档来源名一并列出（引用溯源），最多 3 个，其余折叠为「等 N 份」。
         """
+        if stats.get("_unactivated"):
+            # M1a-Fix 1.1：最近一轮未激活（步 11 早退）——显式说明而不是
+            # 回退渲染上一轮的陈旧构成，否则用户会拿旧数据调参。
+            return "〔注入〕本轮未激活"
         if not stats:
             return ""
         parts = []
@@ -1677,6 +1773,25 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
         return activated, wr_activated
 
+    def _trace_rag_modules(self, event: AstrMessageEvent, rows: list) -> None:
+        """M1a trace：把 RAG 段模块行写进本会话 inflight trace（R1 故障隔离）。
+
+        采集只是「就地读已有数据」：任何异常只 warning，不影响注入主链路；
+        error/degraded 只记类别（local_error / kb_error / mem_error /
+        not_initialized / rag_crash），不落原始异常文本与检索原文。
+        """
+        try:
+            props = getattr(self, "props", None)
+            store = getattr(self, "_trace_store", None)
+            if props is None or store is None or not props.trace_enabled:
+                return
+            key = _trace_mod.hash_target_id(self._get_target_id(event))
+            t = store.inflight(key)
+            if t is not None:
+                t.module_results.extend(rows)
+        except Exception as e:
+            logger.warning(f"[Quill Trace] RAG 段采集失败（已忽略）: {e}")
+
     async def _run_rag_retrieval(self, event: AstrMessageEvent, req: ProviderRequest, user_input: str, persona_data, dynamic_prompt: str, stats: dict | None = None) -> str:
         """执行 RAG 检索（Doc + Memory），返回更新后的 dynamic_prompt。
 
@@ -1692,6 +1807,13 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         kb_ready = bool(kb_source and kb_source.available)
         if not (self.rag_retriever and self.rag_retriever.embedding) and not kb_ready:
             logger.warning("[Quill RAG] 文档系统未初始化（本地 RAG 与内置知识库均不可用）")
+            self._trace_rag_modules(event, [
+                _trace_mod.TraceModuleResult(module="rag_doc", ok=True, degraded="not_initialized"),
+                # M1a-Fix 1.4：早退时 memory/core_memory 未执行，补 skipped 行
+                # ——面板模块表此前这两行缺席，与「执行了但零命中」无法区分。
+                _trace_mod.TraceModuleResult(module="memory", ok=True, degraded="skipped"),
+                _trace_mod.TraceModuleResult(module="core_memory", ok=True, degraded="skipped"),
+            ])
             return dynamic_prompt
 
         try:
@@ -1715,6 +1837,12 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             # 合并 list 会丢掉 RagResult 子类的失败标记，按路分别取 ok/原因
             local_ok = kb_ok = True
             doc_errors: list[str] = []
+
+            # M1b 模块 1：RAG 漏斗出参——本地路粗召回/重排近失由
+            # search_documents 回填；内置库路（kb_source.search）无出参支持，
+            # 其贡献只进 hits，candidates 口径以本地路为准（面板如实展示）。
+            rag_funnel: dict = {}
+            mem_funnel: dict = {}
 
             if rag_mode != "disabled":
                 bound_rag_docs = ext.get("bound_rag_docs", []) if rag_mode == "custom" else None
@@ -1742,7 +1870,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 # 路 1：本地 FAISS Doc RAG
                 if self.rag_retriever and self.rag_retriever.embedding:
                     local_results = await self.rag_retriever.search_documents(
-                        user_input, allowed_sources=plugin_sources
+                        user_input, allowed_sources=plugin_sources, funnel=rag_funnel
                     )
                     local_ok = _rag_ok(local_results)
                     if not local_ok:
@@ -1769,7 +1897,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             mem_results = []
             core_mems = []
             if self.rag_retriever:
-                mem_results = await self.rag_retriever.search_memories(mem_session_id, user_input)
+                mem_results = await self.rag_retriever.search_memories(
+                    mem_session_id, user_input, funnel=mem_funnel
+                )
                 logger.info(f"[Quill RAG] 记忆检索: {len(mem_results)} 条 (Session: {mem_session_id})")
 
                 # 核心记忆：无条件注入，不参与 Top-K 竞争
@@ -1809,10 +1939,67 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     getattr(mem_results, RAG_ERROR_ATTR, "ok"),
                 )
             self.health_tracker.record_rag(doc_ok and mem_ok)
+            # M1a trace：RAG 段三行（doc/memory/core_memory）。doc_ok/mem_ok
+            # 在上面刚判定完；items 只放文档名（source_ref，截 40 字符）与
+            # 分值，绝不放检索命中的原文片段（红线：来源原文不进 trace）。
+            rag_rows = [
+                _trace_mod.TraceModuleResult(
+                    module="rag_doc", ok=doc_ok,
+                    degraded=("disabled" if rag_mode == "disabled" else None),
+                    error=(
+                        "+".join(e for e, bad in
+                                 (("local_error", not local_ok), ("kb_error", not kb_ok))
+                                 if bad) or None
+                    ),
+                    hits=len(doc_results),
+                    candidates=int(rag_funnel.get("candidates", 0) or 0),
+                    items=[
+                        {
+                            "source_ref": (str(r.get("source", "") or "").strip() or "unknown")[:40],
+                            **({"score_or_kw": round(float(r["score"]), 3)}
+                               if isinstance(r.get("score"), (int, float)) else {}),
+                        }
+                        for r in doc_results[:10]
+                    ] + [
+                        # M1b 模块 1 漏斗：重排/截帽挤掉的粗召回段（只记来源名）
+                        {"source_ref": str(f.get("source_ref", "?"))[:40],
+                         "filtered_reason": str(f.get("reason", ""))}
+                        for f in (rag_funnel.get("filtered") or [])[:10]
+                    ],
+                ),
+                _trace_mod.TraceModuleResult(
+                    module="memory", ok=mem_ok,
+                    error=None if mem_ok else "mem_error",
+                    hits=len(mem_results),
+                    candidates=int(mem_funnel.get("candidates", 0) or 0),
+                    items=[
+                        # 留存记忆只记 id 与综合分（rrf），不携带记忆原文（红线 7）
+                        {"source_ref": f"mem#{r.get('id', '?')}",
+                         **({"score_or_kw": f"rrf {float(r['rrf_score']):.4f}"}
+                            if isinstance(r.get("rrf_score"), (int, float)) else {})}
+                        for r in mem_results[:10]
+                    ] + [
+                        {"source_ref": f"mem#名次{f.get('rank', '?')}",
+                         "filtered_reason": str(f.get("reason", ""))}
+                        for f in (mem_funnel.get("filtered") or [])
+                    ],
+                ),
+                _trace_mod.TraceModuleResult(
+                    module="core_memory", hits=len(core_mems),
+                ),
+            ]
+            self._trace_rag_modules(event, rag_rows)
         except Exception as e:
             logger.warning(f"[Quill RAG] 检索失败: {e}")
             # P1-4: 记录 RAG 检索失败
             self.health_tracker.record_rag(False)
+            self._trace_rag_modules(event, [
+                _trace_mod.TraceModuleResult(module="rag_doc", ok=False, error="rag_crash"),
+                # M1a-Fix 1.4：同早退分支——崩溃后 memory/core_memory 状态未知，
+                # 但本轮确定未注入，标 skipped 保持三行齐全。
+                _trace_mod.TraceModuleResult(module="memory", ok=True, degraded="skipped"),
+                _trace_mod.TraceModuleResult(module="core_memory", ok=True, degraded="skipped"),
+            ])
 
         return dynamic_prompt
 
@@ -1900,15 +2087,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             await _quill_hooks.handle_llm_request(self, event, req)
         except Exception as e:
             # 记录脱敏摘要，避免泄露 user_input、context_text 等敏感字段
-            def _sanitize_extra(info: dict) -> dict:
-                return {
-                    "persona_id": info.get("persona_id"),
-                    "user_id_len": len(str(info.get("user_id", ""))),
-                    "user_input_len": len(str(info.get("user_input", ""))),
-                    "context_text_len": len(str(info.get("context_text", ""))),
-                    "skip_constants": info.get("skip_constants"),
-                }
-
+            # （M1a 起摘要函数在模块级 _sanitize_extra——trace 侧共用同一
+            # 「只记长度不记内容」口径，语义与闭包版逐字一致）
             logger.error(
                 f"[Quill] 致命错误，Prompt 装配失败，降级放行: {e} | "
                 f"extra_summary={_sanitize_extra(extra_info)}",
@@ -2032,7 +2212,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
     @filter.command("quill")
     async def cmd_quill(self, event: AstrMessageEvent, args: GreedyStr):
-        """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill debug | /quill statusbar [on|off|auto] | /quill test <wr|wb|mem> <文字>"""
+        """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill debug | /quill statusbar [on|off|auto] | /quill test <wr|wb|mem|kb> <文字>"""
         arg1, rest = _split2(args)
         arg1_lower = (arg1 or "").strip().lower()
         if arg1_lower == "help":
@@ -2050,8 +2230,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         if arg1_lower == "test":
             text = (rest or "").strip()
             # 解析: /quill test wr <文字> 或 /quill test <文字>
+            # M1b-Fix P1-e：kb 分支（AstrBot 内置知识库）并入 system 白名单
             parts = text.split(None, 1) if text else []
-            if len(parts) >= 2 and parts[0].lower() in ("wr", "wb", "mem"):
+            if len(parts) >= 2 and parts[0].lower() in ("wr", "wb", "mem", "kb"):
                 system = parts[0]
                 test_text = parts[1]
             else:
@@ -2059,7 +2240,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 test_text = text
             if not test_text:
                 from astrbot.api.event import MessageEventResult
-                event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem> <文字>"))
+                event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem|kb> <文字>"))
                 return
             await _cmds.quill_test(self, event, system, test_text)
             return

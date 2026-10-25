@@ -34,6 +34,30 @@ def _get_target_id(event: AstrMessageEvent) -> str:
     return str(event.get_sender_id())
 
 
+async def _test_anchor_line(plugin, event: AstrMessageEvent, text: str,
+                            persona_id: str | None = None) -> str:
+    """M1b 模块 7：/quill test 结果与面板互链。
+
+    对同一文本跑一次零写入模拟检索（激活/世界书/WR/条件，RAG 不跑——
+    零 provider 请求），把模拟轮的 trace_id 作为锚点附在回复末尾——
+    面板「注入诊断」页凭该 id 可查（trace/detail 的模拟缓存兜底）。
+    锚点失败只记 debug，绝不影响测试输出本体。
+    """
+    try:
+        from ._route_core import handle_trace_simulate
+        from .quill.services.trace import hash_target_id
+        result = await handle_trace_simulate(
+            plugin, text=text, persona_id=(persona_id or None),
+            target_id_hash=hash_target_id(_get_target_id(event)),
+        )
+        tid = (result.get("data") or {}).get("trace_id", "")
+        if tid:
+            return f"\nTrace: {tid}（面板·注入诊断 可查此模拟轮；模拟缓存重启即清）"
+    except Exception as e:  # noqa: BLE001 - 互链是锦上添花，失败即静默
+        logger.debug(f"[Quill] /quill test 锚点生成失败（忽略）: {e}")
+    return ""
+
+
 def _check_group_permission(plugin, event: AstrMessageEvent):
     """群聊写权限校验。私聊始终返回 None（放行）。
 
@@ -633,11 +657,25 @@ async def _char_import(plugin, event: AstrMessageEvent, json_text: str):
     data["name"] = (data.get("name") or "").strip() or "导入的角色"
 
     try:
-        result = await plugin.persona_manager.create_persona(data)
+        # Issue #1：带 spec / 嵌套 data 的 V2/V3 卡统一走 parse_v2_card——此前
+        # 原始 dict 直接进 create_persona，固定键白名单丢掉整个 data 嵌套层，
+        # 导入近乎空卡。Quill 自导出格式（core_prompts 在顶层）保持原路径。
+        if isinstance(data.get("spec"), str) or isinstance(data.get("data"), dict):
+            raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            card = await asyncio.to_thread(plugin.persona_manager.parse_v2_card, raw, False)
+        else:
+            card = data
+        wb_info = await plugin.persona_manager.attach_embedded_worldbook(
+            card, plugin.wb_manager,
+            enabled=getattr(plugin.config, "worldbook_card_embed_import", True),
+        )
+        result = await plugin.persona_manager.create_persona(card)
         name = result.get("name", data["name"])
-        event.set_result(MessageEventResult().message(
-            f"角色卡导入成功！名称: {name}\n使用 /char {name} 切换到新角色。"
-        ))
+        lines = [f"角色卡导入成功！名称: {name}"]
+        if wb_info:
+            lines.append(f"已自动生成内嵌世界书《{wb_info['name']}》（{wb_info['entries']} 条）并绑定。")
+        lines.append(f"使用 /char {name} 切换到新角色。")
+        event.set_result(MessageEventResult().message("\n".join(lines)))
     except Exception as e:
         event.set_result(MessageEventResult().message(error_text("导入失败", e)))
 
@@ -729,7 +767,7 @@ async def quill_help(event: AstrMessageEvent):
         # 帮助文本原先漏了 🔒，与同列表其它写操作标法不一致——群聊里非管理员
         # 照着帮助敲会被拒，用户看不出为什么。这里补齐标记。
         "  /quill statusbar [on|off|auto]  状态栏开关（仅本会话；不带参数看当前生效值）  🔒",
-        "  /quill test <wr|wb|mem> <文字>  测试检索命中",
+        "  /quill test <wr|wb|mem|kb> <文字>  测试检索命中",
         "  /stream [on|off|auto]  流式模式开关（不带参数看当前值）  🔒",
         "  /reinject          重置注入状态，下次激活重新注入全部常驻素材  🔒",
         "",
@@ -833,12 +871,13 @@ async def quill_test(plugin, event: AstrMessageEvent, system: str, text: str):
     /quill test wr <文本>  — 测试素材库命中
     /quill test wb <文本>  — 测试世界书命中
     /quill test mem <文本> — 测试记忆检索
+    /quill test kb <文本>  — 测试 AstrBot 内置知识库检索（M1b-Fix P1-e）
     """
     system = (system or "").strip().lower()
     text = (text or "").strip()
 
     if not text:
-        event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem> <文字>"))
+        event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem|kb> <文字>"))
         return
 
     if system == "wr":
@@ -847,8 +886,63 @@ async def quill_test(plugin, event: AstrMessageEvent, system: str, text: str):
         await _test_wb(plugin, event, text)
     elif system == "mem":
         await _test_mem(plugin, event, text)
+    elif system == "kb":
+        await _test_kb(plugin, event, text)
     else:
-        event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem> <文字>"))
+        event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem|kb> <文字>"))
+
+
+async def _test_kb(plugin, event: AstrMessageEvent, text: str):
+    """M1b-Fix P1-e：/quill test kb——AstrBot 内置知识库（kb: 源）检索测试。
+
+    检索面与主链 _run_rag_retrieval 的 kb 路一致：auto = 全部非空库；
+    custom = 角色卡绑定的 kb: 源（未绑定任何 kb: 源时如实说明，不发空跑）。
+    """
+    kb_source = getattr(getattr(plugin, "rag_retriever", None), "kb_source", None) \
+        or getattr(plugin, "rag_kb_source", None)
+    if not kb_source or not getattr(kb_source, "available", False):
+        event.set_result(MessageEventResult().message(
+            "内置知识库不可用（AstrBot 未启用知识库功能或 kb_manager 缺失），无法测试"))
+        return
+    try:
+        target_id = _get_target_id(event)
+        persona_id = ""
+        if hasattr(plugin.state_manager, "get_persona_id"):
+            persona_id = await plugin.state_manager.get_persona_id(target_id)
+        kb_names = None
+        doc_filters = None
+        if persona_id and getattr(plugin, "persona_manager", None):
+            try:
+                pdata = await plugin.persona_manager.get_persona(persona_id)
+                pext = (pdata or {}).get("quill_extensions", {}) or {}
+                if pext.get("rag_mode") == "custom":
+                    from .quill_rag.astrbot_kb import split_bound_ex
+                    _srcs, kb_names, doc_filters = split_bound_ex(
+                        pext.get("bound_rag_docs", []) or [])
+            except Exception:
+                kb_names, doc_filters = None, None
+        if kb_names is not None and not kb_names:
+            event.set_result(MessageEventResult().message(
+                f"当前角色卡（custom 绑定）未绑定任何内置库源，KB 路不参与注入\n输入: {text[:80]}"))
+            return
+        results = await kb_source.search(
+            text, kb_names=kb_names, doc_filters=doc_filters, top_k=5)
+        if not results:
+            scope = "绑定库" if kb_names is not None else "全部非空库"
+            event.set_result(MessageEventResult().message(
+                f"KB 未检索到内容（{scope}）\n输入: {text[:80]}"))
+            return
+        lines = [f"[KB 测试] 检索到 {len(results)} 段:"]
+        for r in results[:5]:
+            src = str(r.get("source", "?") or "?")[:60]
+            score = r.get("score", 0)
+            score_str = f"[{score:.3f}] " if isinstance(score, (int, float)) else ""
+            lines.append(f"  {score_str}{src}")
+        lines.append(f"输入: {text[:60]}")
+        lines.append(await _test_anchor_line(plugin, event, text, persona_id))
+        event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
+    except Exception as e:
+        event.set_result(MessageEventResult().message(error_text("KB 检索失败", e)))
 
 
 async def _test_wr(plugin, event: AstrMessageEvent, text: str):
@@ -874,6 +968,7 @@ async def _test_wr(plugin, event: AstrMessageEvent, text: str):
             if kw_str:
                 lines.append(f"       关键词: {kw_str}")
         lines.append(f"输入: {text[:60]}")
+        lines.append(await _test_anchor_line(plugin, event, text))
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
     except Exception as e:
         event.set_result(MessageEventResult().message(error_text("WR 匹配失败", e)))
@@ -896,7 +991,14 @@ async def _test_wb(plugin, event: AstrMessageEvent, text: str):
                 if wb_mode == "custom":
                     bound_worldbooks = ext.get("bound_worldbooks", [])
                 # disabled mode: bound_worldbooks stays None (still allow testing)
-        results = plugin.wb_manager.match_entries(text, bound_worldbooks=bound_worldbooks, top_k=5)
+        # M1b 模块 6：条件条目按会话变量如实判定（拿不到变量时条件
+        # fail-close——与主链路同语义）。
+        svars = {}
+        if hasattr(plugin.state_manager, "get_session_vars"):
+            svars = await plugin.state_manager.get_session_vars(target_id) or {}
+        results = plugin.wb_manager.match_entries(
+            text, bound_worldbooks=bound_worldbooks, top_k=5, session_vars=svars
+        )
         if not results:
             event.set_result(MessageEventResult().message(
                 f"WB 未匹配到任何条目\n输入: {text[:80]}"
@@ -914,6 +1016,7 @@ async def _test_wb(plugin, event: AstrMessageEvent, text: str):
             if keys_str:
                 lines.append(f"       触发词: {keys_str}")
         lines.append(f"输入: {text[:60]}")
+        lines.append(await _test_anchor_line(plugin, event, text, persona_id))
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
     except Exception as e:
         event.set_result(MessageEventResult().message(error_text("WB 匹配失败", e)))
@@ -944,6 +1047,7 @@ async def _test_mem(plugin, event: AstrMessageEvent, text: str):
             score = r.get("score", 0)
             lines.append(f"  [{score:.2f}] {summary}")
         lines.append(f"输入: {text[:60]}")
+        lines.append(await _test_anchor_line(plugin, event, text, persona_id))
         event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
     except Exception as e:
         event.set_result(MessageEventResult().message(error_text("记忆检索失败", e)))
@@ -967,9 +1071,19 @@ async def quill_debug(plugin, event: AstrMessageEvent):
     if hasattr(plugin.state_manager, "get_persona_id"):
         persona_id = await plugin.state_manager.get_persona_id(target_id)
     session_id = f"{target_id}::{persona_id}" if persona_id else target_id
+    # M1a-Fix 1.4（M0 可读性联动）：裸 persona_id 对人不可读，查出角色卡
+    # 名一并显示；查询失败回退裸 id，不让诊断指令因展示层挂掉。
+    persona_label = persona_id or '默认'
+    if persona_id and getattr(plugin, "persona_manager", None):
+        try:
+            pdata = await plugin.persona_manager.get_persona(persona_id)
+            if pdata and pdata.get("name"):
+                persona_label = f"{pdata.get('name')} ({persona_id})"
+        except Exception as e:
+            logger.debug(f"[Quill] /quill debug 读取角色卡名失败（回退裸 id）: {e}")
     lines.append(f"  Target: {target_id}")
     lines.append(f"  Session: {session_id}")
-    lines.append(f"  Persona: {persona_id or '默认'}")
+    lines.append(f"  Persona: {persona_label}")
 
     # 状态栏配置（M2.3：配置读取统一走 plugin.props 实时访问器）
     lines.append(f"  状态栏: {'启用' if plugin.props.status_bar_enabled else '关闭'}")
@@ -1037,6 +1151,14 @@ async def quill_debug(plugin, event: AstrMessageEvent):
     if hasattr(plugin, "_format_inject_report"):
         report = plugin._format_inject_report(plugin._get_inject_report(target_id))
         lines.append(f"  注入: {report or '（无命中记录）'}")
+        # M1a：同源锚点——上面这行构成的来源 trace 轮次。面板「诊断」页里
+        # 同一 trace_id 的完整结构（段序/模块行/耗时）与此处结论一致；无记录
+        # （trace 关闭或本轮还没跑过）时不显示。只展示前 8 位：这是对照锚点
+        # 不是查询键，面板按会话浏览、无需手输 id。
+        if hasattr(plugin, "_get_last_trace_id"):
+            tid = plugin._get_last_trace_id(target_id)
+            if tid:
+                lines.append(f"  Trace: {tid[:8]}…")
 
     # Decision 轮次判定（内存态，仅最近一轮；未启用/本轮无判定时无此行）
     # M8 修复：加开关判据。缓存最长活 5 分钟（decision_client 的 max_age_s），

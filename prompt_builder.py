@@ -284,7 +284,42 @@ class PromptBuilder:
         remaining_budget = self.max_prompt_length - len(stable_prompt)
         if remaining_budget < 1000:
             remaining_budget = 1000
-        dynamic_prompt = self._smart_truncate(dynamic_sections, remaining_budget)
+
+        # M1a trace：把「实际组出的段序」写进出参 stats（保留键，下划线前缀
+        # 与注入报告的计数键区分；_format_inject_report 只读计数键不受影响）。
+        # dynamic 侧截断发生在 _smart_truncate 内部（可能丢段），经 kept_names
+        # 出参取**最终保留**的段名；stable 侧无截断，直接取非空段名。
+        # RAG 追加段与 tail 由 hooks 侧拼进 injection_order（步 17/20 之后）。
+        # stats=None 的默认路径与改动前逐字一致（kept_names=None 零开销）。
+        # M1b 模块 3：截断事件（丢段/硬切）同样经 trunc_events 出参进
+        # stats["_truncation_events"]——下划线键与 _sections_* 同一先例，
+        # 注入报告/面板的计数键读取不受影响。
+        kept_dyn: List[str] = []
+        trunc_ev: List[dict] = []
+        dynamic_prompt = self._smart_truncate(
+            dynamic_sections, remaining_budget,
+            kept_names=kept_dyn, trunc_events=trunc_ev,
+        )
+        if stats is not None:
+            try:
+                stats["_sections_stable"] = [s.name for s in stable_sections if s.content]
+                stats["_sections_dynamic"] = kept_dyn
+                # where 标注统一在调用侧打（_smart_truncate 是通用静态方法，
+                # 不知道自己服务哪段装配）；guard 侧事件带 post_rag_guard。
+                for _ev in trunc_ev:
+                    _ev.setdefault("where", "build_system_prompt")
+                stats["_truncation_events"] = trunc_ev
+                # M1b 模块 7：分段文本画像（脱敏预览数据源）。stable 全量 +
+                # dynamic 按 kept_dyn 存活集；char_slice 轮次里末段实际被切，
+                # 预览侧以 _truncation_events 为准（预览文本是切前的原文，
+                # 面板已标注该差异）。
+                stats["_section_texts"] = (
+                    [(s.name, s.content) for s in stable_sections if s.content]
+                    + [(s.name, s.content) for s in dynamic_sections
+                       if s.content and s.name in set(kept_dyn)]
+                )
+            except Exception as exc:  # noqa: BLE001 - 出参写入失败不影响 prompt 装配
+                logger.warning("[PromptBuilder] trace 统计出参写入失败（已忽略）: %s", exc)
 
         return stable_prompt, dynamic_prompt
 
@@ -409,18 +444,46 @@ class PromptBuilder:
         # （它们是世界观底座），剩多少给关键词命中。
         wb_max_token = extra_info.get("wb_max_token", 0)
         wb_accumulated_tokens = 0.0
+        # M1b 模块 1：世界书三阶漏斗出参（常驻预算近失在 Layer 1 记、
+        # 灵敏度/条件/截帽/预算近失在 Layer 2 记；stats 缺省时零采集）。
+        _wb_funnel: Dict[str, Any] = {"candidates": 0, "matched": 0, "filtered": []}
+        # P1-d：常驻侧近失（条件不达成 / 预算截断）记到独立 dict——Layer 2 的
+        # match_entries 会对 _wb_funnel["filtered"] **整表赋值**，直接共用
+        # 会被清掉；Layer 2 之后按时序（常驻先评估）合并回去。
+        _wb_const_funnel: Dict[str, Any] = {"filtered": []}
+        # WR 侧漏斗：candidates=检索返回数，filtered 记绑定分类过滤近失；
+        # 保底注入触发时标 fallback_pool=True（保底不是关键词命中）。
+        _wr_funnel: Dict[str, Any] = {"candidates": 0, "matched": 0,
+                                      "fallback_pool": False, "filtered": []}
 
         if not skip_constants and wb_manager and wb_mode != "disabled":
             try:
-                wb_constants = await asyncio.to_thread(wb_manager.get_constant_entries, bound_worldbooks=bound_worldbooks)
-                for entry in wb_constants:
+                wb_constants = await asyncio.to_thread(
+                    wb_manager.get_constant_entries,
+                    bound_worldbooks=bound_worldbooks,
+                    session_vars=extra_info.get("session_vars") or None,
+                    funnel=_wb_const_funnel,
+                )
+                for _c_idx, entry in enumerate(wb_constants):
                     content = entry.get("content", "")
                     if content:
                         # 与 Layer 2 同一判据：预算用尽即停，不再注入后续条目
                         token_count = self._estimate_tokens(content)
                         if wb_max_token > 0 and wb_accumulated_tokens + token_count > wb_max_token:
-                            logger.info("[PromptBuilder] WB 常驻 Token 上限已达 (%.0f/%d)，截断后续常驻条目",
+                            # 日志文案是 E2E 契约（ab_worldbook_max_token_limit
+                            # grep 旧串），M1b 只在漏斗 reason 里带「常驻」语境
+                            logger.info("[PromptBuilder] WB Token 上限已达 (%.0f/%d)，截断后续常驻条目",
                                         wb_accumulated_tokens, wb_max_token)
+                            # M1b 模块 1 漏斗：预算截断的常驻条目记近失
+                            # （此后全部条目都因同一预算被截）。挂
+                            # _wb_const_funnel——挂 _wb_funnel 会被 Layer 2
+                            # match_entries 的整表赋值清掉。
+                            for dropped in wb_constants[_c_idx:]:
+                                if dropped.get("content"):
+                                    _wb_const_funnel["filtered"].append({
+                                        "title": dropped.get("title", ""),
+                                        "reason": f"token_budget_cap(常驻{int(wb_accumulated_tokens)}/{wb_max_token})",
+                                    })
                             break
                         wb_accumulated_tokens += token_count
                         layer1_parts.append(
@@ -437,10 +500,20 @@ class PromptBuilder:
                 max_entries = extra_info.get("wr_max_entries", 5)
                 # Custom 模式取多一点候选池，防止过滤后不够
                 fetch_count = max_entries * 2 if bound_wrs is not None else max_entries
-                matched = await wr_manager.match(matching_text, top_k=fetch_count)
+                # M1b 模块 1：funnel 交给 kb.match 回填 candidates/filtered
+                # （category_dedup/max_entries_cap——那两处裁剪只在 kb 内部可见）；
+                # 不支持该出参的 duck-typing 管理器经 **kwargs 吞掉，保持 0 值。
+                matched = await wr_manager.match(matching_text, top_k=fetch_count,
+                                                 funnel=_wr_funnel)
 
                 # 过滤被绑定的分类（is not None 确保空列表也能正确过滤）
                 if bound_wrs is not None:
+                    for e in matched:
+                        if e.get("category") not in bound_wrs:
+                            _wr_funnel["filtered"].append({
+                                "title": e.get("name", ""),
+                                "reason": f"category_unbound({e.get('category', '?')})",
+                            })
                     matched = [e for e in matched if e.get("category") in bound_wrs]
 
                 match_count = 0
@@ -455,7 +528,11 @@ class PromptBuilder:
                             )
                             match_count += 1
                 wr_match_hits += match_count
+                _wr_funnel["matched"] = match_count
                 if match_count == 0:
+                    # 保底注入（高频素材兜底）不是关键词命中——漏斗如实标注，
+                    # 面板可区分「命中 N 条」与「兜底塞了 N 条」。
+                    _wr_funnel["fallback_pool"] = True
                     try:
                         fallback_limit = extra_info.get("wr_fallback_top_count", 2)
                         top_entries = await wr_manager.get_top_entries_by_match_count(limit=fallback_limit)
@@ -484,11 +561,13 @@ class PromptBuilder:
                 wb_matched = await asyncio.to_thread(
                     wb_manager.match_entries,
                     matching_text, bound_worldbooks=bound_worldbooks,
-                    top_k=wb_top_k, sensitivity=sensitivity
+                    top_k=wb_top_k, sensitivity=sensitivity,
+                    session_vars=extra_info.get("session_vars") or None,
+                    funnel=_wb_funnel,
                 )
                 # Token 注入上限（配置注入）——沿用 Layer 1 的累加器，
                 # 常驻条目已消费的部分在此继续扣减（M12 修复）。
-                for entry in wb_matched:
+                for _m_idx, entry in enumerate(wb_matched):
                     content = entry.get("content", "")
                     if content:
                         # Token 估算：CJK ≈ 1 token/字，ASCII ≈ 0.25 token/字
@@ -496,6 +575,13 @@ class PromptBuilder:
                         if wb_max_token > 0 and wb_accumulated_tokens + token_count > wb_max_token:
                             logger.info("[PromptBuilder] WB Token \u4e0a\u9650\u5df2\u8fbe (%.0f/%d)\uff0c\u622a\u65ad\u540e\u7eed\u6761\u76ee",
                                         wb_accumulated_tokens, wb_max_token)
+                            # M1b 模块 1 漏斗：预算截断的命中条目记近失
+                            for dropped in wb_matched[_m_idx:]:
+                                if dropped.get("content"):
+                                    _wb_funnel["filtered"].append({
+                                        "title": dropped.get("title", ""),
+                                        "reason": f"token_budget_cap({int(wb_accumulated_tokens)}/{wb_max_token})",
+                                    })
                             break
                         wb_accumulated_tokens += token_count
                         layer2_parts.append(
@@ -505,6 +591,12 @@ class PromptBuilder:
             except Exception as exc:
                 logger.warning("[PromptBuilder] WB keyword match failed: %s", exc)
 
+        # P1-d：常驻侧近失（条件不达成/预算截断）按时序合并（常驻先于关键词
+        # 评估，进同一漏斗）
+        if _wb_const_funnel["filtered"]:
+            _wb_funnel["filtered"] = (
+                _wb_const_funnel["filtered"] + _wb_funnel.get("filtered", []))
+
         if stats is not None:
             stats["wr"] = wr_constant_hits + wr_match_hits + wr_fallback_hits
             stats["wr_constant"] = wr_constant_hits
@@ -513,6 +605,10 @@ class PromptBuilder:
             stats["wb"] = wb_constant_hits + wb_match_hits
             stats["wb_constant"] = wb_constant_hits
             stats["wb_match"] = wb_match_hits
+            # M1b 模块 1：漏斗诊断进 stats（下划线键与 _sections_* 同一先例，
+            # 注入报告只读上面的计数键不受影响）。
+            stats["_funnel_wb"] = _wb_funnel
+            stats["_funnel_wr"] = _wr_funnel
 
         return layer1_parts, layer2_parts, layer1_random_parts
 
@@ -521,7 +617,11 @@ class PromptBuilder:
     # ----------------------------------------------------------
 
     @staticmethod
-    def _smart_truncate(sections: List[PromptSection], max_length: int) -> str:
+    def _smart_truncate(
+        sections: List[PromptSection], max_length: int,
+        kept_names: Optional[List[str]] = None,
+        trunc_events: Optional[List[dict]] = None,
+    ) -> str:
         """Assemble sections into a single string within *max_length*.
 
         Priority 0 sections are **always** kept.
@@ -529,9 +629,39 @@ class PromptBuilder:
         Within the same priority level, sections that appear **later** in the
         input list are dropped first (i.e. earlier sections of equal priority
         are more important).
+
+        ``kept_names`` 为 M1a trace 的可选出参：传入列表时回填**最终保留**
+        的段名（按组装顺序）。默认 None 时零开销、行为与改动前逐字一致。
+        ``trunc_events`` 为 M1b 模块 3 的可选出参：传入列表时回填截断事件
+        （{"kind": "section_dropped"|"char_slice", "section", "dropped_chars",
+        "budget"}）；零截断回填空列表（诚实区分「没截」与「没采」）。
         """
         if not sections:
             return ""
+
+        def _note_kept(selected: List[PromptSection]) -> None:
+            # 只在调用方要段序时记录（M1a），各 return 点前统一调它
+            if kept_names is not None:
+                kept_names[:] = [s.name for s in selected if s.content]
+
+        def _note_events(kept_indices: set, sliced_chars: int = 0) -> None:
+            # 只在调用方要事件时记录（M1b 模块 3）。丢段按 drop 循环实际
+            # 淘汰的非空段记；硬切再补一条 char_slice（sliced_chars>0）。
+            if trunc_events is None:
+                return
+            for i, s in enumerate(sections):
+                if s.content and i not in kept_indices:
+                    trunc_events.append({
+                        "kind": "section_dropped",
+                        "section": s.name,
+                        "dropped_chars": len(s.content),
+                    })
+            if sliced_chars > 0:
+                trunc_events.append({
+                    "kind": "char_slice",
+                    "dropped_chars": sliced_chars,
+                    "budget": max_length,
+                })
 
         # Build in order: sections with lower priority index are kept
         # To drop, we sort descending by priority (highest first to drop)
@@ -545,12 +675,15 @@ class PromptBuilder:
 
         result = _assemble(sections)
         if len(result) <= max_length:
+            _note_kept(sections)
+            _note_events(set(range(len(sections))))
             return result
 
         # Sort by (priority DESC, index DESC) — highest priority + latest first to drop
         drop_order = sorted(indexed, key=lambda x: (-x[1].priority, -x[0]))
 
         kept_indices: set = set(range(len(sections)))
+        remaining = sections  # drop 循环可能一次都不跑（全 priority-0）
         for idx, sec in drop_order:
             if sec.priority == 0:
                 continue  # never drop priority-0
@@ -558,6 +691,8 @@ class PromptBuilder:
             remaining = [sections[i] for i in sorted(kept_indices)]
             result = _assemble(remaining)
             if len(result) <= max_length:
+                _note_kept(remaining)
+                _note_events(kept_indices)
                 return result
 
         # If still too long after dropping all non-zero sections, truncate last
@@ -566,7 +701,16 @@ class PromptBuilder:
             # 切片会从**末尾**取，于是「截断」反而把整段文本接在尾巴上越截越长。
             # max_prompt_length 理论上可配到 20 以下（面板是数字输入，无下限校验），
             # 这里用 max(0, ...) 保证切片端点非负。
+            before_slice = len(result)
             result = result[: max(0, max_length - 20)] + "\n\n...[已截断]"
+            # 末段被硬截：按 drop 循环后的剩余段记段名（remaining 已在循环前
+            # 初始化，走到这里必然有定义；与 result 内容一致或为其前缀超集，
+            # 段序信息足够诊断用）。
+            _note_kept(remaining)
+            _note_events(
+                kept_indices,
+                sliced_chars=before_slice - max(0, max_length - 20),
+            )
         return result
 
     # ----------------------------------------------------------

@@ -656,7 +656,10 @@ async function savePersona() {
     ...$$(".cb-rag-grp:checked").filter(cb => RAG_GROUP_KINDS.has(cb.dataset.kind)).map(cb => cb.value),
   ])];
   const body = {
-    id: S._personaMode === "edit" && S._personaEditing ? S._personaEditing.id : name,
+    // M0-T1 收口：新建模式不再把「角色名」当 id 提交——那会让内部标识随
+    // 改名语义漂移（id 渗入身份键/记忆会话键/落盘文件名）。空串 = 后端
+    // 生成 12 位 hex 短 UUID；编辑模式仍显式带原 id。
+    id: S._personaMode === "edit" && S._personaEditing ? S._personaEditing.id : "",
     name,
     avatar_path: $("#pf-avatar")?.value.trim() || "",
     summary: $("#pf-summary")?.value.trim() || "",

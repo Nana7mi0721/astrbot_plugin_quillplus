@@ -1,5 +1,7 @@
 /* utils.js — 由 index.html 拆分生成（可读性优先，逻辑与拆分前逐行一致） */
 
+import { S } from "./state.js";
+
 export { $, $$, CAT_TONES, PLUGIN_NAME, b64ToBlob, catTone, compactNum, debounce, downloadBlob, downloadJSON, esc, fileToB64, fmtTime, formatSessionId, store, withBusy };
 
 const PLUGIN_NAME = "astrbot_plugin_quillplus";
@@ -54,7 +56,10 @@ function catTone(name) {
   return CAT_TONES[Math.abs(h) % CAT_TONES.length];
 }
 
-/** 会话 ID 美化：aiocqhttp:GroupMessage:123::persona → 群 123 / persona */
+/** 会话 ID 美化：aiocqhttp:GroupMessage:123::persona → 群 123 / persona。
+    persona 段命中已加载的角色卡 id 时显示卡名（M0 可读性联动，
+    M1a-Fix 1.4）——S._personas 由角色卡页加载填充，未访问过该页时
+    回退裸 id，不为此发额外请求。 */
 function formatSessionId(sid) {
   if (!sid) return "—";
   const [target = "", persona = ""] = String(sid).split("::");
@@ -67,7 +72,9 @@ function formatSessionId(sid) {
     else if (type === "PrivateMessage") scope = `私聊 ${id}`;
     else scope = `${type} ${id}`;
   }
-  return persona ? `${scope} / ${persona}` : scope;
+  if (!persona) return scope;
+  const card = (S._personas || []).find(p => p && p.id === persona);
+  return card ? `${scope} / ${card.name || persona}` : `${scope} / ${persona}`;
 }
 
 /** ISO 时间戳 → 可读文本 */

@@ -308,6 +308,10 @@ function openWBEntryModal(wbName, entryId) {
       <label for="weContent">内容</label>
       <textarea class="field field--wide" id="weContent" rows="6">${esc(entry?.content || "")}</textarea>
     </div>
+    <div class="form-group">
+      <label for="weCond">解锁条件（可选）</label>
+      <input class="field field--wide" type="text" id="weCond" value="${esc(entry?.condition || "")}" placeholder="如：好感度>=70 或 剧情阶段 in 约会,婚礼（留空 = 无条件）">
+    </div>
     <div class="row-wrap">
       <label class="check"><input type="checkbox" id="weConst" ${entry?.is_constant ? "checked" : ""}><span>常驻</span></label>
       <label class="check"><input type="checkbox" id="weEnabled" ${(entry ? entry.enabled : true) !== false ? "checked" : ""}><span>启用</span></label>
@@ -327,7 +331,10 @@ async function saveWBEntry() {
   const content = $("#weContent")?.value || "";
   const is_constant = !!$("#weConst")?.checked;
   const enabled = $("#weEnabled")?.checked !== false;
-  const entry = { id, title, keys, content, is_constant, enabled };
+  // M1b-Fix P1-d：条件字段恒随表单提交（空串 = 清除条件，后端
+  // update_entry_in_worldbook 对空串 pop 键——不留删不掉的旧条件）。
+  const condition = $("#weCond")?.value.trim() || "";
+  const entry = { id, title, keys, content, is_constant, enabled, condition };
   try {
     if (st.mode === "create") await apiPost("/wb/entry/create", { name, entry });
     else await apiPost("/wb/entry/update", { name, entry_id: id, entry });
