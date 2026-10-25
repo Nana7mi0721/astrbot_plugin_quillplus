@@ -28,7 +28,9 @@
 }
 /* 按下即反馈（响应发生在 pointer-down）；macOS 是「填充变深」，不缩放 */
 .btn:active:not(:disabled) { background: var(--btn-bordered-clicked); }
-.btn:disabled { background: var(--btn-bordered-disabled); color: var(--label-4); cursor: default; }
+/* 禁用文字用 tertiary（25%）—— kit 的 disabled label 就是这个档；
+   quaternary（10%）在 kit 里不是文字色，只给细线与轨道。 */
+.btn:disabled { background: var(--btn-bordered-disabled); color: var(--label-3); cursor: default; }
 
 /* prominent：实心强调色 */
 .btn--filled { background: var(--btn-prominent-idle); color: var(--on-accent); font-weight: 600; }
@@ -79,7 +81,7 @@
 .icon-btn:hover { background: var(--fill-quaternary); color: var(--label); }
 .icon-btn:active { background: var(--fill-tertiary); }
 .icon-btn--danger:hover { background: var(--red-fill); color: var(--red-text); }
-.icon-btn:disabled { color: var(--label-4); cursor: default; }
+.icon-btn:disabled { color: var(--label-3); cursor: default; }
 
 /* 文件选择伪装成按钮 */
 .file-btn { position: relative; overflow: hidden; }
@@ -118,7 +120,7 @@
   color: var(--on-accent);
 }
 .segmented > button.is-selected:active { background: var(--segmented-on-clicked); }
-.segmented > button:disabled { color: var(--label-4); }
+.segmented > button:disabled { color: var(--label-3); }
 .segmented--icon > button { min-width: 30px; padding: 0; }
 
 /* ── 5. 开关与选择控件 ──────────────────────────────────────────────── */
@@ -213,10 +215,21 @@
   border-color: var(--accent);
   box-shadow: var(--focus-ring);
 }
-.field:disabled, .field[readonly] {
+/* 禁用态：kit 的 Text Fields Disabled 是「填充降到 50% 白 + 边框 4% + 文字 25%」。
+   文字用 tertiary（25%）而不是 quaternary（10%）—— quaternary 在 kit 里明确不是
+   文字色（只给细线与轨道），拿它写文字实测对比度只有 1.25:1，等于看不见。 */
+.field:disabled {
   background: var(--input-bg-disabled);
   border-color: var(--input-border-disabled);
-  color: var(--label-4);
+  color: var(--label-3);
+  cursor: default;
+}
+/* 只读态不是禁用态：字段里装的是给人读的内容（记忆详情、条目 ID），
+   所以保留正常 well 外观与 primary 文字。kit 的配对规则也是「正文用 primary，
+   secondary 及以下只给元数据」。此前把它并进 :disabled，于是整段摘要按 10%
+   黑渲染，压根读不出来。 */
+.field[readonly] {
+  color: var(--label);
   cursor: default;
 }
 textarea.field { height: auto; padding: 8px 10px; line-height: 20px; resize: vertical; min-height: 64px; }
@@ -405,7 +418,7 @@ select.field:focus-visible {
   display: block;
   margin-top: 5px;
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 15px;
   color: var(--label-3);
 }
 .modal-body .form-group {
@@ -610,7 +623,7 @@ select.field:focus-visible {
 .card-body-inner { padding: 0 var(--sp-4) var(--sp-4); }
 
 /* 列表行描述 */
-.row-desc { margin-top: 2px; font-size: 12px; line-height: 1.55; color: var(--label-2); }
+.row-desc { margin-top: 2px; font-size: 12px; line-height: 15px; color: var(--label-2); }
 
 /* 行内提示块 */
 .note {
@@ -620,7 +633,7 @@ select.field:focus-visible {
   border-radius: var(--r-sm);
   background: var(--fill-quaternary);
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 15px;
   color: var(--label-2);
 }
 .note--warn { background: var(--orange-fill); color: var(--orange-text); }
@@ -705,7 +718,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
   max-width: none;
   min-height: 240px;
   resize: vertical;
-  line-height: 1.65;
+  line-height: 16px;
   tab-size: 2;
 }
 @media (max-width: 980px) {
@@ -851,7 +864,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 }
 .empty-state .icon { color: var(--label-3); margin-bottom: var(--sp-2); }
 .empty-title { font-size: 15px; font-weight: 600; }
-.empty-desc { font-size: 13px; color: var(--label-3); max-width: 380px; line-height: 1.6; }
+.empty-desc { font-size: 13px; color: var(--label-3); max-width: 380px; line-height: 16px; }
 .empty-extra { margin-top: var(--sp-3); }
 
 .skeleton {
@@ -956,7 +969,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 }
 .stats .num { font-weight: 600; color: var(--label); }
 /* 统计分隔线：比正文淡得多，只做视觉停顿，不参与阅读 */
-.stats .sep { width: 1px; height: 11px; background: var(--label-4); flex: none; }
+.stats .sep { width: 1px; height: 11px; background: var(--fill-primary); flex: none; }
 
 /* 悬浮工具栏：滚动时内容从下面穿过（材质 + 边缘渐隐，而非硬分割线） */
 .toolbar {
@@ -998,7 +1011,7 @@ table.data tbody tr:focus-within td.cell-actions { opacity: 1; }
 .wr-main-actions { margin-left: auto; }
 .wr-batch-actions .btn:disabled {
   background: var(--btn-bordered-disabled);
-  color: var(--label-4);
+  color: var(--label-3);
 }
 /* 工具栏内的搜索框可收缩：优先保证按钮不被挤到第二行 */
 .toolbar > .search { min-width: min(120px, 100%); flex: 0 1 auto; }

@@ -98,7 +98,7 @@
 .sel-btn:focus { outline: none; }
 .sel-btn:focus-visible { border-color: var(--accent); box-shadow: var(--shadow-focus); }
 .sel-btn[aria-expanded="true"] { border-color: var(--accent); }
-.sel-btn:disabled { background: var(--input-bg-disabled); color: var(--label-4); cursor: default; }
+.sel-btn:disabled { background: var(--input-bg-disabled); color: var(--label-3); cursor: default; }
 .sel-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* chevron 用 currentColor：原先的 data-URI 硬编码 #8E8E93，深色 / 高对比度下不变色 */
 .sel-btn > .icon {

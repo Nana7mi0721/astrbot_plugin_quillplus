@@ -59,7 +59,7 @@ code, pre, kbd { font-family: var(--font-mono); font-size: .92em; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: var(--label-4);
+  background: var(--fill-primary);
   border: 3px solid transparent;
   border-radius: var(--r-pill);
   background-clip: content-box;
@@ -135,6 +135,13 @@ code, pre, kbd { font-family: var(--font-mono); font-size: .92em; }
 .fs-12 { font-size: 12px; }
 .fs-13 { font-size: 13px; }
 .mono { font-family: var(--font-mono); }
+/* .mono 要能盖住输入控件自己的字体声明：components.css 里 `.field{font-family:inherit}`
+   与本文件 `.mono` 权重同为 (0,1,0)，但 components.css 后加载会赢，于是
+   `<textarea class="field mono">`（状态栏模板、角色卡文本导入）实际渲染成
+   界面字体而非等宽字，JSON 模板对齐会散。用组合选择器把权重提到 (0,2,0)。 */
+.field.mono,
+.search > input.mono,
+.tagfield.mono { font-family: var(--font-mono); }
 .nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row { display: flex; align-items: center; gap: var(--sp-2); }
 .row-wrap { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }

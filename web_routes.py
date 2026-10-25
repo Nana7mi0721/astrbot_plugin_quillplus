@@ -492,6 +492,8 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/trace/simulate",   self.trace_simulate, ["POST"],   "模拟检索沙盒(零写入)")
         _r(f"/{PLUGIN_NAME}/trace/events",     self.trace_events,   ["GET"],    "追踪SSE实时流")
         _r(f"/{PLUGIN_NAME}/worldbook/lint",   self.worldbook_lint, ["GET"],    "世界书/角色卡静态体检")
+        # 决策模型连通性测试：真发一次判定调用（零写入），面板「测试」按钮用
+        _r(f"/{PLUGIN_NAME}/decision/probe",   self.decision_probe, ["POST"],   "决策模型连通性测试")
 
         # ── Panel 主题 / 界面状态：已随配置项一并移除 ──
         # 主题改由 AstrBot 面板注入 <html data-theme>（前端 app.js 读它），
@@ -1091,6 +1093,25 @@ class QuillRoutes:
         """世界书/角色卡静态体检（纯本地分析，零模型调用）。"""
         from ._route_core import handle_worldbook_lint
         return json_response(await handle_worldbook_lint(self.plugin))
+
+    @_api_handler
+    async def decision_probe(self):
+        """决策模型连通性测试（POST，真发一次判定调用，零写入）。
+
+        入参 ``{base_url?, api_key?, model?, api_format?}``，全部可选——
+        面板只把「用户改过但还没保存」的字段传上来，其余回落服务端配置。
+        与 ``/trace/simulate`` 不同，这个端点**会真实发出网络请求**（也就
+        是它存在的意义），但仍然零写入：不碰 state / chat_logs / TraceStore。
+        """
+        from ._route_core import handle_decision_probe
+        data = await _json_body()
+        return json_response(await handle_decision_probe(
+            self.plugin,
+            base_url=data.get("base_url"),
+            api_key=data.get("api_key"),
+            model=data.get("model"),
+            api_format=data.get("api_format"),
+        ))
 
     @_api_handler
     async def trace_events(self):

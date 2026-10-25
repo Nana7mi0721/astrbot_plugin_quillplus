@@ -1,6 +1,8 @@
 /* ── 19. 动态记忆 ───────────────────────────────────────────────────── */
-/* 分段式子页导航（HIG：≤6 段，纯文字） */
-.seg-nav { margin-bottom: var(--sp-4); }
+/* 分段式子页导航（HIG：≤6 段，纯文字）。
+   它现在住在标题带的 .toolbar 里，不再自己留底边距——间距由标题带的
+   padding-bottom（--sp-2）统一负责，留一份会让标题带比别的页高出一截。 */
+.seg-nav { margin-bottom: 0; }
 .seg-nav .segmented { width: 100%; max-width: 560px; }
 
 .dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--sp-3); }

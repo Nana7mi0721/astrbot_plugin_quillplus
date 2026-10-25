@@ -7,10 +7,10 @@ import { closeAlert, copyText, dismissBanner } from "./components/feedback.js";
 import { initListKeys } from "./components/listkeys.js";
 import { closeModal } from "./components/modal.js";
 import { closeSelMenus, enhanceSelects } from "./components/select.js";
-import { discardChanges, filterConfig, initConfigNavObserver, loadGlobalSettings, loadHealth, markDirty, saveAllChanges, scrollToSection, setStreamModeAll, switchTab, syncSidebarBadges } from "./pages/config.js";
+import { discardChanges, filterConfig, initConfigNavObserver, loadGlobalSettings, loadHealth, markDirty, probeDecisionModel, saveAllChanges, scrollToSection, setStreamModeAll, switchTab, syncSidebarBadges } from "./pages/config.js";
 import { changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, onMemorySessionChange, pruneMemories, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin } from "./pages/memory.js";
 import { closeAstrbotImportModal, closeImportTextModal, deletePersona, exportPersona, filterCheckboxes, filterWBEntries, importFromAstrbot, importPersona, importPersonaFromText, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openImportTextModal, openPersonaModal, renderPersonaPage, savePersona, selectAstrbotPersona, switchPersonaView, syncExtList, syncRagGroup, toggleExtBig, toggleExtGroup } from "./pages/persona.js";
-import { deleteRAGDocument, deleteRAGGroup, moveRAGDocument, newRAGGroup, processRAGFiles, renameRAGGroup, setRAGKbEnabled, testRAGSearch, toggleRAGBig, toggleRAGGroup } from "./pages/rag.js";
+import { deleteRAGDocument, deleteRAGGroup, loadRAG, loadRAGModelInfo, moveRAGDocument, newRAGGroup, processRAGFiles, renameRAGGroup, setRAGKbEnabled, testRAGSearch, toggleRAGBig, toggleRAGGroup } from "./pages/rag.js";
 import { loadTracePage, onTraceSessionChange, refreshTrace, toggleTraceTurn,
          runSimulate, runLint, toggleTraceLive, copyPreviewText } from "./pages/trace.js";
 import { deleteWB, deleteWBEntry, exportWBSt, importWBSt, onWBSearchInput, openWBCreateModal, openWBEntryModal, reloadWB, saveWBCreate, saveWBEntry, setWBOnlyConst, toggleWB } from "./pages/worldbook.js";
@@ -106,6 +106,7 @@ const ACTIONS = {
   "persona-recrop": () => recropAvatar(),
 
   // 文档知识库
+  "rag-refresh": (el) => withBusy(el, "", () => Promise.all([loadRAG(), loadRAGModelInfo()])),
   "rag-pick": () => $("#ragFile")?.click(),
   "rag-search": (el) => testRAGSearch(el),
   "rag-delete": (el) => deleteRAGDocument(el.dataset.value, el),
@@ -143,6 +144,7 @@ const ACTIONS = {
   // 配置
   "config-save": (el) => saveAllChanges(el),
   "config-discard": () => discardChanges(),
+  "decision-probe": (el) => probeDecisionModel(el),
   "stream-all": (el) => setStreamModeAll(el.dataset.value, el),
   "backup-export": (el) => backupExport(el),
   "cfg-nav": (el) => scrollToSection(el.dataset.target),

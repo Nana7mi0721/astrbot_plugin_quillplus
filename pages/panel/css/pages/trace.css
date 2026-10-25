@@ -87,9 +87,9 @@
   overflow: auto;
   background: var(--fill-tertiary);
   border-radius: var(--r-sm);
-  font-family: var(--font-mono, monospace);
-  font-size: var(--fs-12, 12px);
-  line-height: 1.6;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 15px;
   white-space: pre-wrap;
   word-break: break-word;
 }

@@ -26,7 +26,7 @@ async function loadPersonas() {
     S._personas = list || [];
     updatePersonaStats();
     if (!S._personas.length) {
-      host.innerHTML = renderEmptyState("persona", "还没有角色卡", "点击上方「新建角色卡」创建，或从 V2 角色卡导入",
+      host.innerHTML = renderEmptyState("persona", "还没有角色卡", "点击上方「新建角色卡」创建，或从 V2/V3 角色卡导入",
         '<button type="button" class="btn btn--filled" data-action="persona-new">新建角色卡</button>');
       return;
     }

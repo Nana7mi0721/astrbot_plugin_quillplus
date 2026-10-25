@@ -275,7 +275,7 @@ function _preview(t, opts = {}) {
     </div>`;
   }).join("");
   return `<div class="trace-preview">
-    <div class="toolbar" style="margin-bottom:var(--sp-2)">
+    <div class="row-wrap" style="margin-bottom:var(--sp-2)">
       <span class="fs-12"><span class="t3">脱敏预览（分段；RAG 检索段不展示原文）：</span></span>
       <span class="grow"></span>
       <button type="button" class="btn btn--sm btn--gray" data-action="trace-copy-preview" data-target="${esc(copyTarget)}">复制全部段落文本</button>

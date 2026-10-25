@@ -1406,6 +1406,46 @@ async def handle_trace_simulate(plugin, text=None, persona_id=None,
     return ok(data)
 
 
+async def handle_decision_probe(plugin, base_url=None, api_key=None,
+                                model=None, api_format=None) -> dict:
+    """决策模型连通性测试（读配置为准，入参只用于「改了还没保存」的场景）。
+
+    面板上填了新地址/新模型 ID 就想先点一下测试、此时还没点保存——入参优先，
+    缺省回落 ``self.config`` 的当前值。API 密钥**不回传给前端**，也不接受
+    空串覆盖：``api_key`` 传 ``None`` 或空值时用配置里那把（否则测试永远
+    401，用户会误以为地址错了）。
+
+    与生产路径的差别：``decision_evaluate`` 任何失败都吞成 None（fail-open），
+    这里把失败阶段（config/network/http/format）与原始错误片段一并带回，
+    因为用户要据此判断该改地址、改模型还是改网络。
+    """
+    from .quill.services.statusbar import decision_client as dc
+
+    base = (base_url if base_url is not None
+            else getattr(plugin.config, "status_bar_decision_base_url", ""))
+    key = (api_key if api_key else
+           getattr(plugin.config, "status_bar_decision_api_key", ""))
+    mid = (model if model is not None
+           else getattr(plugin.config, "status_bar_decision_model", ""))
+    fmt = (api_format if api_format is not None
+           else getattr(plugin.config, "status_bar_decision_api_format", "auto"))
+
+    result = await dc.decision_probe(
+        str(base or ""), str(key or ""), str(mid or ""), str(fmt or "auto")
+    )
+    # 成功时也把「这次实际打到哪个端点、用了哪族格式」说清楚：auto 模式下
+    # 用户看不到它猜了哪族，出问题无从下手。
+    result["configured_base_url"] = str(base or "").strip()
+    result["configured_model"] = str(mid or "").strip()
+    if not result["ok"]:
+        logger.info(
+            "[Quill] 决策模型连通性测试失败 | stage=%s url=%s model=%s | %s",
+            result.get("stage"), result.get("url"), result.get("configured_model"),
+            result.get("message"),
+        )
+    return ok(result)
+
+
 async def handle_worldbook_lint(plugin) -> dict:
     """M1b 模块 5：世界书/角色卡静态体检（纯本地分析，零模型调用）。
 

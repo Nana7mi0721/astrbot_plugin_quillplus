@@ -10,7 +10,7 @@ import { loadWB } from "../pages/worldbook.js";
 import { loadWR } from "../pages/writing.js";
 import { $, $$, compactNum, esc, withBusy } from "../utils.js";
 
-export { CFG_DEFAULTS, CFG_FIELDS, applySettings, cfgGet, clearDirty, discardChanges, fillProviderSelect, filterConfig, initConfigNavObserver, loadGlobalSettings, loadHealth, markCfgNav, markDirty, saveAllChanges, scrollToSection, setStreamModeAll, switchTab, syncSidebarBadges, updateBadge, updateStreamStats };
+export { CFG_DEFAULTS, CFG_FIELDS, applySettings, cfgGet, clearDirty, discardChanges, fillProviderSelect, filterConfig, initConfigNavObserver, loadGlobalSettings, loadHealth, markCfgNav, markDirty, probeDecisionModel, saveAllChanges, scrollToSection, setStreamModeAll, switchTab, syncSidebarBadges, updateBadge, updateStreamStats };
 
 
 
@@ -239,6 +239,63 @@ async function saveAllChanges(btn) {
     } catch (e) {
       showToast("保存失败：" + e.message);
     }
+  });
+}
+
+/**
+ * 决策模型连通性测试（配置 → 状态栏 → 决策模式 → 模型 ID 右侧「测试连接」）。
+ *
+ * 把当前**界面上填的**地址 / 密钥 / 模型 / 格式一起发上去，而不是只读已保存
+ * 的配置：用户改完地址第一反应就是点一下试试，此时还没点保存。后端对
+ * 「传了就优先、没传回落配置」有对应处理，密钥传空串时后端也会回落到配置里
+ * 那把（否则测试永远 401，用户会误判成地址写错）。
+ *
+ * 失败不弹 toast 而就地渲染一行结论：这个按钮的产出就是诊断信息，
+ * 弹窗会盖住结果、还得再点一次关闭。``stage`` 由后端给定，这里只负责把
+ * 四种失败映射成不同措辞，让用户知道该改地址、改模型还是改网络。
+ */
+async function probeDecisionModel(el) {
+  const box = $("#decisionProbeResult");
+  const read = (sel) => { const n = $(sel); return n ? String(n.value || "").trim() : ""; };
+  await withBusy(el, "", async () => {
+    if (box) box.innerHTML = '<span class="fs-12 t3">正在连接…</span>';
+    let r = null;
+    try {
+      r = await apiPost("/decision/probe", {
+        base_url: read("#c-sb-decision-url"),
+        api_key: read("#c-sb-decision-key"),
+        model: read("#c-sb-decision-model"),
+        api_format: read("#c-sb-decision-format"),
+      });
+    } catch (e) {
+      if (box) box.innerHTML = `<div class="note">测试失败：${esc(e.message || String(e))}</div>`;
+      return;
+    }
+    if (!box) return;
+    const d = (r && r.data) || r || {};
+    if (d.ok) {
+      const ms = d.elapsed_ms ? ` · ${d.elapsed_ms} ms` : "";
+      const via = d.format ? ` · ${esc(d.format)}` : "";
+      box.innerHTML = `<div class="row-wrap" style="margin-top:var(--sp-2)">` +
+        `<span class="badge badge--green"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-check"/></svg>连接正常</span>` +
+        `<span class="fs-12 t3">${esc(d.message || "判定模型已响应")}${ms}${via}</span>` +
+        `</div>`;
+      return;
+    }
+    // 失败：阶段 → 该改哪里。``stage`` 是后端稳定标识，措辞按它分派。
+    const HINT = {
+      config: "先在下方把字段填全。",
+      network: "地址可能写错、服务不可达，或本机网络/代理拦截了该请求。",
+      http: "能连上服务，但这次请求被拒绝——多半是密钥无效、模型 ID 不存在，或该模型未开通。",
+      format: "服务有响应，但回的不是决策模型格式——确认填的是决策模型（不是普通对话模型），或手动指定「API 格式」。",
+    };
+    const hint = HINT[d.stage] || "检查上面的地址、密钥与模型 ID。";
+    box.innerHTML = `<div class="row-wrap" style="margin-top:var(--sp-2)">` +
+      `<span class="badge badge--yellow"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-warn"/></svg>连接失败</span>` +
+      `<span class="fs-12">${esc(d.message || "未知错误")}</span>` +
+      `</div>` +
+      `<span class="hint">${esc(hint)}</span>` +
+      (d.detail ? `<div class="note mono fs-12" style="margin-top:var(--sp-2);overflow-x:auto">${esc(d.detail)}</div>` : "");
   });
 }
 

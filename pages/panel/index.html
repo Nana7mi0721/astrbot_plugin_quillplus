@@ -310,7 +310,7 @@
                 <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建角色卡
               </button>
               <label class="btn btn--gray file-btn">
-                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>导入 V2
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>导入 V2/V3
                 <input type="file" accept=".png,.jpg,.jpeg,.webp,.json" data-file="persona-import" aria-label="导入角色卡">
               </label>
               <button type="button" class="btn btn--gray" data-action="persona-import-text">文本导入</button>
@@ -337,12 +337,26 @@
 
     <!-- ───── 文档知识库 ───── -->
     <section class="tab-pane" id="pane-rag" role="region" aria-label="文档知识库">
-      <div class="page">
-        <div class="page-head">
-          <h2>文档知识库</h2>
-          <span class="page-sub" id="ragSub"></span>
-        </div>
+      <div class="page-head-bar">
+        <div class="page-head-bar-inner">
+          <div class="page-head">
+            <h2>文档知识库</h2>
+            <span class="page-sub" id="ragSub"></span>
+          </div>
 
+          <div class="toolbar">
+            <button type="button" class="btn btn--sm btn--gray" data-action="rag-refresh">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
+            </button>
+            <span class="grow"></span>
+            <button type="button" class="btn btn--sm" data-action="rag-pick">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>上传文档
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="page">
         <div class="cfg-cols rag-overview" style="margin-bottom:var(--sp-4)">
           <div class="card">
             <div class="card-head"><h3>向量模型</h3></div>
@@ -424,22 +438,28 @@
 
     <!-- ───── 动态记忆 ───── -->
     <section class="tab-pane" id="pane-memory" role="region" aria-label="动态记忆">
-      <div class="page">
-        <div class="page-head">
-          <h2>动态记忆</h2>
-          <span class="page-sub" id="memSub"></span>
-        </div>
+      <div class="page-head-bar">
+        <div class="page-head-bar-inner">
+          <div class="page-head">
+            <h2>动态记忆</h2>
+            <span class="page-sub" id="memSub"></span>
+          </div>
 
-        <div class="seg-nav">
-          <div class="segmented" role="tablist" aria-label="记忆子页">
-            <button type="button" class="is-selected" data-memsub="overview" role="tab" aria-selected="true" aria-controls="mem-overview" id="memsub-overview">系统总览</button>
-            <button type="button" data-memsub="browser" role="tab" aria-selected="false" aria-controls="mem-browser" id="memsub-browser">记忆浏览</button>
-            <button type="button" data-memsub="logs" role="tab" aria-selected="false" aria-controls="mem-logs" id="memsub-logs">对话日志</button>
-            <button type="button" data-memsub="vector" role="tab" aria-selected="false" aria-controls="mem-vector" id="memsub-vector">向量检索</button>
-            <button type="button" data-memsub="io" role="tab" aria-selected="false" aria-controls="mem-io" id="memsub-io">导入导出</button>
+          <div class="toolbar">
+            <div class="seg-nav">
+              <div class="segmented" role="tablist" aria-label="记忆子页">
+                <button type="button" class="is-selected" data-memsub="overview" role="tab" aria-selected="true" aria-controls="mem-overview" id="memsub-overview">系统总览</button>
+                <button type="button" data-memsub="browser" role="tab" aria-selected="false" aria-controls="mem-browser" id="memsub-browser">记忆浏览</button>
+                <button type="button" data-memsub="logs" role="tab" aria-selected="false" aria-controls="mem-logs" id="memsub-logs">对话日志</button>
+                <button type="button" data-memsub="vector" role="tab" aria-selected="false" aria-controls="mem-vector" id="memsub-vector">向量检索</button>
+                <button type="button" data-memsub="io" role="tab" aria-selected="false" aria-controls="mem-io" id="memsub-io">导入导出</button>
+              </div>
+            </div>
           </div>
         </div>
+      </div>
 
+      <div class="page">
         <div class="mem-sub is-active" id="mem-overview" role="tabpanel" aria-labelledby="memsub-overview">
           <div class="dash-grid" style="margin-bottom:var(--sp-4)">
             <div class="dash-card" data-tone="blue">
@@ -578,12 +598,28 @@
 
     <!-- ───── 注入诊断（M1a）───── -->
     <section class="tab-pane" id="pane-trace" role="region" aria-label="注入诊断">
-      <div class="page">
-        <div class="page-head">
-          <h2>注入诊断</h2>
-          <span class="page-sub" id="traceSub"></span>
-        </div>
+      <div class="page-head-bar">
+        <div class="page-head-bar-inner">
+          <div class="page-head">
+            <h2>注入诊断</h2>
+            <span class="page-sub" id="traceSub"></span>
+          </div>
 
+          <div class="toolbar">
+            <button type="button" class="btn btn--sm btn--gray" data-action="trace-live" id="traceLiveBtn" title="开启后新一轮对话的追踪实时推入列表（SSE，失败自动降级为 15 秒轮询）">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：关
+            </button>
+            <select class="field" id="traceSession" style="width:auto;min-width:min(220px, 100%)" aria-label="选择会话">
+              <option value="">加载中…</option>
+            </select>
+            <button type="button" class="btn btn--sm btn--gray" data-action="trace-refresh">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="page">
         <div class="note" style="margin-bottom:var(--sp-3)">
           <span>每轮对话的注入追踪：命中了什么、以什么顺序注入、各环节是否降级。用于排查「设定漏注入 /
           角色失忆」类问题。纯内存记录——重启即清、不写盘；会话只以哈希标识，不含原始会话 ID 与对话内容。
@@ -594,16 +630,6 @@
           <div class="card-head">
             <h3>最近轮次</h3>
             <span class="card-head-sub">点条目展开模块明细</span>
-            <span class="grow"></span>
-            <button type="button" class="btn btn--sm btn--gray" data-action="trace-live" id="traceLiveBtn" title="开启后新一轮对话的追踪实时推入列表（SSE，失败自动降级为 15 秒轮询）">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：关
-            </button>
-            <select class="field" id="traceSession" style="width:auto;min-width:220px" aria-label="选择会话">
-              <option value="">加载中…</option>
-            </select>
-            <button type="button" class="btn btn--sm btn--gray" data-action="trace-refresh">
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
-            </button>
           </div>
           <div class="card-body"><div class="card-body-inner">
             <div id="traceList" aria-live="polite">
@@ -620,11 +646,11 @@
           <div class="card-body"><div class="card-body-inner">
             <div class="trace-sim-form">
               <textarea class="field" id="simText" rows="3" placeholder="要模拟的用户输入（可粘贴多轮对话文本充当上下文）" aria-label="模拟输入"></textarea>
-              <div class="toolbar">
-                <select class="field" id="simPersona" style="width:auto;min-width:180px" aria-label="角色卡（决定绑定模式）">
+              <div class="row-wrap">
+                <select class="field" id="simPersona" style="width:auto;min-width:min(180px, 100%)" aria-label="角色卡（决定绑定模式）">
                   <option value="">不选角色卡（各系统按 disabled）</option>
                 </select>
-                <input type="text" class="field" id="simVars" style="flex:1;min-width:180px" placeholder='会话变量覆盖（JSON，如 {"好感度": 85}；留空=条件条目按未达标）' aria-label="会话变量">
+                <input type="text" class="field" id="simVars" style="flex:1;min-width:min(180px, 100%)" placeholder='会话变量覆盖（JSON，如 {"好感度": 85}；留空=条件条目按未达标）' aria-label="会话变量">
                 <button type="button" class="btn btn--sm" data-action="trace-simulate">
                   <svg class="icon icon--sm" aria-hidden="true"><use href="#i-flask"/></svg>运行模拟
                 </button>
@@ -912,8 +938,14 @@
               </div>
               <div class="cfg-field">
                 <label class="cfg-field-label" for="c-sb-decision-model">模型 ID</label>
-                <input class="field field--wide" type="text" id="c-sb-decision-model" spellcheck="false" autocomplete="off" placeholder="inception/mercury-decide:free">
-                <span class="hint">如 <code>inception/mercury-decide:free</code>、<code>typesafe/jev-1.14</code>、<code>openai/gpt-6-luna-decisions</code>。</span>
+                <div class="row-wrap">
+                  <input class="field field--wide grow" type="text" id="c-sb-decision-model" spellcheck="false" autocomplete="off" placeholder="inception/mercury-decide:free" style="max-width:none">
+                  <button type="button" class="btn btn--gray" data-action="decision-probe">
+                    <svg class="icon icon--sm" aria-hidden="true"><use href="#i-zap"/></svg>测试连接
+                  </button>
+                </div>
+                <span class="hint">如 <code>inception/mercury-decide:free</code>、<code>typesafe/jev-1.14</code>、<code>openai/gpt-6-luna-decisions</code>。「测试连接」按上面填写的地址、密钥与本处模型真发一次判定请求，不必先保存。</span>
+                <div id="decisionProbeResult" role="status" aria-live="polite"></div>
               </div>
               <div class="cfg-field">
                 <label class="cfg-field-label" for="c-sb-decision-format">API 格式</label>
@@ -1226,10 +1258,10 @@
       </button>
     </div>
     <div class="modal-body">
-      <p class="row-desc" style="margin-bottom:var(--sp-3)">粘贴角色设定文本，支持 V2 JSON 与 W++ / Raw Text 标签格式。</p>
+      <p class="row-desc" style="margin-bottom:var(--sp-3)">粘贴角色设定文本，支持 V2/V3 JSON 与 W++ / Raw Text 标签格式。</p>
       <textarea class="field field--wide mono fs-13" id="importText" rows="14" placeholder="Name = &quot;白芷&quot;&#10;Personality: 傲娇、外冷内热&#10;Scenario: 现代校园，同桌关系&#10;First Message: &quot;哼，你来干什么？&quot;……"></textarea>
       <div class="row-wrap fs-12 t3" style="margin-top:var(--sp-3)">
-        <span>✓ V2 JSON</span><span>✓ W++ 标签</span><span>✓ 正则智能匹配</span>
+        <span>✓ V2/V3 JSON</span><span>✓ W++ 标签</span><span>✓ 正则智能匹配</span>
       </div>
     </div>
     <div class="modal-foot">

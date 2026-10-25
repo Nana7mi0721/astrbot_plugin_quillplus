@@ -136,6 +136,9 @@
 /* 滑块与同行输入框共用 --w-ctl，滑轨末端与上方输入框右边缘对齐 */
 .cfg-field .slider { max-width: var(--w-ctl); }
 .cfg-field .row-wrap { max-width: var(--w-wide); }
+/* 「测试连接」的结果区：宽度跟模型输入框那行对齐（三档宽度全部左对齐到
+   同一条竖线）。错误详情是这个字段的附注，不该横穿整张卡片。 */
+#decisionProbeResult { max-width: var(--w-wide); }
 
 /* 健康度指标 */
 /* 健康度行：与 cfg-row 同样只留垂直内边距（水平由 .card-body-inner 提供） */
@@ -214,6 +217,6 @@
   padding-top: var(--sp-4);
   border-top: .5px solid var(--separator);
   font-size: 11px;
-  line-height: 1.7;
+  line-height: 14px;
   color: var(--label-3);
 }

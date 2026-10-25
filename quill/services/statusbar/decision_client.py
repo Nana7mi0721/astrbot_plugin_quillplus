@@ -336,6 +336,177 @@ async def decision_evaluate(
     return normalize_answers(raw)
 
 
+# ── 连通性测试（面板「测试」按钮）────────────────────────────────
+
+
+def _probe_questions() -> dict:
+    """测试用两问：一道 noul + 一道 choice。
+
+    刻意两族都问：只发 noul 就测不出 choice 的 ``criteria``→``choices``
+    映射，而剧情走向恰恰依赖 choice；只发 choice 又漏掉 predicate 分支。
+    选项数取 3（与 plot_paths 默认等长），不依赖任何会话状态。
+    """
+    return {
+        "responding": {
+            "type": "noul",
+            "instructions": (
+                "Is the user's message a greeting? Answer true for a greeting "
+                "such as '你好'."
+            ),
+            "criteria": {
+                "true": "The message greets someone.",
+                "false": "The message does not greet anyone.",
+            },
+        },
+        "branch": {
+            "type": "choice",
+            "instructions": "Which of the options best matches the message?",
+            "criteria": {
+                "1": "继续当前话题",
+                "2": "转换场景",
+                "3": "结束互动",
+            },
+        },
+    }
+
+
+async def decision_probe(
+    base_url: str,
+    api_key: str,
+    model: str,
+    api_format: str = "auto",
+    timeout: float = DECISION_TIMEOUT_S,
+    post_fn: Callable | None = None,
+) -> dict:
+    """用一次真实判定调用测连通性，返回可直接渲染进面板的诊断结果。
+
+    与 :func:`decision_evaluate` 的分工：那个是生产路径，任何失败都吞成
+    None（fail-open，判定挂了不能拖住聊天）；这个是给人看的，**必须把失败
+    原因原样带回来** —— 「连不上」和「连上了但回的不是决策格式」是两种完全
+    不同的错，用户要据此改地址还是改模型 ID。
+
+    返回值恒为 dict（不抛异常）::
+
+        {"ok": bool, "stage": "config|network|http|format|parse|ok",
+         "url": str, "format": str, "elapsed_ms": int,
+         "message": str, "detail": str, "answers": {...}|None}
+
+    ``stage`` 是给前端做文案分派的稳定标识，``message`` 是给用户看的中文
+    结论，``detail`` 是原始异常/响应片段（截断，仅作排障线索）。
+    """
+    started = time.time()
+    base = str(base_url or "").strip()
+    model = str(model or "").strip()
+    result: dict = {
+        "ok": False,
+        "stage": "config",
+        "url": "",
+        "format": "",
+        "elapsed_ms": 0,
+        "message": "",
+        "detail": "",
+        "answers": None,
+    }
+
+    if not base:
+        result["message"] = "API 地址为空，请先填写服务地址（如 https://openrouter.ai/api/v1）"
+        return result
+    if not model:
+        # 部分服务有默认模型，但决策模型基本都按 model 路由；空着大概率 400，
+        # 与其发出去等 4xx，不如在本地就说清楚。
+        result["message"] = "模型 ID 为空，请填写要测试的决策模型（如 inception/mercury-decide:free）"
+        return result
+
+    fmt = resolve_format(base, api_format)
+    url = resolve_decision_endpoint(base, fmt)
+    result["url"] = url
+    result["format"] = fmt
+
+    headers = build_headers(api_key, url)
+    payload = build_request_body(
+        fmt, model, {"probe": "connectivity test"}, _probe_questions(), url
+    )
+    post = post_fn or _post_json
+
+    try:
+        raw = await asyncio.wait_for(
+            asyncio.to_thread(post, url, headers, payload, timeout),
+            timeout=timeout + 2.0,
+        )
+    except asyncio.TimeoutError:
+        result["stage"] = "network"
+        result["message"] = f"连接超时（{timeout:.0f} 秒内无响应）"
+        result["detail"] = "检查网络/代理，或该地址是否需要走内网"
+    except urllib.error.HTTPError as e:
+        result["stage"] = "http"
+        result["message"] = f"服务返回 HTTP {e.code}"
+        result["detail"] = _read_error_body(e)
+    except urllib.error.URLError as e:
+        result["stage"] = "network"
+        result["message"] = "无法连接到该地址"
+        result["detail"] = str(getattr(e, "reason", e))[:300]
+    except Exception as e:  # noqa: BLE001 — 任何异常都要变成可读结论
+        result["stage"] = "network"
+        result["message"] = f"请求失败：{type(e).__name__}"
+        result["detail"] = str(e)[:300]
+    else:
+        answers = normalize_answers(raw)
+        if answers is None:
+            result["stage"] = "format"
+            result["message"] = "服务有响应，但回的不是决策模型格式"
+            result["detail"] = _truncate_json(raw)
+        else:
+            result["ok"] = True
+            result["stage"] = "ok"
+            result["message"] = "连接正常，判定模型已正确响应"
+            result["answers"] = _summarize_probe_answers(answers)
+
+    result["elapsed_ms"] = int((time.time() - started) * 1000)
+    return result
+
+
+def _read_error_body(e: urllib.error.HTTPError) -> str:
+    """把 HTTPError 的响应体读成一行文本（服务端的错误说明通常比状态码有用）。"""
+    try:
+        raw = e.read()
+        text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+    except Exception:
+        return str(getattr(e, "reason", e))[:300]
+    return text.strip()[:300]
+
+
+def _truncate_json(raw: Any) -> str:
+    """把非决策格式的响应压成一行，供用户判断对面到底是什么服务。"""
+    try:
+        return json.dumps(raw, ensure_ascii=False)[:300]
+    except Exception:
+        return str(raw)[:300]
+
+
+def _summarize_probe_answers(answers: dict) -> dict:
+    """把归一化后的答案压成「人能一眼看懂」的摘要。
+
+    只保留结论量（noul 概率 / 选中项 / 置信度），不打全量概率分布——
+    测试按钮要回答的是「通不通」，不是「分布长什么样」。
+    """
+    out: dict = {}
+    resp = answers.get("responding")
+    if isinstance(resp, dict):
+        out["greeting_probability"] = round(_safe_float(resp.get("noul")), 4)
+    branch = answers.get("branch")
+    if isinstance(branch, dict):
+        probs = branch.get("probabilities")
+        if isinstance(probs, dict):
+            out["probabilities"] = {
+                str(k): round(_safe_float(v), 4) for k, v in probs.items()
+            }
+        pick = branch.get("choice")
+        if pick is not None:
+            out["choice"] = pick
+        out["confidence"] = round(_safe_float(branch.get("confidence")), 4)
+    return out
+
+
 # ── 剧情走向：问题与 state 构造 ─────────────────────────────────
 
 
