@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-indigo.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-5.3.3-green.svg)]()
+[![Version](https://img.shields.io/badge/version-5.3.4-green.svg)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](./LICENSE)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.0-purple.svg)]()
 
@@ -24,7 +24,7 @@ QuillPlus 是一个面向 AstrBot 的沉浸式角色扮演（RP）增强插件�
 
 实现 Character Card V2 标准核心字段，兼容多种导入来源。
 
-- 支持 PNG / JPG / WebP / JSON 格式的 V2/V3 卡片导入（内嵌世界书 character_book 自动转换并绑定），导出为 PNG（含头像）或 JSON
+- 支持 PNG / JPG / WebP / JSON 格式的 V2/V3 卡片导入（内嵌世界书 character_book 自动转换并绑定，可在「配置 → 世界书 → 角色卡导入自动转换内嵌世界书」关闭），导出为 PNG（含头像）或 JSON
 - **身份键与显示名解耦**：新建/导入的角色卡一律用 12 位短 ID 作内部标识，改名只是改名——对话记忆、会话绑定与聊天记录在改名前后连续（已有旧卡零迁移照常使用；导出的 V2 卡携带身份信息，导入往返不换卡）
 - 内置正则解析引擎，支持 W++、Raw Text 等纯文本格式导入
 - 头像不随列表内联返回，按需懒加载（Data URL / 静态端点），避免 WebUI iframe 沙箱的跨域限制
@@ -288,7 +288,7 @@ Web 依赖（fastapi、quart）通常由 AstrBot 自带，缺失时手动安装�
 
 | 分组 | 说明 |
 |------|------|
-| 世界书 | 开关、容量、Token 上限、匹配灵敏度、注入位置、触发日志 |
+| 世界书 | 开关、容量、Token 上限、匹配灵敏度、注入位置、触发日志、角色卡内嵌世界书转换 |
 | 写作素材库 | 开关、最大注入条数、回退条数、去重上限 |
 | RAG | Embedding/Rerank 提供商、本地模型、分块参数、检索数量、记忆开关 |
 | 性能 | Prompt 截断上限、最低回复字数 |
@@ -379,6 +379,7 @@ on_llm_tool_respond (priority=10)  →  停止 agent loop + 记忆存储
 
 QuillPlus 遵循持续迭代的开发路线，当前（v5.3）已完成以下里程碑：
 
+- ✅ **v5.3.4** — V2/V3 角色卡导入（PNG/JSON/文本粘贴/指令全通道，卡内内嵌世界书自动转换并绑定，可在配置里关闭）；新增「注入诊断」页：每轮注入了什么、以什么顺序、差一点命中的是哪条、被裁剪了什么；世界书条目支持条件解锁；注入预算守卫；指令在唤醒词为空与群聊未 @ 的配置下不再失效；并加固决策模型「测试连接」的密钥外带与群聊 `/reinject` 的权限校验（详见 CHANGELOG）
 - ✅ **v5.3.2** — 双向兼容 AstrBot 原生配置：AstrBot「人格」只读导入为角色卡（用你配置的摘要模型转换，同名自动加后缀，人格本体不改不删）；Doc RAG 兼容 AstrBot 内置知识库（`kb:库名` 绑定，文档级 `kb:库名/文档名`）；插件文档新增子知识库分组与面板/角色卡三级勾选；分组下拉改为面板自绘控件；顺带修复文本导入弹窗遮罩无守卫导致的误关窗
 - ✅ **v5.3.3** — 面板按 macOS 27 重建；「JEV 模式」升级为决策模式（Decision）：TypeSafe / OpenAI / OpenRouter 等决策模型的地址与密钥在插件内独立配置，剧情走向判定不再受单一厂商限制；移除「反拒绝/应急反拒绝协议」「拒绝语扫描闭环」与 `[B:…]` 输出编码层，Layer 0 改为只约束写作格式的「叙事完整性要求」（并写明模型自身的安全策略与判断始终有效）
 - ✅ **v5.3.0** — 结构重构：main.py 六钩子薄化为注册桩 + `interfaces/` 适配层，业务下沉 `quill/` 服务分层（与 AstrBot 解耦、可独立测试）；配套真机端到端验证链路（本地运行）；统一上传通道与路径安全加固；热路径历史清洗 O(历史长度)→O(增量)；修复真机实测与自查的 10 项正确性缺陷（详见 CHANGELOG）
@@ -467,3 +468,5 @@ AstrBot 框架的 Plugin Pages 静态文件服务默认设置 `Cache-Control: no
 - [AstrBot](https://github.com/Soulter/AstrBot) — 提供可扩展的机器人插件框架
 - [HarmonyOS Sans](https://developer.huawei.com/consumer/cn/doc/design-guides/font-0000001828772001) — 管理面板界面字体（© 华为技术有限公司，依华为字体许可使用）。macOS 上使用系统 SF Pro / 苹方，不加载此字体
 - 面板设计参考 [Apple Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/)（配色、字阶、间距与动效数值均取自其现行发布值）
+
+代码审查与协作：Gemini、GLM、DeepSeek（插件元数据的 author 只保留维护者一个人，协作者记在这里）。

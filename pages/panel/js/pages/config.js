@@ -38,6 +38,7 @@ const CFG_FIELDS = [
   ["worldbook", "injection_position", "#c-wb-pos", "str"],
   ["worldbook", "match_sensitivity", "#c-wb-sens", "float"],
   ["worldbook", "always_activate", "#c-wb-always", "bool"],
+  ["worldbook", "card_embed_worldbook", "#c-wb-card-embed", "bool"],
   ["worldbook", "show_trigger_log", "#c-wb-show-log", "bool"],
   ["writing_resource", "enabled", "#c-wr-enabled", "bool"],
   ["writing_resource", "max_entries", "#c-wr-max", "int"],
@@ -81,6 +82,7 @@ const CFG_DEFAULTS = {
   "rag.chat_log_retention_days": 30,
   "worldbook.enabled": true, "worldbook.max_token_limit": 4000, "worldbook.max_dynamic_entries": 4,
   "worldbook.injection_position": "user_prefix", "worldbook.match_sensitivity": 0.7,
+  "worldbook.card_embed_worldbook": true,
   "writing_resource.enabled": true, "writing_resource.max_entries": 4,
   "writing_resource.fallback_top_count": 2, "writing_resource.category_dedup_limit": 3,
   "performance.min_output_length": 400, "performance.max_output_length": 0,
@@ -246,9 +248,13 @@ async function saveAllChanges(btn) {
  * 决策模型连通性测试（配置 → 状态栏 → 决策模式 → 模型 ID 右侧「测试连接」）。
  *
  * 把当前**界面上填的**地址 / 密钥 / 模型 / 格式一起发上去，而不是只读已保存
- * 的配置：用户改完地址第一反应就是点一下试试，此时还没点保存。后端对
- * 「传了就优先、没传回落配置」有对应处理，密钥传空串时后端也会回落到配置里
- * 那把（否则测试永远 401，用户会误判成地址写错）。
+ * 的配置：用户改完地址第一反应就是点一下试试，此时还没点保存。
+ *
+ * 密钥的回落规则是**同源才回落**（不是无条件回落）：填的地址与已保存的判定
+ * 地址 scheme+host 一致时，密钥框留空就用配置里那把——用户只是没重新输密码，
+ * 这时不该 401；一旦换成别的地址，已保存的密钥绝不能被带过去，否则随便填个
+ * 地址点一下测试，密钥就成了对方的 Authorization 头。这种情况下后端回
+ * `key_hint`，**必须显示**：用户只看到 401 会误判成地址写错。
  *
  * 失败不弹 toast 而就地渲染一行结论：这个按钮的产出就是诊断信息，
  * 弹窗会盖住结果、还得再点一次关闭。``stage`` 由后端给定，这里只负责把
@@ -273,18 +279,22 @@ async function probeDecisionModel(el) {
     }
     if (!box) return;
     const d = (r && r.data) || r || {};
+    // 跨源测试时后端不携带已保存的密钥并给出 key_hint，成功/失败都要显示。
+    const keyHint = d.key_hint
+      ? `<span class="hint">${esc(d.key_hint)}</span>`
+      : "";
     if (d.ok) {
       const ms = d.elapsed_ms ? ` · ${d.elapsed_ms} ms` : "";
       const via = d.format ? ` · ${esc(d.format)}` : "";
       box.innerHTML = `<div class="row-wrap" style="margin-top:var(--sp-2)">` +
         `<span class="badge badge--green"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-check"/></svg>连接正常</span>` +
         `<span class="fs-12 t3">${esc(d.message || "判定模型已响应")}${ms}${via}</span>` +
-        `</div>`;
+        `</div>` + keyHint;
       return;
     }
     // 失败：阶段 → 该改哪里。``stage`` 是后端稳定标识，措辞按它分派。
     const HINT = {
-      config: "先在下方把字段填全。",
+      config: "先在下方把字段填全（地址需以 http:// 或 https:// 开头）。",
       network: "地址可能写错、服务不可达，或本机网络/代理拦截了该请求。",
       http: "能连上服务，但这次请求被拒绝——多半是密钥无效、模型 ID 不存在，或该模型未开通。",
       format: "服务有响应，但回的不是决策模型格式——确认填的是决策模型（不是普通对话模型），或手动指定「API 格式」。",
@@ -295,6 +305,7 @@ async function probeDecisionModel(el) {
       `<span class="fs-12">${esc(d.message || "未知错误")}</span>` +
       `</div>` +
       `<span class="hint">${esc(hint)}</span>` +
+      keyHint +
       (d.detail ? `<div class="note mono fs-12" style="margin-top:var(--sp-2);overflow-x:auto">${esc(d.detail)}</div>` : "");
   });
 }

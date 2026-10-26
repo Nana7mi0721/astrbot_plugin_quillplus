@@ -68,6 +68,25 @@ _VALID_FORMATS = ("systemone", "openai")
 # ── 格式与端点解析 ──────────────────────────────────────────────
 
 
+def is_http_url(url: str) -> bool:
+    """地址是否是「可外连的 HTTP(S) 端点」（scheme 与主机都要有）。
+
+    Q1 修复：``urllib.request.urlopen`` 默认支持 ``file://``、``ftp://``、
+    ``data:`` 等协议，而 ``base_url`` 是**用户/面板可填的自由文本**。不校验
+    协议就意味着一次判定调用可以变成任意本地文件读取（``file:///etc/passwd``
+    经 ``resolve_decision_endpoint`` 变成 ``file:///etc/passwd/v1/systemone``
+    后仍会走 FileHandler），错误片段再经 ``detail`` 回传给调用方。
+
+    只放行 http/https 且 netloc 非空——判定服务不存在别的协议形态，
+    这条白名单不会误伤任何真实用法。
+    """
+    try:
+        parts = urlsplit(str(url or "").strip())
+    except Exception:
+        return False
+    return parts.scheme.lower() in ("http", "https") and bool(parts.netloc)
+
+
 def resolve_format(base_url: str, api_format: str | None) -> str:
     """决定 wire format：显式 systemone/openai 优先，auto 按主机名判。
 
@@ -275,7 +294,14 @@ def normalize_answers(resp: Any) -> dict | None:
 
 
 def _post_json(url: str, headers: dict, payload: dict, timeout: float) -> dict:
-    """同步 POST（在线程池里跑）；429/529 单次短退避重试。"""
+    """同步 POST（在线程池里跑）；429/529 单次短退避重试。
+
+    Q1 修复：这里是**唯一**真正发出请求的出口，协议白名单卡在此处而不是只
+    卡在上层——上游两个公开入口都有各自的早退分支，将来任一条新增调用路径
+    漏写校验时，实际 I/O 仍然只可能落到 http/https 上。
+    """
+    if not is_http_url(url):
+        raise ValueError(f"不允许的协议或地址：{str(url or '')[:120]}")
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     for attempt in (1, 2):
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
@@ -313,6 +339,11 @@ async def decision_evaluate(
     base = str(base_url or "").strip()
     if not base:
         logger.debug("[Decision] 未启用：decision_base_url 未配置")
+        return None
+    if not is_http_url(base):
+        # Q1 修复：非 http(s) 地址一律当未配置处理。生产路径本来 fail-open，
+        # 这里只是把「悄悄不做判定」的理由留在 debug 日志里。
+        logger.debug("[Decision] 地址协议不支持（仅 http/https）：%s", base[:120])
         return None
     fmt = resolve_format(base, api_format)
     url = resolve_decision_endpoint(base, fmt)
@@ -410,6 +441,12 @@ async def decision_probe(
 
     if not base:
         result["message"] = "API 地址为空，请先填写服务地址（如 https://openrouter.ai/api/v1）"
+        return result
+    if not is_http_url(base):
+        # Q1 修复：阶段仍是 config——这是「配置不对」，不是网络问题，
+        # 前端按 stage 分派文案时要把用户引到地址输入框上。
+        result["message"] = "API 地址必须以 http:// 或 https:// 开头，并带有主机名"
+        result["detail"] = str(base)[:300]
         return result
     if not model:
         # 部分服务有默认模型，但决策模型基本都按 model 路由；空着大概率 400，

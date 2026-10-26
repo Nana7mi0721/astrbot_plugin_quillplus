@@ -832,8 +832,20 @@ class WorldbookManager:
             st["keysecondary"] = st["secondary_keys"]
         if not str(st.get("comment") or "").strip():
             st["comment"] = st.get("name") or ""
-        if "disable" not in st and "enabled" in st:
-            st["disable"] = not bool(st.get("enabled"))
+        # Q4-1 修复：spec 的 `enabled` 与 ST 的 `disable` 语义相反，而 V2/V3 导出
+        # 常常**同时**带这两个键（`enabled: false` 是规范字段，`disable: false`
+        # 是 ST 编辑器残留的默认值）。旧写法 `if "disable" not in st` 一见 disable
+        # 就跳过 enabled，把作者刻意禁用的条目（剧透 / 作者备注）强行启用并注入
+        # ——静默泄内容，比报错难查得多。
+        #
+        # 现在按「任一为禁用即禁用」（OR）：两个字段都只在表达「这条要不要注入」，
+        # 冲突时保守取禁用。`enabled is None` 视为未表态，不参与判定。
+        if "enabled" in st and st["enabled"] is not None:
+            st["disable"] = bool(st.get("disable")) or (not bool(st["enabled"]))
+        else:
+            # 只有 disable（原生 ST 形态）时统一成 bool：`"false"` 这类字符串脏值
+            # 走 `not bool(...)` 会被当成 True，这里一次性收干净。
+            st["disable"] = bool(st.get("disable"))
         ext = st.get("extensions")
         if isinstance(ext, dict) and "position" in ext and "position" not in st:
             st["position"] = ext.get("position")

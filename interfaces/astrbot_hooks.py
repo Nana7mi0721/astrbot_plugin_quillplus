@@ -278,9 +278,20 @@ async def handle_waiting_llm_request(plugin, event: AstrMessageEvent) -> None:
     # `webchat:FriendMessage:webchat!xxx`）。`StateManager.reset_quill_rounds`
     # 对未知键是纯 no-op，于是这条分支从来只回「已重置」而什么都没重置。
     if user_input.strip() in ("/reinject", "/重新注入"):
+        # Q5 修复（权限绕过）：/reinject 在指令侧是带 🔒 的 admin 写操作
+        # （commands.py::reinject_dispatch 先调 _check_group_permission），但
+        # 本钩子跑在指令分发**之前**，命中就直接 return 了——群聊普通成员
+        # 只要把 /reinject 发给机器人，就从这条捷径绕过白名单重置了整群
+        # 的注入状态（quill_rounds 归零 → 下一轮重新灌入全部常驻素材）。
+        # 这里补上与指令侧同一口径的校验：拒绝时回同样的提示并结束事件。
+        from astrbot.api.event import MessageEventResult
+        _perm_err = _check_group_permission(plugin, event)
+        if _perm_err:
+            logger.info("[Quill] /reinject 被权限拦截（群聊非 admin）")
+            event.set_result(MessageEventResult().message(_perm_err))
+            return
         await plugin.state_manager.reset_quill_rounds(target_id)
         logger.info("[Quill] /reinject 已重置 quill_rounds")
-        from astrbot.api.event import MessageEventResult
         event.set_result(MessageEventResult().message(
             "已重置注入状态。下次触发 Quill 时将重新注入全部常驻素材。"
         ))

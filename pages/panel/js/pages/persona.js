@@ -4,7 +4,7 @@ import { api, apiPost } from "../api.js";
 import { sandboxConfirm, showErrorDetail, showToast } from "../components/feedback.js";
 import { autoSizeModalTextareas, closeModal, closeScrim, openModal, openScrim, renderEmptyState } from "../components/modal.js";
 import { enhanceSelects } from "../components/select.js";
-import { updateBadge } from "../pages/config.js";
+import { syncSidebarBadges, updateBadge } from "../pages/config.js";
 import { _wbFilterQuery } from "../pages/worldbook.js";
 import { $, $$, b64ToBlob, downloadBlob, esc, fileToB64, withBusy } from "../utils.js";
 
@@ -698,6 +698,33 @@ function deletePersona(personaId, btn) {
   }, true, personaId);
 }
 
+/** 导入成功后的统一回执：世界书是本轮导入顺带产生的，必须说一声。
+ *
+ * 卡内 character_book 是被**自动**转成世界书并绑定到新卡的（配置页那个开
+ * 关决定开不开），用户对这件事没有任何预期——只回一句「导入成功」，左侧
+ * 世界书数量悄悄 +1 就成了无从解释的异常。所以带内嵌书时把书名与条目数
+ * 讲明；`replaced_existing`（同名覆盖）也在这条回执里点出来。
+ *
+ * 侧栏徽章同步走 syncSidebarBadges 而不是 local +1：导入失败的路径不会
+ * 走到这里，而 `/info` 是唯一真源，比前端猜数字可靠。
+ */
+function toastImportDone(res) {
+  const wb = res && res.embedded_worldbook;
+  if (wb && wb.name) {
+    const n = typeof wb.entries === "number" ? wb.entries : 0;
+    const tail = wb.replaced_existing ? "，已覆盖同名旧书" : "";
+    showToast(
+      `角色卡「${res.name}」导入成功（已绑定内嵌世界书「${wb.name}」${n} 条${tail}）`,
+      "success",
+    );
+  } else {
+    showToast(`角色卡「${res.name}」导入成功`, "success");
+  }
+  // 不 await：回执已经弹出来了，徽章晚 100ms 刷新用户看不出来，但把导入按钮
+  // 多按住的几十毫秒是实打实的。
+  syncSidebarBadges().catch(() => {});
+}
+
 async function importPersona(input) {
   const file = input.files && input.files[0];
   if (!file) return;
@@ -709,7 +736,7 @@ async function importPersona(input) {
     try {
       const b64 = await fileToB64(file);
       const res = await apiPost("/persona/import_base64", { filename: file.name, b64_data: b64 });
-      showToast(`角色卡「${res.name}」导入成功`, "success");
+      toastImportDone(res);
       loadPersonas();
     } catch (e) { showErrorDetail("角色卡导入失败", e.message); loadPersonas(); }
     finally { input.value = ""; }
@@ -747,7 +774,7 @@ async function importPersonaFromText(btn) {
       const b64 = btoa(unescape(encodeURIComponent(text)));
       const res = await apiPost("/persona/import_text_base64", { b64_text: b64 });
       closeImportTextModal();
-      showToast(`角色卡「${res.name}」导入成功`, "success");
+      toastImportDone(res);
       loadPersonas();
     } catch (e) { showErrorDetail("文本导入失败", e.message); }
   });

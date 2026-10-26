@@ -16,6 +16,7 @@ import tempfile
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlsplit
 
 from astrbot.api import logger
 
@@ -52,6 +53,25 @@ def _get_plugin_version() -> str:
 
 
 # ── Response helpers ─────────────────────────────────────────────
+
+def _same_origin(a: str, b: str) -> bool:
+    """两个 base_url 是否同源（scheme + netloc 全等，忽略大小写与尾斜杠）。
+
+    Q1 修复用：判定「面板传入的地址是不是用户配置里那把地址」。路径不参与
+    比较——``https://openrouter.ai`` 与 ``https://openrouter.ai/api/v1``
+    是同一台服务，用户把地址补全成完整端点是常态，不该因此丢掉已保存密钥。
+    """
+    try:
+        pa, pb = urlsplit(str(a or "").strip()), urlsplit(str(b or "").strip())
+    except Exception:
+        return False
+    if not (pa.scheme and pa.netloc and pb.scheme and pb.netloc):
+        return False
+    return (
+        pa.scheme.lower() == pb.scheme.lower()
+        and pa.netloc.lower() == pb.netloc.lower()
+    )
+
 
 def ok(data: Any = None, **kw) -> dict:
     result: dict = {"status": "ok"}
@@ -1411,9 +1431,10 @@ async def handle_decision_probe(plugin, base_url=None, api_key=None,
     """决策模型连通性测试（读配置为准，入参只用于「改了还没保存」的场景）。
 
     面板上填了新地址/新模型 ID 就想先点一下测试、此时还没点保存——入参优先，
-    缺省回落 ``self.config`` 的当前值。API 密钥**不回传给前端**，也不接受
-    空串覆盖：``api_key`` 传 ``None`` 或空值时用配置里那把（否则测试永远
-    401，用户会误以为地址错了）。
+    缺省回落 ``self.config`` 的当前值。API 密钥的回落**不是无条件的**：只有
+    目标地址与已保存地址同源时，``api_key`` 缺省才用配置里那把（否则测试
+    永远 401，用户会误以为地址错了）；换了源就只认调用方显式传入的值 ——
+    详见下面 Q1 修复的注释。
 
     与生产路径的差别：``decision_evaluate`` 任何失败都吞成 None（fail-open），
     这里把失败阶段（config/network/http/format）与原始错误片段一并带回，
@@ -1421,22 +1442,51 @@ async def handle_decision_probe(plugin, base_url=None, api_key=None,
     """
     from .quill.services.statusbar import decision_client as dc
 
-    base = (base_url if base_url is not None
-            else getattr(plugin.config, "status_bar_decision_base_url", ""))
-    key = (api_key if api_key else
-           getattr(plugin.config, "status_bar_decision_api_key", ""))
+    # Q1 修复（凭据外带）：此前 api_key 为空就无条件回落到配置里那把已保存的
+    # 密钥——面板上把地址改成任意第三方（或攻击者控制的地址）再点「测试」，
+    # 用户的 OpenRouter 密钥就被 Bearer 到那个地址上。现在的规则是：**只有
+    # 目标与已保存地址同源（scheme + host:port）时才允许回落**；换了源就必须
+    # 由调用方显式带上 api_key，否则按「无密钥」发请求（服务端 401 反而是
+    # 正确反馈：这个地址本来就没配过凭据）。注意「显式带上」还有一个坑见下面的
+    # 回填识别——面板会把已保存的密钥回填进输入框再发上来。
+    saved_base = str(
+        getattr(plugin.config, "status_bar_decision_base_url", "") or ""
+    ).strip()
+    base = str(base_url if base_url is not None else saved_base).strip()
+    saved_key = str(
+        getattr(plugin.config, "status_bar_decision_api_key", "") or ""
+    )
+    same_origin = _same_origin(base, saved_base)
+    key = str(api_key) if api_key else ""
+    if key and not same_origin and saved_key and key == saved_key:
+        # 面板会把已保存的密钥回填进那个 password 输入框（applySettings 按
+        # _ALLOWED_CONFIG_KEYS 里的 status_bar.decision_api_key 直填），所以
+        # 「用户只改了地址、点测试」时前端发上来的 api_key 就是**那把已保存的
+        # 密钥**——只看「api_key 非空」会把上面的同源闸整个绕过（实测：
+        # 换源后 Authorization 里仍是 SAVED_SECRET）。这里认出「与已保存密钥
+        # 逐字相同」这一种情况并丢弃它：它本来就是从配置里回填的，不是用户
+        # 为新地址新输的。用户真要为别的地址配一把新密钥时，值必然不同。
+        key = ""
+    if not key and same_origin:
+        key = saved_key
     mid = (model if model is not None
            else getattr(plugin.config, "status_bar_decision_model", ""))
     fmt = (api_format if api_format is not None
            else getattr(plugin.config, "status_bar_decision_api_format", "auto"))
 
     result = await dc.decision_probe(
-        str(base or ""), str(key or ""), str(mid or ""), str(fmt or "auto")
+        base, key, str(mid or ""), str(fmt or "auto")
     )
     # 成功时也把「这次实际打到哪个端点、用了哪族格式」说清楚：auto 模式下
     # 用户看不到它猜了哪族，出问题无从下手。
-    result["configured_base_url"] = str(base or "").strip()
+    result["configured_base_url"] = base
     result["configured_model"] = str(mid or "").strip()
+    # 换了源又没给密钥时把话说明白，否则用户只看到莫名其妙的 401 会以为地址错。
+    if base and not key and not same_origin and saved_key:
+        result["key_hint"] = (
+            "目标地址与已保存的判定地址不同源，未携带已保存的 API 密钥；"
+            "如需鉴权请在上方填写该地址对应的密钥。"
+        )
     if not result["ok"]:
         logger.info(
             "[Quill] 决策模型连通性测试失败 | stage=%s url=%s model=%s | %s",

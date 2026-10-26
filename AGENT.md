@@ -128,9 +128,16 @@ astrbot_kb）→ `pages/panel/`（Web 面板前端）。
 
 - 插件 `__getattr__` 对未知属性抛 `AttributeError`：运行期读「可能未初始化的实例属性」
   必须 `getattr(self, "x", None)` 防御，不能直接 `self.x`。
-- `QuillConfig` **新增字段必须有归宿**：props.py 访问器 / 改名别名表 / `_LIVE_READ_FIELDS`
-  豁免（须写明理由）三选一；需要面板热生效的值还要在 `save_plugin_configs` 的热更新分支
-  同步到持有组件。
+- `QuillConfig` **新增字段必须有五个落点，缺一即失效**：`_conf_schema.json`（默认值与分组）→
+  `config.py`（`QuillConfig` 读取，`_safe_int/float/bool` 兜底）→ `props.py`（访问器，宿主侧
+  一律 `self.props.x`）→ `web_routes.py::_ALLOWED_CONFIG_KEYS`（面板读写白名单，漏登记则面板
+  改不动也读不到）→ 面板（`index.html` 控件 + `config.js` 的 `CFG_FIELDS` / `CFG_DEFAULTS`）。
+  两点易踩的坑：**「`_LIVE_READ_FIELDS` 豁免」与「改名别名表」在现行代码里都不存在**
+  （旧守卫已随 `tests/` 归档，见 §〇-6），不要按旧写法去找它们；`props` 全部实时读
+  `self.config`，`save_plugin_configs` 重建 config 引用后即全量生效。真正需要手工同步的是
+  **构造期被快照成普通属性的值**（如 `rag_retriever.top_k` / `enable_memory`、
+  `rag_kb_source.enabled` / `top_k`），必须加进 `main.py::save_plugin_configs` 的热更新分支，
+  否则面板上改了要重载插件才生效。
 - `self.context` 上的**可选属性**（如 `kb_manager`、`persona_manager`）一律 getattr 防御，
   兼容旧版 AstrBot。
 - `docs/`、`tools/`、CI 配置与已归档的 `tests/` 都**不在版本库**（本地保留，见 commit

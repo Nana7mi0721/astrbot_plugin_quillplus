@@ -295,7 +295,11 @@ class HealthTracker:
 
 @register(
     "astrbot_plugin_quillplus",
-    "Nana7mi0721 & Gemini & GLM & DeepSeek",
+    # 与 metadata.yaml 的 author 逐字一致：AstrBot 的 plugin_id 由 author/name
+    # 派生（star.py::plugin_id → f"{author}/{name}"），author 是**身份值**而不是
+    # 展示名。多作者展示串会让 plugin_id 变成一长串，与市场登记对不上；协作者
+    # 的致谢放在 README 鸣谢节。yaml 优先，这里只是 subclass 注册路径的兜底。
+    "Nana7mi0721",
     # 描述与 metadata.yaml desc 逐字一致（M4.1 单源化，原先此处是 v5.0 时代
     # 的五合一旧文案，与六合一漂移）；版本号取 quill/__init__.py 唯一真源，
     # 由 tools/check_version.py 静态对拍。

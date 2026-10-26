@@ -168,6 +168,7 @@
 | `injection_position` | `user_prefix` | `system_end` / `user_prefix`（推荐） |
 | `show_trigger_log` | `false` | 调试：查看最近命中词条 |
 | `always_activate` | `false` | 全局常驻激活 |
+| `card_embed_worldbook` | `true` | 导入 V2/V3 角色卡时，把卡内 `character_book` 转成世界书并绑定到新角色 |
 
 ### `[writing_resource]` — 写作素材库
 
@@ -211,6 +212,11 @@
 > （`noul`/`predicate`、`choice`、`score`），不生成文本；凭据独立配置、不经过 AstrBot 提供商
 > （决策模型没有 `chat/completions` 端点）；失败一律 fail-open。v5.3.2 及更早版本的 `jev_*` 三键会在
 > 新键缺省时被回退读取（开启状态与置信度阈值不丢）。
+>
+> **测试连接（v5.3.4 起的钥匙口径）**：面板「模型 ID」右侧的按钮会按当前填写的地址、密钥与模型真发一次
+> 判定请求。它只在**地址与已保存地址同源**时才回填已保存的密钥——把地址改成别处再点测试，请求里不会带上
+> 你的密钥（面板会提示「未携带已保存的密钥」）；地址只接受 `http://` / `https://`，其他协议直接拒绝、
+> 不发出任何请求。该操作计入管理员写操作，需 Dashboard 会话或 `admin_users` 白名单内的 API Key。
 
 ### `[debug]` / `[permissions]`
 

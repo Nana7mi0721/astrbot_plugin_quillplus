@@ -260,6 +260,28 @@ class QuillPersonaManager:
                 return True
         return False
 
+    async def _will_create_conflict(self, data: dict) -> bool:
+        """create_persona 是否**必然**因重名/重 ID/文件名冲突而拒绝这份数据。
+
+        Q3 修复用：只在「注定失败」时返回 True——判据逐条对齐 create_persona
+        的四个拒绝点（空名、重名、显式 ID 已存在、_sanitize_id 归一后文件名
+        已被占用），避免预检比建卡更严而误挡合法导入。空名也算冲突：建卡同样
+        会以 `角色名称 (name) 为必填项` 抛错，此时落盘的内嵌世界书会退化成一
+        本绑定不到任何卡的书（书名固定为「角色卡_内嵌」）。
+        """
+        name = (data.get("name") or "").strip()
+        if not name or await self._name_exists(name):
+            return True
+        persona_id = (data.get("id") or "").strip()
+        if not persona_id:
+            # 缺省 ID 由 create_persona 现场生成 12 位 hex，不会与既有卡撞车。
+            return False
+        if self._cache_loaded and persona_id in self._cache:
+            return True
+        return await asyncio.to_thread(
+            os.path.isfile, self._persona_path(persona_id)
+        )
+
     async def create_persona(self, data: dict) -> dict:
         """创建一张新的角色卡。返回保存后的数据。
 
@@ -453,6 +475,9 @@ class QuillPersonaManager:
         name = (str(_raw_name).strip() if _raw_name is not None else "") or "未命名角色"
         description = data.get("description", "")
         personality = data.get("personality", "")
+        # Q4-3：留一份改造前的 personality 快照——下面的 _sp/_ph 合并会往里塞
+        # 【系统提示】/【后置指令】块，那段文字不适合当角色卡简介。
+        _raw_personality = personality
         scenario = data.get("scenario", "")
         first_mes = data.get("first_mes", "")
         mes_example = data.get("mes_example", "")
@@ -502,9 +527,21 @@ class QuillPersonaManager:
         if isinstance(ext_block, dict) and isinstance(ext_block.get("quillplus"), dict):
             qp = ext_block["quillplus"] or {}
 
+        # Q4-3 修复：description 是 V2 的简介主来源，但 V3 卡常把设定整段塞进
+        # character_book / system_prompt，description 留空——旧写法 summary 恒为空
+        # 串，面板角色卡列表就只剩一个名字。按 description → creator_notes →
+        # personality（改造前快照）依次回退，取到第一段非空文本为止，都空才留空。
+        # 顺带统一 str()：`description` 脏成列表时旧代码的切片结果不是字符串，
+        # 到 create_persona 的 `.strip()` 会抛 AttributeError。
+        _sum_src = str(description or "").strip()
+        if not _sum_src:
+            _sum_src = str(data.get("creator_notes") or "").strip()
+        if not _sum_src:
+            _sum_src = str(_raw_personality or "").strip()
+
         out = {
             "name": name,
-            "summary": description[:500] if description else "",
+            "summary": _sum_src[:500],
             "core_prompts": {
                 "personality": personality,
                 "scenario": scenario,
@@ -683,7 +720,21 @@ class QuillPersonaManager:
             if not isinstance(data, dict):
                 raise ValueError("剪贴板 JSON 根不是对象")
             # Issue #1：V3 卡剪贴板导入与文件导入同口径放行
-            if data.get("spec") in ("chara_card_v2", "chara_card_v3"):
+            #
+            # Q4-2 修复：此前只认 spec 字段，而 parse_v2_card 的准入口径宽得多
+            # （无 spec 但有 data / 扁平字段 / 标准字段的卡都收）。同一张卡
+            # 存成文件能导、粘到剪贴板却掉进纯文本正则分支——正则只认
+            # `Name = ...` 这种形态，JSON 粘进去的结果是一张「未命名角色」，
+            # 设定整段丢失且没有任何报错。这里与 parse_v2_card 的判据对齐：
+            # 任一特征命中即当 V2/V3 卡解析。
+            if (
+                data.get("spec") in ("chara_card_v2", "chara_card_v3")
+                or isinstance(data.get("data"), dict)
+                or any(k in data for k in (
+                    "first_mes", "mes_example", "character_book",
+                    "personality", "description", "creator_notes", "name",
+                ))
+            ):
                 return self.parse_v2_card(text.encode('utf-8'), is_image=False)
         except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
             logger.debug("[QuillPersona] 剪贴板文本非 V2 JSON，降级为纯文本解析", exc_info=True)
@@ -734,9 +785,24 @@ class QuillPersonaManager:
         返回 None（角色卡仍导入，与头像保存失败同一姿态）。create_persona 若失败，
         已落盘的世界书保留不回收：书名由卡名派生，可能与既有同名卡共用同一本，
         自动删除会误伤既有绑定。
+
+        Q3 修复（数据破坏）：落盘与建卡是两步，而**重名/重 ID 只会在第二步被
+        拒绝**。于是「导入一张与库中同名的卡」会先覆盖掉旧卡的同名内嵌世界书
+        （用户可能已手工微调过），再被 `create_persona` 以 400 打回——导入失败
+        了，旧书却已被毁。这里在落盘前先跑一遍与 create_persona 完全同判据的
+        预检（空名 / 重名 / 显式 ID 冲突 / 文件名冲突），注定失败的导入绝不
+        提前写盘。判据必须与 create_persona 保持一致，否则会出现「预检放过、
+        建卡拒绝」的同一坑，或反过来让本来能成功的导入被误挡。
         """
         book = persona_data.pop("_character_book", None)
         if not enabled or wb_manager is None or not isinstance(book, dict):
+            return None
+        if await self._will_create_conflict(persona_data):
+            # 不记录名字本身：日志会进用户可读的后端日志，卡名属内容。
+            logger.info(
+                "[QuillPersona] 目标角色卡与既有卡冲突，跳过内嵌世界书转换"
+                "（避免覆盖已绑定的世界书）"
+            )
             return None
         try:
             wb_info = await asyncio.to_thread(

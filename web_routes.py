@@ -24,7 +24,7 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("worldbook", "enabled"), ("worldbook", "max_dynamic_entries"),
     ("worldbook", "max_token_limit"), ("worldbook", "match_sensitivity"),
     ("worldbook", "injection_position"), ("worldbook", "show_trigger_log"),
-    ("worldbook", "always_activate"),
+    ("worldbook", "always_activate"), ("worldbook", "card_embed_worldbook"),
     # writing_resource
     ("writing_resource", "enabled"), ("writing_resource", "max_entries"),
     ("writing_resource", "fallback_top_count"), ("writing_resource", "category_dedup_limit"),
@@ -210,6 +210,9 @@ _MUTATING_ROUTES: frozenset = frozenset({
     "persona_create", "persona_update", "persona_delete", "upload_avatar",
     "persona_import", "persona_import_text", "persona_astrbot_import",
     "backup_restore", "backup_restore_base64",
+    # Q1：连通性测试**会真实发出站外请求**（可能携带已保存的判定密钥），
+    # 是一等一的「借用户之手打内网 / 外带凭据」的入口，必须与写操作同级设防。
+    "decision_probe",
 })
 
 #: H2 修复：AstrBot 用该前缀把「API Key 调用」与「Dashboard 登录会话」区分开

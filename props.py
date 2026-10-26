@@ -78,6 +78,15 @@ class QuillConfigProperties:
         """
         return self._plugin.config.worldbook_always_activate
 
+    @property
+    def worldbook_card_embed_import(self) -> bool:
+        """角色卡导入是否自动转换内嵌世界书（config.worldbook.card_embed_worldbook）。
+
+        三个导入入口（面板的两个 persona_import*、指令 _char_import）共用同
+        一个开关；默认 True——卡自带 character_book 时静默丢弃才是意外行为。
+        """
+        return self._plugin.config.worldbook_card_embed_import
+
     # ── prompt ────────────────────────────────────────────────────
 
     @property
