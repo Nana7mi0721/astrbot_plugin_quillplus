@@ -33,6 +33,14 @@
    `.backup/tests_v5.3.2_unit_regression/`，不许搬回工作区，也不许新写同类测试。
    任何新增测试必须是端到端测试——定义、落点与验收纪律见 §五。
    **只改代码不跑 E2E 等于没做**。
+7. **只能修改插件源码，禁止修改 AstrBot 实例的任何状态。** 包括但不限于：配置档
+   （`data/config/abconf_*.json`、`cmd_config.json`）、路由表 / 共享首选项
+   （`data_v4.db` 的 `preferences`）、平台与会话配置、插件开关、白名单。
+   即使诊断出「问题出在 AstrBot 配置」也只**报告**，由用户自己改。
+   原由：2026-10-26 排查 onebot 指令失效时直接改了用户的配置档 `wake_prefix`，
+   属于越界改动用户环境。E2E 需要临时改动实例状态时，必须**先取得用户明确同意**，
+   且备份 → `finally` 还原 → 回读校验（参考 `.build/harness/quilltest/gates.py` 的
+   `RouteFlip`），还原后确认与备份逐字节一致。
 
 ---
 

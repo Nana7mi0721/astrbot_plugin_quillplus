@@ -119,6 +119,80 @@ def _split2(text: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+# 未唤醒场景的 /指令 兜底（群聊，或配置档把唤醒词清空时）。
+# wake_prefix 列表为空时 core/pipeline/waking_check/stage.py 的
+# `for wake_prefix in wake_prefixes` 整个循环不进入；群聊消息又没有 @/回复时
+# is_wake 始终为假，该阶段末尾 `if is_wake: ... else: event.stop_event()` 会把
+# 整条消息丢弃——指令处理器连被匹配的机会都没有（CommandFilter.filter 首行就是
+# `if not event.is_at_or_wake_command: return False`）。
+# RegexFilter 是全框架唯一不检查唤醒状态的过滤器（core/star/filter/regex.py），
+# 且它通过这一事实本身会让唤醒检查把 is_wake 置真、事件得以继续流转，故用它兜底。
+# 只认「消息以 /指令名 开头」，命中后复用同一套 dispatch：参数解析、权限门、
+# 输出格式全部不变。命中时 is_at_or_wake_command 仍为假，ProcessStage 不会接着
+# 调 LLM，所以 /char 不会被当成普通聊天再答一遍。
+_SLASH_CMD_RE = re.compile(r"^/(wb|char|quill|memory|doc|stream|reinject)(?=\s|$)")
+
+
+class _UnwokenSlashFilter(filter.CustomFilter):
+    """未唤醒时的 /指令 兜底门。
+
+    只在 `is_at_or_wake_command` 为假时放行：该标志为真说明正常唤醒路径已经
+    接管（私聊、群聊 @ 机器人、或唤醒词命中），此时再放行会让同一条指令被派发
+    两次——StarRequestSubStage 逐个执行 activated_handlers，每个 handler 各自
+    走到发送阶段，用户会收到两条一模一样的回复。
+
+    保留 `raise_error` 形参：register_custom_filter 会以位置参数实例化本类
+    （`custom_filter(raise_error)`），签名不符会直接注册失败。
+    """
+
+    def filter(self, event: AstrMessageEvent, cfg) -> bool:
+        if event.is_at_or_wake_command:
+            return False
+        return bool(_SLASH_CMD_RE.match((event.get_message_str() or "").strip()))
+
+
+async def _quill_dispatch(plugin, event: AstrMessageEvent, args: str) -> None:
+    """/quill 的子命令分发（三条入口共用：/quill、/quill 兜底）。
+
+    抽成模块级而非留在方法里：正常入口与未唤醒兜底走的是同一份分发，
+    避免两处各写一遍后逐渐漂移（此前 /quill test 的 system 白名单就只在一处）。
+    """
+    arg1, rest = _split2(args)
+    arg1_lower = (arg1 or "").strip().lower()
+    if arg1_lower == "help":
+        await _cmds.quill_help(event)
+        return
+    if arg1_lower == "reset":
+        await _cmds.quill_reset(plugin, event)
+        return
+    if arg1_lower == "debug":
+        await _cmds.quill_debug(plugin, event)
+        return
+    if arg1_lower == "statusbar":
+        await _cmds.statusbar_dispatch(plugin, event, rest)
+        return
+    if arg1_lower == "test":
+        text = (rest or "").strip()
+        # 解析: /quill test wr <文字> 或 /quill test <文字>
+        # M1b-Fix P1-e：kb 分支（AstrBot 内置知识库）并入 system 白名单
+        parts = text.split(None, 1) if text else []
+        if len(parts) >= 2 and parts[0].lower() in ("wr", "wb", "mem", "kb"):
+            system = parts[0]
+            test_text = parts[1]
+        else:
+            system = "wr"
+            test_text = text
+        if not test_text:
+            from astrbot.api.event import MessageEventResult
+            event.set_result(
+                MessageEventResult().message("用法: /quill test <wr|wb|mem|kb> <文字>")
+            )
+            return
+        await _cmds.quill_test(plugin, event, system, test_text)
+        return
+    await _cmds.quill_status(plugin, event)
+
+
 # P1-8: 核心记忆自然语言注入前缀匹配
 # 支持: @记住：内容 | 记住：内容 | 核心记忆：内容 | @remember: content
 _CORE_MEMORY_NL_RE = re.compile(
@@ -2198,72 +2272,99 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     # ================================================================
     # 用户指令
     # ================================================================
+    #
+    # 斜杠别名（每个指令都挂一个 "/同名"）：
+    # AstrBot 的指令匹配只在 wake_prefix 命中时才剥掉开头的唤醒词
+    # （core/pipeline/waking_check/stage.py：`for wake_prefix in wake_prefixes`
+    # 在列表为空时整个循环不进入），随后 core/star/filter/command.py 用
+    # `message_str.startswith(full_cmd + " ") or == full_cmd` 做匹配。
+    # 于是唤醒词被清空的配置档下，消息原文的 "/" 原样留着，"/char" 永远
+    # 匹配不上 "char"——指令静默失效、消息被当成普通聊天交给 LLM，而
+    # 本插件的 /quill help 与全部文档写的都是带斜杠的形式。
+    # 补别名让匹配层同时接受两种写法：唤醒前缀正常剥离时 "char" 命中，
+    # 未剥离时 "/char" 命中别名。只影响名字匹配，不改参数解析、不改
+    # 权限判断、不碰消息原文。
 
-    @filter.command("wb")
+    @filter.command("wb", alias={"/wb"})
     async def cmd_wb(self, event: AstrMessageEvent, args: GreedyStr):
         """世界书管理。用法：/wb | /wb bind <序号|名字> | /wb unbind <序号|名字> | /wb info <序号|名字> | /wb reload"""
         arg1, arg2 = _split2(args)
         await _cmds.wb_dispatch(self, event, arg1, arg2)
 
-    @filter.command("char")
+    @filter.command("char", alias={"/char"})
     async def cmd_char(self, event: AstrMessageEvent, args: GreedyStr):
         """角色卡管理。用法：/char | /char <序号|名字> | /char unset | /char info [序号|名字] | /char export [序号|名字] | /char import <JSON>"""
         await _cmds.char_dispatch(self, event, args)
 
-    @filter.command("quill")
+    @filter.command("quill", alias={"/quill"})
     async def cmd_quill(self, event: AstrMessageEvent, args: GreedyStr):
         """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill debug | /quill statusbar [on|off|auto] | /quill test <wr|wb|mem|kb> <文字>"""
-        arg1, rest = _split2(args)
-        arg1_lower = (arg1 or "").strip().lower()
-        if arg1_lower == "help":
-            await _cmds.quill_help(event)
-            return
-        if arg1_lower == "reset":
-            await _cmds.quill_reset(self, event)
-            return
-        if arg1_lower == "debug":
-            await _cmds.quill_debug(self, event)
-            return
-        if arg1_lower == "statusbar":
-            await _cmds.statusbar_dispatch(self, event, rest)
-            return
-        if arg1_lower == "test":
-            text = (rest or "").strip()
-            # 解析: /quill test wr <文字> 或 /quill test <文字>
-            # M1b-Fix P1-e：kb 分支（AstrBot 内置知识库）并入 system 白名单
-            parts = text.split(None, 1) if text else []
-            if len(parts) >= 2 and parts[0].lower() in ("wr", "wb", "mem", "kb"):
-                system = parts[0]
-                test_text = parts[1]
-            else:
-                system = "wr"
-                test_text = text
-            if not test_text:
-                from astrbot.api.event import MessageEventResult
-                event.set_result(MessageEventResult().message("用法: /quill test <wr|wb|mem|kb> <文字>"))
-                return
-            await _cmds.quill_test(self, event, system, test_text)
-            return
-        await _cmds.quill_status(self, event)
+        await _quill_dispatch(self, event, args)
 
-    @filter.command("memory")
+    @filter.command("memory", alias={"/memory"})
     async def cmd_memory(self, event: AstrMessageEvent, args: GreedyStr):
         """动态记忆管理。用法：/memory | /memory list [页码] | /memory del <序号> | /memory clear | /memory learn [内容] | /memory search <关键词> | /memory pin <序号> [on|off] | /memory core <内容>"""
         arg1, arg2 = _split2(args)
         await _cmds.memory_dispatch(self, event, arg1, arg2)
 
-    @filter.command("doc")
+    @filter.command("doc", alias={"/doc"})
     async def cmd_doc(self, event: AstrMessageEvent, args: GreedyStr):
         """外部文档 RAG 管理。用法：/doc list | /doc bind <序号> | /doc unbind <序号> | /doc search <关键词> | /doc reload"""
         arg1, arg2 = _split2(args)
         await _cmds.doc_dispatch(self, event, arg1, arg2)
 
-    @filter.command("stream")
+    @filter.command("stream", alias={"/stream"})
     async def cmd_stream(self, event: AstrMessageEvent, arg: str = ""):
         """流式模式控制。用法：/stream on|off|auto"""
         await _cmds.stream_dispatch(self, event, arg)
 
-    @register_command("reinject", alias={"重新注入"})
+    @register_command("reinject", alias={"重新注入", "/reinject"})
     async def cmd_reinject(self, event: AstrMessageEvent):
         """强制重置注入状态，下次激活重新注入全部常驻素材。用法：/reinject"""
         await _cmds.reinject_dispatch(self, event)
+
+    # ================================================================
+    # 未唤醒时的 /指令 兜底
+    # ================================================================
+    #
+    # 与上面 7 个 @filter.command 是**同一套 dispatch 的第二条入口**，不是新指令：
+    # 参数解析、权限门（_check_group_permission）、输出格式全部复用，差别只在
+    # 「怎么被唤醒」。上面那批由 CommandFilter 匹配，而 CommandFilter 首行
+    # 就要求 is_at_or_wake_command 为真；本处理器用 CustomFilter 自己判条件，
+    # 因此在唤醒检查把事件丢弃之前就能拿到它（见 _UnwokenSlashFilter 的注释）。
+    #
+    # 参数只能自己从消息原文里切：CustomFilter 不参与框架的参数解析
+    # （那是 CommandFilter 的职责），event.get_message_str() 就是「/char 1」本身。
+
+    @filter.custom_filter(_UnwokenSlashFilter)
+    async def cmd_slash_fallback(self, event: AstrMessageEvent):
+        """未唤醒时接管 /wb /char /quill /memory /doc /stream /reinject。"""
+        text = (event.get_message_str() or "").strip()
+        name, args = _split2(text[1:])  # 去掉开头的 "/"
+        try:
+            if name == "wb":
+                arg1, arg2 = _split2(args)
+                await _cmds.wb_dispatch(self, event, arg1, arg2)
+            elif name == "char":
+                await _cmds.char_dispatch(self, event, args)
+            elif name == "quill":
+                await _quill_dispatch(self, event, args)
+            elif name == "memory":
+                arg1, arg2 = _split2(args)
+                await _cmds.memory_dispatch(self, event, arg1, arg2)
+            elif name == "doc":
+                arg1, arg2 = _split2(args)
+                await _cmds.doc_dispatch(self, event, arg1, arg2)
+            elif name == "stream":
+                await _cmds.stream_dispatch(self, event, args)
+            elif name == "reinject":
+                await _cmds.reinject_dispatch(self, event)
+        except Exception:
+            # 兜底入口失败不能让整条消息无声无息地消失（正常情况下事件已被
+            # 唤醒检查丢弃，用户本来什么都收不到），至少回一句让用户知道。
+            logger.error("[Quill] 未唤醒指令兜底执行失败", exc_info=True)
+            from astrbot.api.event import MessageEventResult
+            event.set_result(
+                MessageEventResult().message("指令执行出错，详情见 AstrBot 日志。")
+                .use_markdown(False)
+            )
