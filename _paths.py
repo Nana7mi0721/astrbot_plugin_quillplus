@@ -60,8 +60,8 @@ _MIGRATIONS = (
     ("data", ("quill_state.json", "quill_personas", "quill_avatars")),
 )
 
-# 素材库种子：随插件分发的预置写作指引库（145 条，README 承诺的开箱内容，
-# 全新安装的素材库不再为空）。只在运行目录里连旧版 ``quill_kb.db`` 都没有
+# 素材库种子：随插件分发的预置写作指引库（65 条通用写作指引，README 承诺的开箱
+# 内容，全新安装的素材库不再为空）。只在运行目录里连旧版 ``quill_kb.db`` 都没有
 # 时播种一次——旧库在场说明是老用户升级，其改名迁移由 main.initialize 负责，
 # 提前播 ``quill_wr.db`` 会把旧库遮蔽成孤儿文件。已存在的用户数据一律不覆盖。
 _SEED_KNOWLEDGE_FILES = ("quill_wr.db",)
