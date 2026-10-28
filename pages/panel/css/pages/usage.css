@@ -1,0 +1,13 @@
+/* M2：复用页头、卡片、分组表单、表格与分页；只保留用量页特有的宽表约束。 */
+#pane-usage .cfg-row-text { min-width: 0; }
+#pane-usage .cfg-row-control { max-width: 60%; }
+#pane-usage .cfg-row-control > .field,
+#pane-usage .cfg-row-control > .sel-wrap { max-width: 100%; }
+#pane-usage .dash-grid { margin-bottom: var(--sp-4); }
+#pane-usage .table-wrap + .note { margin-top: var(--sp-3); }
+#pane-usage .usage-empty { text-align: center; }
+#pane-usage th, #pane-usage td { white-space: nowrap; }
+#pane-usage .cell-truncate { max-width: 180px; }
+#pane-usage .card:first-child .cell-truncate { max-width: 480px; }
+#pane-usage #usage-results { margin-top: var(--sp-4); }
+#pane-usage .dash-value { line-height: 30px; }

@@ -76,6 +76,8 @@ function enhanceSelectAsSegmented(sel) {
     const on = b.dataset.value === sel.value;
     b.classList.toggle("is-selected", on);
     b.setAttribute("aria-checked", on ? "true" : "false");
+    b.disabled = !!sel.disabled;
+    wrap.setAttribute("aria-disabled", sel.disabled ? "true" : "false");
   });
 
   const parent = sel.parentNode;
@@ -84,6 +86,7 @@ function enhanceSelectAsSegmented(sel) {
   sel.setAttribute("aria-hidden", "true");
 
   wrap.addEventListener("click", (e) => {
+    if (sel.disabled) return;
     const b = e.target.closest("button");
     if (!b || b.dataset.value === sel.value) return;
     sel.value = b.dataset.value;
@@ -92,6 +95,7 @@ function enhanceSelectAsSegmented(sel) {
   });
   // 键盘：左右方向键在分段间移动（HIG 分段控件行为），Home/End 到首尾
   wrap.addEventListener("keydown", (e) => {
+    if (sel.disabled) return;
     const i = btns.indexOf(document.activeElement);
     if (i < 0) return;
     let j = -1;
@@ -122,6 +126,7 @@ function enhanceSelectAsSegmented(sel) {
   }
 
   sel._selApi = api;
+  sync();
   sel.dataset.enhanced = "1";
   // 选项被外部改写（如后端下发新配置）时同步选中态，与下拉的 MutationObserver 对齐
   new MutationObserver(sync).observe(sel, { childList: true, subtree: true, attributes: true });

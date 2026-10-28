@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import sqlite3
+import asyncio
+from uuid import uuid4
 import aiosqlite
 
 import numpy as np
@@ -23,6 +25,13 @@ except ImportError:  # 直接运行本文件时无父包
 
 from astrbot.api import logger
 
+try:
+    from .._schema import prepare_database, finish_database
+    from ..quill.services.scope import current_turn, memory_session_prefix, memory_session_key
+except ImportError:  # 与已有存储组件一致，保留顶层脚本的导入方式。
+    from _schema import prepare_database, finish_database
+    from quill.services.scope import current_turn, memory_session_prefix, memory_session_key
+
 
 class MemoryStore:
     """动态记忆存储：SQLite + BLOB 向量 + NumPy 余弦相似度。
@@ -41,158 +50,359 @@ class MemoryStore:
         self._lock = ReentrantLock()
         self._cache = OrderedDict()
         self._MAX_CACHE = 50
+        self._generation = 0
+        self._writable = False
+        self.schema_status = {}
 
     # F4 修复：SQLite 共享连接（check_same_thread=False）必须由调用方串行化。
     # 以下三个辅助方法统一在 self._lock 保护下执行 execute+commit/fetch。
     async def initialize(self):
         self._conn = await aiosqlite.connect(self.db_path, timeout=10.0)
-        await self._init_db()
+        try:
+            self.schema_status = await prepare_database(self._conn, self.db_path, "memory")
+            await self._init_db()
+            self._writable = True
+        except BaseException as exc:
+            self.schema_status = {"available": False, "error": type(exc).__name__, **getattr(exc,"context",{})}
+            await self._conn.close()
+            self._conn = None
+            raise
+
+    async def _exec_tx(self, operation):
+        """同锁内一次事务；回调只使用传入连接，不调用会自行提交的辅助方法。"""
+        async with self._lock:
+            if not self._writable or self._conn is None:
+                raise StorageError("记忆库不可写，请检查数据库版本与初始化告警")
+            if self._conn.in_transaction:
+                # 重入调用在 BEGIN 之前拒绝，绝不能回滚调用者已经执行的外层写入。
+                raise StorageError("禁止嵌套记忆库事务", detail="nested_transaction")
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                result = await operation(self._conn)
+                await self._conn.commit()
+            except BaseException as failure:
+                # 取消不能留下挂起事务；回滚失败也不能覆盖最初的存储/取消异常。
+                rollback = asyncio.create_task(self._conn.rollback())
+                while not rollback.done():
+                    try:
+                        await asyncio.shield(rollback)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                try:
+                    rollback.result()
+                except BaseException as exc:
+                    logger.error("[Quill Memory] 事务回滚失败: %s", type(exc).__name__)
+                if isinstance(failure, sqlite3.Error):
+                    raise StorageError('记忆库事务未完成，请检查存储状态',detail=type(failure).__name__) from failure
+                raise
+            # 提交成功后才推进缓存世代；失败保持旧世代与旧缓存。
+            self._generation += 1
+            self._cache.clear()
+            return result
 
     async def _exec_write(self, sql: str, params=()) -> aiosqlite.Cursor:
-        """执行写操作并提交，返回 cursor（线程安全）"""
-        async with self._lock:
-            cur = await self._conn.execute(sql, params)
-            await self._conn.commit()
-            return cur
+        async def write(connection):
+            return await connection.execute(sql, params)
+        return await self._exec_tx(write)
 
     async def _exec_fetchall(self, sql: str, params=()) -> list:
         """执行读操作并 fetchall，返回行列表（线程安全）"""
         async with self._lock:
+            self._require_readable()
             cur = await self._conn.execute(sql, params)
             return await cur.fetchall()
 
     async def _exec_fetchone(self, sql: str, params=()):
         """执行读操作并 fetchone，返回单行或 None（线程安全）"""
         async with self._lock:
+            self._require_readable()
             cur = await self._conn.execute(sql, params)
             return await cur.fetchone()
 
+    def _require_readable(self):
+        if self._conn is None:
+            raise StorageError("记忆库暂不可用，不能将读取失败视为空数据", detail="store_unavailable")
+
     async def _init_db(self):
-        """初始化 SQLite 表（复用长连接）。"""
         async with self._lock:
             await self._conn.execute("PRAGMA journal_mode=WAL")
             await self._conn.execute("PRAGMA busy_timeout=5000")
-            await self._conn.execute("""
-                CREATE TABLE IF NOT EXISTS memories (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    chat_summary TEXT DEFAULT '',
-                    vector BLOB NOT NULL,
-                    dim INTEGER NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)")
-            await self._conn.execute("""
-                CREATE TABLE IF NOT EXISTS chat_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-                    content TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_session ON chat_logs(session_id)")
-            await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_ts ON chat_logs(timestamp)")
-            
-            # ── FTS5 分词器迁移：unicode61 → trigram ──
-            # `CREATE ... IF NOT EXISTS` 不会改变已存在表的 tokenizer，老库必须
-            # 显式重建。unicode61 把整句连续中文当成一个 token，子串查询恒不命中
-            # （实测：整句入库后 MATCH '生日' 得 0 行），记忆检索的关键词通道
-            # 因此形同虚设，全靠向量通道兜底。
-            # 重建后由下方回填逻辑（COUNT==0 分支）重新灌数据。
             try:
-                cur = await self._conn.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_fts'"
-                )
-                row = await cur.fetchone()
+                await self._conn.execute("BEGIN IMMEDIATE")
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+                    summary TEXT NOT NULL, chat_summary TEXT DEFAULT '', vector BLOB NOT NULL,
+                    dim INTEGER NOT NULL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS chat_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('user','assistant')), content TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+                additions = {
+                    "memories": {"tags": "TEXT DEFAULT '[]'", "strength": "INTEGER DEFAULT 10",
+                                 "useful_count": "INTEGER DEFAULT 0", "useful_score": "REAL DEFAULT 0.0",
+                                 "is_active": "INTEGER DEFAULT 0", "is_core": "INTEGER DEFAULT 0",
+                                 "record_id": "TEXT", "source_ref": "TEXT DEFAULT 'legacy'",
+                                 "source_start_id": "INTEGER", "source_end_id": "INTEGER",
+                                 "trust_level": "TEXT DEFAULT 'derived'", "process_status": "TEXT DEFAULT 'ready'",
+                                 "created_at": "TEXT"},
+                    "chat_logs": {"record_id": "TEXT", "origin_ref": "TEXT", "turn_id": "TEXT",
+                                  "actor_id": "TEXT", "process_status": "TEXT DEFAULT 'recorded'"},
+                }
+                for table, fields in additions.items():
+                    columns = {r[1] for r in await (await self._conn.execute(f"PRAGMA table_info({table})")).fetchall()}
+                    for name, definition in fields.items():
+                        if name not in columns:
+                            await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+                    await self._conn.execute(f"UPDATE {table} SET record_id=lower(hex(randomblob(16))) WHERE record_id IS NULL")
+                    await self._conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {table}_record_id ON {table}(record_id)")
+                await self._conn.execute("UPDATE memories SET created_at=timestamp WHERE created_at IS NULL")
+                await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)")
+                await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_session ON chat_logs(session_id)")
+                await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_ts ON chat_logs(timestamp)")
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS summary_watermarks (
+                    session_id TEXT PRIMARY KEY, last_log_id INTEGER NOT NULL DEFAULT 0 CHECK(last_log_id>=0),
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS summary_batches (
+                    batch_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, after_id INTEGER NOT NULL,
+                    through_id INTEGER NOT NULL, memory_record_id TEXT,
+                    status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(session_id,after_id,through_id))""")
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS session_generations (
+                    session_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0)""")
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS reflection_watermarks (
+                    session_id TEXT PRIMARY KEY, last_log_id INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS persistent_operations (
+                    operation_id TEXT PRIMARY KEY, kind TEXT NOT NULL, session_id TEXT NOT NULL,
+                    status TEXT NOT NULL, phase TEXT NOT NULL, payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+                row = await (await self._conn.execute("SELECT sql FROM sqlite_master WHERE name='memories_fts'")).fetchone()
                 if row and row[0] and "trigram" not in row[0].lower():
-                    logger.info("[Quill Memory] memories_fts 分词器升级为 trigram，重建索引")
-                    # 触发器跟着一起删：它们引用的是 memories_fts，
-                    # 重建表后需要重新创建（下方 CREATE TRIGGER IF NOT EXISTS 会补上）。
-                    for trg in ("memories_ai", "memories_ad", "memories_au"):
-                        await self._conn.execute(f"DROP TRIGGER IF EXISTS {trg}")
-                    await self._conn.execute("DROP TABLE IF EXISTS memories_fts")
-                    await self._conn.commit()
-            except Exception as e:
-                logger.warning("[Quill Memory] FTS 分词器迁移失败，沿用原表: %s", e, exc_info=True)
+                    for trigger in ("memories_ai", "memories_ad", "memories_au"):
+                        await self._conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+                    await self._conn.execute("DROP TABLE memories_fts")
+                await self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(summary, content, tokenize='trigram')")
+                for suffix, event, body in (
+                    ("ai", "INSERT", "INSERT INTO memories_fts(rowid,summary,content) VALUES(new.id,new.summary,new.chat_summary);"),
+                    ("ad", "DELETE", "DELETE FROM memories_fts WHERE rowid=old.id;"),
+                    ("au", "UPDATE", "DELETE FROM memories_fts WHERE rowid=old.id; INSERT INTO memories_fts(rowid,summary,content) VALUES(new.id,new.summary,new.chat_summary);"),
+                ):
+                    await self._conn.execute(f"CREATE TRIGGER IF NOT EXISTS memories_{suffix} AFTER {event} ON memories BEGIN {body} END")
+                # 只补漏行，不在每次启动重建或重写已存数据。
+                await self._conn.execute("INSERT INTO memories_fts(rowid,summary,content) SELECT id,summary,chat_summary FROM memories WHERE id NOT IN (SELECT rowid FROM memories_fts)")
+                from .scope_store import create_scope_tables
+                await create_scope_tables(self._conn)
+                self.schema_status["previous_version"]=self.schema_status["version"]
+                self.schema_status["version"]=await finish_database(self._conn,kind="memory")
+            except BaseException:
+                await self._conn.rollback()
+                raise
 
-            await self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(summary, content, tokenize='trigram');")
-            # Create triggers to sync FTS
-            await self._conn.execute('''
-            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-              INSERT INTO memories_fts(rowid, summary, content) VALUES (new.id, new.summary, new.chat_summary);
-            END;
-            ''')
-            await self._conn.execute('''
-            CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-              DELETE FROM memories_fts WHERE rowid = old.id;
-            END;
-            ''')
-            await self._conn.execute('''
-            CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-              DELETE FROM memories_fts WHERE rowid = old.id;
-              INSERT INTO memories_fts(rowid, summary, content) VALUES (new.id, new.summary, new.chat_summary);
-            END;
-            ''')
-            await self._conn.commit()
-
-            # Backfill FTS5（直连 self._conn 的既有写法保持不变）
-            try:
-                cur = await self._conn.execute("SELECT COUNT(*) FROM memories_fts")
-                row = await cur.fetchone()
-                if row and row[0] == 0:
-                    await self._conn.execute("INSERT INTO memories_fts(rowid, summary, content) SELECT id, summary, chat_summary FROM memories")
-                    await self._conn.commit()
-            except Exception as e:
-                logger.warning("[Quill Memory] _init_db FTS5 回填失败: %s", e, exc_info=True)
-
-            # Schema 热迁移：新增记忆质量管理字段（兼容老数据库）
-            for stmt in (
-                "ALTER TABLE memories ADD COLUMN tags TEXT DEFAULT '[]'",
-                "ALTER TABLE memories ADD COLUMN strength INTEGER DEFAULT 10",
-                "ALTER TABLE memories ADD COLUMN useful_count INTEGER DEFAULT 0",
-                "ALTER TABLE memories ADD COLUMN useful_score REAL DEFAULT 0.0",
-                "ALTER TABLE memories ADD COLUMN is_active INTEGER DEFAULT 0",
-                "ALTER TABLE memories ADD COLUMN is_core INTEGER DEFAULT 0",
-            ):
-                try:
-                    await self._conn.execute(stmt)
-                except sqlite3.OperationalError as e:
-                    if "duplicate column" not in str(e).lower():
-                        raise
-            await self._conn.commit()
-
-    
     async def _invalidate_cache(self, session_id: str):
         if session_id in self._cache:
             del self._cache[session_id]
 
-    async def update_core_memory(self, session_id: str, new_traits: str, crucial_facts: str):
-        await self._invalidate_cache(session_id)
-        # 审查修复：只更新"系统核心行"（vector 为空、由本方法/反思循环写入），
-        # 不碰用户通过 /memory pin 或面板钉住的普通记忆行（那些行带向量）。
-        # 此前无过滤 + rows[0]（最小 rowid）会把用户已 pin 的记忆静默覆盖。
-        rows = await self._exec_fetchall(
-            "SELECT id FROM memories WHERE session_id = ? AND is_core = 1 AND length(vector) = 0 "
-            "ORDER BY id LIMIT 1",
-            (session_id,)
-        )
-        core_content = json.dumps({"traits": new_traits, "facts": crucial_facts}, ensure_ascii=False)
-        if rows:
-            await self._exec_write("UPDATE memories SET summary = ?, timestamp = CURRENT_TIMESTAMP WHERE id = ?", (core_content, rows[0][0]))
-        else:
-            await self._exec_write("INSERT INTO memories (session_id, summary, vector, dim, is_core) VALUES (?, ?, ?, ?, ?)", (session_id, core_content, b'', 0, 1))
+    async def get_summary_progress(self, session_id: str) -> dict:
+        async with self._lock:
+            row = await self._exec_fetchone("SELECT last_log_id FROM summary_watermarks WHERE session_id=?", (session_id,))
+            generation = await self._exec_fetchone("SELECT generation FROM session_generations WHERE session_id=?", (session_id,))
+            return {"session_id": session_id, "last_log_id": row[0] if row else 0,
+                    "generation": generation[0] if generation else 0, "initialized": row is not None}
 
+    async def ensure_summary_progress(self, session_id: str, legacy_last_id: int = 0):
+        # 只接管首次所属角色的旧游标；以后删记忆、清日志都不倒退水位。
+        await self._exec_write(
+            "INSERT OR IGNORE INTO summary_watermarks(session_id,last_log_id) VALUES(?,?)",
+            (session_id, max(0, int(legacy_last_id))))
+        return await self.get_summary_progress(session_id)
+
+    async def commit_summary_batch(self, session_id: str, after_id: int, through_id: int,
+                                   *, summary="", vector=None, chat_summary="",
+                                   expected_generation: int, outcome="stored"):
+        if through_id <= after_id or after_id < 0:
+            raise ValueError("总结日志范围无效")
+        record_id = uuid4().hex if summary and vector else None
+        async def commit(connection):
+            generation = await (await connection.execute(
+                "SELECT generation FROM session_generations WHERE session_id=?", (session_id,))).fetchone()
+            if (generation[0] if generation else 0) != expected_generation:
+                raise StorageError("会话已重置或清理，本次旧总结已取消")
+            row = await (await connection.execute(
+                "SELECT last_log_id FROM summary_watermarks WHERE session_id=?", (session_id,))).fetchone()
+            current = row[0] if row else 0
+            if current >= through_id:
+                return {"applied": False, "already_consumed": True, "memory_record_id": None}
+            if current != after_id:
+                raise StorageError("总结水位已变化，请重新读取未消费日志")
+            if record_id:
+                await connection.execute("""INSERT INTO memories
+                    (session_id,summary,chat_summary,vector,dim,record_id,source_ref,
+                     source_start_id,source_end_id,created_at)
+                    VALUES(?,?,?,?,?,?, 'chat_logs',?,?,CURRENT_TIMESTAMP)""",
+                    (session_id,summary,chat_summary,self._encode_vector(vector),len(vector),
+                     record_id,after_id+1,through_id))
+            await connection.execute("""INSERT INTO summary_batches
+                (batch_id,session_id,after_id,through_id,memory_record_id,status) VALUES(?,?,?,?,?,?)""",
+                (uuid4().hex,session_id,after_id,through_id,record_id,outcome))
+            await connection.execute("""INSERT INTO summary_watermarks(session_id,last_log_id) VALUES(?,?)
+                ON CONFLICT(session_id) DO UPDATE SET last_log_id=excluded.last_log_id,updated_at=CURRENT_TIMESTAMP""",
+                (session_id,through_id))
+            return {"applied": True, "already_consumed": False, "memory_record_id": record_id}
+        return await self._exec_tx(commit)
+
+    async def clear_session(self, session_id: str, *, memories=True, logs=True, operation_id=None):
+        async def clear(connection):
+            await connection.execute("""INSERT INTO session_generations(session_id,generation) VALUES(?,1)
+                ON CONFLICT(session_id) DO UPDATE SET generation=generation+1""", (session_id,))
+            result = {"memories": 0, "chat_logs": 0}
+            for table, enabled in (("memories", memories), ("chat_logs", logs)):
+                if enabled:
+                    cursor = await connection.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
+                    result[table] = max(0,cursor.rowcount)
+            if logs:
+                # 共享近期流与日志清理在同一事务；保留审计行，读取不再看到旧剧情。
+                pairs = await (await connection.execute("SELECT DISTINCT scope_id,persona_id FROM qp_turns")).fetchall()
+                for scope, persona in pairs:
+                    if memory_session_key(scope, persona) == session_id:
+                        await connection.execute("UPDATE qp_turns SET status='reset' WHERE scope_id=? AND persona_id=?", (scope,persona))
+            if operation_id:
+                row=await (await connection.execute("SELECT payload FROM persistent_operations WHERE operation_id=?",(operation_id,))).fetchone()
+                payload=json.loads(row[0]) if row else {}
+                payload["counts"]=result
+                await connection.execute("UPDATE persistent_operations SET phase='database_done',payload=?,updated_at=CURRENT_TIMESTAMP WHERE operation_id=?",(json.dumps(payload,ensure_ascii=False),operation_id))
+            return result
+        return await self._exec_tx(clear)
+
+    async def get_reflection_progress(self, session_id):
+        async with self._lock:
+            summary = await self.get_summary_progress(session_id)
+            row = await self._exec_fetchone("SELECT last_log_id FROM reflection_watermarks WHERE session_id=?",(session_id,))
+            return {**summary,"last_log_id":row[0] if row else 0}
+
+    async def commit_reflection_batch(self, session_id, progress, through_id, reflection, notes):
+        async def commit(connection):
+            generation = await (await connection.execute("SELECT generation FROM session_generations WHERE session_id=?",(session_id,))).fetchone()
+            if (generation[0] if generation else 0) != progress['generation']:
+                raise StorageError("会话已清理，旧反思结果未写入")
+            watermark = await (await connection.execute("SELECT last_log_id FROM reflection_watermarks WHERE session_id=?",(session_id,))).fetchone()
+            previous = watermark[0] if watermark else 0
+            if previous >= through_id:
+                return {"processed":0,"stored":0}
+            if previous != progress['last_log_id']:
+                raise StorageError("反思水位已变化，请重新读取来源日志")
+            stored=0
+            traits,facts=reflection['new_core_traits'].strip(),reflection['crucial_facts'].strip()
+            if traits or facts:
+                row=await (await connection.execute("SELECT id,summary FROM memories WHERE session_id=? AND is_core=1 AND length(vector)=0 ORDER BY id LIMIT 1",(session_id,))).fetchone()
+                old={}
+                if row:
+                    try:old=json.loads(row[1])
+                    except (ValueError,TypeError):old={"facts":row[1]}
+                    if not isinstance(old,dict):old={}
+                content=json.dumps({"traits":traits or old.get('traits',''),"facts":facts or old.get('facts','')},ensure_ascii=False)
+                if row:
+                    await connection.execute("UPDATE memories SET summary=?,timestamp=CURRENT_TIMESTAMP,source_ref='reflection',source_start_id=?,source_end_id=? WHERE id=?",(content,previous+1,through_id,row[0]))
+                else:
+                    await connection.execute("""INSERT INTO memories(session_id,summary,vector,dim,is_core,record_id,source_ref,source_start_id,source_end_id,created_at)
+                        VALUES(?,?,?,0,1,?,'reflection',?,?,CURRENT_TIMESTAMP)""",(session_id,content,b'',uuid4().hex,previous+1,through_id))
+                stored+=1
+            for summary,vector in notes:
+                await connection.execute("""INSERT INTO memories(session_id,summary,vector,dim,record_id,source_ref,source_start_id,source_end_id,created_at)
+                    VALUES(?,?,?,?,?,'reflection',?,?,CURRENT_TIMESTAMP)""",(session_id,summary,self._encode_vector(vector),len(vector),uuid4().hex,previous+1,through_id))
+                stored+=1
+            await connection.execute("""INSERT INTO reflection_watermarks(session_id,last_log_id) VALUES(?,?)
+                ON CONFLICT(session_id) DO UPDATE SET last_log_id=excluded.last_log_id,updated_at=CURRENT_TIMESTAMP""",(session_id,through_id))
+            return {"stored":stored,"through_id":through_id}
+        return await self._exec_tx(commit)
+
+    async def begin_operation(self, kind: str, session_id: str, payload: dict):
+        operation_id = uuid4().hex
+        async def register(connection):
+            count = (await (await connection.execute("SELECT COUNT(*) FROM persistent_operations WHERE status!='completed'")).fetchone())[0]
+            if count >= 1000:
+                raise StorageError("待恢复操作已达上限，请先处理存储故障", detail="operations_backlog")
+            await connection.execute("""INSERT INTO persistent_operations
+                (operation_id,kind,session_id,status,phase,payload) VALUES(?,?,?,'pending','registered',?)""",
+                (operation_id,kind,session_id,json.dumps(payload,ensure_ascii=False)))
+        await self._exec_tx(register)
+        return operation_id
+
+    async def update_operation(self, operation_id: str, phase: str, status="pending"):
+        async def update(connection):
+            await connection.execute("""UPDATE persistent_operations SET phase=?,status=?,updated_at=CURRENT_TIMESTAMP
+                WHERE operation_id=?""",(phase,status,operation_id))
+            await connection.execute("""DELETE FROM persistent_operations WHERE operation_id IN
+                (SELECT operation_id FROM persistent_operations WHERE status='completed'
+                 ORDER BY updated_at DESC,operation_id DESC LIMIT -1 OFFSET 1000)""")
+        await self._exec_tx(update)
+
+    async def pending_operations(self, *, scope_id=None, operation_id=None, session_id=None):
+        clauses, args = ["status!='completed'"], []
+        if scope_id is not None:
+            clauses.append("(session_id=? OR session_id LIKE ? ESCAPE '\\')")
+            args.extend((scope_id, escape_like(memory_session_prefix(scope_id)) + "%"))
+        for key, value in (("operation_id", operation_id), ("session_id", session_id)):
+            if value is not None:
+                clauses.append(key + "=?")
+                args.append(value)
+        # 注册时已设总上限；先按作用域筛选，不能让别的组挤掉当前组的恢复记录。
+        rows = await self._exec_fetchall("SELECT operation_id,kind,session_id,phase,payload FROM persistent_operations WHERE "
+            + " AND ".join(clauses) + " ORDER BY created_at,operation_id", args)
+        result = []
+        for row in rows:
+            try:
+                payload = json.loads(row[4])
+                if not isinstance(payload,dict):
+                    raise ValueError('operation_payload_not_object')
+            except (ValueError,TypeError):
+                payload = {'error_class':'invalid_operation_payload'}
+            result.append({'operation_id':row[0],'kind':row[1],'session_id':row[2],'phase':row[3],'payload':payload})
+        return result
+
+    async def fail_operation(self, operation_id, error):
+        async def fail(connection):
+            row = await (await connection.execute("SELECT payload FROM persistent_operations WHERE operation_id=?", (operation_id,))).fetchone()
+            try:
+                payload = json.loads(row[0])
+                if not isinstance(payload,dict):
+                    raise ValueError('operation_payload_not_object')
+            except (ValueError,TypeError):
+                await connection.execute("UPDATE persistent_operations SET status='failed',updated_at=CURRENT_TIMESTAMP WHERE operation_id=?",(operation_id,))
+                return  # 损坏的原始字节保留供人工恢复，不用空对象覆盖它。
+            payload['failure_count'] = int(payload.get('failure_count', 0)) + 1
+            payload['error_class'] = type(error).__name__
+            import time
+            payload['retry_after'] = time.time() + min(300, 2 ** min(payload['failure_count'], 8))
+            # 保留原阶段、计数和原生对话目标；失败不能伪装为完成或丢弃恢复凭据。
+            await connection.execute("UPDATE persistent_operations SET status='failed',payload=?,updated_at=CURRENT_TIMESTAMP WHERE operation_id=?",
+                (json.dumps(payload, ensure_ascii=False), operation_id))
+        await self._exec_tx(fail)
+
+    async def update_core_memory(self, session_id: str, new_traits: str, crucial_facts: str):
+        core_content = json.dumps({"traits": new_traits, "facts": crucial_facts}, ensure_ascii=False)
+        async def update(connection):
+            row = await (await connection.execute(
+                "SELECT id FROM memories WHERE session_id=? AND is_core=1 AND length(vector)=0 ORDER BY id LIMIT 1",
+                (session_id,))).fetchone()
+            if row:
+                await connection.execute("UPDATE memories SET summary=?,timestamp=CURRENT_TIMESTAMP WHERE id=?", (core_content,row[0]))
+            else:
+                await connection.execute("""INSERT INTO memories
+                    (session_id,summary,vector,dim,is_core,record_id,source_ref,trust_level,created_at)
+                    VALUES(?,?,?,0,1,?,'core_update','confirmed',CURRENT_TIMESTAMP)""",
+                    (session_id,core_content,b'',uuid4().hex))
+        await self._exec_tx(update)
 
     async def close(self):
-        """关闭数据库连接（插件卸载时调用）。"""
-        try:
-            if self._conn:
+        async with self._lock:
+            self._writable = False
+            if self._conn is not None:
                 await self._conn.close()
-        except Exception as e:
-            logger.debug("[Quill Memory] close 失败: %s", e)
+                self._conn = None
+            self._cache.clear()
 
     def _encode_vector(self, vector: list[float]) -> bytes:
         """将向量列表编码为 BLOB。"""
@@ -210,7 +420,7 @@ class MemoryStore:
             raise ValueError(f"BLOB size {len(blob)} != expected {expected}")
         return np.frombuffer(blob, dtype=np.float32).copy()
 
-    async def add(self, session_id: str, summary: str, vector: list[float], chat_summary: str = ""):
+    async def add(self, session_id: str, summary: str, vector: list[float], chat_summary: str = "", *, record_id=None, source_ref="manual"):
         """添加一条记忆。
 
         D4（M3.2）：底层失败抛 :class:`StorageError`（六类高频路径之一：add），
@@ -222,12 +432,12 @@ class MemoryStore:
         dim = len(vector)
         blob = self._encode_vector(vector)
         try:
-            await self._exec_write(
-                "INSERT INTO memories (session_id, summary, chat_summary, vector, dim) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (session_id, summary, chat_summary, blob, dim)
+            cursor = await self._exec_write(
+                "INSERT INTO memories (session_id,summary,chat_summary,vector,dim,record_id,source_ref,created_at) "
+                "VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(record_id) DO NOTHING",
+                (session_id,summary,chat_summary,blob,dim,record_id or uuid4().hex,source_ref)
             )
-            await self._invalidate_cache(session_id)
+            return cursor.rowcount > 0
         except Exception as e:
             note_storage_error("add", e)
             raise StorageError(
@@ -717,8 +927,8 @@ class MemoryStore:
                 for r in rows
             ]
         except Exception as e:
-            logger.warning("[Quill Memory] get_chat_logs_after 失败: %s", e, exc_info=True)
-            return []
+            logger.warning("[Quill Memory] get_chat_logs_after 失败（%s）", type(e).__name__)
+            raise StorageError("读取增量日志失败，水位未推进",detail=type(e).__name__) from e
 
     async def list_memories(self, session_id: str, limit: int = 50) -> list[dict]:
         """列出某 session 的所有记忆。"""
@@ -777,10 +987,8 @@ class MemoryStore:
         if not session_id:
             return 0
         try:
-            cursor = await self._exec_write("DELETE FROM memories WHERE session_id = ?", (session_id,))
-            # 失效向量缓存，否则已删记忆仍会从缓存被召回
-            await self._invalidate_cache(session_id)
-            return cursor.rowcount
+            result = await self.clear_session(session_id,memories=True,logs=False)
+            return result["memories"]
         except Exception as e:
             note_storage_error("delete", e)
             raise StorageError(
@@ -805,10 +1013,10 @@ class MemoryStore:
             # 未转义的 'target::%' 前缀匹配会误删其他会话的记忆。
             cursor = await self._exec_write(
                 "DELETE FROM memories WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'",
-                (target_id, escape_like(target_id) + "::%"),
+                (target_id, escape_like(memory_session_prefix(target_id)) + "%"),
             )
             # 按 target_id 前缀失效所有 persona 维度的会话缓存
-            prefix = target_id + "::"
+            prefix = memory_session_prefix(target_id)
             for key in [k for k in self._cache if k == target_id or k.startswith(prefix)]:
                 await self._invalidate_cache(key)
             return cursor.rowcount
@@ -836,10 +1044,8 @@ class MemoryStore:
     async def get_recent_chat_logs(self, session_id: str, limit: int = 8) -> list[dict]:
         """获取最近聊天记录（正序返回，供上下文恢复用）
 
-        返回值额外带 `id`。反思清理必须按**本次实际读到的 id 批次**删除，
-        不能凭「保留最新 N 条」重算——读与设计之间是 LLM/embedding 的等待窗口，
-        期间会话可能重新活跃并写入新日志，按重算删会把未参与本次摘要的日志
-        一起抹掉（见 main.py 反思循环）。
+        返回值额外带 `id`，供近期上下文读取；摘要和反思分别推进持久水位，
+        不在完成单个消费者后删除输入日志。保留期清理由启用消费者的水位共同约束。
         """
         if not session_id:
             return []
@@ -856,36 +1062,6 @@ class MemoryStore:
             logger.warning("[Quill Memory] get_recent_chat_logs 失败: %s", e, exc_info=True)
             return []
 
-    async def delete_chat_logs_by_ids(self, session_id: str, log_ids: list[int]) -> int:
-        """按**确定的 id 批次**删除日志，只删本次实际参与处理的那些。
-
-        与「保留最新 N 条、其余全删」的区别：后者会连带抹掉未进入本次摘要的
-        更早日志，以及摘要生成期间新写入的日志。返回实际删除行数。
-        """
-        ids = [int(i) for i in (log_ids or []) if i is not None]
-        if not ids or not session_id:
-            return 0
-        # SQLite 参数上限约 999，分批避免极端批次触发 "too many SQL variables"
-        deleted = 0
-        for i in range(0, len(ids), 500):
-            chunk = ids[i:i + 500]
-            placeholders = ",".join("?" for _ in chunk)
-            try:
-                cur = await self._exec_write(
-                    f"DELETE FROM chat_logs WHERE session_id = ? AND id IN ({placeholders})",
-                    (session_id, *chunk)
-                )
-            except Exception as e:
-                # D4（M3.2）：反思清理删除失败必须可见（写记忆成功、删日志失败
-                # 会导致下轮重复摘要），统一抛 StorageError（六类高频路径之一：delete）。
-                note_storage_error("delete", e)
-                raise StorageError(
-                    "删除对话日志批次失败",
-                    detail=f"delete_chat_logs_by_ids: {e}",
-                    context={"session_id": session_id},
-                ) from e
-            deleted += cur.rowcount if cur and cur.rowcount > 0 else 0
-        return deleted
 
     async def log_message(self, session_id: str, role: str, content: str):
         """记录一条原始对话（D4：底层失败抛 StorageError，类别 add；
@@ -895,9 +1071,13 @@ class MemoryStore:
         if role not in ("user", "assistant"):
             return
         try:
+            turn = current_turn()
+            record_id = (turn.turn_id + ":" + role) if turn and turn.memory_session_id == session_id else uuid4().hex
             await self._exec_write(
-                "INSERT INTO chat_logs (session_id, role, content) VALUES (?, ?, ?)",
-                (session_id, role, content[:2000])
+                """INSERT INTO chat_logs(session_id,role,content,record_id,origin_ref,turn_id,actor_id)
+                   VALUES(?,?,?,?,?,?,?) ON CONFLICT(record_id) DO NOTHING""",
+                (session_id,role,content[:2000],record_id,
+                 turn.origin_umo if turn else None,turn.turn_id if turn else None,turn.actor_id if turn else None)
             )
         except Exception as e:
             note_storage_error("add", e)
@@ -971,16 +1151,25 @@ class MemoryStore:
             )
         return body
 
-    async def cleanup_chat_logs(self, retention_days: int) -> int:
-        """清理超过保留天数的对话日志（D4：失败抛 StorageError，类别 prune）。"""
+    async def cleanup_chat_logs(self, retention_days: int, *, summary_enabled=True, reflection_enabled=True) -> int:
+        """只清理启用消费者已处理的超期日志；未消费输入保留并披露积压。"""
         if retention_days <= 0:
             return 0
         try:
-            cursor = await self._exec_write(
-                "DELETE FROM chat_logs WHERE timestamp < datetime('now', ?)",
-                (f"-{retention_days} days",)
-            )
-            return cursor.rowcount
+            conditions = ["timestamp < datetime('now', ?)"]
+            for table, enabled in (("summary_watermarks", summary_enabled), ("reflection_watermarks", reflection_enabled)):
+                if enabled:
+                    conditions.append(f"id <= COALESCE((SELECT last_log_id FROM {table} w WHERE w.session_id=chat_logs.session_id),0)")
+            async def prune(connection):
+                before = (await (await connection.execute("SELECT COUNT(*) FROM chat_logs WHERE timestamp < datetime('now', ?)", (f"-{retention_days} days",))).fetchone())[0]
+                cursor = await connection.execute("DELETE FROM chat_logs WHERE " + " AND ".join(conditions), (f"-{retention_days} days",))
+                self.retention_status = {"deleted": cursor.rowcount, "unconsumed_retained": before - cursor.rowcount,
+                                         "summary_enabled": summary_enabled, "reflection_enabled": reflection_enabled}
+                return cursor.rowcount
+            count = await self._exec_tx(prune)
+            if self.retention_status["unconsumed_retained"]:
+                logger.warning("[Quill Memory] 保留 %s 条超期但尚未消费的日志", self.retention_status["unconsumed_retained"])
+            return count
         except Exception as e:
             note_storage_error("prune", e)
             raise StorageError(
@@ -993,8 +1182,8 @@ class MemoryStore:
         if not session_id:
             return 0
         try:
-            cursor = await self._exec_write("DELETE FROM chat_logs WHERE session_id = ?", (session_id,))
-            return cursor.rowcount
+            result = await self.clear_session(session_id,memories=False,logs=True)
+            return result["chat_logs"]
         except Exception as e:
             note_storage_error("delete", e)
             raise StorageError(
@@ -1017,7 +1206,7 @@ class MemoryStore:
             # LIKE 通配符转义（M3.3 自查），理由同 delete_all_session_memories。
             cursor = await self._exec_write(
                 "DELETE FROM chat_logs WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'",
-                (target_id, escape_like(target_id) + "::%"),
+                (target_id, escape_like(memory_session_prefix(target_id)) + "%"),
             )
             return cursor.rowcount
         except Exception as e:
@@ -1061,7 +1250,7 @@ class MemoryStore:
             ))[0]
         except Exception as e:
             logger.warning("[Quill Memory] get_stats 失败: %s", e, exc_info=True)
-            return {"total_memories": 0, "total_sessions": 0, "today_count": 0}
+            raise StorageError("记忆统计暂不可用", detail="store_unavailable") from e
         return {"total_memories": total, "total_sessions": sessions, "today_count": today}
 
     async def list_all_memories(self, limit: int = 200, offset: int = 0) -> list[dict]:
@@ -1074,7 +1263,7 @@ class MemoryStore:
         """
         try:
             rows = await self._exec_fetchall(
-                "SELECT id, session_id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active, is_core FROM memories "
+                "SELECT id, session_id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active, is_core, record_id, source_ref, source_start_id, source_end_id, created_at, trust_level, process_status FROM memories "
                 "ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
                 (limit, offset)
             )
@@ -1082,7 +1271,9 @@ class MemoryStore:
                 {
                     "id": r[0], "session_id": r[1], "summary": r[2], "chat_summary": r[3],
                     "timestamp": r[4], "strength": r[5], "useful_count": r[6],
-                    "useful_score": r[7], "is_active": r[8], "is_core": r[9]
+                    "useful_score": r[7], "is_active": r[8], "is_core": r[9],
+                    "record_id":r[10],"source_ref":r[11],"source_start_id":r[12],"source_end_id":r[13],
+                    "created_at":r[14],"trust_level":r[15],"process_status":r[16]
                 }
                 for r in rows
             ]
@@ -1091,11 +1282,15 @@ class MemoryStore:
             return []
 
     async def list_sessions(self) -> list[dict]:
-        """P2-1: 列出所有有记忆的会话，按最近更新时间倒序。"""
+        """同时列出仅有日志的会话，才能在首次生成记忆前从面板发起总结。"""
         try:
             rows = await self._exec_fetchall(
-                "SELECT session_id, COUNT(*) as mem_count, MAX(timestamp) as last_active "
-                "FROM memories GROUP BY session_id ORDER BY last_active DESC"
+                "SELECT session_id, SUM(mem_count), MAX(last_active) AS last_active FROM ("
+                "SELECT session_id, COUNT(*) AS mem_count, MAX(timestamp) AS last_active "
+                "FROM memories GROUP BY session_id UNION ALL "
+                "SELECT session_id, 0 AS mem_count, MAX(timestamp) AS last_active "
+                "FROM chat_logs GROUP BY session_id) GROUP BY session_id "
+                "ORDER BY last_active DESC, session_id"
             )
             return [
                 {"session_id": r[0], "mem_count": r[1], "last_active": r[2]}
@@ -1103,7 +1298,7 @@ class MemoryStore:
             ]
         except Exception as e:
             logger.warning("[Quill Memory] list_sessions 失败: %s", e, exc_info=True)
-            return []
+            raise StorageError("会话列表暂不可用", detail="store_unavailable") from e
 
     async def count_all_memories(self) -> int:
         """返回全部记忆总数（用于分页统计）。"""

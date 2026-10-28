@@ -1,3 +1,6 @@
+import { loadTasks } from "./tasks.js";
+import { loadGroups } from "./groups.js";
+import { loadUsage } from "./usage.js";
 /* pages/config.js — 由 index.html 拆分生成（可读性优先，逻辑与拆分前逐行一致） */
 import { S } from "../state.js";
 import { api, apiPost } from "../api.js";
@@ -69,6 +72,14 @@ const CFG_FIELDS = [
   ["permissions", "admin_users", "#c-perm-admins", "str"],
   ["debug", "enabled", "#c-debug-enabled", "bool"],
   ["debug", "show_inject_report", "#c-debug-report", "bool"],
+  ["usage", "enabled", "#c-usage-enabled", "bool"],
+  ["usage", "retention_days", "#c-usage-retention-days", "int"],
+  ["usage", "max_records", "#c-usage-max-records", "int"],
+  ["usage", "prices_json", "#c-usage-prices-json", "str"],
+  ["cache", "enabled", "#c-cache-enabled", "bool"],
+  ["cache", "dynamic_to_user_tail", "#c-cache-dynamic-to-user-tail", "bool"],
+  ["cache", "stable_sampling", "#c-cache-stable-sampling", "bool"],
+  ["cache", "sampling_window", "#c-cache-sampling-window", "int"],
   ["trace", "enabled", "#c-trace-enabled", "bool"],
   ["trace", "buffer_per_session", "#c-trace-buffer", "int"],
 ];
@@ -98,6 +109,14 @@ const CFG_DEFAULTS = {
   "status_bar.decision_api_format": "auto",
   "status_bar.decision_confidence_floor": 0.6,
   "debug.show_inject_report": false,
+  "usage.enabled": true,
+  "usage.retention_days": 30,
+  "usage.max_records": 20000,
+  "usage.prices_json": "{}",
+  "cache.enabled": false,
+  "cache.dynamic_to_user_tail": false,
+  "cache.stable_sampling": false,
+  "cache.sampling_window": 3,
   "trace.enabled": true, "trace.buffer_per_session": 20,
 };
 
@@ -130,6 +149,7 @@ function applySettings(providers, cfg) {
     else el.value = v === undefined || v === null ? "" : v;
   });
 
+  syncCachePosition();
   // 蓝条错位修复：滑块填充条（--slider-progress）只在 input 事件时由
   // app.js 的同步器重算；上面程序化写 value 不触发 input，首次打开配置页
   // 时填充条停留在 HTML 缺省值的位置（0.7 → 70%），与实际保存值对应的
@@ -183,7 +203,14 @@ async function setStreamModeAll(mode, btn) {
 }
 
 /** 标记有未保存更改（显示底部操作条）。 */
+function syncCachePosition() {
+  const stable = $("#c-cache-enabled")?.checked;
+  const position = $("#c-wb-pos");
+  if (position) { position.disabled = !!stable; position.title = stable ? "稳定布局已开启，此项不生效" : ""; }
+}
+
 function markDirty() {
+  syncCachePosition();
   if (S._applyingSettings) return;
   if (S._dirty) return;
   S._dirty = true;
@@ -425,6 +452,9 @@ function switchTab(tab) {
   else if (tab === "persona") loadPersonas();
   else if (tab === "rag") { loadRAG(); loadRAGModelInfo(); }
   else if (tab === "memory") switchMemorySub("overview");
+  else if (tab === "tasks") loadTasks();
+  else if (tab === "groups") loadGroups();
+  else if (tab === "usage") loadUsage();
   else if (tab === "trace") loadTracePage();
   else if (tab === "config") { loadGlobalSettings(); loadHealth(); }
 }

@@ -14,6 +14,7 @@ from astrbot.api.event import AstrMessageEvent, MessageEventResult
 from astrbot.api.platform import MessageType
 
 from ._route_core import error_text
+from .interfaces.operations import run_scope_operation
 
 from astrbot.api import logger
 
@@ -59,7 +60,7 @@ async def _test_anchor_line(plugin, event: AstrMessageEvent, text: str,
 
 
 def _check_group_permission(plugin, event: AstrMessageEvent):
-    """群聊写权限校验。私聊始终返回 None（放行）。
+    """群聊/共享空间写权限校验；未入组私聊保持原规则。
 
     F2 修复：原实现用 `sender_id in target_id` 子串匹配，群号含于用户 ID 时越权。
     现改为：私聊场景直接放行；群聊仅 admin 放行。
@@ -73,22 +74,38 @@ def _check_group_permission(plugin, event: AstrMessageEvent):
     admin_users = getattr(plugin.config, "admin_users", []) or []
     sender_id = str(event.get_sender_id())
     # 私聊：直接放行（与 AstrBot 内置 /reset 策略对齐：私聊默认 member）
-    if event.get_message_type() == MessageType.FRIEND_MESSAGE:
+    grouped=plugin.scope_resolver.scope_for(_get_target_id(event))!=_get_target_id(event)
+    if event.get_message_type() == MessageType.FRIEND_MESSAGE and not grouped:
         return None
     # 群聊：仅 admin 放行；admin 未配置时 fail-close
     if not admin_users:
         logger.warning("[Quill] admin_users 未配置，群聊写操作已拒绝。请在配置面板设置 admin_users（留空时群聊写功能锁定）。")
         return (
-            "⛔ 群聊中只有管理员可以执行此操作。\n"
+            "⛔ 群聊或共享会话中只有管理员可以执行此操作。\n"
             f"当前 admin_users 未配置，请在插件配置面板 → 权限 → admin_users 中填写你的用户 ID ({sender_id})。"
         )
     admin_set = set(str(u) for u in admin_users)
-    if sender_id not in admin_set:
+    qualified=str(event.get_platform_id())+':'+sender_id
+    if sender_id not in admin_set and qualified not in admin_set:
         return (
-            "⛔ 群聊中只有管理员可以执行此操作。\n"
+            "⛔ 群聊或共享会话中只有管理员可以执行此操作。\n"
             f"你的用户 ID ({sender_id}) 不在 admin_users 白名单中，请联系群主添加。"
         )
     return None
+
+
+def _shared_operation_notice(plugin,event,target_id,command,confirmation):
+    scope=plugin.state_manager.role_scope(target_id)
+    group=plugin.scope_resolver.groups.get(scope)
+    if not group:
+        return False
+    token=f"confirm {scope}:{group['revision']}"
+    if str(confirmation or '').strip()==token:
+        return False
+    members=[o['umo'] for o in plugin.shared_scopes.index['origins'] if o['scope_id']==scope]
+    event.set_result(event.plain_result(f"此操作影响会话组「{group['name']}」当前角色，涉及 {len(members)} 个入口：\n"+
+        '\n'.join(members)+f"\n核对后发送：{command} {token}"))
+    return True
 
 
 # ================================================================
@@ -1034,7 +1051,7 @@ async def _test_mem(plugin, event: AstrMessageEvent, text: str):
         persona_id = ""
         if hasattr(plugin.state_manager, "get_persona_id"):
             persona_id = await plugin.state_manager.get_persona_id(target_id)
-        session_id = f"{target_id}::{persona_id}" if persona_id else target_id
+        session_id = plugin._get_memory_session_id(target_id, persona_id)
         results = await plugin.rag_retriever.search_memories(session_id, text)
         if not results:
             event.set_result(MessageEventResult().message(
@@ -1070,7 +1087,7 @@ async def quill_debug(plugin, event: AstrMessageEvent):
     persona_id = ""
     if hasattr(plugin.state_manager, "get_persona_id"):
         persona_id = await plugin.state_manager.get_persona_id(target_id)
-    session_id = f"{target_id}::{persona_id}" if persona_id else target_id
+    session_id = plugin._get_memory_session_id(target_id, persona_id)
     # M1a-Fix 1.4（M0 可读性联动）：裸 persona_id 对人不可读，查出角色卡
     # 名一并显示；查询失败回退裸 id，不让诊断指令因展示层挂掉。
     persona_label = persona_id or '默认'
@@ -1115,6 +1132,13 @@ async def quill_debug(plugin, event: AstrMessageEvent):
         except Exception:
             lines.append("  动态记忆: 查询失败")
 
+    store = getattr(plugin,'rag_memory_store',None)
+    if store and getattr(store,'_writable',False):
+        pending = await store.pending_operations(scope_id=plugin.state_manager.role_scope(target_id))
+        if pending:
+            failures = sum(bool(row['payload'].get('error_class')) for row in pending)
+            lines.append(f'  恢复受阻：{len(pending)} 项未完成操作，其中 {failures} 项恢复失败；相关会话暂停生成，请查看后台任务页。')
+
     # 健康度
     if hasattr(plugin, "health_tracker") and plugin.health_tracker:
         try:
@@ -1151,6 +1175,10 @@ async def quill_debug(plugin, event: AstrMessageEvent):
     if hasattr(plugin, "_format_inject_report"):
         report = plugin._format_inject_report(plugin._get_inject_report(target_id))
         lines.append(f"  注入: {report or '（无命中记录）'}")
+        from .interfaces.prompt_cache import last_capability
+        capability = event.get_extra('_quill_temporary_capability') or last_capability(event.unified_msg_origin)
+        if capability:
+            lines.append('  临时上下文：' + ('可用' if capability.get('supported') else capability.get('reason','未知')))
         # M1a：同源锚点——上面这行构成的来源 trace 轮次。面板「诊断」页里
         # 同一 trace_id 的完整结构（段序/模块行/耗时）与此处结论一致；无记录
         # （trace 关闭或本轮还没跑过）时不显示。只展示前 8 位：这是对照锚点
@@ -1217,7 +1245,7 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
     persona_id = ""
     if hasattr(plugin.state_manager, "get_persona_id"):
         persona_id = await plugin.state_manager.get_persona_id(target_id)
-    session_id = f"{target_id}::{persona_id}" if persona_id else target_id
+    session_id = plugin._get_memory_session_id(target_id, persona_id)
 
     if not arg1:
         stats = await plugin.rag_memory_store.get_stats()
@@ -1318,11 +1346,11 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
         if msg:
             event.set_result(MessageEventResult().message(msg))
             return
+        if _shared_operation_notice(plugin,event,target_id,'/memory clear',arg2):
+            return
         try:
-            deleted = await plugin.rag_memory_store.delete_session_memories(session_id)
-            chat_deleted = await plugin.rag_memory_store.delete_session_chat_logs(session_id)
-            await plugin.state_manager.reset_unsummarized_turns(target_id)
-            await plugin.state_manager.update_last_learned_id(target_id, 0)
+            cleared = await run_scope_operation(plugin,"clear_memory",target_id,persona_id)
+            deleted, chat_deleted = cleared['memories'], cleared['chat_logs']
             msg = f"已清空当前会话 {deleted} 条记忆"
             if chat_deleted:
                 msg += f"、{chat_deleted} 条对话日志"
@@ -1356,27 +1384,22 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
 
         # ── 无内容 → 增量总结本地 chat_logs ──
         try:
-            last_learned_id = await plugin.state_manager.get_last_learned_id(target_id)
-            new_logs = await plugin.rag_memory_store.get_chat_logs_after(session_id, last_learned_id, limit=50)
-            if not new_logs:
-                event.set_result(MessageEventResult().message(
-                    "⚠️ 没有新的对话记录可供总结。\n"
-                    "请先聊几句，再发送 /memory learn 增量总结。"
-                ))
+            last_id = await plugin.state_manager.get_last_learned_id(target_id,persona_id=persona_id)
+            record, reused = plugin._start_summary_task(session_id,legacy_last_id=last_id)
+            try:
+                result = await asyncio.shield(record.task)
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise
+                event.set_result(MessageEventResult().message("总结任务已取消，已提交的结果保留。"))
                 return
-            if len(new_logs) < 2:
-                event.set_result(MessageEventResult().message(
-                    "⚠️ 新对话记录不足（至少需要 2 条）。\n"
-                    "请再多聊几句，再发送 /memory learn。"
-                ))
-                return
-            contexts = [{"role": log["role"], "content": log["content"]} for log in new_logs]
-            summary = await plugin.rag_retriever.summarize_contexts(session_id, contexts)
-            new_max_id = max(log["id"] for log in new_logs)
-            await plugin.state_manager.update_last_learned_id(target_id, new_max_id)
-            event.set_result(MessageEventResult().message(
-                f"✅ 已增量总结 {len(new_logs)} 条新对话并存储为记忆：\n\n{summary}"
-            ))
+            if not result["processed"]:
+                message="没有足够的新对话记录可供总结（至少需要 2 条）。"
+            elif result["stored"]:
+                message=f"已增量总结 {result['processed']} 条新对话并存储为记忆：\n\n{result['summary']}"
+            else:
+                message=f"已处理 {result['processed']} 条新对话，无需新增记忆；总结水位已保存。"
+            event.set_result(MessageEventResult().message(message))
         except ValueError as e:
             event.set_result(MessageEventResult().message(f"⚠️ {e}"))
         except Exception as e:
@@ -1899,7 +1922,7 @@ async def reinject_dispatch(plugin, event: AstrMessageEvent):
 # /quill reset — 重开当前角色卡这段剧情（保留长期记忆）
 # ================================================================
 
-async def quill_reset(plugin, event: AstrMessageEvent):
+async def quill_reset(plugin, event: AstrMessageEvent, confirmation=""):
     """/quill reset — 清掉当前角色卡的对话上下文与日志，**保留动态记忆**。
 
     清理内容（只作用于**当前角色卡**，不影响其他角色卡）：
@@ -1919,35 +1942,18 @@ async def quill_reset(plugin, event: AstrMessageEvent):
         return
 
     target_id = _get_target_id(event)
+    if _shared_operation_notice(plugin,event,target_id,'/quill reset',confirmation):
+        return
     persona_id = await plugin.state_manager.get_persona_id(target_id)
-    mem_session_id = f"{target_id}::{persona_id}" if persona_id else target_id
+    mem_session_id = plugin._get_memory_session_id(target_id, persona_id)
 
-    log_deleted = 0
-    if plugin.rag_retriever and plugin.rag_retriever.memory_store:
-        try:
-            # 只删当前角色卡的日志（此前是 delete_all_session_chat_logs，
-            # 会把所有角色卡的日志一起清掉，与「按卡隔离」相悖）
-            log_deleted = await plugin.rag_retriever.memory_store.delete_session_chat_logs(
-                mem_session_id
-            )
-        except Exception as e:
-            logger.warning(f"[Quill] /quill reset 清理对话日志失败: {e}")
-
-    # 清空当前角色卡专属对话的 AstrBot 历史（与内置 /reset 同款做法）
-    conv_cleared = False
-    conv_mgr = getattr(plugin.context, "conversation_manager", None)
-    if conv_mgr is not None:
-        try:
-            cid = await conv_mgr.get_curr_conversation_id(target_id)
-            if cid:
-                await conv_mgr.update_conversation(target_id, cid, [])
-                conv_cleared = True
-        except Exception as e:
-            logger.warning(f"[Quill] /quill reset 清空对话历史失败: {e}")
-
-    await plugin.state_manager.reset_quill_rounds(target_id)
-    await plugin.state_manager.reset_unsummarized_turns(target_id)
-    await plugin.state_manager.update_last_learned_id(target_id, 0)
+    try:
+        result=await run_scope_operation(plugin,"reset_conversation",target_id,persona_id)
+        log_deleted=result["chat_logs"]
+        conv_cleared=result["conversation_cleared"]
+    except Exception as exc:
+        event.set_result(MessageEventResult().message(error_text("重置尚未完成，请重试；已登记的步骤会恢复",exc)))
+        return
 
     msg = "✅ Quill 会话已重置\n"
     msg += "  · 动态记忆: 已保留（长期记忆不受影响）\n"
@@ -1955,6 +1961,6 @@ async def quill_reset(plugin, event: AstrMessageEvent):
     msg += f"  · 对话上下文: {'已清空' if conv_cleared else '未清空（无法访问会话管理器）'}\n"
     msg += "  · 注入轮次: 已归零\n"
     msg += "  · 反思计数: 已归零\n"
-    msg += f"\n（仅影响当前角色卡，其他角色卡的记录未受影响）"
+    msg += f"\n（仅影响当前角色卡，其他角色卡的记录未受影响；涉及 {len(result['affected'])} 个入口）"
     event.set_result(MessageEventResult().message(msg))
 

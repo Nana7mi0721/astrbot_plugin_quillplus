@@ -121,7 +121,7 @@
         "type": "string",
         "description": "提示词注入位置",
         "default": "user_prefix",
-        "hint": "[强烈推荐 user_prefix] 将强制协议贴脸输出在用户消息之前，能极大提升大模型对状态栏和工具调用的服从度！",
+        "hint": "稳定布局开启时此项不生效；关闭后 user_prefix 将协议置于用户消息前，system_end 将协议置于系统提示词尾部。",
         "options": ["system_end", "user_prefix"]
       },
       "show_trigger_log": {
@@ -184,7 +184,7 @@
         "type": "int",
         "description": "提示词硬截断上限 (字符)",
         "default": 50000,
-        "hint": "总字符数极限保护，超出按优先级强行丢弃次要内容。"
+        "hint": "文本预算：稳定布局包含系统、当前输入与文本历史；旧布局限制插件装配文本。用户正文与受保护核心内容不会强行截断，超限会提示；不等同于供应商 token 窗口。"
       },
       "min_output_length": {
         "type": "int",
@@ -345,13 +345,73 @@
   "permissions": {
     "type": "object",
     "description": "[权限] 管理员白名单",
-    "hint": "控制群聊写指令的访问权限。仅作用于 QQ/Discord 等聊天平台的群聊写指令，Web 面板已由 AstrBot 鉴权保护，不受此项影响。",
+    "hint": "控制群聊及已加入会话组的私聊写指令权限。Web 面板由 AstrBot 自身鉴权保护，不受此项影响。",
     "items": {
       "admin_users": {
         "type": "text",
         "description": "管理员 ID（换行分隔）",
         "default": "",
-        "hint": "填写 AstrBot 账号 ID（UID，可通过 /sid 指令获取），每行一个。配置后仅白名单用户可在群聊执行写指令（切卡/清记忆/改流式等）。留空时群聊写指令被拦截，私聊与 Web 面板编辑不受限制。"
+        "hint": "每行填写一个用户 ID，或用 平台实例ID:用户ID 限定平台。群聊及已入组私聊的写指令仅允许白名单用户；未入组私聊与 Web 面板维持原权限规则。参与者关联不授予管理员权限。"
+      }
+    }
+  },
+  "usage": {
+    "type": "object",
+    "description": "用量与费用",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "记录模型用量",
+        "default": true,
+        "hint": "仅保存调用元数据与供应商返回的计数，不记录提示词或回复。"
+      },
+      "retention_days": {
+        "type": "int",
+        "description": "用量保留天数",
+        "default": 30,
+        "hint": "1–366 天；仅清理用量台账。"
+      },
+      "max_records": {
+        "type": "int",
+        "description": "用量记录上限",
+        "default": 20000,
+        "hint": "100–100000 条；常规清理最多延后 99 条，调整上限后在下次记录时清理。过期记录不参与查询。"
+      },
+      "prices_json": {
+        "type": "text",
+        "description": "手动模型单价（每百万 Token）",
+        "default": "{}",
+        "hint": "JSON：模型名或 provider/model 为键，值含 currency、version、input、output、cache_read、cache_write。没有可靠价格或完整用量时金额保持未知。"
+      }
+    }
+  },
+  "cache": {
+    "type": "object",
+    "description": "提示词缓存",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用稳定提示词布局",
+        "default": false,
+        "hint": "开启后重排段序与分组，覆盖世界书注入位置；可能改变模型行为、增加常驻输入。动态状态后置，关闭恢复旧布局。"
+      },
+      "dynamic_to_user_tail": {
+        "type": "bool",
+        "description": "临时动态上下文",
+        "default": false,
+        "hint": "仅在已知宿主/Provider 序列化路径启用；不支持时退到系统尾部，不自动重发请求。"
+      },
+      "stable_sampling": {
+        "type": "bool",
+        "description": "稳定素材采样",
+        "default": false,
+        "hint": "仅缓存布局启用时有效；在窗口内保持随机池样本，改变采样节奏。"
+      },
+      "sampling_window": {
+        "type": "int",
+        "description": "素材采样窗口（轮）",
+        "default": 3,
+        "hint": "1–100 轮，按会话与角色确定稳定种子。"
       }
     }
   }

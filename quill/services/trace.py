@@ -127,6 +127,7 @@ class ContextTrace:
     module_results: list[TraceModuleResult] = field(default_factory=list)
     injection_order: list[str] = field(default_factory=list)
                                 # 实际注入段序（与 22 步段序映射）
+    cache_diagnostics: dict[str, Any] = field(default_factory=dict)
     token_estimate: dict[str, int] = field(default_factory=dict)
                                 # 各模块字符量→粗估 token（标注"估算"）
     truncation_events: list[dict[str, Any]] = field(default_factory=list)

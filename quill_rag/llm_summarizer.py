@@ -15,16 +15,23 @@ DEFAULT_SYSTEM_PROMPT = """你是一个记忆整理助手。请将以下对话�
 class QuillSummarizer:
     """使用 AstrBot LLM Provider 生成对话摘要。"""
 
-    def __init__(self, context, provider_id: str = "", system_prompt: str = DEFAULT_SYSTEM_PROMPT):
+    def __init__(self, context, provider_id: str = "", system_prompt: str = DEFAULT_SYSTEM_PROMPT, usage_recorder=None):
         self.context = context
+        self.usage_recorder = usage_recorder
         self.provider_id = (provider_id or "").strip()
         self.system_prompt = system_prompt
+
+    async def _generate(self, provider, purpose, session_id, **kwargs):
+        if self.usage_recorder is not None:
+            return await self.usage_recorder.generate(
+                provider_id=self.provider_id, purpose=purpose, session_id=session_id, **kwargs)
+        return await provider.text_chat(**kwargs)
 
     CONTEXT_SUMMARY_PROMPT = """你是一个记忆整理助手。请将以下多轮对话精简为一条不超过80字的核心事件摘要。
 重点提取：关键角色关系、重要事件转折、情感变化轨迹。忽略日常寒暄和重复内容。
 只输出摘要文本，不要任何前缀或解释。"""
 
-    async def summarize(self, user_input: str, ai_response: str) -> str:
+    async def summarize(self, user_input: str, ai_response: str, session_id=None) -> str:
         """将对话精简为摘要。
 
         Args:
@@ -43,7 +50,7 @@ class QuillSummarizer:
                 return ""
 
             prompt = f"用户：{user_input}\nAI：{ai_response}"
-            response = await provider.text_chat(
+            response = await self._generate(provider, "memory_summary", session_id,
                 prompt=prompt,
                 system_prompt=self.system_prompt,
             )
@@ -55,7 +62,7 @@ class QuillSummarizer:
             logger.warning(f"[Quill Memory] 摘要生成失败: {e}")
         return ""
 
-    async def context_summarize(self, combined_text: str, turn_count: int = 0) -> str:
+    async def context_summarize(self, combined_text: str, turn_count: int = 0, session_id=None) -> str:
         """将多轮对话历史精简为一条摘要。
 
         Args:
@@ -74,7 +81,7 @@ class QuillSummarizer:
                 return ""
 
             prompt = f"以下是 {turn_count} 轮对话：\n\n{combined_text}\n\n请总结核心事件："
-            response = await provider.text_chat(
+            response = await self._generate(provider, "context_summary", session_id,
                 prompt=prompt,
                 system_prompt=self.CONTEXT_SUMMARY_PROMPT,
             )
@@ -88,8 +95,31 @@ class QuillSummarizer:
             logger.warning(f"[Quill Memory] 多轮摘要生成失败: {e}")
         return ""
 
+    async def context_summarize_result(self, combined_text: str, turn_count=0, session_id=None):
+        """M3 显式区分成功空产出与失败；不把空串包装成伪摘要推进水位。"""
+        if not self.provider_id or not self.context:
+            return {"ok": False, "text": "", "error": "provider_unconfigured"}
+        try:
+            provider = self.context.get_provider_by_id(self.provider_id)
+            if provider is None:
+                return {"ok": False, "text": "", "error": "provider_unavailable"}
+            response = await self._generate(
+                provider, "context_summary", session_id,
+                prompt=f"以下是 {turn_count} 轮对话：\n\n{combined_text}\n\n请总结核心事件：",
+                system_prompt=self.CONTEXT_SUMMARY_PROMPT,
+            )
+            if response is None or getattr(response,"role","") == "err":
+                return {"ok": False, "text": "", "error": "provider_response_error"}
+            text = getattr(response,"completion_text",None)
+            if not isinstance(text,str):
+                return {"ok": False, "text": "", "error": "invalid_summary_response"}
+            return {"ok": True, "text": text.strip(), "error": None}
+        except Exception as exc:
+            logger.warning("[Quill Memory] 增量总结失败（%s）", type(exc).__name__)
+            return {"ok": False, "text": "", "error": type(exc).__name__}
 
-    async def reflect_on_logs(self, combined_text: str) -> dict:
+
+    async def reflect_on_logs(self, combined_text: str, session_id=None) -> dict:
         if not self.provider_id or not self.context:
             return {}
             
@@ -101,7 +131,7 @@ class QuillSummarizer:
             prompt = f"以下是该用户最近的详细对话日志：\n\n{combined_text}\n\n请你作为心理侧写师和记忆整理大师，输出JSON格式进行高维度归纳。必须包含三个字段：\n1. new_core_traits: 字符串，总结角色的心理变化、态度转变、确立的新关系等高维度设定。\n2. crucial_facts: 字符串，总结不可逆的重大客观事件或设定的核心信息。\n3. trivial_summaries: 字符串列表，将日常的琐碎闲聊精简为几条独立的简短陈述句。"
             system_prompt = "你是一个专门负责信息提纯与归纳的AI。严格返回合法的JSON对象，包含 'new_core_traits', 'crucial_facts', 'trivial_summaries' (数组) 字段。"
             
-            response = await provider.text_chat(
+            response = await self._generate(provider, "reflection", session_id,
                 prompt=prompt,
                 system_prompt=system_prompt,
             )

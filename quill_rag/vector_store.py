@@ -30,10 +30,12 @@ import numpy as np
 from astrbot.api import logger
 
 try:
+    from .._schema import prepare_database, finish_database
     from ..quill.core.errors import StorageError
     from ..quill.core.locks import ReentrantLock
     from ..quill.core.storage_stats import note_storage_error
 except ImportError:  # 直接运行本文件时无父包
+    from _schema import prepare_database, finish_database
     from quill.core.errors import StorageError
     from quill.core.locks import ReentrantLock
     from quill.core.storage_stats import note_storage_error
@@ -84,8 +86,16 @@ class FaissVectorStore:
     # F4 修复：SQLite 共享连接必须串行化，与 FAISS 共用同一把锁
     async def initialize(self):
         self._conn = await aiosqlite.connect(self.db_path, timeout=10.0)
-        await self._init_db()
-        await self._load_index()
+        try:
+            self.schema_status = await prepare_database(self._conn, self.db_path, "documents")
+            await self._init_db()
+            self.schema_status["previous_version"]=self.schema_status["version"]
+            self.schema_status["version"]=await finish_database(self._conn,kind="documents")
+            await self._load_index()
+        except BaseException:
+            await self._conn.close()
+            self._conn = None
+            raise
 
     async def _exec_write(self, sql: str, params=()) -> aiosqlite.Cursor:
         async with self._lock:

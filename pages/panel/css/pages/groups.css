@@ -1,0 +1,30 @@
+/* M7 内容区沿用现有 macOS 27 令牌与卡片；不在内容卡片叠加玻璃材质。 */
+#pane-groups #groups-list { margin-top: var(--sp-4); }
+#pane-groups .group-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+#pane-groups .cfg-row-text { min-width: 0; }
+#pane-groups .cfg-row-control { max-width: 60%; }
+#pane-groups .cfg-row-control > .field,
+#pane-groups .cfg-row-control > .sel-wrap { max-width: 100%; }
+#pane-groups .group-choices { min-width: 0; border: 0; padding: 0; margin: 0; }
+#pane-groups .group-choices legend { padding: 0; margin-bottom: var(--sp-2); }
+#pane-groups .group-member { padding: var(--sp-2) 0; border-bottom: .5px solid var(--separator); overflow-wrap: anywhere; }
+#pane-groups .group-member:last-child { border-bottom: 0; }
+#pane-groups .group-member .check,
+#pane-groups .group-member.check { display: flex; min-height: var(--h-control); align-items: flex-start; line-height: 18px; }
+#pane-groups .group-member .check input { margin-top: var(--sp-1); }
+#pane-groups .group-member .check > span { min-width: 0; }
+#pane-groups .group-member small { display: block; color: var(--label-2); font-size: 11px; line-height: 14px; }
+#pane-groups .group-history { margin: var(--sp-2) 0 0 var(--sp-6); }
+#pane-groups .group-member:has(input:disabled) { color: var(--label-2); }
+#pane-groups .group-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; margin: 0; font-size: 13px; line-height: 18px; }
+#pane-groups .group-origins { margin: 0; padding-left: var(--sp-4); overflow-wrap: anywhere; line-height: 18px; }
+#pane-groups .group-origins li + li { margin-top: var(--sp-1); }
+#pane-groups .card-head h3 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+#pane-groups .page-head h2 { line-height: 32px; letter-spacing: 0; }
+#pane-groups .card-head h3 { letter-spacing: 0; }
+#pane-groups .group-preview:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+#pane-groups .cfg-row-text .row-desc { display: block; }
+#pane-groups .page-sub, #pane-groups .card-head-sub { color: var(--label-2); }
+#pane-groups .group-choices legend { font-size: 13px; line-height: 16px; font-weight: 600; color: var(--label-1); letter-spacing: 0; text-transform: none; }
+#pane-groups #groups-list:not(:empty) { margin-bottom: var(--sp-4); }

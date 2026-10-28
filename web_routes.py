@@ -45,6 +45,15 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("debug", "enabled"), ("debug", "show_inject_report"),
     # trace（M1a 注入诊断）
     ("trace", "enabled"), ("trace", "buffer_per_session"),
+    # M2 用量/缓存
+    ("usage", "enabled"),
+    ("usage", "retention_days"),
+    ("usage", "max_records"),
+    ("usage", "prices_json"),
+    ("cache", "enabled"),
+    ("cache", "dynamic_to_user_tail"),
+    ("cache", "stable_sampling"),
+    ("cache", "sampling_window"),
     # permissions
     ("permissions", "admin_users"),
 }
@@ -213,7 +222,14 @@ _MUTATING_ROUTES: frozenset = frozenset({
     # Q1：连通性测试**会真实发出站外请求**（可能携带已保存的判定密钥），
     # 是一等一的「借用户之手打内网 / 外带凭据」的入口，必须与写操作同级设防。
     "decision_probe",
+    "task_list", "task_detail", "task_cancel", "scope_resolve", "schema_status",
+    "memory_progress", "memory_summarize_task", "memory_import_task",
+    "groups_list", "groups_preview", "groups_save", "groups_archive", "groups_recent", "groups_actors",
+    "usage_stats", "usage_clear",  # 全会话元数据也需要管理身份。
 })
+
+# 新增写入口默认要求管理身份；只有这些既有 POST 查询明确按只读处理。
+_READ_ONLY_POST_ROUTES = frozenset({'wr_get','wr_test','wb_get','rag_search','memory_vector_search','trace_simulate'})
 
 #: H2 修复：AstrBot 用该前缀把「API Key 调用」与「Dashboard 登录会话」区分开
 #: （框架 `astrbot.core.workspace.API_KEY_USERNAME_PREFIX`，由
@@ -266,7 +282,8 @@ def _api_handler(handler):
     """
     @wraps(handler)
     async def wrapper(*args, **kwargs):
-        if getattr(handler, "__name__", "") in _MUTATING_ROUTES:
+        name = getattr(handler, "__name__", "")
+        if name in _MUTATING_ROUTES or (request.method.upper() not in ('GET','HEAD','OPTIONS') and name not in _READ_ONLY_POST_ROUTES):
             owner = args[0] if args else None
             guard = getattr(owner, "_require_admin_request", None)
             if not callable(guard):
@@ -487,6 +504,24 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/chatlog/list",     self.chat_log_list,  ["GET"],    "列出对话日志")
         _r(f"/{PLUGIN_NAME}/chatlog/export",   self.chat_log_export, ["GET"],   "导出对话日志")
 
+        _r(f"/{PLUGIN_NAME}/tasks/list", self.task_list, ["GET"], "后台任务列表（管理员）")
+        _r(f"/{PLUGIN_NAME}/groups/list", self.groups_list, ["GET"], "会话组与已观测入口（管理员）")
+        _r(f"/{PLUGIN_NAME}/groups/preview", self.groups_preview, ["POST"], "预览共享范围与历史（管理员）")
+        _r(f"/{PLUGIN_NAME}/groups/save", self.groups_save, ["POST"], "保存会话组（管理员）")
+        _r(f"/{PLUGIN_NAME}/groups/archive", self.groups_archive, ["POST"], "解散并保留管理档案（管理员）")
+        _r(f"/{PLUGIN_NAME}/groups/recent", self.groups_recent, ["GET"], "组内近期消息（管理员）")
+        _r(f"/{PLUGIN_NAME}/groups/actors", self.groups_actors, ["POST"], "显式参与者关联（管理员）")
+        _r(f"/{PLUGIN_NAME}/tasks/detail", self.task_detail, ["GET"], "后台任务详情（管理员）")
+        _r(f"/{PLUGIN_NAME}/tasks/cancel", self.task_cancel, ["POST"], "请求安全点取消（管理员）")
+        _r(f"/{PLUGIN_NAME}/scope/resolve", self.scope_resolve, ["GET"], "身份与角色桶诊断（管理员）")
+        _r(f"/{PLUGIN_NAME}/storage/status", self.schema_status, ["GET"], "存储版本与恢复状态（管理员）")
+        _r(f"/{PLUGIN_NAME}/memory/progress", self.memory_progress, ["GET"], "持久总结水位（管理员）")
+        _r(f"/{PLUGIN_NAME}/memory/summarize_task", self.memory_summarize_task, ["POST"], "增量总结后台任务")
+        _r(f"/{PLUGIN_NAME}/memory/import_task", self.memory_import_task, ["POST"], "记忆导入后台任务")
+
+        _r(f"/{PLUGIN_NAME}/usage/stats", self.usage_stats, ["GET"], "用量元数据（管理员）")
+        _r(f"/{PLUGIN_NAME}/usage/clear", self.usage_clear, ["POST"], "清空用量台账（管理员）")
+
         # ── M1a 注入追踪（只读诊断；写名单 _MUTATING_ROUTES 不涉及）──
         _r(f"/{PLUGIN_NAME}/trace/recent",     self.trace_recent,   ["GET"],    "最近注入追踪(按会话)")
         _r(f"/{PLUGIN_NAME}/trace/detail",     self.trace_detail,   ["GET"],    "单轮注入追踪详情")
@@ -536,6 +571,225 @@ class QuillRoutes:
             health_tracker=self.plugin.health_tracker if self.plugin else None,
         )
 
+    @_api_handler
+    async def task_list(self):
+        return json_response({"items":self.plugin.task_registry.list(),"retention_seconds":self.plugin.task_registry.retention_seconds})
+
+    async def _groups_call(self,work):
+        from .interfaces.groups import GroupBusy, StalePreview
+        try:
+            self.plugin.shared_scopes.require_ready()
+            return json_response(await work())
+        except (GroupBusy, StalePreview) as exc:
+            return error_response(str(exc),status_code=409)
+        except ValueError as exc:
+            return error_response(str(exc),status_code=400)
+
+    @_api_handler
+    async def groups_list(self):
+        async def read():
+            service=self.plugin.shared_scopes
+            await service.refresh()
+            from .interfaces.prompt_cache import _host_profile, last_capability
+            return {**service.index,"groups":[{**g,'busy':service.busy(g['scope_id'])} for g in service.index['groups']],"history_policy":"from_now_unless_selected",
+                "exit_policy":"管理员在此面板移除入口后恢复该入口原有独立数据；组档案仅管理员可读",
+                "capability":"共享纯文本；需通过宿主装配、保存契约与实际序列化能力检查；仅本地 runner 的已审阅 OpenAI/Anthropic 路径",
+                "host_capability":_host_profile(),
+                "origin_capabilities":{o['origin_key']:last_capability(o['umo']) for o in service.index['origins']},
+                "instance_scope":"single_astrbot_instance"}
+        return await self._groups_call(read)
+
+    @_api_handler
+    async def groups_preview(self):
+        data=await _json_body()
+        return await self._groups_call(lambda:self.plugin.shared_scopes.preview(data))
+
+    @_api_handler
+    async def groups_save(self):
+        data=await _json_body()
+        return await self._groups_call(lambda:self.plugin.shared_scopes.save(data))
+
+    @_api_handler
+    async def groups_archive(self):
+        data=await _json_body()
+        scope=data.get('scope_id');revision=data.get('revision')
+        if not isinstance(scope,str) or not scope.startswith('scope:') or not isinstance(revision,int) or data.get('confirm')!='ARCHIVE':
+            return error_response('需要会话组 ID、当前版本和解散确认',status_code=400)
+        return await self._groups_call(lambda:self.plugin.shared_scopes.archive(scope,revision))
+
+    @_api_handler
+    async def groups_recent(self):
+        scope=request.query.get('scope_id','')
+        persona=request.query.get('persona_id','')
+        if len(scope)>200 or len(persona)>200:
+            return error_response('会话组或角色 ID 过长',status_code=400)
+        async def read():
+            if not any(g['scope_id']==scope for g in self.plugin.shared_scopes.index['groups']):
+                raise ValueError('会话组不存在')
+            return {'items':await self.plugin.shared_scopes.store.recent(scope,persona)}
+        return await self._groups_call(read)
+
+    @_api_handler
+    async def groups_actors(self):
+        from uuid import uuid4
+        data=await _json_body()
+        actors=data.get('actors')
+        if not isinstance(actors,list) or not 1<=len(actors)<=50 or any(not isinstance(a,str) for a in actors):
+            return error_response('请选择 1–50 个已观测参与者',status_code=400)
+        async def link():
+            service=self.plugin.shared_scopes
+            async with service.admin_lock:
+                # 只锁受关联身份影响的组；其他组生成不应阻塞此操作。
+                for scope in await service.store.actor_scopes(actors):
+                    service.guard_idle(scope)
+                canonical=None if data.get('unlink') is True else 'actorlink:'+uuid4().hex
+                await service.store.link_actors(actors,canonical)
+                await service.refresh()
+                return {'actors':actors,'canonical_id':canonical,'permission_changed':False}
+        return await self._groups_call(link)
+
+    @_api_handler
+    async def task_detail(self):
+        record = self.plugin.task_registry.get(str(request.query.get("id", "")))
+        if record is None:
+            return error_response("任务不存在或已过保留期",status_code=404)
+        return json_response({"status":"ok","data":record.to_dict()})
+
+    @_api_handler
+    async def task_cancel(self):
+        data = await _json_body()
+        result = self.plugin.task_registry.cancel(str(data.get("task_id", "")))
+        return json_response({"status":"ok","data":result}) if result is not None else error_response("任务不存在或已过保留期",status_code=404)
+
+    @_api_handler
+    async def scope_resolve(self):
+        from .quill.services.scope import PhysicalOrigin
+        umo = str(request.query.get("umo", ""))
+        if not umo or len(umo)>2048:
+            return error_response("需要有效 umo",status_code=400)
+        selected = await self.plugin.state_manager.get_selected_persona_id(umo)
+        persona = str(request.query.get("persona_id", selected))
+        if len(persona)>200:
+            return error_response("角色 ID 过长",status_code=400)
+        parts=umo.split(":",2)
+        observed=next((o for o in self.plugin.shared_scopes.index['origins'] if o['umo']==umo),{})
+        origin=PhysicalOrigin(umo,str(request.query.get("platform_instance_id",observed.get('platform_id',parts[0] if len(parts)==3 else ""))),
+                              observed.get('message_type',parts[1] if len(parts)==3 else ""),str(request.query.get("sender_id","")))
+        turn=self.plugin.scope_resolver.resolve(origin,persona)
+        if 'persona_id' in request.query:
+            from dataclasses import replace
+            turn=replace(turn,persona_id=persona)
+        values=await self.plugin.state_manager.get_session_vars(umo,persona_id=persona,claim_legacy=False)
+        return json_response({"identity":turn.to_dict(),"memory_session_id":turn.memory_session_id,
+                              "selected_persona_id":selected,"session_vars":values,"diagnostic_only":True})
+
+    @_api_handler
+    async def schema_status(self):
+        stores={"memory":getattr(self.plugin,"rag_memory_store",None),
+                "documents":getattr(self.plugin,"rag_vector_store",None),"writing":self.plugin.wr_manager}
+        result={}
+        for name,store in stores.items():
+            status=dict(getattr(store,"schema_status",{}) or getattr(self.plugin,"_rag_storage_status",{}).get(name,{}) or {})
+            if status:
+                status["backup_verified"]=bool(status.pop("backup",None))
+            result[name]={"available":store is not None and getattr(store,"_conn",None) is not None,**status}
+            if store is not None and name == 'memory':
+                result[name]['retention'] = getattr(store, 'retention_status', {})
+        memory=stores["memory"]
+        pending=await memory.pending_operations() if memory and getattr(memory,"_writable",False) else []
+        return json_response({"stores":result,"pending_operations":[{**{k:v for k,v in row.items() if k!='payload'},
+            'failure_count':row['payload'].get('failure_count',0),'error_class':row['payload'].get('error_class'),
+            'retry_after':row['payload'].get('retry_after')} for row in pending],
+                              "state_read_only":bool(getattr(self.plugin.state_manager,"_read_only_reason",None))})
+
+    @_api_handler
+    async def memory_progress(self):
+        session_id=str(request.query.get("session_id",""))
+        store=self.rag.get("memory_store")
+        if not session_id or len(session_id)>2048:
+            return error_response("需要有效 session_id",status_code=400)
+        if not store or not getattr(store,"_writable",False):
+            return error_response("记忆库暂不可用",status_code=503)
+        turn=self.plugin.scope_resolver.from_session_key(session_id,self.plugin.state_manager.known_origins())
+        return json_response({**await store.get_summary_progress(session_id),"scope_id":turn.scope_id,"persona_id":turn.persona_id})
+
+    @_api_handler
+    async def memory_summarize_task(self):
+        data=await _json_body()
+        session_id=str(data.get("session_id", ""))
+        if not session_id or len(session_id)>2048:
+            return error_response("需要有效 session_id",status_code=400)
+        store=self.rag.get("memory_store")
+        if not store or not getattr(store,"_writable",False):
+            return error_response("记忆库暂不可用",status_code=503)
+        if not self.plugin.rag_retriever or not self.plugin.rag_retriever.enable_memory:
+            return error_response("动态记忆功能未启用",status_code=400)
+        turn=self.plugin.scope_resolver.from_session_key(session_id,self.plugin.state_manager.known_origins())
+        legacy=await self.plugin.state_manager.get_last_learned_id(turn.scope_id,persona_id=turn.persona_id)
+        record,reused=self.plugin._start_summary_task(session_id,legacy_last_id=legacy)
+        return json_response({"task_id":record.task_id,"reused":reused,"task":record.to_dict()},status_code=202)
+
+    @_api_handler
+    async def memory_import_task(self):
+        import hashlib,json
+        from ._route_core import handle_memory_import
+        data=await _json_body()
+        memories=data.get("memories")
+        if not isinstance(memories,list) or len(memories)>10000 or any(not isinstance(row,dict) for row in memories):
+            return error_response("memories 必须为最多 10000 条对象的数组",status_code=400)
+        store=self.rag.get("memory_store")
+        if not store or not getattr(store,"_writable",False):
+            return error_response("记忆库暂不可用",status_code=503)
+        key=hashlib.sha256(json.dumps(data,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+        async def work(handle):
+            result=await handle_memory_import(store,self.rag.get("embedding"),data,handle=handle)
+            if result.get("status")!='ok':
+                raise ValueError("记忆导入失败")
+            handle.record.result=result.get("data")
+            return result.get("data")
+        record,reused=self.plugin._start_task("memory_import",key,work,total=len(memories))
+        return json_response({"task_id":record.task_id,"reused":reused,"task":record.to_dict()},status_code=202)
+
+    @_api_handler
+    async def usage_stats(self):
+        recorder = getattr(self.plugin, "_usage", None) if self.plugin else None
+        if recorder is None or not recorder.ready:
+            return error_response("用量台账暂不可用，对话不受影响", status_code=503)
+        params = request.query
+        filters = {}
+        try:
+            for key, default, low, high in (("days", 7, 1, 366), ("limit", 50, 1, 200),
+                                            ("offset", 0, 0, 100000)):
+                filters[key] = int(params.get(key, default))
+                if not low <= filters[key] <= high:
+                    raise ValueError()
+            for key in ("scope_id", "persona_id", "provider_id", "model", "purpose"):
+                filters[key] = str(params.get(key, ""))
+                if len(filters[key]) > 512:
+                    raise ValueError()
+        except (ValueError, TypeError):
+            return error_response("用量筛选参数无效", status_code=400)
+        try:
+            return json_response(await recorder.query(**filters))
+        except Exception as exc:
+            recorder.error = type(exc).__name__
+            return error_response("用量台账暂不可用，对话不受影响", status_code=503)
+
+    @_api_handler
+    async def usage_clear(self):
+        data = await _json_body()
+        if data.get("confirm") != "CLEAR_USAGE":
+            return error_response("需明确确认清空用量台账", status_code=400)
+        recorder = getattr(self.plugin, "_usage", None) if self.plugin else None
+        if recorder is None or not recorder.ready:
+            return error_response("用量台账暂不可用", status_code=503)
+        try:
+            await recorder.clear()
+        except Exception as exc:
+            recorder.error = type(exc).__name__
+            return error_response("用量台账暂不可用", status_code=503)
+        return json_response({"cleared": True})
+
     # ── Config Save ───────────────────────────────────────────
 
     @_api_handler
@@ -557,6 +811,12 @@ class QuillRoutes:
 
         if (group, key) not in _ALLOWED_CONFIG_KEYS:
             return error_response(f"不支持的配置项: {group}.{key}", status_code=400)
+
+        if (group, key) == ("usage", "prices_json"):
+            from .quill.services.usage import validate_prices
+            message = validate_prices(value)
+            if message:
+                return error_response(message, status_code=400)
 
         plugin = self.plugin
         if plugin is None:
@@ -588,6 +848,11 @@ class QuillRoutes:
                 return error_response(
                     f"不支持的配置项: {group}.{key}", status_code=400
                 )
+            if pair == ("usage", "prices_json"):
+                from .quill.services.usage import validate_prices
+                message = validate_prices(item.get("value"))
+                if message:
+                    return error_response(message, status_code=400)
             if pair in seen:
                 return error_response(
                     f"重复的配置项: {group}.{key}", status_code=400
@@ -866,7 +1131,7 @@ class QuillRoutes:
         """列出记忆。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆未初始化", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         session_id = request.query.get("session_id")
         return json_response(await handle_memory_list(memory_store, session_id))
 
@@ -875,17 +1140,17 @@ class QuillRoutes:
         """列出全部记忆（跨 session），按创建时间倒序，支持分页。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆未初始化", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         page = max(1, request.query.get("page", 1, type=int) or 1)
         per_page = min(max(1, request.query.get("per_page", 50, type=int) or 50), 200)
         return json_response(await handle_memory_list_all(memory_store, page=page, per_page=per_page))
 
     @_api_handler
     async def memory_sessions(self):
-        """P2-1: 列出所有有记忆的会话。"""
+        """列出有记忆或待总结日志的会话。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆未初始化", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         sessions = await memory_store.list_sessions()
         return json_response({"status": "ok", "data": {"sessions": sessions}})
 
@@ -894,7 +1159,7 @@ class QuillRoutes:
         """B4 修复：记忆存储统计（总数 / 活跃会话 / 今日新增）。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆未初始化", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         return json_response(await handle_memory_stats(memory_store))
 
     @_api_handler
@@ -902,11 +1167,19 @@ class QuillRoutes:
         """获取单条记忆完整详情。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆未初始化", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         memory_id = request.query.get("id", type=int)
         if not memory_id:
             return error_response("缺少 id 参数", status_code=400)
-        return json_response(await handle_memory_get(memory_store, memory_id=memory_id))
+        result = await handle_memory_get(memory_store, memory_id=memory_id)
+        if result.get('status') == 'ok':
+            mem = result['data']
+            turn = self.plugin.scope_resolver.from_session_key(mem['session_id'],self.plugin.state_manager.known_origins())
+            group = self.plugin.scope_resolver.groups.get(turn.scope_id)
+            if group:
+                mem['shared_scope'] = {'scope_id':turn.scope_id,'revision':group['revision'],'name':group['name'],
+                    'affected':[o['umo'] for o in self.plugin.shared_scopes.index['origins'] if o['scope_id']==turn.scope_id]}
+        return json_response(result)
 
     @_api_handler
     async def memory_vector_search(self):
@@ -918,7 +1191,7 @@ class QuillRoutes:
             return error_response("缺少 query 参数", status_code=400)
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆未初始化", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         embedding = self.rag.get('embedding')
         if embedding is None:
             return error_response("Embedding 未初始化", status_code=500)
@@ -938,7 +1211,7 @@ class QuillRoutes:
         """导出全部记忆为 JSON。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆未初始化", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         return json_response(await handle_memory_export(memory_store))
 
     @_api_handler
@@ -946,7 +1219,7 @@ class QuillRoutes:
         """从上传的 JSON 文件导入记忆（异步，重新生成向量）。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆未初始化", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         embedding = self.rag.get('embedding')
         try:
             data = await _json_body()
@@ -962,7 +1235,7 @@ class QuillRoutes:
         """一键清理低价值/过期记忆。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆系统未加载", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         return json_response(await handle_memory_prune(memory_store))
 
     @_api_handler
@@ -971,17 +1244,32 @@ class QuillRoutes:
         data = await _json_body()
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆未初始化", status_code=500)
-        return json_response(
-            await handle_memory_delete(memory_store, data.get("memory_id"), data.get("session_id"))
-        )
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
+        session_id = data.get('session_id')
+        if data.get('memory_id'):
+            memory = await memory_store.get_memory_by_id(data['memory_id'])
+            session_id = memory['session_id'] if memory else None
+        turn = self.plugin.scope_resolver.from_session_key(str(session_id or ''),self.plugin.state_manager.known_origins())
+        group = self.plugin.scope_resolver.groups.get(turn.scope_id)
+        if group:
+            service = self.plugin.shared_scopes
+            async with service.admin_lock:
+                latest = self.plugin.scope_resolver.groups.get(turn.scope_id)
+                if not latest or data.get('scope_revision') != latest['revision'] or data.get('confirm_scope') != turn.scope_id:
+                    return error_response('共享范围已变化或未确认，请重新查看影响入口后删除',status_code=409)
+                try:
+                    service.guard_idle(turn.scope_id)
+                except ValueError as exc:
+                    return error_response(str(exc),status_code=409)
+                return json_response(await handle_memory_delete(memory_store,data.get('memory_id'),data.get('session_id')))
+        return json_response(await handle_memory_delete(memory_store, data.get("memory_id"), data.get("session_id")))
 
     @_api_handler
     async def memory_pin(self):
         """钉住/取消钉住核心记忆。is_core=1 的记忆不参与 Top-K 竞争，直接注入 prompt。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆未初始化", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         data = await _json_body()
         memory_id = data.get("memory_id")
         is_core = bool(data.get("is_core", False))
@@ -1008,7 +1296,7 @@ class QuillRoutes:
         """列出对话日志。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆系统未加载", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         session_id = request.query.get("session_id")
         # L7：非数字（?limit=abc）回落到默认值。不用 request.query.get(..., type=int)：
         # 真机 PluginMultiDict 支持 type 参数，但显式解析在两种实现下行为一致。
@@ -1024,7 +1312,7 @@ class QuillRoutes:
         """导出对话日志。"""
         memory_store = self.rag.get('memory_store')
         if memory_store is None:
-            return error_response("记忆系统未加载", status_code=500)
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         session_id = request.query.get("session_id")
         fmt = request.query.get("format", "markdown")
         result = await handle_chat_log_export(memory_store, session_id, fmt)
@@ -1730,7 +2018,8 @@ class QuillRoutes:
     async def persona_astrbot_list(self):
         """列出 AstrBot 面板里已配置的人格（「由人格导入」的选择列表）。"""
         source = self._persona_source()
-        converter = PersonaCardConverter(self.context, provider_id=self._summary_provider_id())
+        converter = PersonaCardConverter(self.context, provider_id=self._summary_provider_id(),
+                                         usage_recorder=getattr(self.plugin, "_usage", None))
         personas = await source.list_personas()
         existing = await self._card_names()
         for item in personas:
@@ -1774,7 +2063,8 @@ class QuillRoutes:
             # 用户显式指定的名字撞重名：先报错，别白跑一次 LLM
             return error_response(f"角色名 '{name}' 已存在", status_code=400)
 
-        converter = PersonaCardConverter(self.context, provider_id=self._summary_provider_id())
+        converter = PersonaCardConverter(self.context, provider_id=self._summary_provider_id(),
+                                         usage_recorder=getattr(self.plugin, "_usage", None))
         try:
             card = await converter.convert(raw, name_override=name)
         except PersonaImportError as e:

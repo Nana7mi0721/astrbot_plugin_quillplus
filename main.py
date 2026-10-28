@@ -96,6 +96,12 @@ from .quill.services.statusbar import (
 # M2.2 钩子薄化：实现函数住 interfaces/astrbot_hooks.py（BASELINE §1.2
 # 架构修订——注册桩必须留在本类体，桩体一行委托）。
 from .interfaces import astrbot_hooks as _quill_hooks
+from .interfaces.usage import UsageRecorder
+from .interfaces.scopes import freeze_turn, event_turn
+from .quill.services.scope import ScopeResolver, bind_turn
+from .quill.services.tasks import TaskRegistry
+from .quill_rag.usage_store import UsageStore
+from .quill.services.prompt_cache import SegmentProfiler
 
 
 # ── 指令参数切分 ───────────────────────────────────────────────────
@@ -151,6 +157,15 @@ class _UnwokenSlashFilter(filter.CustomFilter):
         return bool(_SLASH_CMD_RE.match((event.get_message_str() or "").strip()))
 
 
+class _AlreadyAwakeFilter(filter.CustomFilter):
+    """M7 能力门只检查原本已唤醒的消息，不改变群聊唤醒条件。"""
+    def __init__(self,raise_error=False):
+        pass
+
+    def filter(self,event,cfg):
+        return bool(event.is_at_or_wake_command)
+
+
 async def _quill_dispatch(plugin, event: AstrMessageEvent, args: str) -> None:
     """/quill 的子命令分发（三条入口共用：/quill、/quill 兜底）。
 
@@ -163,7 +178,7 @@ async def _quill_dispatch(plugin, event: AstrMessageEvent, args: str) -> None:
         await _cmds.quill_help(event)
         return
     if arg1_lower == "reset":
-        await _cmds.quill_reset(plugin, event)
+        await _cmds.quill_reset(plugin, event,rest)
         return
     if arg1_lower == "debug":
         await _cmds.quill_debug(plugin, event)
@@ -384,6 +399,16 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         # 安装目录留成半新半旧。这里统一迁到 AstrBot 约定的
         # data/plugin_data/<插件名>/（更新器不碰），并做一次性搬迁。
         self.paths = resolve_data_layout(self.plugin_dir)
+        self.scope_resolver = ScopeResolver()
+        self.task_registry = TaskRegistry()
+        self._usage = UsageRecorder(
+            self.context,
+            UsageStore(os.path.join(self.paths["data_root"] or self.paths["state_dir"], "quill_usage.db")),
+            lambda: self.config,
+            session_resolver=lambda value: self.scope_resolver.from_session_key(
+                value, self.state_manager.known_origins()),
+        )
+        self._cache_profiler = SegmentProfiler()
         if self.paths.get("legacy"):
             logger.warning(
                 "[Quill] 无法使用外部数据目录，仍在插件目录内读写数据；"
@@ -399,6 +424,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         data_dir = self.paths["state_dir"]
         os.makedirs(data_dir, exist_ok=True)
         self.state_manager = StateManager(data_dir=data_dir)
+        from .interfaces.groups import SharedScopes
+        self.shared_scopes = SharedScopes(self)
+        self.shared_scopes.bind_state()
 
         # --- Writing Resource (deferred to initialize()) ---
         # WR 注入参数（wr_max_entries 等）经 self.props 实时读，见 props.py
@@ -485,28 +513,47 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
     @staticmethod
     def _is_valid_reflection(reflection: dict) -> bool:
-        """校验反思结果是否可直接用于写入。
+        # 完整空结构是成功零产出；缺字段/类型错是失败，不能因此推进水位。
+        return (isinstance(reflection,dict)
+                and isinstance(reflection.get("new_core_traits"),str)
+                and isinstance(reflection.get("crucial_facts"),str)
+                and isinstance(reflection.get("trivial_summaries"),list)
+                and all(isinstance(item,str) for item in reflection["trivial_summaries"]))
 
-        `reflect_on_logs` 只保证「返回 dict」，不保证字段齐全——LLM 少了某个
-        字段时它照样返回。而 `update_core_memory` 会把取到的值**覆写**进核心
-        记忆行，所以缺字段 = 用空串顶掉已有核心设定，且日志随后被清理、
-        无法回滚。因此写入前必须确认关键字段存在且非空。
-        """
-        if not isinstance(reflection, dict):
-            return False
-        traits = reflection.get("new_core_traits")
-        facts = reflection.get("crucial_facts")
-        trivials = reflection.get("trivial_summaries")
-        # traits/facts 至少一个有实质内容，否则这次反思没有产出，不写不删
-        has_core = bool(isinstance(traits, str) and traits.strip()) or bool(
-            isinstance(facts, str) and facts.strip()
-        )
-        if not has_core:
-            return False
-        # trivial_summaries 允许为空（没有闲聊可提纯），但给了就必须是列表
-        if trivials is not None and not isinstance(trivials, list):
-            return False
-        return True
+    async def _run_idle_reflection(self, session_id, handle):
+        store=self.rag_memory_store
+        retriever=self.rag_retriever
+        progress=await store.get_reflection_progress(session_id)
+        logs=await store.get_chat_logs_after(session_id,progress['last_log_id'],limit=50)
+        if not logs:
+            return {"processed":0,"stored":0}
+        await handle.checkpoint(0,total=len(logs),message="正在准备闲时反思")
+        combined="\n".join(f"{row['role']}: {row['content']}" for row in logs)
+        while len(combined)>24000 and len(logs)>1:
+            logs=logs[:-1]
+            combined="\n".join(f"{row['role']}: {row['content']}" for row in logs)
+        if len(combined)>24000:
+            raise ValueError("单条日志过长，反思水位未推进")
+        reflection=await retriever.summarizer.reflect_on_logs(combined,session_id=session_id)
+        if not self._is_valid_reflection(reflection):
+            raise ValueError("反思结果字段不完整，水位未推进")
+        summaries=[text.strip()[:200] for text in reflection['trivial_summaries'] if text.strip()]
+        if len(summaries)>50:
+            raise ValueError("反思条目过多，未提交")
+        await handle.checkpoint(message="正在准备反思记忆向量")
+        notes=[]
+        if summaries:
+            vectors=await retriever.embedding.embed(summaries,session_id=session_id)
+            if not vectors or len(vectors)!=len(summaries) or any(not vector for vector in vectors):
+                raise ValueError("反思向量化失败，水位未推进")
+            notes=list(zip(summaries,vectors))
+        await handle.checkpoint(message="正在原子提交反思与水位")
+        result=await store.commit_reflection_batch(session_id,progress,max(row['id'] for row in logs),reflection,notes)
+        result['processed']=len(logs)
+        handle.record.progress=len(logs)
+        handle.record.total=len(logs)
+        handle.record.result=result
+        return result
 
     async def _reflection_loop(self):
         """Phase 4: 全自动自迭代反思守护进程 (Idle Detection)"""
@@ -529,7 +576,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 # 寻找空闲的 Session (超过1小时没说话，且有大量日志)
                 # 由于这是后台任务，我们可以直接查询 SQLite
                 store = self.rag_retriever.memory_store
-                rows = await store._exec_fetchall("SELECT session_id, MAX(timestamp), COUNT(*) FROM chat_logs GROUP BY session_id")
+                rows = await store._exec_fetchall("""SELECT l.session_id,MAX(l.timestamp),COUNT(*) FROM chat_logs l
+                    LEFT JOIN reflection_watermarks w ON w.session_id=l.session_id
+                    WHERE l.id>COALESCE(w.last_log_id,0) GROUP BY l.session_id""")
                 
                 now_utc = datetime.now(timezone.utc)
                 for row in rows:
@@ -548,61 +597,22 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     # 粗略判断：如果日志条数 > 30 条，进行反思
                     if count > 30:
                         logger.info(f"[Quill Reflection] 开始对 {session_id} 进行闲时反思归纳...")
-                        logs = await store.get_recent_chat_logs(session_id, limit=200)
-                        if not logs:
-                            continue
-                        # 记录本次实际参与摘要的日志 id 批次：删除只能针对这批，
-                        # 不能按「保留最新 2 条」重算——LLM 与 embedding 的等待
-                        # 窗口里会话可能重新活跃并写入新日志，重算会把它们误删。
-                        batch_ids = [lg.get("id") for lg in logs if lg.get("id") is not None]
-                        combined = []
-                        for log in logs:
-                            role = "User" if log.get("role") == "user" else "AI"
-                            combined.append(f"{role}: {log.get('content', '')}")
-                        combined_text = "\n".join(combined)
+                        turn=self.scope_resolver.from_session_key(session_id,self.state_manager.known_origins())
+                        async def reflect(handle, frozen=turn, sid=session_id):
+                            with self._usage.bind({**frozen.to_dict(),"source_umo":frozen.origin_umo,
+                                                   "turn_kind":"background","_turn_context":frozen}):
+                                return await self._run_idle_reflection(sid,handle)
+                        record,reused=self._start_task("idle_reflection",session_id,reflect)
+                        try:
+                            await asyncio.shield(record.task)
+                        except asyncio.CancelledError:
+                            if asyncio.current_task().cancelling():
+                                raise
+                        except Exception as exc:
+                            logger.warning("[Quill Reflection] 闲时反思失败（%s），保留水位与日志",type(exc).__name__)
 
-                        reflection = await self.rag_retriever.summarizer.reflect_on_logs(combined_text)
-                        if reflection:
-                            # 结构校验：reflect_on_logs 只保证返回 dict，不保证字段
-                            # 齐全。字段缺失时 .get(..., "") 会拿到空串，而
-                            # update_core_memory 会把它**覆写**进核心记忆行 ——
-                            # 等于用空白顶掉已有核心设定，且紧接着日志被删，
-                            # 无法回滚。这里必须显式校验后再放行。
-                            if not self._is_valid_reflection(reflection):
-                                logger.warning(
-                                    f"[Quill Reflection] {session_id} 反思结果字段不全，"
-                                    f"已跳过本次写入与日志清理（keys={sorted(reflection.keys())}）"
-                                )
-                                continue
-
-                            traits = reflection.get("new_core_traits", "")
-                            facts = reflection.get("crucial_facts", "")
-                            trivials = reflection.get("trivial_summaries", [])
-
-                            # 顺序：先写记忆，确认落库后再清日志。
-                            # 反过来的话，写记忆失败 = 日志已删、摘要也没留下，
-                            # 这段对话永久丢失。
-                            try:
-                                await store.update_core_memory(session_id, traits, facts)
-                                for t in trivials:
-                                    if isinstance(t, str) and t.strip():
-                                        await self.rag_retriever.store_memory_direct(session_id, t)
-                            except Exception as e:
-                                logger.warning(
-                                    f"[Quill Reflection] {session_id} 记忆写入失败，"
-                                    f"保留原始日志待下轮重试: {e}"
-                                )
-                                continue
-
-                            # 只删本次实际处理过的那批 id
-                            removed = await store.delete_chat_logs_by_ids(session_id, batch_ids)
-                            logger.info(
-                                f"[Quill Reflection] 成功完成 {session_id} 的记忆反思提纯"
-                                f"（清理本批 {removed}/{len(batch_ids)} 条日志）。"
-                            )
-                            
-                            # 控制速率，防止 API 频率过高
-                            await asyncio.sleep(10)
+                        # 控制速率，防止 API 频率过高。
+                        await asyncio.sleep(10)
                             
             except Exception as e:
                 logger.warning(f"[Quill Reflection] 守护进程异常: {e}")
@@ -617,6 +627,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         - RAG 检索器与 FAISS 索引初始化
         - 过期对话日志清理与低价值记忆修剪
         """
+        await self._usage.initialize()
         if self.config.wr_enabled:
             wr_path = os.path.join(self.paths["knowledge_dir"], "quill_wr.db")
             # 迁移旧数据库文件名（同一目录内；_paths 已把整个目录搬到外部数据根）
@@ -660,6 +671,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
         # --- RAG 初始化 ---
         await self._init_rag()
+        from .interfaces.operations import recover_operations
+        try:
+            await recover_operations(self)
+        except Exception as exc:
+            logger.warning("[Quill Operation] 存在待恢复操作（%s），相关会话写入前会再次恢复",type(exc).__name__)
 
         # --- Web routes (AstrBot v4.26+ register_web_api 模式) ---
         rag_components = {
@@ -692,11 +708,17 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 "面板 UI 不可用，但 API 路由仍正常工作。"
             )
 
+        # 能力源码核对在启动期预热，首次聊天不承担同步 inspect/AST 开销。
+        from .interfaces.prompt_cache import _host_profile
+        await asyncio.to_thread(_host_profile)
+
         # 启动时清理过期对话日志
         if self.rag_retriever and self.rag_retriever.memory_store:
             retention_days = getattr(self.config, 'rag_chat_log_retention_days', 30)
             try:
-                cleaned = await self.rag_retriever.memory_store.cleanup_chat_logs(retention_days)
+                cleaned = await self.rag_retriever.memory_store.cleanup_chat_logs(
+                    retention_days, summary_enabled=self.config.rag_enable_memory,
+                    reflection_enabled=getattr(self.config, 'rag_enable_autonomous_reflection', True))
                 if cleaned:
                     logger.info(f"[Quill ChatLog] 清理了 {cleaned} 条过期日志（保留 {retention_days} 天）")
             except StorageError as e:
@@ -747,16 +769,23 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 self.context,
                 provider_id=self.config.rag_embedding_provider_id,
                 enable_local=self.config.rag_enable_local_embedding,
+                usage_recorder=self._usage,
             )
 
             # Doc RAG 向量库（FAISS + SQLite）
             rag_db = os.path.join(self.paths["knowledge_dir"], "quill_rag.db")
             rag_idx = os.path.join(self.paths["knowledge_dir"], "quill_rag.index")
             # S2-10: 传入 embedding_provider，切换 provider 时自动重建索引
-            self.rag_vector_store = FaissVectorStore(
-                rag_db, rag_idx, embedding_provider=self.rag_embedding
-            )
-            await self.rag_vector_store.initialize()
+            self._rag_storage_status = {}
+            self.rag_vector_store = None
+            vector_store = None
+            try:
+                vector_store = FaissVectorStore(rag_db, rag_idx, embedding_provider=self.rag_embedding)
+                await vector_store.initialize()
+                self.rag_vector_store = vector_store
+            except Exception as exc:
+                self._rag_storage_status['documents'] = getattr(vector_store, 'schema_status', {}) or {'available': False, 'error': type(exc).__name__}
+                logger.error("[Quill RAG] 文档库不可用，其他检索组件继续初始化: %s", type(exc).__name__)
 
             # 插件文档分组（子知识库）元数据：所有插件文档共用同一套
             # embedding/FAISS 索引，分组只是 source → 组名 的映射，不进 chunks 表。
@@ -776,17 +805,31 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 self.context,
                 rerank_provider_id=self.config.rag_rerank_provider_id,
                 fallback_llm_id=self.config.rag_llm_provider_id,
+                usage_recorder=self._usage,
             )
 
             # 动态记忆存储（SQLite BLOB）
             mem_db = os.path.join(self.paths["knowledge_dir"], "quill_memory.db")
-            self.rag_memory_store = MemoryStore(mem_db)
-            await self.rag_memory_store.initialize()
+            self.rag_memory_store = None
+            memory_store = None
+            try:
+                memory_store = MemoryStore(mem_db)
+                await memory_store.initialize()
+                self.rag_memory_store = memory_store
+            except Exception as exc:
+                self._rag_storage_status['memory'] = getattr(memory_store,'schema_status',{}) or {'available':False,'error':type(exc).__name__}
+                logger.error("[Quill RAG] 记忆库不可用，文档检索继续初始化: %s", type(exc).__name__)
+            if self.rag_memory_store is not None:
+                try:
+                    await self.shared_scopes.initialize(self.rag_memory_store)
+                except Exception as exc:
+                    logger.error("[Quill Groups] 共享服务初始化失败: %s", type(exc).__name__)
 
             # LLM 摘要器
             self.rag_summarizer = QuillSummarizer(
                 self.context,
                 provider_id=self.config.rag_llm_provider_id,
+                usage_recorder=self._usage,
             )
 
             # AstrBot 内置知识库源（kb: 前缀可绑定源）。独立 try：本地栈
@@ -813,7 +856,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 memory_store=self.rag_memory_store,
                 summarizer=self.rag_summarizer,
                 top_k=self.config.rag_top_k,
-                enable_memory=self.config.rag_enable_memory,
+                enable_memory=self.config.rag_enable_memory and self.rag_memory_store is not None,
                 config=self.config,
                 kb_source=self.rag_kb_source,
             )
@@ -838,6 +881,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         不等待的话，重建过程中这些任务仍会往刚被 close 的连接里写，
         报 "Connection closed" 或更糟——静默丢数据。
         """
+        registry=getattr(self,"task_registry",None)
+        if registry:
+            for record in list(registry.records.values()):
+                if record.kind in ("memory_summary","idle_reflection","memory_import") and record.finished_at is None:
+                    registry.cancel(record.task_id)
         if self.rag_retriever:
             await self._drain_retriever_tasks()
             for comp, name in (
@@ -949,7 +997,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             finally:
                 self._rag_reinit_task = None
 
-        self._rag_reinit_task = loop.create_task(_run())
+        self._rag_reinit_task = self._spawn(_run(),kind="rag_reinitialize",key="global")
         # 也纳入插件自己的任务集合，terminate 时能被统一取消/等待。
         # L3：与 _spawn 一样必须挂 done 回调把任务从集合里摘掉，否则每次
         # embedding provider 变更都会在 _bg_tasks 留下一个已完成的 Task 对象
@@ -1001,6 +1049,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             # 1) 重建 StateManager（从恢复后的 quill_state.json 重新加载）
             data_dir = self.paths["state_dir"]
             self.state_manager = StateManager(data_dir=data_dir)
+            self.shared_scopes.bind_state()
             autoflush_ready = True
             # 2) 重建写作素材库连接
             self.wr_manager = None
@@ -1098,20 +1147,76 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 await comp.close()
             except Exception as e:
                 logger.warning(f"[Quill] RAG {name} 关闭失败: {e}")
+        usage = getattr(self, "_usage", None)
+        if usage is not None:
+            try:
+                await usage.close()
+            except Exception as exc:
+                logger.warning("[Quill Usage] 关闭台账失败（%s）", type(exc).__name__)
         logger.info("[Quill] 插件已停用")
 
-    def _spawn(self, coro):
-        """F5 修复：启动后台任务并保留引用，防止被 GC 中断。完成后自动从集合移除。"""
-        t = asyncio.create_task(coro)
-        self._bg_tasks.add(t)
+    def _track_task(self, task):
+        if task in self._bg_tasks:
+            return task
+        self._bg_tasks.add(task)
+        def done(completed):
+            self._bg_tasks.discard(completed)
+            if not completed.cancelled() and completed.exception() is not None:
+                logger.warning("[Quill Task] 后台任务失败（%s）", type(completed.exception()).__name__)
+        task.add_done_callback(done)
+        return task
 
-        def _on_done(task: asyncio.Task):
-            self._bg_tasks.discard(task)
-            if not task.cancelled() and task.exception() is not None:
-                logger.warning(f"[Quill] 后台任务 {task.get_coro()} 异常退出: {task.exception()}")
+    def _start_task(self, kind, key, factory, *, total=None):
+        record, reused = self.task_registry.submit(kind,key,factory,total=total)
+        self._track_task(record.task)
+        return record, reused
 
-        t.add_done_callback(_on_done)
-        return t
+    def _start_summary_task(self, session_id, *, legacy_last_id=0):
+        from .quill.services.scope import current_turn
+        current = current_turn()
+        turn = current if current and current.memory_session_id == session_id else self.scope_resolver.from_session_key(
+            session_id,self.state_manager.known_origins())
+        async def summarize(handle):
+            identity = {**turn.to_dict(), "source_umo":turn.origin_umo,
+                        "turn_kind":"user" if current else "background", "_turn_context":turn}
+            with self._usage.bind(identity):
+                result = await self.rag_retriever.summarize_incremental(
+                    session_id,legacy_last_id=legacy_last_id,handle=handle)
+            handle.record.result = {k:v for k,v in result.items() if k != "summary"}
+            return result
+        return self._start_task("memory_summary",session_id,summarize)
+
+    def _spawn(self, coro, *, kind=None, key=None):
+        if kind is None:
+            # 短日志写入沿用原跟踪集合，不挤占长任务的完成记录保留空间。
+            try:
+                return self._track_task(asyncio.create_task(coro))
+            except BaseException:
+                if hasattr(coro,"close"):
+                    coro.close()
+                raise
+        # 无业务 key 的短任务不能拒重，否则两条日志可能被误当成同一任务。
+        import uuid
+        task_kind = kind or getattr(getattr(coro,"cr_code",None),"co_name","background")
+        started = False
+        async def work(handle):
+            nonlocal started
+            started = True
+            return await coro
+        try:
+            record, reused = self._start_task(task_kind, key if key is not None else uuid.uuid4().hex, work)
+        except BaseException:
+            if hasattr(coro,"close"):
+                coro.close()
+            raise
+        if reused and hasattr(coro,"close"):
+            coro.close()
+        elif hasattr(coro,"close"):
+            def close_unstarted(completed):
+                if not started:
+                    coro.close()
+            record.task.add_done_callback(close_unstarted)
+        return record.task
 
     # ================================================================
     # 配置持久化
@@ -1141,6 +1246,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 key = str(item.get("key", "")).strip()
                 if not group or not key:
                     return False, "配置更新缺少 group 或 key"
+                if (group, key) == ("usage", "prices_json"):
+                    from .quill.services.usage import validate_prices
+                    price_error = validate_prices(item.get("value"))
+                    if price_error:
+                        return False, price_error
                 normalized.append((group, key, item.get("value")))
             if not normalized:
                 return True, "没有需要保存的修改"
@@ -1273,6 +1383,22 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     # LLM Hooks
     # ================================================================
 
+    @filter.custom_filter(_AlreadyAwakeFilter,priority=1000)
+    async def shared_scope_capability_guard(self,event:AstrMessageEvent):
+        await self.shared_scopes.observe(event)
+        if event.get_extra('_quill_origin_error'):
+            return
+        text=(event.message_str or '').strip()
+        first=text.split(maxsplit=1)[0].lstrip('/') if text else ''
+        if text.startswith('/') or first in ('quill','char','wb','doc','memory','stream','reinject'):
+            return
+        from .interfaces.scopes import physical_origin
+        origin=physical_origin(event)
+        scope=self.scope_resolver.scope_for(origin.umo)
+        if scope!=origin.umo:
+            turn=self.scope_resolver.resolve(origin,await self.state_manager.get_selected_persona_id(origin.umo))
+            await self.shared_scopes.waiting_supported(event,turn)
+
     @filter.on_waiting_llm_request(priority=100)
     async def on_waiting_llm_request(self, event: AstrMessageEvent):
         """在流式决策前切换角色卡专属对话并控制流式模式。
@@ -1299,7 +1425,24 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         "取 message_str/_get_target_id"的内层小块 except: return 静默。
         桩体因此不做任何 try 包裹。
         """
-        await _quill_hooks.handle_waiting_llm_request(self, event)
+        try:
+            await self.shared_scopes.observe(event)
+            if event.get_extra('_quill_origin_error'):
+                return
+            await self.shared_scopes.acquire(event)
+        except Exception as exc:
+            logger.warning('[Quill Scope] 来源或会话组不可用（%s）',type(exc).__name__)
+            event.set_result(event.plain_result('会话组来源暂不可用，本轮已停止。请查看存储状态。'))
+            event.stop_event()
+            return
+        try:
+            turn = await freeze_turn(self, event)
+        except StorageError:
+            return  # freeze_turn 已给出恢复受阻的原因并停止本轮。
+        if not await self.shared_scopes.waiting_supported(event,turn):
+            return
+        with bind_turn(turn):
+            await _quill_hooks.handle_waiting_llm_request(self, event)
 
     # ── 状态栏解析共享方法 ──────────────────────────────────────
 
@@ -1530,6 +1673,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     shown += f" 等 {len(srcs)} 份"
                 label += f"（{shown}）"
             parts.append(label)
+        capability = stats.get('_temporary_capability')
+        if capability:
+            parts.append('临时通道：' + ('可用' if capability.get('supported') else capability.get('reason','未知')))
         if not parts:
             return "〔注入〕无命中"
         return "〔注入〕" + " · ".join(parts)
@@ -1577,9 +1723,10 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
         try:
             resp = await asyncio.wait_for(
-                provider.text_chat(
-                    prompt=prompt, session_id=None, contexts=[],
-                    image_urls=[], system_prompt="你是 JSON 提取助手，仅输出 JSON。"
+                self._usage.generate(
+                    provider_id=provider_id, purpose="status_extract", timeout=3.0,
+                    prompt=prompt, contexts=[], image_urls=[],
+                    system_prompt="你是 JSON 提取助手，仅输出 JSON。"
                 ),
                 timeout=3.0
             )
@@ -1704,7 +1851,10 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         return str(event.get_sender_id())
 
     def _get_memory_session_id(self, target_id: str, persona_id: str) -> str:
-        return f"{target_id}::{persona_id}" if persona_id else target_id
+        from .quill.services.scope import current_turn, memory_session_key
+        turn=current_turn()
+        scope=turn.scope_id if turn and target_id in (turn.origin_umo,turn.scope_id) else self.scope_resolver.scope_for(target_id)
+        return memory_session_key(scope,persona_id)
 
     # ── 角色卡 → 对话隔离 ────────────────────────────────────────
 
@@ -1762,7 +1912,13 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         不修改 tool_args。
         """
         try:
-            await _quill_hooks.handle_using_llm_tool(self, event, tool, tool_args)
+            if getattr(tool,'name','')==self._QUILL_SMT_TOOL_NAME and not await self.shared_scopes.response_current(event):
+                if isinstance(tool_args,dict):
+                    tool_args['messages']='[]' if isinstance(tool_args.get('messages'),str) else []
+                event.stop_event()
+                return
+            with self._usage.bind(event.get_extra("_quill_usage_identity") or {}):
+                await _quill_hooks.handle_using_llm_tool(self, event, tool, tool_args)
         except Exception as e:
             logger.error(f"[Quill] on_using_llm_tool 拦截异常，已降级放行: {e}", exc_info=True)
 
@@ -2159,11 +2315,42 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         22 步全部注入成功之后，全插件仅此一处）：
         ``event.set_extra("_quill_activated", True)``。
         """
+        extra_info = {}
         try:
-            # P1-3 修复：提前初始化，避免 except 块引用未定义变量掩盖原始异常
-            extra_info = {}
-            await _quill_hooks.handle_llm_request(self, event, req)
+            # M2：同一请求重复经过插件时不重记日志、不开第二个摘要、不叠加提示。
+            from .interfaces.request_guard import begin_request, finish_request
+            prepared_record = begin_request(event, req)
+            if prepared_record is None:
+                return
+            identity = {}
+            await self.shared_scopes.acquire(event)
+            turn = await freeze_turn(self, event)
+            try:
+                if not await self.shared_scopes.prepare(event,req,turn):
+                    return
+            except Exception as exc:
+                if turn.scope_id!=turn.origin_umo:
+                    logger.warning('[Quill Scope] 共享视图准备失败（%s），停止本轮',type(exc).__name__)
+                    event.set_result(event.plain_result('共享上下文暂不可用，本轮未发送给模型。请稍后重试。'))
+                    event.stop_event()
+                    return
+                raise
+            try:
+                identity = await self._usage.identity_for(event, turn.persona_id, new_request=True)
+                await self._usage.note_provider(identity, req, event)
+            except Exception as exc:
+                logger.warning("[Quill Usage] 请求身份采集失败（%s），继续装配", type(exc).__name__)
+            with self._usage.bind(identity), bind_turn(turn):
+                await _quill_hooks.handle_llm_request(self, event, req)
+            if event.get_extra('_quill_shared_context'):
+                # 包括开场白在内的共享旧消息一律不回灌到物理原生历史。
+                for message in req.contexts:
+                    if isinstance(message,dict): message['_no_save']=True
+            finish_request(event, req, prepared_record)
         except Exception as e:
+            if event.get_extra('_quill_shared_context'):
+                event.set_result(event.plain_result('共享会话装配失败，本轮未继续生成，请检查存储状态。'))
+                event.stop_event()
             # 记录脱敏摘要，避免泄露 user_input、context_text 等敏感字段
             # （M1a 起摘要函数在模块级 _sanitize_extra——trace 侧共用同一
             # 「只记长度不记内容」口径，语义与闭包版逐字一致）
@@ -2209,7 +2396,19 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         resp 保持已改到一半的状态（降级语义 = 放行当前响应）。
         """
         try:
-            await _quill_hooks.handle_llm_response(self, event, resp)
+            # 先采原始响应，状态栏/回声清洗不得改变计费数据。
+            try:
+                await self._usage.main_response(event, resp)
+            except Exception as exc:
+                logger.warning("[Quill Usage] 主响应采集失败（%s），继续处理", type(exc).__name__)
+            if not await self.shared_scopes.response_current(event):
+                event.set_result(event.plain_result('共享会话任务已中断，旧结果未写入。请重新发起本轮。'))
+                event.stop_event()
+                return
+            identity = event.get_extra("_quill_usage_identity") or {}
+            with self._usage.bind(identity), bind_turn(event_turn(event)):
+                await _quill_hooks.handle_llm_response(self, event, resp)
+                await self.shared_scopes.finish(event,resp)
         except Exception as e:
             logger.error(f"[Quill] on_llm_response 后处理遭遇未捕获异常，已降级放行: {e}", exc_info=True)
 
@@ -2244,7 +2443,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         总闸门永不在工具回调中被清除（不得出现
         set_extra("_quill_activated", False) 调用）。
         """
-        await _quill_hooks.handle_llm_tool_respond(self, event, tool, tool_args, tool_result)
+        with self._usage.bind(event.get_extra("_quill_usage_identity") or {}):
+            await _quill_hooks.handle_llm_tool_respond(self, event, tool, tool_args, tool_result)
 
 
     # ================================================================
@@ -2268,7 +2468,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
           钩子绝不能抛，抛了会中断整条回复的发送。
         """
         try:
-            await _quill_hooks.handle_decorating_result(self, event)
+            with bind_turn(event_turn(event)):
+                await _quill_hooks.handle_decorating_result(self, event)
         except Exception:
             # 发送前钩子绝不能抛：抛了会中断整条回复的发送
             logger.warning("[Quill] 发送前清理异常，已放行", exc_info=True)
@@ -2293,39 +2494,51 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     async def cmd_wb(self, event: AstrMessageEvent, args: GreedyStr):
         """世界书管理。用法：/wb | /wb bind <序号|名字> | /wb unbind <序号|名字> | /wb info <序号|名字> | /wb reload"""
         arg1, arg2 = _split2(args)
-        await _cmds.wb_dispatch(self, event, arg1, arg2)
+        with bind_turn(await freeze_turn(self, event)):
+            await _cmds.wb_dispatch(self, event, arg1, arg2)
 
     @filter.command("char", alias={"/char"})
     async def cmd_char(self, event: AstrMessageEvent, args: GreedyStr):
         """角色卡管理。用法：/char | /char <序号|名字> | /char unset | /char info [序号|名字] | /char export [序号|名字] | /char import <JSON>"""
-        await _cmds.char_dispatch(self, event, args)
+        await self.shared_scopes.observe(event)
+        try:
+            with bind_turn(await freeze_turn(self,event)):
+                await _cmds.char_dispatch(self, event, args)
+        except ValueError as exc:
+            event.set_result(event.plain_result(str(exc)))
 
     @filter.command("quill", alias={"/quill"})
     async def cmd_quill(self, event: AstrMessageEvent, args: GreedyStr):
         """Quill 系统总览与测试。用法：/quill | /quill help | /quill reset | /quill debug | /quill statusbar [on|off|auto] | /quill test <wr|wb|mem|kb> <文字>"""
-        await _quill_dispatch(self, event, args)
+        await self.shared_scopes.observe(event)
+        with bind_turn(await freeze_turn(self, event, recover=str(args).strip().lower() != 'debug')):
+            await _quill_dispatch(self, event, args)
 
     @filter.command("memory", alias={"/memory"})
     async def cmd_memory(self, event: AstrMessageEvent, args: GreedyStr):
         """动态记忆管理。用法：/memory | /memory list [页码] | /memory del <序号> | /memory clear | /memory learn [内容] | /memory search <关键词> | /memory pin <序号> [on|off] | /memory core <内容>"""
         arg1, arg2 = _split2(args)
-        await _cmds.memory_dispatch(self, event, arg1, arg2)
+        with bind_turn(await freeze_turn(self, event)):
+            await _cmds.memory_dispatch(self, event, arg1, arg2)
 
     @filter.command("doc", alias={"/doc"})
     async def cmd_doc(self, event: AstrMessageEvent, args: GreedyStr):
         """外部文档 RAG 管理。用法：/doc list | /doc bind <序号> | /doc unbind <序号> | /doc search <关键词> | /doc reload"""
         arg1, arg2 = _split2(args)
-        await _cmds.doc_dispatch(self, event, arg1, arg2)
+        with bind_turn(await freeze_turn(self, event)):
+            await _cmds.doc_dispatch(self, event, arg1, arg2)
 
     @filter.command("stream", alias={"/stream"})
     async def cmd_stream(self, event: AstrMessageEvent, arg: str = ""):
         """流式模式控制。用法：/stream on|off|auto"""
-        await _cmds.stream_dispatch(self, event, arg)
+        with bind_turn(await freeze_turn(self,event)):
+            await _cmds.stream_dispatch(self, event, arg)
 
     @register_command("reinject", alias={"重新注入", "/reinject"})
     async def cmd_reinject(self, event: AstrMessageEvent):
         """强制重置注入状态，下次激活重新注入全部常驻素材。用法：/reinject"""
-        await _cmds.reinject_dispatch(self, event)
+        with bind_turn(await freeze_turn(self,event)):
+            await _cmds.reinject_dispatch(self, event)
 
     # ================================================================
     # 未唤醒时的 /指令 兜底
@@ -2346,23 +2559,12 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         text = (event.get_message_str() or "").strip()
         name, args = _split2(text[1:])  # 去掉开头的 "/"
         try:
-            if name == "wb":
-                arg1, arg2 = _split2(args)
-                await _cmds.wb_dispatch(self, event, arg1, arg2)
-            elif name == "char":
-                await _cmds.char_dispatch(self, event, args)
-            elif name == "quill":
-                await _quill_dispatch(self, event, args)
-            elif name == "memory":
-                arg1, arg2 = _split2(args)
-                await _cmds.memory_dispatch(self, event, arg1, arg2)
-            elif name == "doc":
-                arg1, arg2 = _split2(args)
-                await _cmds.doc_dispatch(self, event, arg1, arg2)
-            elif name == "stream":
-                await _cmds.stream_dispatch(self, event, args)
-            elif name == "reinject":
-                await _cmds.reinject_dispatch(self, event)
+            handlers = {'wb':self.cmd_wb,'char':self.cmd_char,'quill':self.cmd_quill,
+                        'memory':self.cmd_memory,'doc':self.cmd_doc,'stream':self.cmd_stream}
+            if name == 'reinject':
+                await self.cmd_reinject(event)
+            elif name in handlers:
+                await handlers[name](event,args)
         except Exception:
             # 兜底入口失败不能让整条消息无声无息地消失（正常情况下事件已被
             # 唤醒检查丢弃，用户本来什么都收不到），至少回一句让用户知道。

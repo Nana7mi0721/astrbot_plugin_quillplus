@@ -87,6 +87,39 @@ class QuillConfigProperties:
         """
         return self._plugin.config.worldbook_card_embed_import
 
+    # M2：保持配置五落点，读取时现取该代 config。
+    @property
+    def usage_enabled(self) -> bool:
+        return self._plugin.config.usage_enabled
+
+    @property
+    def usage_retention_days(self) -> int:
+        return self._plugin.config.usage_retention_days
+
+    @property
+    def usage_max_records(self) -> int:
+        return self._plugin.config.usage_max_records
+
+    @property
+    def usage_prices_json(self) -> str:
+        return self._plugin.config.usage_prices_json
+
+    @property
+    def cache_enabled(self) -> bool:
+        return self._plugin.config.cache_enabled
+
+    @property
+    def cache_dynamic_to_user_tail(self) -> bool:
+        return self._plugin.config.cache_dynamic_to_user_tail
+
+    @property
+    def cache_stable_sampling(self) -> bool:
+        return self._plugin.config.cache_stable_sampling
+
+    @property
+    def cache_sampling_window(self) -> int:
+        return self._plugin.config.cache_sampling_window
+
     # ── prompt ────────────────────────────────────────────────────
 
     @property

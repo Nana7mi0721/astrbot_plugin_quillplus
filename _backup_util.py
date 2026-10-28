@@ -192,12 +192,17 @@ def build_backup_zip(sources: list, buf: io.BytesIO, max_bytes: int | None = Non
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for prefix, base in pairs:
                 for root, _dirs, files in os.walk(base):
+                    # 迁移安全副本独立保留，不能作为剧情存档载荷再次套入备份。
+                    _dirs[:] = [name for name in _dirs if name != ".schema_backups"]
                     for fname in files:
                         if fname.endswith(_SKIP_SUFFIXES):
                             continue
                         fpath = os.path.join(root, fname)
                         parts = [p for p in (prefix, os.path.relpath(fpath, base)) if p]
                         arcname = os.path.join(*parts).replace(os.sep, "/")
+                        # M2 台账不属于剧情备份/恢复，避免恢复旧存档抹掉实际费用。
+                        if arcname in ("quill_usage.db", "data/quill_usage.db"):
+                            continue
                         try:
                             _archive(is_sqlite_file(fpath), fpath, arcname, zf)
                         except OSError as exc:

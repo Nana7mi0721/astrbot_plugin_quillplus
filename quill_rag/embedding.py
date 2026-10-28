@@ -16,14 +16,15 @@ class QuillEmbeddingProvider:
     2. 本地模型 BAAI/bge-small-zh-v1.5（sentence-transformers）
     """
 
-    def __init__(self, context, provider_id: str = "", enable_local: bool = True):
+    def __init__(self, context, provider_id: str = "", enable_local: bool = True, usage_recorder=None):
         self.context = context
+        self.usage_recorder = usage_recorder
         self.provider_id = (provider_id or "").strip()
         self.enable_local = enable_local
         self._local_model = None  # 懒加载
         self._dim = None
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], session_id=None) -> list[list[float]]:
         """将文本列表转为向量列表。"""
         if not texts:
             return []
@@ -33,7 +34,12 @@ class QuillEmbeddingProvider:
             try:
                 provider = self.context.get_provider_by_id(self.provider_id)
                 if provider:
-                    result = await provider.get_embeddings(texts)
+                    if self.usage_recorder is not None:
+                        result = await self.usage_recorder.invoke(
+                            lambda: provider.get_embeddings(texts), purpose="embedding",
+                            provider_id=self.provider_id, session_id=session_id)
+                    else:
+                        result = await provider.get_embeddings(texts)
                     if result:
                         self._dim = len(result[0])
                         return result

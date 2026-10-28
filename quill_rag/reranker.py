@@ -14,8 +14,9 @@ class QuillReranker:
     优先使用 rerank_provider，否则 fallback 到 LLM 评分。
     """
 
-    def __init__(self, context, rerank_provider_id: str = "", fallback_llm_id: str = ""):
+    def __init__(self, context, rerank_provider_id: str = "", fallback_llm_id: str = "", usage_recorder=None):
         self.context = context
+        self.usage_recorder = usage_recorder
         self.rerank_provider_id = (rerank_provider_id or "").strip()
         self.fallback_llm_id = (fallback_llm_id or "").strip()
 
@@ -64,7 +65,12 @@ class QuillReranker:
         try:
             texts = [c.get('content', '') for c in candidates]
             # 调用 rerank（可能是 sync 或 async）—— 使用真实 query，不要用候选内容覆盖
-            rerank_resp = provider.rerank(query=query, documents=texts)
+            if self.usage_recorder is not None:
+                rerank_resp = await self.usage_recorder.invoke(
+                    lambda: provider.rerank(query=query, documents=texts),
+                    purpose="rerank", provider_id=self.rerank_provider_id)
+            else:
+                rerank_resp = provider.rerank(query=query, documents=texts)
             if inspect.isawaitable(rerank_resp):
                 rerank_resp = await rerank_resp
 
@@ -122,10 +128,12 @@ class QuillReranker:
                 f"请为每个文档打分（0-10）："
             )
 
-            response = await provider.text_chat(
-                prompt=prompt,
-                system_prompt=system_prompt,
-            )
+            if self.usage_recorder is not None:
+                response = await self.usage_recorder.generate(
+                    provider_id=self.fallback_llm_id, purpose="rerank_llm",
+                    prompt=prompt, system_prompt=system_prompt)
+            else:
+                response = await provider.text_chat(prompt=prompt, system_prompt=system_prompt)
             text = getattr(response, "completion_text", "") or str(response)
 
             # 解析 [idx]=score 格式

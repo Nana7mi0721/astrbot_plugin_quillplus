@@ -1,3 +1,6 @@
+import { loadTasks, cancelTask, inspectScope } from "./pages/tasks.js";
+import { loadGroups, editGroup, previewGroup, saveGroup, archiveGroup, showGroupRecent, linkGroupActors } from "./pages/groups.js";
+import { loadUsage, usagePage, clearUsage } from "./pages/usage.js";
 /* app.js — 由 index.html 拆分生成（可读性优先，逻辑与拆分前逐行一致） */
 import { S } from "./state.js";
 import { backupExport, backupRestore } from "./components/backup.js";
@@ -8,7 +11,7 @@ import { initListKeys } from "./components/listkeys.js";
 import { closeModal } from "./components/modal.js";
 import { closeSelMenus, enhanceSelects } from "./components/select.js";
 import { discardChanges, filterConfig, initConfigNavObserver, loadGlobalSettings, loadHealth, markDirty, probeDecisionModel, saveAllChanges, scrollToSection, setStreamModeAll, switchTab, syncSidebarBadges } from "./pages/config.js";
-import { changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, onMemorySessionChange, pruneMemories, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin } from "./pages/memory.js";
+import { changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, onMemorySessionChange, pruneMemories, summarizeMemory, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin } from "./pages/memory.js";
 import { closeAstrbotImportModal, closeImportTextModal, deletePersona, exportPersona, filterCheckboxes, filterWBEntries, importFromAstrbot, importPersona, importPersonaFromText, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openImportTextModal, openPersonaModal, renderPersonaPage, savePersona, selectAstrbotPersona, switchPersonaView, syncExtList, syncRagGroup, toggleExtBig, toggleExtGroup } from "./pages/persona.js";
 import { deleteRAGDocument, deleteRAGGroup, loadRAG, loadRAGModelInfo, moveRAGDocument, newRAGGroup, processRAGFiles, renameRAGGroup, setRAGKbEnabled, testRAGSearch, toggleRAGBig, toggleRAGGroup } from "./pages/rag.js";
 import { loadTracePage, onTraceSessionChange, refreshTrace, toggleTraceTurn,
@@ -22,6 +25,23 @@ export { ACTIONS, bindEvents, debouncedMemLoad, debouncedWBFilter, debouncedWRLo
 /* ── 动作分发表 ────────────────────────────────────────────────────── */
 
 const ACTIONS = {
+  "tasks-refresh": () => loadTasks(),
+  "groups-refresh": () => loadGroups(),
+  "group-new": () => editGroup(),
+  "group-edit": el => editGroup(el.dataset.id),
+  "group-preview": () => previewGroup(),
+  "group-save": () => saveGroup(),
+  "group-archive": el => archiveGroup(el.dataset.id),
+  "group-recent": el => showGroupRecent(el.dataset.id),
+  "group-actors-link": () => linkGroupActors(),
+  "group-actors-unlink": () => linkGroupActors(true),
+  "tasks-cancel": el => cancelTask(el.dataset.taskId),
+  "scope-inspect": () => inspectScope(),
+  "mem-summarize": () => summarizeMemory(),
+  "usage-refresh": () => loadUsage(),
+  "usage-prev": () => usagePage(-1),
+  "usage-next": () => usagePage(1),
+  "usage-clear": () => clearUsage(),
   // 通用
   "tab": (el) => switchTab(el.dataset.tab),
   "to-top": () => $("#content")?.scrollTo({ top: 0, behavior: "smooth" }),
@@ -355,12 +375,12 @@ function bindEvents() {
         }
       }
     }
-    // Alt+1..7 切换标签页。必须放在 typing 早返回之前：面板里几乎总有输入框持有焦点
+    // 保留原 Alt+1..7；新增用量/任务/会话组分别用 Alt+8/9/0。必须放在 typing 早返回之前：面板里几乎总有输入框持有焦点
     // （搜索框、配置项），否则用户在任意输入框内都无法用快捷键切页。
-    if (e.altKey && /^[1-7]$/.test(e.key)) {
+    if (e.altKey && /^[0-9]$/.test(e.key)) {
       e.preventDefault();
-      const tabs = ["wr", "wb", "persona", "rag", "memory", "trace", "config"];
-      switchTab(tabs[Number(e.key) - 1]);
+      const tabs = ["wr", "wb", "persona", "rag", "memory", "trace", "config", "usage", "tasks", "groups"];
+      switchTab(tabs[(Number(e.key) + 9) % 10]);
       return;
     }
     const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
@@ -529,7 +549,7 @@ async function quillInit() {
     const hm = (location.hash || "").match(/tab=([a-zA-Z]+)/);
     if (hm) {
       const tab = hm[1].toLowerCase();
-      if (["wr", "wb", "persona", "rag", "memory", "trace", "config"].includes(tab)) switchTab(tab);
+      if (["wr", "wb", "persona", "rag", "memory", "groups", "tasks", "usage", "trace", "config"].includes(tab)) switchTab(tab);
       const sm = (location.hash || "").match(/sub=([a-zA-Z]+)/);
       if (sm && tab === "memory") switchMemorySub(sm[1].toLowerCase());
     } else {

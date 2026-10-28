@@ -3,11 +3,11 @@ import { S } from "../state.js";
 import { api, apiPost } from "../api.js";
 import { sandboxConfirm, showErrorDetail, showToast } from "../components/feedback.js";
 import { openModal } from "../components/modal.js";
-import { updateBadge } from "../pages/config.js";
+import { updateBadge, switchTab } from "../pages/config.js";
 import { getRAGConfig, providerRows } from "../pages/rag.js";
 import { $, $$, downloadBlob, downloadJSON, esc, fmtTime, formatSessionId, withBusy } from "../utils.js";
 
-export { MEM_PER_PAGE, changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, loadMemoryOverview, loadMemorySessions, onMemorySessionChange, pruneMemories, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin, updateMemPager };
+export { MEM_PER_PAGE, changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, loadMemoryOverview, loadMemorySessions, onMemorySessionChange, pruneMemories, summarizeMemory, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin, updateMemPager };
 
 
 
@@ -174,10 +174,14 @@ async function showMemoryDetail(id) {
   } catch (e) { showToast("获取详情失败：" + e.message); }
 }
 
-function deleteMemory(id) {
-  sandboxConfirm("确定删除这条记忆？", async () => {
+async function deleteMemory(id) {
+  let shared;
+  try { shared = (await api("/memory/get?id=" + id)).shared_scope; }
+  catch (error) { showToast("无法核对记忆归属：" + error.message); return; }
+  const message = shared ? `删除会话组「${shared.name}」的这条记忆？以下入口都会受影响：\n${shared.affected.join("\n")}` : "确定删除这条记忆？";
+  sandboxConfirm(message, async () => {
     try {
-      await apiPost("/memory/delete", { memory_id: id });
+      await apiPost("/memory/delete", { memory_id: id, ...(shared ? {scope_revision:shared.revision,confirm_scope:shared.scope_id} : {}) });
       showToast("已删除", "success");
       loadMemoryBrowser();
     } catch (e) { showToast(e.message); }
@@ -215,6 +219,16 @@ async function exportMemories(btn) {
   });
 }
 
+async function summarizeMemory() {
+  const session = $("#memSession")?.value || "";
+  if (!session) { showToast("请先选择一个会话", "warning"); return; }
+  try {
+    const task = await apiPost("memory/summarize_task", { session_id:session });
+    showToast(task.reused ? "正在查看已有总结任务" : "总结任务已创建", "info");
+    switchTab("tasks");
+  } catch (error) { showToast(error.message); }
+}
+
 async function importMemories(input) {
   const file = input.files && input.files[0];
   if (!file) return;
@@ -225,10 +239,9 @@ async function importMemories(input) {
       const data = JSON.parse(text);
       if (!data || typeof data !== "object") throw new Error("JSON 格式无效");
       if (!Array.isArray(data.memories)) throw new Error("JSON 缺少 memories 数组");
-      showToast("正在批量向量化，请稍候…", "info");
-      const res = await apiPost("/memory/import", data);
-      showToast("导入完成：" + (res.message || ""), "success");
-      switchMemorySub("browser");
+      const res = await apiPost("/memory/import_task", data);
+      showToast("导入任务已创建：" + res.task_id.slice(0,8), "info");
+      switchTab("tasks");
     } catch (e) { showErrorDetail("导入失败", e.message); }
     finally { input.value = ""; }
   });

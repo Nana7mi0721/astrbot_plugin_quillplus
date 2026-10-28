@@ -41,6 +41,11 @@ except ModuleNotFoundError:  # 直接运行本文件做自测：先把 AstrBot �
     ensure_astrbot_importable()
     from astrbot.api import logger
 
+if __package__:
+    from ._schema import prepare_database, finish_database
+else:
+    from _schema import prepare_database, finish_database
+
 
 class WritingResourceManager:
     """
@@ -80,6 +85,12 @@ class WritingResourceManager:
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
         self._conn = await aiosqlite.connect(self.db_path, timeout=10.0)
+        try:
+            self.schema_status = await prepare_database(self._conn, self.db_path, "writing")
+        except BaseException:
+            await self._conn.close()
+            self._conn = None
+            raise
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA busy_timeout=5000")
@@ -392,6 +403,8 @@ class WritingResourceManager:
         # 表是真的不存在，从而只清掉历史残留、不动正常触发器。
         await self._drop_orphan_legacy_triggers(await self.conn.cursor())
         await self._rebuild_fts_index()
+        self.schema_status["previous_version"]=self.schema_status["version"]
+        self.schema_status["version"]=await finish_database(self._conn,kind="writing")
 
     async def close(self):
         if self._conn:

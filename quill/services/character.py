@@ -20,6 +20,11 @@ logger），写法与原 main.py 一致；本模块零 astrbot import（架构�
 from __future__ import annotations
 
 from ..core.logbridge import logger
+from .scope import current_turn, memory_session_key
+
+
+def conversation_binding_key(scope_id,persona_id,epoch):
+    return memory_session_key(scope_id,persona_id)+":"+epoch
 
 
 async def _reset_quill_rounds_safe(state_manager, umo: str) -> None:
@@ -35,6 +40,9 @@ async def _reset_quill_rounds_safe(state_manager, umo: str) -> None:
     隔离主流程——隔离是新对话语义的载体，轮次归零只是它的伴生修正。
     """
     try:
+        turn=current_turn()
+        if turn and turn.scope_id!=turn.origin_umo:
+            return  # 新入口的原生对话不能重置整组共享角色轮次。
         await state_manager.reset_quill_rounds(umo)
         logger.info(
             "[Quill] 对话已变更，quill_rounds 已重置"
@@ -91,6 +99,11 @@ async def ensure_persona_conversation(
         umo = resolve_target_id(event)
         persona_id = await state_manager.get_persona_id(umo)
         key = persona_id or ""  # 未绑卡时归入空串一档，同样独立
+        turn=current_turn()
+        grouped=turn is not None and turn.scope_id!=turn.origin_umo
+        if grouped:
+            epoch=event.get_extra('_quill_member_epoch') or ''
+            key=conversation_binding_key(turn.scope_id,persona_id,epoch)
         mapping = await state_manager.get_persona_conv_map(umo)
         curr_cid = await conv_mgr.get_curr_conversation_id(umo)
         target_cid = mapping.get(key)
@@ -114,7 +127,7 @@ async def ensure_persona_conversation(
                 target_cid = None
 
         if target_cid is None:
-            if not mapping and curr_cid:
+            if not grouped and not mapping and curr_cid:
                 # 首次启用隔离：当前角色卡接管现有对话，历史不断
                 target_cid = curr_cid
                 logger.info(

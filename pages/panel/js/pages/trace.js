@@ -213,6 +213,14 @@ function _orderAndTokens(t) {
   if (order.length) {
     parts.push(`<div class="fs-12"><span class="t3">注入段序：</span>${order.map(esc).join(" → ")}</div>`);
   }
+  const cache = t.cache_diagnostics;
+  if (cache) {
+    const capability = cache.temporary_capability || {};
+    parts.push(`<div class="fs-12"><span class="t3">缓存布局：</span>${esc(cache.mode || "legacy")} · 临时通道 ${esc(capability.reason || "disabled")}</div>`);
+    parts.push(`<div class="fs-12">${(cache.segments || []).map(s => `${esc(s.name)} ${s.chars} 字符 (${esc(s.change)})`).join(" · ")}</div>`);
+    parts.push(`<div class="fs-12 t3">${esc(cache.note || "")}</div>`);
+    if (cache.legacy_scrub) parts.push('<div class="fs-12 t3">旧提醒清理延期：历史保存与压缩边界尚未验收。</div>');
+  }
   const tk = t.token_estimate || {};
   if (tk.est_tokens !== undefined) {
     parts.push(`<div class="fs-12"><span class="t3">估算 Token：</span>约 ${tk.est_tokens}（稳定段 ${tk.stable_chars ?? 0} + 动态段 ${tk.dynamic_chars ?? 0} 字符，中文按 2 字符/token 粗估，仅量级参考）</div>`);
@@ -242,9 +250,10 @@ function _truncEvents(t) {
   const evs = t.truncation_events || [];
   if (!evs.length) return "";
   const KIND_LABEL = {
-    section_dropped: "丢段", char_slice: "尾部硬切",
+    section_dropped: "丢段", section_trimmed: "裁减检索条目", char_slice: "尾部硬切",
     trigger_log_withdrawn: "守卫撤回触发日志", rag_tail_trimmed: "守卫裁剪RAG尾部",
     budget_projection: "预算预警",
+    protected_floor_reached: "受保护段超过预算", fixed_or_user_floor_reached: "系统控制与用户正文超过预算",
   };
   const rows = evs.map(e => {
     const kind = KIND_LABEL[e.kind] || e.kind;

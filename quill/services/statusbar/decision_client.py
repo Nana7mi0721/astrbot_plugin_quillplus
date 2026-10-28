@@ -82,9 +82,10 @@ def is_http_url(url: str) -> bool:
     """
     try:
         parts = urlsplit(str(url or "").strip())
+        port = parts.port
     except Exception:
         return False
-    return parts.scheme.lower() in ("http", "https") and bool(parts.netloc)
+    return parts.scheme.lower() in ("http", "https") and bool(parts.hostname) and (port is None or 1 <= port <= 65535)
 
 
 def resolve_format(base_url: str, api_format: str | None) -> str:
@@ -325,6 +326,7 @@ async def decision_evaluate(
     api_format: str = "auto",
     timeout: float = DECISION_TIMEOUT_S,
     post_fn: Callable | None = None,
+    call_observer: Callable | None = None,
 ) -> dict | None:
     """一次判定调用，返回**归一化后**的 ``{问题名: 答案}``；任何失败返回 None。
 
@@ -351,10 +353,10 @@ async def decision_evaluate(
     payload = build_request_body(fmt, model, state, questions, url)
     post = post_fn or _post_json
     try:
-        raw = await asyncio.wait_for(
-            asyncio.to_thread(post, url, headers, payload, timeout),
-            timeout=timeout + 2.0,
-        )
+        async def request_once():
+            return await asyncio.wait_for(
+                asyncio.to_thread(post, url, headers, payload, timeout), timeout=timeout + 2.0)
+        raw = await call_observer(request_once) if call_observer else await request_once()
     except Exception as e:
         # M14 教训：api_base 拼错导致永久 404 时，用户与开发者都拿不到任何
         # 线索。fail-open 语义不变，只是不再静默——具体原因（HTTP 码 / DNS /
@@ -408,6 +410,7 @@ async def decision_probe(
     api_format: str = "auto",
     timeout: float = DECISION_TIMEOUT_S,
     post_fn: Callable | None = None,
+    call_observer: Callable | None = None,
 ) -> dict:
     """用一次真实判定调用测连通性，返回可直接渲染进面板的诊断结果。
 
@@ -466,10 +469,10 @@ async def decision_probe(
     post = post_fn or _post_json
 
     try:
-        raw = await asyncio.wait_for(
-            asyncio.to_thread(post, url, headers, payload, timeout),
-            timeout=timeout + 2.0,
-        )
+        async def request_once():
+            return await asyncio.wait_for(
+                asyncio.to_thread(post, url, headers, payload, timeout), timeout=timeout + 2.0)
+        raw = await call_observer(request_once) if call_observer else await request_once()
     except asyncio.TimeoutError:
         result["stage"] = "network"
         result["message"] = f"连接超时（{timeout:.0f} 秒内无响应）"

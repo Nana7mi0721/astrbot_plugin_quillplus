@@ -268,10 +268,11 @@ class PersonaCardConverter:
     「导入专用模型」配置项，用户已经为摘要配过模型就不该再配第二次。
     """
 
-    def __init__(self, context, provider_id: str = "", timeout: float = CONVERT_TIMEOUT):
+    def __init__(self, context, provider_id: str = "", timeout: float = CONVERT_TIMEOUT, usage_recorder=None):
         self.context = context
         self.provider_id = (provider_id or "").strip()
         self.timeout = float(timeout) if timeout else CONVERT_TIMEOUT
+        self.usage_recorder = usage_recorder
 
     @property
     def ready(self) -> bool:
@@ -335,10 +336,11 @@ class PersonaCardConverter:
         provider = self.context.get_provider_by_id(self.provider_id)
         try:
             response = await asyncio.wait_for(
-                provider.text_chat(
-                    prompt=self.build_prompt(persona),
-                    system_prompt=CONVERT_SYSTEM_PROMPT,
-                ),
+                self.usage_recorder.generate(
+                    provider_id=self.provider_id, purpose="persona_convert", timeout=self.timeout,
+                    prompt=self.build_prompt(persona), system_prompt=CONVERT_SYSTEM_PROMPT)
+                if self.usage_recorder is not None else provider.text_chat(
+                    prompt=self.build_prompt(persona), system_prompt=CONVERT_SYSTEM_PROMPT),
                 timeout=self.timeout,
             )
         except asyncio.TimeoutError:

@@ -8,7 +8,11 @@ import asyncio
 import json
 import os
 import tempfile
-from dataclasses import asdict, dataclass, field
+import copy
+import shutil
+from uuid import uuid4
+from pathlib import Path
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 
 try:
@@ -22,6 +26,9 @@ except ModuleNotFoundError:  # 直接运行本文件做自测：先把 AstrBot �
     ensure_astrbot_importable()
     from astrbot.api import logger
 
+from .quill.services.scope import current_turn
+from .quill.core.errors import StorageError
+
 
 @dataclass
 class UserState:
@@ -31,6 +38,7 @@ class UserState:
     )
     round_count: int = 0
     quill_rounds: int = 0
+    cache_turns: int = 0  # M17：单调采样计数，不随连续激活边界归零。
     stream_mode: str = "auto"
     # 状态栏的会话级覆盖：auto=跟随面板全局开关，on/off=强制。
     # 面板负责默认值，聊天端负责临时切换，两边语义都是「遵循设置」，只是粒度不同。
@@ -47,6 +55,11 @@ class UserState:
     # 切卡时切换过去，切回来仍能看到该角色卡原来的那段历史。
     # 未绑定角色卡时用空串 "" 作为键，同样独立成一档。
     persona_convs: dict = field(default_factory=dict)
+    # M3：旧字段保留为当前卡投影；真实角色状态按不可变角色 ID 分桶。
+    persona_vars: dict = field(default_factory=dict)
+    persona_vars_schema: int = 1
+    legacy_persona_owner: str | None = None
+    legacy_adoption_pending: bool = False
 
 
 class StateManager:
@@ -56,6 +69,13 @@ class StateManager:
 
     def __init__(self, data_dir: str = "data", max_users: int = 10000):
         self._states: dict[str, UserState] = {}
+        self._read_only_reason = None
+        self._closed = False
+        # 只映射角色数据；平台开关和 persona_convs 始终保留物理入口键。
+        self.scope_for = lambda umo: umo
+        self.scope_persona = lambda scope: None
+        self.set_scope_persona = None
+        self._needs_migration_backup = False
         self._lock = asyncio.Lock()
         self._dirty = False
         self._max_users = max_users
@@ -85,6 +105,10 @@ class StateManager:
         try:
             with open(self.state_file, "r", encoding="utf-8") as f:
                 raw = json.load(f)
+            if not isinstance(raw,dict) or any(not isinstance(value,dict) or "user_id" not in value for value in raw.values()):
+                self._read_only_reason="unrecognized_state_format"
+                logger.error("[Quill State] 无法识别状态文件格式，已禁止覆盖原文件")
+                return
             for key, val in raw.items():
                 try:
                     # 只取当前 dataclass 声明过的字段：旧版本写进文件的已废弃键
@@ -93,12 +117,25 @@ class StateManager:
                     # 条目」丢弃——会话隔离映射 / session_vars / last_learned_id
                     # 一起丢，升级一次等于清空所有用户状态。
                     known = UserState.__dataclass_fields__
-                    self._states[key] = UserState(
-                        **{k: v for k, v in val.items() if k in known}
-                    )
+                    values = {k: v for k, v in val.items() if k in known}
+                    values.setdefault("persona_vars_schema", 0)
+                    version = int(values["persona_vars_schema"])
+                    if version > 1 or version < 0:
+                        self._read_only_reason = "future_persona_state_schema"
+                        logger.error("[Quill State] 状态版本高于支持范围，已禁止覆盖原文件")
+                    if version == 0:
+                        self._needs_migration_backup = True
+                    if not isinstance(values.get("persona_vars", {}), dict):
+                        raise ValueError("invalid_persona_buckets")
+                    self._states[key] = UserState(**values)
                 except Exception as e:
+                    self._read_only_reason="invalid_state_entry"
                     # S3-15: 补日志，便于发现损坏的状态条目
                     logger.warning("[Quill State] 跳过损坏的状态条目 %s: %s", key, e)
+            if not self._read_only_reason:
+                for state in self._states.values():
+                    if state.persona_vars_schema == 0:
+                        self._bucket(state, state.persona_id)
             self._evict_if_needed()
             logger.info(f"[Quill State] 已恢复 {len(self._states)} 个对话状态")
         except Exception as e:
@@ -128,13 +165,13 @@ class StateManager:
 
     def _evict_if_needed(self) -> None:
         """Evict oldest sessions beyond max_users limit (LRU by last_active)."""
-        if len(self._states) <= self._max_users:
+        if self._read_only_reason or len(self._states) <= self._max_users:
             return
         sorted_sessions = sorted(
-            self._states.items(),
+            ((key,value) for key,value in self._states.items() if not key.startswith('scope:')),
             key=lambda x: x[1].last_active,
         )
-        to_remove = len(self._states) - self._max_users
+        to_remove = min(len(sorted_sessions),len(self._states) - self._max_users)
         for i in range(to_remove):
             del self._states[sorted_sessions[i][0]]
             self._dirty = True
@@ -150,6 +187,7 @@ class StateManager:
           拿到写锁时若发现自己已被更新的快照超越，直接返回（磁盘已是更新的
           内容，重复落盘反而会把旧值写回去）。
         """
+        self._require_writable()
         async with self._lock:
             snapshot = self._serialize()
             self._dirty = False
@@ -169,15 +207,106 @@ class StateManager:
                     self._dirty = True
                 raise
 
+    _MAX_PERSONA_CONVS = 32
+
+    _BUCKET_DEFAULTS = {"session_vars": {}, "quill_rounds": 0, "round_count": 0, "cache_turns": 0,
+                        "first_message_injected": False, "unsummarized_turns": 0,
+                        "last_learned_id": 0}
+
+    def _require_writable(self):
+        if self._closed:
+            raise StorageError("会话状态组件已关闭，旧任务未写入")
+        if self._read_only_reason:
+            raise StorageError("会话状态版本不受支持，已拒绝写入")
+
+    def known_origins(self):
+        return tuple(self._states)
+
+    def role_scope(self, user_id):
+        turn=current_turn()
+        if turn and user_id in (turn.origin_umo,turn.scope_id):
+            return turn.scope_id
+        return self.scope_for(str(user_id))
+
+    def _effective_persona(self, user_id, state, explicit=None):
+        if explicit is not None:
+            return str(explicit)
+        turn = current_turn()
+        if turn and turn.scope_id == user_id:
+            return turn.persona_id
+        selected=self.scope_persona(user_id)
+        return selected if selected is not None else state.persona_id
+
+    def _bucket(self, state, persona_id):
+        if self._read_only_reason:
+            return {k: copy.deepcopy(getattr(state,k)) for k in self._BUCKET_DEFAULTS}
+        if state.persona_vars_schema == 0:
+            owner = state.persona_id or persona_id
+            if owner:
+                # 旧单轴只被一个角色接管；之后的新卡从空桶开始。
+                old = state.persona_vars.pop("", None)
+                state.persona_vars[owner] = old or {k: copy.deepcopy(getattr(state,k)) for k in self._BUCKET_DEFAULTS}
+                state.persona_vars_schema = 1
+                state.legacy_persona_owner = owner
+                self._mark_dirty()
+            else:
+                state.persona_vars.setdefault("", {k: copy.deepcopy(getattr(state,k)) for k in self._BUCKET_DEFAULTS})
+                # 文件迁移完成与首卡接管是两件事；无卡用户也只备份一次。
+                state.persona_vars_schema = 1
+                state.legacy_adoption_pending = True
+                self._mark_dirty()
+        if state.legacy_adoption_pending and persona_id and persona_id == state.persona_id:
+            state.persona_vars[persona_id] = state.persona_vars.pop("", copy.deepcopy(self._BUCKET_DEFAULTS))
+            state.legacy_persona_owner = persona_id
+            state.legacy_adoption_pending = False
+            self._mark_dirty()
+        if persona_id not in state.persona_vars:
+            state.persona_vars[persona_id] = copy.deepcopy(self._BUCKET_DEFAULTS)
+            self._mark_dirty()
+        bucket = state.persona_vars[persona_id]
+        for key, default in self._BUCKET_DEFAULTS.items():
+            if key not in bucket:
+                bucket[key] = copy.deepcopy(default)
+        return bucket
+
+    def _get_or_create(self, user_id):
+        state = self._states.get(user_id)
+        if state is None:
+            self._require_writable()
+            state = UserState(user_id=user_id)
+            self._states[user_id] = state
+            self._evict_if_needed()
+            self._mark_dirty()
+        return state
+
     def _serialize(self) -> str:
-        return json.dumps(
-            {k: asdict(v) for k, v in self._states.items()},
-            ensure_ascii=False, indent=2,
-        )
+        data = {}
+        for key, state in self._states.items():
+            row = asdict(state)
+            # 兼容读取旧顶层字段的外部工具；投影明确取所选角色，不受在途 context 影响。
+            selected = self.scope_persona(key)
+            if selected is not None:
+                row["persona_id"] = selected
+            projection = state.persona_vars.get(selected if selected is not None else state.persona_id)
+            if projection is not None:
+                row.update(copy.deepcopy(projection))
+            elif state.persona_vars_schema == 1:
+                row.update(copy.deepcopy(self._BUCKET_DEFAULTS))
+            data[key] = row
+        return json.dumps(data, ensure_ascii=False, indent=2)
 
     def _atomic_write(self, text: str) -> None:
         # 使用 mkstemp 生成唯一临时文件名，避免固定 .tmp 后缀在极端并发/异常退出时的冲突
         dir_name = os.path.dirname(self.state_file) or "."
+        if self._needs_migration_backup and os.path.exists(self.state_file):
+            folder = os.path.join(dir_name, ".schema_backups")
+            os.makedirs(folder, mode=0o700, exist_ok=True)
+            target = os.path.join(folder, "quill_state.v0." + uuid4().hex + ".json")
+            original = Path(self.state_file).read_bytes()
+            shutil.copyfile(self.state_file, target)
+            if Path(target).read_bytes() != original or not isinstance(json.loads(original), dict):
+                raise StorageError("会话状态迁移备份校验失败")
+            self._needs_migration_backup = False
         fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -195,20 +324,20 @@ class StateManager:
 
     async def get_state(self, user_id: str) -> UserState:
         async with self._lock:
-            if user_id not in self._states:
-                self._states[user_id] = UserState(user_id=user_id)
-                self._evict_if_needed()
-                self._mark_dirty()
-            return self._states[user_id]
+            physical = self._get_or_create(user_id)
+            scope=self.role_scope(user_id)
+            state = self._get_or_create(scope)
+            pid = self._effective_persona(scope,state)
+            return replace(copy.deepcopy(physical), persona_id=pid, **copy.deepcopy(self._bucket(state,pid)))
 
     async def update_activity(self, user_id: str) -> None:
+        user_id = self.role_scope(user_id)
+        self._require_writable()
         async with self._lock:
-            if user_id not in self._states:
-                self._states[user_id] = UserState(user_id=user_id)
-                self._evict_if_needed()
-            st = self._states[user_id]
-            st.last_active = datetime.now(timezone.utc).isoformat()
-            st.round_count += 1
+            state = self._get_or_create(user_id)
+            state.last_active = datetime.now(timezone.utc).isoformat()
+            bucket = self._bucket(state,self._effective_persona(user_id,state))
+            bucket["round_count"] += 1
             self._mark_dirty()
 
     async def persist_all(self) -> None:
@@ -236,6 +365,7 @@ class StateManager:
         前缀本身的合法性（长度/是否含用户边界 '!'）由调用方校验。
         """
         cap = self.CLEANUP_MAX_DELETE if max_delete is None else max_delete
+        self._require_writable()
         async with self._lock:
             matched = sorted(k for k in self._states if k.startswith(prefix))
             sample = matched[:8]
@@ -331,7 +461,10 @@ class StateManager:
     async def shutdown(self) -> None:
         """Convenience: stop autoflush then persist all."""
         await self.stop_autoflush()
-        await self.persist_all()
+        try:
+            await self.persist_all()
+        finally:
+            self._closed=True
 
     # Internal: mark dirty
     def _mark_dirty(self) -> None:
@@ -340,64 +473,97 @@ class StateManager:
     # ── Public state API ───────────────────────────────────────────
 
 
-    async def increment_quill_rounds(self, user_id: str) -> int:
+    async def increment_quill_rounds(self, user_id: str, persona_id=None) -> int:
+        user_id = self.role_scope(user_id)
+        self._require_writable()
         async with self._lock:
-            st = self._states.get(user_id)
-            if st is None:
-                st = UserState(user_id=user_id)
-                self._evict_if_needed()
-                self._states[user_id] = st
-
-            st.quill_rounds += 1
+            state = self._get_or_create(user_id)
+            bucket = self._bucket(state,self._effective_persona(user_id,state,persona_id))
+            bucket["quill_rounds"] += 1
             self._mark_dirty()
-            return st.quill_rounds
+            return bucket["quill_rounds"]
 
-    async def reset_quill_rounds(self, user_id: str) -> None:
+    async def increment_cache_turns(self, user_id: str, persona_id=None) -> int:
+        user_id = self.role_scope(user_id)
+        self._require_writable()
         async with self._lock:
-            st = self._states.get(user_id)
-            if st is not None:
-                st.quill_rounds = 0
-                self._mark_dirty()
-
-    async def increment_unsummarized_turns(self, user_id: str) -> int:
-        async with self._lock:
-            st = self._states.get(user_id)
-            if st is None:
-                st = UserState(user_id=user_id)
-                self._evict_if_needed()
-                self._states[user_id] = st
-            st.unsummarized_turns += 1
-            val = st.unsummarized_turns
+            state = self._get_or_create(user_id)
+            bucket = self._bucket(state, self._effective_persona(user_id, state, persona_id))
+            bucket["cache_turns"] += 1
             self._mark_dirty()
-        return val
+            return bucket["cache_turns"]
 
-    async def reset_unsummarized_turns(self, user_id: str) -> None:
+    async def reset_quill_rounds(self, user_id: str, persona_id=None) -> None:
+        user_id = self.role_scope(user_id)
+        self._require_writable()
         async with self._lock:
-            st = self._states.get(user_id)
-            if st is not None:
-                st.unsummarized_turns = 0
-                # S3-1: 补 _mark_dirty()，与同类写操作一致；persist 失败时 autoflush 可重试
-                self._mark_dirty()
+            state = self._get_or_create(user_id)
+            bucket = self._bucket(state,self._effective_persona(user_id,state,persona_id))
+            bucket["quill_rounds"] = 0
+            self._mark_dirty()
+            return None
+
+    async def increment_unsummarized_turns(self, user_id: str, persona_id=None) -> int:
+        user_id = self.role_scope(user_id)
+        self._require_writable()
+        async with self._lock:
+            state = self._get_or_create(user_id)
+            bucket = self._bucket(state,self._effective_persona(user_id,state,persona_id))
+            bucket["unsummarized_turns"] += 1
+            self._mark_dirty()
+            return bucket["unsummarized_turns"]
+
+    async def reset_unsummarized_turns(self, user_id: str, persona_id=None) -> None:
+        user_id = self.role_scope(user_id)
+        self._require_writable()
+        async with self._lock:
+            state = self._get_or_create(user_id)
+            bucket = self._bucket(state,self._effective_persona(user_id,state,persona_id))
+            bucket["unsummarized_turns"] = 0
+            self._mark_dirty()
+            return None
+
+    async def reset_role_counters(self, user_id, persona_id, *, reset_quill=False):
+        user_id = self.role_scope(user_id)
+        self._require_writable()
+        async with self._lock:
+            state=self._get_or_create(user_id)
+            bucket=self._bucket(state,str(persona_id or ""))
+            bucket["unsummarized_turns"]=0
+            bucket["last_learned_id"]=0
+            if reset_quill:
+                bucket["quill_rounds"]=0
+            self._mark_dirty()
         await self._persist()
 
-    async def update_last_learned_id(self, user_id: str, last_id: int) -> None:
+    async def consume_unsummarized_turns(self, user_id, count, persona_id=None):
+        user_id = self.role_scope(user_id)
+        self._require_writable()
         async with self._lock:
-            st = self._states.get(user_id)
-            if st is None:
-                st = UserState(user_id=user_id)
-                self._states[user_id] = st
-            st.last_learned_id = last_id
+            state = self._get_or_create(user_id)
+            bucket = self._bucket(state,self._effective_persona(user_id,state,persona_id))
+            bucket["unsummarized_turns"] = max(0,bucket["unsummarized_turns"]-max(0,int(count)))
+            self._mark_dirty()
+
+    async def update_last_learned_id(self, user_id: str, last_id: int, persona_id=None) -> None:
+        # 旧接口仅保留兼容投影；M3 总结进度在 SQLite 独立保存，不靠此值倒退。
+        user_id = self.role_scope(user_id)
+        self._require_writable()
+        async with self._lock:
+            state = self._get_or_create(user_id)
+            self._bucket(state,self._effective_persona(user_id,state,persona_id))["last_learned_id"] = max(0,int(last_id))
+            self._mark_dirty()
         await self._persist()
 
-    async def get_last_learned_id(self, user_id: str) -> int:
+    async def get_last_learned_id(self, user_id: str, persona_id=None) -> int:
+        user_id = self.role_scope(user_id)
         async with self._lock:
-            st = self._states.get(user_id)
-            if st is not None:
-                return st.last_learned_id
-            return 0
+            state = self._states.get(user_id)
+            return int(self._bucket(state,self._effective_persona(user_id,state,persona_id))["last_learned_id"]) if state else 0
 
     async def set_stream_mode(self, user_id: str, mode: str) -> None:
         # F13 降级：运行时态，重启可重算
+        self._require_writable()
         async with self._lock:
             st = self._states.get(user_id)
             if st is None:
@@ -409,9 +575,11 @@ class StateManager:
 
     async def set_stream_mode_all(self, mode: str) -> int:
         """批量设置所有 session 的流式模式，返回受影响数量。"""
+        self._require_writable()
         async with self._lock:
             count = 0
-            for st in self._states.values():
+            for key,st in self._states.items():
+                if key.startswith('scope:'): continue
                 st.stream_mode = mode
                 count += 1
             if count:
@@ -421,8 +589,9 @@ class StateManager:
     async def get_stream_mode_stats(self) -> dict:
         """返回各流式模式的 session 数量统计。"""
         async with self._lock:
-            stats = {"auto": 0, "on": 0, "off": 0, "total": len(self._states)}
-            for st in self._states.values():
+            physical=[st for key,st in self._states.items() if not key.startswith('scope:')]
+            stats = {"auto": 0, "on": 0, "off": 0, "total": len(physical)}
+            for st in physical:
                 m = st.stream_mode or "auto"
                 if m in stats:
                     stats[m] += 1
@@ -432,6 +601,7 @@ class StateManager:
 
     async def set_status_bar_mode(self, user_id: str, mode: str) -> None:
         """设置会话级状态栏覆盖：auto（跟随全局）/ on（强制开）/ off（强制关）。"""
+        self._require_writable()
         async with self._lock:
             st = self._states.get(user_id)
             if st is None:
@@ -451,53 +621,59 @@ class StateManager:
     # session_vars 总大小上限（JSON 序列化后），防止无界增长
     _SESSION_VARS_MAX_BYTES = 65536
 
-    async def update_session_vars(self, user_id: str, updates: dict) -> dict:
+    async def update_session_vars(self, user_id: str, updates: dict, persona_id=None) -> dict:
+        user_id = self.role_scope(user_id)
+        self._require_writable()
         async with self._lock:
-            st = self._states.get(user_id)
-            if st is None:
-                st = UserState(user_id=user_id)
-                self._states[user_id] = st
-
-            st.session_vars.update(updates)
-            # 限制 session_vars 总大小：超出时移除最早写入的非核心字段
-            while len(json.dumps(st.session_vars, ensure_ascii=False)) > self._SESSION_VARS_MAX_BYTES and len(st.session_vars) > 1:
-                # 移除最早写入的键（dict 保持插入顺序）
-                oldest_key = next(iter(st.session_vars))
-                st.session_vars.pop(oldest_key)
-            result = dict(st.session_vars)
+            state = self._get_or_create(user_id)
+            values = self._bucket(state,self._effective_persona(user_id,state,persona_id))["session_vars"]
+            values.update(copy.deepcopy(updates))
+            while len(json.dumps(values,ensure_ascii=False)) > self._SESSION_VARS_MAX_BYTES and len(values)>1:
+                values.pop(next(iter(values)))
             self._mark_dirty()
-        return result
+            return copy.deepcopy(values)
 
-    async def get_session_vars(self, user_id: str) -> dict:
+    async def get_session_vars(self, user_id: str, persona_id=None, *, claim_legacy=True) -> dict:
+        user_id = self.role_scope(user_id)
         async with self._lock:
-            st = self._states.get(user_id)
-            if st is None:
+            state = self._states.get(user_id)
+            if state is None:
                 return {}
-            return dict(st.session_vars)
+            pid = self._effective_persona(user_id,state,persona_id)
+            if not claim_legacy:
+                bucket = state.persona_vars.get(pid)
+                if bucket is not None:
+                    return copy.deepcopy(bucket.get("session_vars",{}))
+                if state.persona_vars_schema == 0 and pid == state.persona_id:
+                    return copy.deepcopy(state.session_vars)
+                return {}
+            return copy.deepcopy(self._bucket(state,pid)["session_vars"])
 
     async def set_persona_id(self, user_id: str, persona_id: str) -> None:
+        user_id = self.role_scope(user_id)
+        self._require_writable()
+        if self.scope_persona(self.role_scope(user_id)) is not None and self.set_scope_persona:
+            await self.set_scope_persona(self.role_scope(user_id),persona_id)
         async with self._lock:
-            st = self._states.get(user_id)
-            if st is None:
-                st = UserState(user_id=user_id)
-                self._states[user_id] = st
-
-            st.persona_id = persona_id
-            st.first_message_injected = False  # 切换角色时重置注入标记
+            state = self._get_or_create(user_id)
+            self._bucket(state,state.persona_id or persona_id)
+            state.persona_id = persona_id
+            self._bucket(state,persona_id)
+            self._mark_dirty()
         await self._persist()
 
     async def get_persona_id(self, user_id: str) -> str:
+        user_id = self.role_scope(user_id)
         async with self._lock:
-            st = self._states.get(user_id)
-            if st is None:
-                return ""
-            return st.persona_id
+            state = self._states.get(user_id)
+            return self._effective_persona(user_id,state) if state else self.scope_persona(user_id) or ""
 
-    # ── 角色卡 → 对话 映射（对话历史隔离用）────────────────────
-
-    # 单会话最多记住多少张角色卡的对话绑定。超出后按插入顺序淘汰最旧的，
-    # 防止长期运行 + 大量角色卡导致 state 文件无限膨胀。
-    _MAX_PERSONA_CONVS = 32
+    async def get_selected_persona_id(self, user_id: str) -> str:
+        async with self._lock:
+            scope=self.role_scope(user_id)
+            selected=self.scope_persona(scope)
+            state = self._states.get(scope)
+            return selected if selected is not None else state.persona_id if state else ""
 
     async def get_persona_conv_map(self, user_id: str) -> dict:
         """返回 persona_id → conversation_id 的副本（只读，外部改动不回写）。"""
@@ -511,6 +687,7 @@ class StateManager:
         self, user_id: str, persona_id: str, conversation_id: str
     ) -> None:
         """记录「该角色卡使用哪个 AstrBot 对话」，立即落盘。"""
+        self._require_writable()
         async with self._lock:
             st = self._states.get(user_id)
             if st is None:
@@ -524,12 +701,14 @@ class StateManager:
             convs.pop(persona_id, None)
             convs[persona_id] = conversation_id
             while len(convs) > self._MAX_PERSONA_CONVS:
-                oldest = next(iter(convs))
+                # 会话组绑定可重建，优先保留入组前的独立角色绑定供退出恢复。
+                oldest = next((key for key in convs if key.startswith('scope:')),next(iter(convs)))
                 convs.pop(oldest, None)
         await self._persist()
 
     async def forget_persona_conv(self, user_id: str, persona_id: str) -> None:
         """删除某角色卡的对话绑定（对话已被外部删除时用来自愈）。"""
+        self._require_writable()
         async with self._lock:
             st = self._states.get(user_id)
             if st is None or not isinstance(st.persona_convs, dict):
@@ -537,14 +716,13 @@ class StateManager:
             st.persona_convs.pop(persona_id, None)
         await self._persist()
 
-    async def mark_first_message_injected(self, user_id: str) -> None:
+    async def mark_first_message_injected(self, user_id: str, persona_id=None) -> None:
+        user_id = self.role_scope(user_id)
+        self._require_writable()
         async with self._lock:
-            st = self._states.get(user_id)
-            if st is None:
-                st = UserState(user_id=user_id)
-                self._states[user_id] = st
-
-            st.first_message_injected = True
+            state = self._get_or_create(user_id)
+            self._bucket(state,self._effective_persona(user_id,state,persona_id))["first_message_injected"] = True
+            self._mark_dirty()
         await self._persist()
 
 if __name__ == "__main__":

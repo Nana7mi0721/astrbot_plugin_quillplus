@@ -21,6 +21,7 @@ wb_manager methods are synchronous.
 
 import asyncio
 import random
+import hashlib
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
@@ -105,6 +106,7 @@ class PromptBuilder:
 
     def __init__(self, config):
         """config 可以是 dict（旧兼容）或 QuillConfig 对象（v5.0）。"""
+        self.cache_enabled = bool(getattr(config, "cache_enabled", False)) if not isinstance(config, dict) else bool((config.get("cache") or {}).get("enabled", False))
         # 兼容 QuillConfig 对象
         if hasattr(config, 'max_prompt_length'):
             self.max_prompt_length: int = config.max_prompt_length
@@ -208,7 +210,7 @@ class PromptBuilder:
         session_vars = (extra_info or {}).get("session_vars") or {}
         if session_vars and self.status_bar_enabled:
             state_lines = [f"{k}={v}" for k, v in session_vars.items()]
-            stable_sections.append(PromptSection(
+            (dynamic_sections if self.cache_enabled else stable_sections).append(PromptSection(
                 name="session_state",
                 content="## 当前状态\n" + " | ".join(state_lines),
                 priority=0,
@@ -269,7 +271,7 @@ class PromptBuilder:
             ))
 
         # --- Layer 3: safety wrapper (stable content but after dynamic) ---
-        dynamic_sections.append(PromptSection(
+        (stable_sections if self.cache_enabled else dynamic_sections).append(PromptSection(
             name="safety_wrapper",
             content=self.build_safety_wrapper(),
             priority=1,
@@ -296,12 +298,19 @@ class PromptBuilder:
         # 注入报告/面板的计数键读取不受影响。
         kept_dyn: List[str] = []
         trunc_ev: List[dict] = []
-        dynamic_prompt = self._smart_truncate(
-            dynamic_sections, remaining_budget,
-            kept_names=kept_dyn, trunc_events=trunc_ev,
-        )
+        if self.cache_enabled:
+            # M2 在 RAG/路由完成后统一按语义预算，不提前切坏状态或包围标签。
+            dynamic_prompt = "\n\n".join(s.content for s in dynamic_sections if s.content)
+            kept_dyn = [s.name for s in dynamic_sections if s.content]
+        else:
+            dynamic_prompt = self._smart_truncate(
+                dynamic_sections, remaining_budget,
+                kept_names=kept_dyn, trunc_events=trunc_ev,
+            )
         if stats is not None:
             try:
+                if self.cache_enabled:
+                    stats["_cache_dynamic"] = [(s.name, s.content, s.priority) for s in dynamic_sections if s.content]
                 stats["_sections_stable"] = [s.name for s in stable_sections if s.content]
                 stats["_sections_dynamic"] = kept_dyn
                 # where 标注统一在调用侧打（_smart_truncate 是通用静态方法，
@@ -428,7 +437,13 @@ class PromptBuilder:
                 # Random pool \u2192 separate list
                 for pool_entries in pools.values():
                     if pool_entries:
-                        for c in random.sample(pool_entries, min(2, len(pool_entries))):
+                        sampler = random
+                        if extra_info.get("_cache_seed"):
+                            # 内容修订参与种子，数据库返回顺序不应制造无意义的抖动。
+                            pool_entries = sorted(pool_entries)
+                            revision = hashlib.sha256(repr(pool_entries).encode()).hexdigest()
+                            sampler = random.Random(extra_info["_cache_seed"] + revision)
+                        for c in sampler.sample(pool_entries, min(2, len(pool_entries))):
                             layer1_random_parts.append(
                                 "\u3010\u7d20\u6750\u3011\n" + c
                             )

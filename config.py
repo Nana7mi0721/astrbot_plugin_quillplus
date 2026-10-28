@@ -201,6 +201,18 @@ class QuillConfig:
             max(_safe_float(_dec_floor, 0.6), 0.0), 1.0
         )
 
+        # M2：新开关默认保留旧装配；台账独立保留策略，不参与 RP 数据迁移。
+        usage = _get_nested(self._raw, "usage", {}) or {}
+        self.usage_enabled: bool = _safe_bool(usage.get("enabled"), True)
+        self.usage_retention_days: int = min(366, max(1, _safe_int(usage.get("retention_days", 30), 30)))
+        self.usage_max_records: int = min(100000, max(100, _safe_int(usage.get("max_records", 20000), 20000)))
+        self.usage_prices_json: str = str(usage.get("prices_json", "{}") or "{}")[:100000]
+        cache = _get_nested(self._raw, "cache", {}) or {}
+        self.cache_enabled: bool = _safe_bool(cache.get("enabled"), False)
+        self.cache_dynamic_to_user_tail: bool = _safe_bool(cache.get("dynamic_to_user_tail"), False)
+        self.cache_stable_sampling: bool = _safe_bool(cache.get("stable_sampling"), False)
+        self.cache_sampling_window: int = min(100, max(1, _safe_int(cache.get("sampling_window", 3), 3)))
+
         # ── debug ──
         dbg = _get_nested(self._raw, "debug", {}) or {}
         self.debug_enabled: bool = _safe_bool(dbg.get("enabled"))

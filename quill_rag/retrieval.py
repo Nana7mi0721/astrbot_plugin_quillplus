@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 
+from ..quill.services.tasks import TaskFailure
 from astrbot.api import logger
 
 # 检索结果的失败标记键。之所以用「挂在 list 上的属性」而不是改成返回
@@ -113,6 +115,7 @@ class QuillRetriever:
         self.kb_source = kb_source            # AstrBot 内置知识库（可选，quill_rag.astrbot_kb.AstrBotKBSource）
         # F5 修复：保留后台 task 引用
         self._bg_tasks: set = set()
+        self._summary_locks = weakref.WeakValueDictionary()
 
     def _spawn(self, coro):
         """启动后台任务并保留引用，防止被 GC 中断"""
@@ -136,8 +139,10 @@ class QuillRetriever:
         「embedding/索引出错」。此前两者都表现为 []，上层统一记
         record_rag(True)，健康度里检索失败被算成成功。
         """
-        if not self.vector_store or not query:
+        if not query:
             return []
+        if not self.vector_store:
+            return _rag_failed('文档库暂不可用，请检查存储状态')
         try:
             query_emb = await self.embedding.embed([query])
             if not query_emb:
@@ -273,12 +278,12 @@ class QuillRetriever:
         try:
             summary = content.strip()
             if self.summarizer:
-                summary = await self.summarizer.summarize(content, "")
+                summary = await self.summarizer.summarize(content, "", session_id=session_id)
                 if not summary:
                     summary = content.strip()
             summary = summary[:200]
 
-            vector = await self.embedding.embed([summary])
+            vector = await self.embedding.embed([summary], session_id=session_id)
             if vector:
                 await self.memory_store.add(
                     session_id, summary, vector[0], chat_summary=content[:100]
@@ -288,80 +293,75 @@ class QuillRetriever:
             logger.warning("[Quill Memory] store_memory_direct 直接记忆存储失败: %s", e, exc_info=True)
             raise
 
-    async def summarize_contexts(self, session_id: str, contexts: list[dict]) -> str:
-        """自动总结多轮对话历史，生成一条记忆并存储。
-
-        Args:
-            session_id: 会话 ID
-            contexts: 对话历史列表，每项含 role/content
-
-        Returns:
-            生成的摘要文本
-        """
+    async def summarize_incremental(self, session_id: str, *, legacy_last_id=0, handle=None, limit=50):
+        """从独立水位向前读取，不截掉前半批再标记整批已消费。"""
         if not self.memory_store or not self.enable_memory:
-            raise RuntimeError("动态记忆功能未启用")
-        if not contexts:
-            raise ValueError("对话历史不足，无法总结。")
+            raise TaskFailure("动态记忆功能未启用","memory_disabled")
+        lock = self._summary_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            progress = await self.memory_store.ensure_summary_progress(session_id,legacy_last_id)
+            logs = await self.memory_store.get_chat_logs_after(session_id,progress["last_log_id"],limit=max(2,min(50,int(limit))))
+            if handle:
+                await handle.checkpoint(0,total=len(logs))
+            if len(logs)<2:
+                return {"processed": 0, "stored": False, "summary": "", "reason": "insufficient_logs"}
+            if handle:
+                await handle.checkpoint(0,total=len(logs),message="正在总结未消费日志")
+            result = await self._summarize_rows(session_id,logs,progress,handle=handle)
+            if handle:
+                handle.record.progress = result["processed"]
+                handle.record.total = result["processed"]
+                handle.record.result = {k:v for k,v in result.items() if k != "summary"}
+            return result
 
-        # 1. 只取最近 6 轮（最多 12 条消息）
-        recent = contexts[-12:]
-
-        # 2. 格式化为结构化对话文本
-        lines = []
-        turn_count = 0
-        for msg in recent:
-            role = msg.get("role", "")
-            content = msg.get("content", "")[:300]
-            if role == "user":
-                lines.append(f"用户：{content}")
-                turn_count += 1
-            elif role == "assistant":
-                lines.append(f"AI：{content}")
+    async def _summarize_rows(self, session_id, logs, progress, handle=None):
+        if not self.summarizer:
+            raise TaskFailure("摘要模型未配置","provider_unconfigured")
+        lines = [f"{'用户' if row['role']=='user' else 'AI'}：{row['content']}" for row in logs]
         combined = "\n".join(lines)
-
-        # 3. 调用 LLM 做结构化多轮摘要（复用 summarizer provider）
-        summary = ""
-        if self.summarizer and hasattr(self.summarizer, 'context_summarize'):
-            summary = await self.summarizer.context_summarize(combined, turn_count)
-        elif self.summarizer:
-            # 降级：用单轮 summarizer 兜底
-            summary = await self.summarizer.summarize(combined[:1500], "")
-        if not summary:
-            summary = f"最近{turn_count}轮对话片段：" + combined[:150]
-        summary = summary[:200]
-
-        # 4. Embedding → 存储
-        vector = await self.embedding.embed([summary])
-        if not vector:
-            raise RuntimeError("Embedding 生成失败")
-
-        # 5. 防重复：检查是否已有语义高度重叠的记忆
-        # B11：阈值必须打在**原始余弦** sim 上。vec_score 是排序分
-        # （sim × 时间衰减 + 引用频次加成 ×0.2）：一条 cosine 0.80 但被引用 6 次的
-        # 旧记忆就能到 0.92，于是真正的新记忆被当成重复丢弃，日志还把 0.93 报成
-        # similarity，排查时越看越偏。
-        if self.memory_store:
+        # 避免把大批正文悄悄截掉却推进全部水位；缩短本批而不跳过任何中间日志。
+        while len(combined)>24000 and len(logs)>2:
+            logs=logs[:-1]
+            lines=lines[:-1]
+            combined="\n".join(lines)
+        if len(combined)>24000:
+            raise TaskFailure("单条对话过长，未消费日志保持原状","input_too_large")
+        outcome = await self.summarizer.context_summarize_result(
+            combined,sum(row['role']=='user' for row in logs),session_id=session_id)
+        if not outcome["ok"]:
+            message="摘要模型未配置或不可用" if outcome['error'] in ('provider_unconfigured','provider_unavailable') else "摘要未成功，水位未推进"
+            raise TaskFailure(message,str(outcome["error"]))
+        summary=outcome["text"][:200]
+        vector=None
+        disposition="empty"
+        if handle:
+            await handle.checkpoint(message="正在准备记忆写入")
+        if summary:
             try:
-                existing = await self.memory_store.search(
-                    session_id, vector[0], top_k=3
-                )
-                for mem in existing:
-                    sim = mem.get("sim", 0.0)
-                    if sim > 0.92:
-                        logger.info(
-                            f"[Quill Memory] 跳过重复记忆: session={session_id} cosine={sim:.2f}"
-                        )
-                        return summary  # 已存在高度相似记忆，跳过存储
-            except Exception:
-                logger.debug("[Quill Memory] 重复记忆检查失败，继续存储", exc_info=True)
+                vectors=await self.embedding.embed([summary],session_id=session_id)
+            except Exception as exc:
+                raise TaskFailure("向量化未成功，水位未推进","embedding_failed") from exc
+            if not vectors or not vectors[0]:
+                raise TaskFailure("向量化未成功，水位未推进","embedding_failed")
+            vector=vectors[0]
+            existing=await self.memory_store.search(session_id,vector,top_k=3)
+            if any(row.get('sim',0)>0.92 for row in existing):
+                vector=None
+                disposition="duplicate"
+            else:
+                disposition="stored"
+        if handle:
+            await handle.checkpoint(message="正在提交总结与水位")
+        result=await self.memory_store.commit_summary_batch(
+            session_id,progress['last_log_id'],max(row['id'] for row in logs),summary=summary,
+            vector=vector,chat_summary=combined[:100],expected_generation=progress['generation'],outcome=disposition)
+        return {"processed":len(logs),"stored":bool(result['memory_record_id']),"summary":summary,
+                "reason":disposition,"through_id":max(row['id'] for row in logs)}
 
-        await self.memory_store.add(
-            session_id, summary, vector[0],
-            chat_summary=combined[:100]
-        )
-        logger.info(f"[Quill Memory] 上下文自动总结: session={session_id} turns={turn_count} summary={summary[:30]}...")
-
-        return summary
+    async def summarize_contexts(self, session_id: str, contexts: list[dict]) -> str:
+        # 兼容旧调用面，但日志来源由持久水位统一解析，不把外部片段 MAX 当作消费范围。
+        result=await self.summarize_incremental(session_id)
+        return result['summary']
 
     def format_for_prompt(self, doc_results: list[dict], memory_results: list[dict], core_memories: list[dict] = None) -> str:
         """将检索结果格式化为 XML 规范文本。委托模块级纯函数（兼容旧调用面）。"""

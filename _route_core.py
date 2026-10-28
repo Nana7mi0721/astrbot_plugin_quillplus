@@ -915,79 +915,72 @@ async def handle_chat_log_export(memory_store, session_id=None, format="markdown
         return err(error_text("导出失败", e))
 
 
-async def handle_memory_import(memory_store, embedding_provider, data):
-    """从 JSON 数据批量导入记忆（异步，重新生成向量）。
-
-    F16 修复：原实现循环内逐条 embed([summary])，100 条=100 次 API 往返。
-    现改为先收集所有 summary，一次批量 embed，再循环写 DB。
-    """
-    try:
-        if not data or not isinstance(data, dict):
-            return err("无效的数据格式")
-        memories = data.get("memories", [])
-        if not isinstance(memories, list):
-            return err("memories 必须是数组")
-
-        if not memories:
-            return ok({"imported": 0, "failed": 0, "message": "无记忆可导入"})
-
-        # 1. 预处理：收集有效条目（有 summary 且有 embedding_provider）
-        valid_entries = []
-        failed = 0
-        for m in memories:
-            summary = m.get("summary", "")
-            if not summary:
-                failed += 1
+async def handle_memory_import(memory_store, embedding_provider, data, handle=None):
+    """批次向量化和逐条事务写入；安全点取消保留此前已提交记录。"""
+    import hashlib,json
+    if not isinstance(data,dict) or not isinstance(data.get("memories"),list):
+        return err("memories 必须为数组")
+    memories=data["memories"]
+    if len(memories)>10000 or any(not isinstance(row,dict) for row in memories):
+        return err("单次最多导入 10000 条对象")
+    imported,failed,duplicates=0,0,0
+    for start in range(0,len(memories),50):
+        batch=memories[start:start+50]
+        valid=[]
+        for row in batch:
+            summary=row.get("summary")
+            session_id=row.get("session_id","imported")
+            if not isinstance(summary,str) or not summary.strip() or not isinstance(session_id,str) or not session_id.strip() or len(session_id)>2048:
+                failed+=1
                 continue
-            valid_entries.append({
-                "summary": summary,
-                "chat_summary": m.get("chat_summary", ""),
-                "session_id": m.get("session_id", "imported"),
-            })
-
-        if not valid_entries:
-            return ok({"imported": 0, "failed": failed, "message": "无有效记忆可导入"})
-
-        # 2. 批量向量化（1 次 API 调用）
-        all_summaries = [e["summary"] for e in valid_entries]
+            turn_text=str(row.get("record_id") or row.get("id") or "")
+            stable=json.dumps([session_id,turn_text,summary,str(row.get("chat_summary", ""))],ensure_ascii=False)
+            # 新导出保留稳定 ID，避免“导入→导出→再导入”每次变成一条新记录。
+            # 旧导出只有自增 id，仍用内容和来源键构造可重试的导入身份。
+            record_id=row.get("record_id")
+            rid=record_id if isinstance(record_id,str) and record_id.strip() and len(record_id)<=200 else "import:"+hashlib.sha256(stable.encode()).hexdigest()
+            valid.append((session_id,summary,str(row.get("chat_summary", "")),rid))
+        if handle:
+            handle.record.result={"imported":imported,"failed":failed,"duplicates":duplicates}
+            await handle.checkpoint(start,total=len(memories),message="正在分批向量化与导入")
+        if not valid:
+            continue
         if not embedding_provider:
-            return ok({"imported": 0, "failed": len(valid_entries) + failed,
-                        "message": "embedding_provider 未配置，无法导入"})
-
+            failed+=len(valid)
+            continue
         try:
-            all_vectors = await embedding_provider.embed(all_summaries)
-        except Exception as e:
-            logger.warning(f"[Quill Memory] 批量向量化失败: {e}")
-            return ok({"imported": 0, "failed": len(valid_entries) + failed,
-                        "message": error_text("向量化失败", e)})
-
-        if not all_vectors or len(all_vectors) != len(valid_entries):
-            logger.warning(
-                f"[Quill Memory] 向量化数量不匹配: 期望 {len(valid_entries)}, 得到 {len(all_vectors) if all_vectors else 0}"
-            )
-            return ok({"imported": 0, "failed": len(valid_entries) + failed,
-                        "message": "向量化数量不匹配"})
-
-        # 3. 批量写 DB（memory_store.add 是 async，直接 await；
-        # 此前误用 asyncio.to_thread 包装 async 函数——线程内只会创建协程对象
-        # 从不执行，导致导入显示成功但一条都没写库）
-        imported = 0
-        for entry, vector in zip(valid_entries, all_vectors):
+            vectors=await embedding_provider.embed([row[1] for row in valid])
+        except Exception as exc:
+            logger.warning("[Quill Memory] 导入向量化失败（%s）",type(exc).__name__)
+            if handle:
+                await handle.checkpoint(message="本批向量化失败")
+            failed+=len(valid)
+            continue
+        if not vectors or len(vectors)!=len(valid):
+            failed+=len(valid)
+            continue
+        for row_index,(row,vector) in enumerate(zip(valid,vectors),1):
+            if handle:
+                await handle.checkpoint(min(start+row_index,len(memories)),total=len(memories))
             try:
-                if vector:
-                    await memory_store.add(
-                        entry["session_id"], entry["summary"], vector, entry["chat_summary"]
-                    )
-                    imported += 1
-                else:
-                    failed += 1
-            except Exception as e:
-                logger.warning(f"[Quill Memory] import single failed: {e}")
-                failed += 1
-
-        return ok({"imported": imported, "failed": failed, "message": f"成功导入 {imported}/{len(memories)} 条"})
-    except Exception as e:
-        return err(error_text("导入失败", e))
+                if not vector:
+                    failed+=1
+                    continue
+                added=await memory_store.add(row[0],row[1],vector,row[2],record_id=row[3],source_ref="import")
+                if added:imported+=1
+                else:duplicates+=1
+            except Exception as exc:
+                logger.warning("[Quill Memory] 导入单条失败（%s）",type(exc).__name__)
+                failed+=1
+        if handle:
+            handle.record.result={"imported":imported,"failed":failed,"duplicates":duplicates}
+            await handle.checkpoint(min(start+len(batch),len(memories)),total=len(memories))
+    result={"imported":imported,"failed":failed,"duplicates":duplicates,
+            "message":f"新增 {imported} 条，重复 {duplicates} 条，失败 {failed} 条"}
+    if handle:
+        handle.record.progress=len(memories)
+        handle.record.result=result
+    return ok(result)
 
 
 # ── Shared helpers ───────────────────────────────────────────────
@@ -1126,7 +1119,7 @@ async def handle_trace_simulate(plugin, text=None, persona_id=None,
     svars = session_vars if isinstance(session_vars, dict) else None
     if svars is None and umo:
         try:
-            svars = await plugin.state_manager.get_session_vars(str(umo))
+            svars = await plugin.state_manager.get_session_vars(str(umo), persona_id=persona_id, claim_legacy=False)
         except Exception:
             svars = None
     svars = svars or {}
@@ -1398,6 +1391,12 @@ async def handle_trace_simulate(plugin, text=None, persona_id=None,
                 module=mod, ok=True, degraded="skipped",
                 items=[{"filtered_reason": "模拟默认不跑 RAG（勾选 rag 且提供 umo 才跑）"}]))
 
+    # 模拟是检索画像，缺少宿主 system/工具/媒体，不能冒充最终优化 payload。
+    trace.cache_diagnostics = {"mode": "simulation_retrieval_only", "segments": [],
+                               "note": "模拟不包含宿主提示词、工具与临时数据序列化；最终段序与裁剪请查看真实请求追踪。"}
+    if getattr(plugin.config, "cache_enabled", False):
+        trace.warnings.append("已启用稳定布局：本页仅预演检索候选，真实请求在决策后统一按语义裁剪。")
+
     # ── 预算画像（量级参考：不含角色卡正文——那是宿主 original prompt，
     #    模拟侧不可得；对照 max_prompt_length 给出超限预警）──
     budget = int(getattr(plugin.config, "max_prompt_length", 0) or 0)
@@ -1475,7 +1474,10 @@ async def handle_decision_probe(plugin, base_url=None, api_key=None,
            else getattr(plugin.config, "status_bar_decision_api_format", "auto"))
 
     result = await dc.decision_probe(
-        base, key, str(mid or ""), str(fmt or "auto")
+        base, key, str(mid or ""), str(fmt or "auto"),
+        call_observer=(lambda operation: plugin._usage.invoke(
+            operation, purpose="decision_probe", base_url=base,
+            model=str(mid or ""), timeout=8.0)) if getattr(plugin, "_usage", None) else None,
     )
     # 成功时也把「这次实际打到哪个端点、用了哪族格式」说清楚：auto 模式下
     # 用户看不到它猜了哪族，出问题无从下手。

@@ -36,6 +36,10 @@ H1 与 H5 都**没有**钩子级顶层 try（gate 间异常会上抛框架）。
 
 from __future__ import annotations
 
+from .prompt_cache import apply_layout, split_rag, temporary_capability
+from .scopes import event_turn
+from ..quill.services.prompt_cache import CacheBlock, stable_seed
+
 import json
 import time
 
@@ -757,7 +761,8 @@ async def handle_llm_response(
             and (resp.completion_text or "").strip()
             and getattr(plugin.config, 'rag_enable_chat_logging', True)
             and plugin.rag_retriever and plugin.rag_retriever.memory_store):
-        resp_pid = await plugin.state_manager.get_persona_id(target_id)
+        turn = event_turn(event)
+        resp_pid = turn.persona_id if turn else await plugin.state_manager.get_persona_id(target_id)
         plugin._spawn(plugin.rag_retriever.log_chat_message(
             plugin._get_memory_session_id(target_id, resp_pid),
             "assistant", (resp.completion_text or "").strip()
@@ -878,7 +883,7 @@ async def handle_llm_tool_respond(
             # 调用顺序逐字保真）
             await _memory_mod.schedule_reflection(
                 plugin.state_manager, plugin.rag_retriever, plugin._spawn,
-                plugin.config, target_id, mem_session_id,
+                plugin.config, target_id, mem_session_id, start_summary=plugin._start_summary_task,
             )
 
         except Exception as e:
@@ -903,6 +908,7 @@ async def _decision_plot_route(
     没有 chat/completions 端点），System One 与 OpenAI Decisions 两族格式由
     decision_client 自动适配。超时 5s，任何失败静默跳过。
     """
+    shared = bool(event.get_extra('_quill_shared_context'))
     cache = getattr(plugin, "_decision_round_cache", None)
     if not isinstance(cache, dict):
         return
@@ -937,10 +943,11 @@ async def _decision_plot_route(
             )
         ))
 
-    if not getattr(plugin.props, "status_bar_decision_enabled", False) or not activated:
+    if not shared and (not getattr(plugin.props, "status_bar_decision_enabled", False) or not activated):
         _dec_note("disabled")
         return
-    options = [str(p).strip() for p in (plugin.props.status_bar_plot_paths or []) if str(p).strip()][:3]
+    options = event.get_extra('_quill_shared_options') if shared else [str(p).strip() for p in (plugin.props.status_bar_plot_paths or []) if str(p).strip()][:3]
+    options = options or []
     if len(options) < 2:
         _dec_note("no_options")
         return
@@ -955,6 +962,9 @@ async def _decision_plot_route(
         # 显式数字选择零成本零风险，直接视为确定判定（不消耗判定调用）。
         confidence = 1.0
     else:
+        if shared and not getattr(plugin.props, "status_bar_decision_enabled", False):
+            _dec_note('disabled')
+            return
         base_url = (getattr(plugin.props, "status_bar_decision_base_url", "") or "").strip()
         api_key = (getattr(plugin.props, "status_bar_decision_api_key", "") or "").strip()
         model = (getattr(plugin.props, "status_bar_decision_model", "") or "").strip()
@@ -974,6 +984,8 @@ async def _decision_plot_route(
             _dec_mod.build_route_state(user_msg, recent, options),
             _dec_mod.build_plot_questions(options),
             api_format=api_format,
+            call_observer=lambda operation: plugin._usage.invoke(
+                operation, purpose="decision", base_url=base_url, model=model, timeout=8.0),
         )
         if not isinstance(answers, dict):
             _dec_note("model_error")
@@ -1037,6 +1049,8 @@ async def handle_llm_request(
 
     22 步编排（BASELINE §4 一一对应，搬移前后顺序逐字一致，不得重排）：
 
+    M3：入口由 main 注册桩固定 TurnContext；以下状态/费用/后台写回沿用该快照。
+
     1.  ``_restore_smt_tool``（无条件、最先——SMT 请求级还原，§4.1）；
     2.  Context Restoration 垫回：类型守卫 + 注入报告行抹除（M3.4 起经
         quill/services/history_scrub.py 的增量游标通道，见下沉决策）→
@@ -1059,7 +1073,7 @@ async def handle_llm_request(
     9.  ``_check_activation``（激活词/【】括号/WR 关键词；WR 匹配异常内部吞）；
     10. ``worldbook_always_activate`` 强制 ``activated=True, wr_activated=False``；
     11. **未激活 → reset_quill_rounds + return**（gate 本体，编排控制流）；
-    12. ``increment_quill_rounds``；quill_rounds>1 → ``skip_constants``；
+    12. ``increment_quill_rounds``；旧路径 quill_rounds>1 跳常驻；M2 保留常驻稳定前缀；
     13. ``_rewrite_smt_tool_description``（仅激活路径；无角色卡跳过）；
     14. extra_info 组装（含 session_vars）；
     15. ``_prompt_builder_for_request(_sb_effective)``（浅拷贝对齐状态栏开关）；
@@ -1071,9 +1085,10 @@ async def handle_llm_request(
     18.5 **Post-RAG 预算守卫**（M1b 模块 3，只裁不扩）：装配后超
         max_prompt_length 时先撤回步 18 触发日志块、再对步 17 RAG 上下文
         尾部裁剪（</core_memory> 为硬下限）；未超预算分支不进，零改动；
-    19. ``inject_prompt`` 合并（injection_position 透传）；
-    20. tail message 追加 req.prompt（开：``build_status_reminder`` 契约
-        提醒；关：禁止状态栏文案；幂等）；
+    19. 旧路径 ``inject_prompt``；M2 在决策完成后统一装配/预算，状态作数据；
+    20. 旧路径 tail 追加 req.prompt；M2 把固定状态提醒保留在 system，
+        不追加用户正文；临时上下文仅走明确能力路径，否则放系统尾部数据段；
+    20.5 **M2 稳定布局**：决策之后装配固定/动态段，预算包括文本历史；保护段超限显式披露；
     21. **``event.set_extra("_quill_activated", True)``**（闸门唯一点位，
         全部注入成功之后——快照 master 用例钉住其相对时序）；
     22. ``update_activity``。
@@ -1130,7 +1145,8 @@ async def handle_llm_request(
     target_id = plugin._get_target_id(event)
 
     # ── 上下文恢复（重启/滑动窗口切断后无缝续传）──
-    _req_persona_id = await plugin.state_manager.get_persona_id(target_id)
+    turn = event_turn(event)
+    _req_persona_id = turn.persona_id if turn else await plugin.state_manager.get_persona_id(target_id)
     mem_session_id = plugin._get_memory_session_id(target_id, _req_persona_id)
 
     # ── M1a trace：开一条进行中记录（begin 落在步 2 区——22 步里最早能
@@ -1176,7 +1192,14 @@ async def handle_llm_request(
         plugin, target_id, req.contexts
     )
     contexts_is_fresh = not req.contexts or len(req.contexts) <= 1
-    if contexts_is_fresh \
+    shared_view=event.get_extra('_quill_shared_view')
+    if shared_view:
+        _trace_note(plugin,target_id,lambda t:t.module_results.append(_trace_mod.TraceModuleResult(
+            module='shared_context',ok=True,hits=shared_view['messages'],
+            items=[{'source_ref':'logical_transcript:'+str(shared_view['last_seq']),
+                    'score_or_kw':f"临时视图 {shared_view['chars']} 字，上一轮 {shared_view['options']} 个选项"}]
+        )))
+    if contexts_is_fresh and not event.get_extra('_quill_shared_context') \
             and getattr(plugin.config, 'rag_enable_chat_logging', True) \
             and plugin.rag_retriever and plugin.rag_retriever.memory_store:
         recent_logs = await plugin.rag_retriever.memory_store.get_recent_chat_logs(mem_session_id, limit=8)
@@ -1224,12 +1247,13 @@ async def handle_llm_request(
         ))
 
     # 记录用户消息（仅已绑定角色卡且非指令时）
-    if persona_id and user_input and not user_input.strip().startswith("/") \
+    if not event.get_extra('_quill_user_logged') and persona_id and user_input and not user_input.strip().startswith("/") \
             and getattr(plugin.config, 'rag_enable_chat_logging', True) \
             and plugin.rag_retriever:
         plugin._spawn(plugin.rag_retriever.log_chat_message(
             mem_session_id, "user", user_input
         ))
+        event.set_extra('_quill_user_logged', True)
 
     # P1-8: 自然语言核心记忆注入 — 检测 @记住 / 核心记忆 / @remember 前缀
     # 审查修复：切片统一以 stripped 文本为基准（此前 strip 后匹配、原文切片，
@@ -1250,10 +1274,11 @@ async def handle_llm_request(
                     req.prompt = _rest
                 logger.info(f"[Quill] 检测到核心记忆自然语言注入: {_core_nl[:80]}...")
     # 异步写入核心记忆（不阻塞请求流程）
-    if _core_nl:
+    if _core_nl and not event.get_extra('_quill_core_written'):
         plugin._spawn(plugin.rag_memory_store.update_core_memory(
             mem_session_id, _core_nl, _core_nl
         ))
+        event.set_extra('_quill_core_written', True)
 
     # 存储最近 6 轮对话，供 /memory learn 自动总结
     if hasattr(req, 'contexts') and isinstance(req.contexts, list):
@@ -1273,6 +1298,9 @@ async def handle_llm_request(
     if always_activate:
         activated = True
         wr_activated = False
+    shared_options = event.get_extra('_quill_shared_options') or []
+    if event.get_extra('_quill_shared_context') and _dec_mod.parse_numeric_pick((event.message_str or '').strip(),len(shared_options)) is not None:
+        activated = True  # 真实共享菜单的数字续接不依赖状态栏开关或激活词。
 
     # M1a trace：激活判定（reason 与函数尾部 trigger 日志同口径，另加常驻
     # 模式一档——那是配置而非输入信号，单列更可诊断）。
@@ -1297,8 +1325,11 @@ async def handle_llm_request(
         await plugin.state_manager.reset_quill_rounds(target_id)
         return
 
-    quill_rounds = await plugin.state_manager.increment_quill_rounds(target_id)
-    skip_constants = quill_rounds > 1
+    quill_rounds = event.get_extra('_quill_assembly_round')
+    if quill_rounds is None:
+        quill_rounds = await plugin.state_manager.increment_quill_rounds(target_id)
+        event.set_extra('_quill_assembly_round', quill_rounds)
+    skip_constants = quill_rounds > 1 and not plugin.props.cache_enabled
     if skip_constants:
         logger.info(f"[Quill] 连续第 {quill_rounds} 轮激活，跳过 Layer 1 常驻")
 
@@ -1332,6 +1363,14 @@ async def handle_llm_request(
         "skip_constants": skip_constants,
         "session_vars": await plugin.state_manager.get_session_vars(target_id),
     }
+
+    if plugin.props.cache_enabled and plugin.props.cache_stable_sampling:
+        cache_turn = event.get_extra('_quill_cache_turn')
+        if cache_turn is None:
+            cache_turn = await plugin.state_manager.increment_cache_turns(target_id)
+            event.set_extra('_quill_cache_turn', cache_turn)
+        extra_info["_cache_seed"] = stable_seed(mem_session_id, persona_id or "", cache_turn,
+                                                plugin.props.cache_sampling_window)
 
     # 注入报告统计（本轮各来源命中条数）。始终采集——即使 debug 关闭，
     # 本轮最终开关：会话级覆盖 > 面板全局。上面（历史 contexts 清理）与
@@ -1402,6 +1441,7 @@ async def handle_llm_request(
     dynamic_prompt = await plugin._run_rag_retrieval(
         event, req, user_input, persona_data, dynamic_prompt, inject_stats
     )
+    _cache_rag_text = dynamic_prompt[_dyn_len_pre_rag:]
     _rag_ms = int((time.perf_counter() - _t_rag0) * 1000)
     _trace_note(plugin, target_id, lambda t: [
         setattr(m, "stage_ms", _rag_ms) for m in t.module_results
@@ -1468,7 +1508,7 @@ async def handle_llm_request(
     # 装配结果与现状逐字节一致（E2E 用例钉住）。
     _budget = int(getattr(plugin.config, "max_prompt_length", 0) or 0)
     _guard_events: list = []
-    if _budget > 0:
+    if _budget > 0 and not plugin.props.cache_enabled:
         _assembled = plugin.props.prompt_builder.inject_prompt(
             req.system_prompt or "", stable_prompt, dynamic_prompt,
             injection_position=plugin.config.worldbook_injection_pos
@@ -1536,16 +1576,19 @@ async def handle_llm_request(
             t.warnings.append("注入内容超预算，已按预算守卫裁剪（见裁剪事件）"),
         ))
 
-    plugin._remember_inject_report(target_id, inject_stats)
+    if not plugin.props.cache_enabled:
+        plugin._remember_inject_report(target_id, inject_stats)
 
     # M1b 模块 7：合并前留一份原始 system prompt（角色卡等宿主内容）——
     # 脱敏预览要按最终段序呈现「协议 → 角色卡 → 动态」的中间那层。
     _orig_sys_prompt = req.system_prompt or ""
-    req.system_prompt = plugin.props.prompt_builder.inject_prompt(
-        req.system_prompt or "", stable_prompt, dynamic_prompt,
-        injection_position=plugin.config.worldbook_injection_pos
-    )
+    if not plugin.props.cache_enabled:
+        req.system_prompt = plugin.props.prompt_builder.inject_prompt(
+            req.system_prompt or "", stable_prompt, dynamic_prompt,
+            injection_position=plugin.config.worldbook_injection_pos
+        )
 
+    tail = ""
     if persona_id:
         if _sb_effective:
             # 契约文本由 PromptBuilder 单一来源生成（格式行/示例/选项块），
@@ -1557,10 +1600,11 @@ async def handle_llm_request(
                 "[STATUS]、好感度数值、关系阶段、心情标签、穿着描述、"
                 "位置信息、剧情走向选项等内容。请仅输出纯剧情正文。"
             )
-        if req.prompt and tail not in req.prompt:
-            req.prompt += tail
-        elif not req.prompt:
-            req.prompt = tail
+        if not plugin.props.cache_enabled:
+            if req.prompt and tail not in req.prompt:
+                req.prompt += tail
+            elif not req.prompt:
+                req.prompt = tail
 
     # M1a trace：步 19-20 终态——injection_order（stable 段名 + dynamic
     # 段名 + RAG/触发日志追加段 + tail，与 22 步段序映射；段名来自
@@ -1633,7 +1677,7 @@ async def handle_llm_request(
         if persona_id:
             preview.append({"name": "tail_message", "chars": len(tail or ""),
                             "text": tail or "",
-                            "note": "状态栏指令（追加在用户消息末尾，不在 system prompt 内）"})
+                            "note": "状态栏指令（稳定布局置于 system，旧布局追加在用户消息末尾）"})
         if any(e.get("kind") == "char_slice" for e in trace.truncation_events):
             preview.append({"name": "(预览注)", "chars": 0, "text": "",
                             "note": "本轮动态段发生过尾部硬截断：上方段文本为截断前原文，实际注入以裁剪事件为准"})
@@ -1667,9 +1711,93 @@ async def handle_llm_request(
 
         _trace_note(plugin, target_id, _fill_decision_preview)
 
+    # 20.5 M2：路由完成后统一装配、计入文本历史预算；随后才发布最终注入报告。
+    cache_result = None
+    capability = {"supported": False, "reason": "disabled"}
+    if plugin.props.cache_enabled:
+        blocks = [CacheBlock(n, text, 20 if n == "session_state" else priority, False, n == "session_state")
+                  for n, text, priority in inject_stats.get("_cache_dynamic", [])]
+        blocks.extend(split_rag(_cache_rag_text))
+        if _trig_log_appended:
+            blocks.append(CacheBlock("wb_trigger_log", _trig_block, 30))
+        # H8：路由结果是插件可信指令，保留 system 权限，不套辅助数据包装。
+        directive = req.system_prompt[_sys_len_pre_decision:] if _decision_delta > 0 else ""
+        if plugin.props.cache_dynamic_to_user_tail:
+            try:
+                capability = await temporary_capability(plugin.context, event, req)
+            except Exception as exc:
+                capability = {"supported": False, "reason": "capability_error", "error_class": type(exc).__name__}
+        cache_result = apply_layout(
+            req, original_system=_orig_sys_prompt, stable=stable_prompt, blocks=blocks,
+            reminder=tail, budget=_budget, temporary=bool(capability.get("supported")), directive=directive)
+        inject_stats['_temporary_capability'] = capability
+        if "rag_memories" in cache_result["dropped"]:
+            inject_stats["mem"] = 0
+        if "rag_documents" in cache_result["dropped"]:
+            inject_stats["doc"] = 0
+            inject_stats["doc_sources"] = []
+        for trim in cache_result['events']:
+            if trim.get('kind') == 'section_trimmed':
+                if trim['section'] == 'rag_documents':
+                    inject_stats['doc'] = min(inject_stats.get('doc',0),trim['retained_items'])
+                    inject_stats['doc_sources'] = inject_stats.get('doc_sources',[])[:trim['retained_items']]
+                elif trim['section'] == 'rag_memories':
+                    inject_stats['mem'] = min(inject_stats.get('mem',0),trim['retained_items'])
+        if "layer2_scene_reference" in cache_result["dropped"]:
+            inject_stats["wb"] = inject_stats.get("wb_constant", 0)
+            inject_stats["wr"] = inject_stats.get("wr_constant", 0)
+        if "layer1_random_pool" in cache_result["dropped"]:
+            random_count = next((text.count("【素材】") for n, text, _ in inject_stats.get("_cache_dynamic", []) if n == "layer1_random_pool"), 0)
+            inject_stats["wr"] = max(0, inject_stats.get("wr", 0) - random_count)
+        # 报告只记实际存活量；不把被预算舍弃的命中数算作注入数。
+        plugin._remember_inject_report(target_id, inject_stats)
+        def _cache_trace(trace):
+            trace.prompt_preview = cache_result["preview"]
+            trace.injection_order = [p["name"] for p in cache_result["preview"]]
+            trace.truncation_events.extend(cache_result["events"])
+            trace.token_estimate = {"stable_chars": cache_result["fixed_chars"],
+                                    "dynamic_chars": cache_result["dynamic_chars"],
+                                    "system_prompt_chars": len(req.system_prompt),
+                                    "est_tokens": (len(req.system_prompt) + cache_result["dynamic_chars"]
+                                                   if capability.get("supported") else len(req.system_prompt)) // 2}
+        _trace_note(plugin, target_id, _cache_trace)
+
+    if event.get_extra('_quill_temporary_capability'):
+        inject_stats['_temporary_capability'] = event.get_extra('_quill_temporary_capability')
+        plugin._remember_inject_report(target_id, inject_stats)
+
+    # 基线也采集，只保存摘要和长度；这些是插件段，不冒充供应商缓存 token。
+    try:
+        profile_blocks = list(cache_result["profile_blocks"]) if cache_result else [
+            CacheBlock(n, text) for n, text in inject_stats.get("_section_texts", [])]
+        if not cache_result:
+            profile_blocks.append(CacheBlock("host_system", _orig_sys_prompt))
+        profile_parts = list(req.extra_user_content_parts or [])
+        if cache_result and capability.get("supported") and cache_result["blocks"]:
+            profile_parts = profile_parts[:-len(cache_result["blocks"])]
+        profile_blocks.extend(CacheBlock("extra_user_part_" + str(i), str(p.get("text", "") if isinstance(p, dict) else getattr(p, "text", "")))
+                              for i, p in enumerate(profile_parts))
+        diagnostic = plugin._cache_profiler.observe(plugin._get_memory_session_id(target_id,persona_id or ""), profile_blocks)
+        host_change = next((s for s in diagnostic['segments'] if s['name']=='host_system' and s['change']=='changed'),None)
+        if host_change:
+            diagnostic['note'] += f" 本轮宿主系统段已变化，字符差 {host_change['chars']-host_change['previous_chars']:+d}；这不证明供应商缓存是否失效。"
+        diagnostic.update(mode=cache_result["mode"] if cache_result else "legacy",
+                          temporary_capability=capability,
+                          sampling_window=plugin.props.cache_sampling_window if plugin.props.cache_stable_sampling else None)
+        if cache_result:
+            diagnostic.update(legacy_scrub="deferred_history_preservation_not_verified",
+                              effective_position="stable_layout_overrides_worldbook_position",
+                              budget_scope="text_system_history_and_current_input; protected_floor_may_exceed; not_token_limit",
+                              host_prefix_volatility="宿主时间、工具描述/模式、其他插件及模型路由仍可能改变最终前缀")
+        _trace_note(plugin, target_id, lambda t: setattr(t, "cache_diagnostics", diagnostic))
+    except Exception as exc:
+        logger.debug("[Quill Cache] 诊断不可用（%s）", type(exc).__name__)
+
     event.set_extra("_quill_activated", True)
 
-    await plugin.state_manager.update_activity(target_id)
+    if not event.get_extra('_quill_activity_updated'):
+        await plugin.state_manager.update_activity(target_id)
+        event.set_extra('_quill_activity_updated', True)
 
     trigger = "激活词" if activated else ("括号" if has_bracket else "WR关键词")
     _es = event.get_extra("enable_streaming")
