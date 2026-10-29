@@ -4,11 +4,11 @@ export const DIMENSIONS = {model: '模型', purpose: '用途', provider_id: '供
 export const fmt = v => v == null ? '—' : Number(v).toLocaleString();
 export const compact = v => v == null ? '—' : Intl.NumberFormat('zh-CN', {notation:'compact', maximumFractionDigits:1}).format(v);
 export const percent = v => v == null ? '未报告' : (v * 100).toFixed(1) + '%';
-export const bucketAmount = (row, bucket) => row.costs_by_source?.[bucket?.currency]?.[bucket?.source] ?? null;
+export const bucketAmount = (row, bucket) => (row.display_costs_by_source ?? row.costs_by_source)?.[bucket?.currency]?.[bucket?.source] ?? null;
 export const amountText = v => v == null ? '无金额记录' : String(v);
 export const valueOf = (row, metric, bucket) => metric === 'cost' ? bucketAmount(row, bucket) : row[metric] ?? null;
 export function costBuckets(summary) {
-  return Object.entries(summary.costs_by_source || {}).flatMap(([currency, sources]) => Object.keys(sources).map(source => ({currency, source})));
+  return Object.entries(summary.display_costs_by_source ?? summary.costs_by_source ?? {}).flatMap(([currency, sources]) => Object.keys(sources).map(source => ({currency, source})));
 }
 export function costLabel(bucket) { return bucket ? `${bucket.currency} · ${SOURCE[bucket.source] || bucket.source}` : '无金额记录'; }
 export function decimalSum(values) {

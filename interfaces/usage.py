@@ -332,10 +332,13 @@ class UsageRecorder:
         cfg = self.settings()
         await asyncio.wait_for(self._queue.join(), timeout=5)
         await self._save_gaps()
-        if filters.get("scope_id") and not (len(filters['scope_id']) == 16 and all(c in '0123456789abcdef' for c in filters['scope_id'])):
-            filters["scope_id"] = hashlib.sha256(filters["scope_id"].encode()).hexdigest()[:16]
+        for key in ('scope_id', 'source_umo'):
+            if filters.get(key) and not (len(filters[key]) == 16 and all(c in '0123456789abcdef' for c in filters[key])):
+                filters[key] = hashlib.sha256(filters[key].encode()).hexdigest()[:16]
         result = await self.store.query(**filters, retention_days=cfg.usage_retention_days,
                                         max_records=cfg.usage_max_records)
+        from ..quill.services.usage import convert_usage_view
+        result = convert_usage_view(result, cfg.usage_display_currency, cfg.usage_usd_cny_rate)
         diagnostics = await self.store.diagnostics()
         return {**result, "enabled": cfg.usage_enabled, "available": self.ready,
                 'quarantined_records': diagnostics['quarantined_records'],

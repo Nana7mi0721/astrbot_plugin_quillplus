@@ -47,6 +47,8 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("trace", "enabled"), ("trace", "buffer_per_session"),
     # M2 用量/缓存
     ("usage", "enabled"),
+    ("usage", "display_currency"), ("usage", "usd_cny_rate"),
+    ("compression", "enabled"), ("compression", "max_tokens"), ("compression", "provider_id"),
     ("usage", "retention_days"),
     ("usage", "max_records"),
     ("usage", "prices_json"),
@@ -763,14 +765,27 @@ class QuillRoutes:
                 filters[key] = int(params.get(key, default))
                 if not low <= filters[key] <= high:
                     raise ValueError()
-            for key in ("scope_id", "persona_id", "provider_id", "model", "purpose"):
+            for key in ("scope_id", "source_umo", "persona_id", "provider_id", "model", "purpose"):
                 filters[key] = str(params.get(key, ""))
                 if len(filters[key]) > 512:
                     raise ValueError()
         except (ValueError, TypeError):
             return error_response("用量筛选参数无效", status_code=400)
         try:
-            return json_response(await recorder.query(**filters))
+            data = await recorder.query(**filters)
+            import hashlib
+            labels = {}
+            groups = getattr(self.plugin, 'shared_scopes', None)
+            if groups:
+                for group in groups.index['groups']:
+                    labels[hashlib.sha256(group['scope_id'].encode()).hexdigest()[:16]] = '会话组：' + group['name']
+                for origin in groups.index['origins']:
+                    labels.setdefault(hashlib.sha256(origin['umo'].encode()).hexdigest()[:16], origin.get('label') or origin['umo'])
+            for dimension, key in (('sessions','scope_id'), ('origins','source_umo')):
+                for row in data.get(dimension,[]):
+                    row['label'] = labels.get(row[key], row[key])
+            data['context_compression'] = {'enabled':self.plugin.props.compression_enabled,'limit':self.plugin.props.compression_max_tokens,'recent':list(self.plugin.context_compactor.status.values())[-20:]}
+            return json_response(data)
         except Exception as exc:
             recorder.error = type(exc).__name__
             return error_response("用量台账暂不可用，对话不受影响", status_code=503)
@@ -812,6 +827,10 @@ class QuillRoutes:
         if (group, key) not in _ALLOWED_CONFIG_KEYS:
             return error_response(f"不支持的配置项: {group}.{key}", status_code=400)
 
+        from .quill.services.usage import validate_usage_setting
+        message = validate_usage_setting(group, key, value)
+        if message:
+            return error_response(message, status_code=400)
         if (group, key) == ("usage", "prices_json"):
             from .quill.services.usage import validate_prices
             message = validate_prices(value)
@@ -848,6 +867,10 @@ class QuillRoutes:
                 return error_response(
                     f"不支持的配置项: {group}.{key}", status_code=400
                 )
+            from .quill.services.usage import validate_usage_setting
+            message = validate_usage_setting(*pair, item.get("value"))
+            if message:
+                return error_response(message, status_code=400)
             if pair == ("usage", "prices_json"):
                 from .quill.services.usage import validate_prices
                 message = validate_prices(item.get("value"))

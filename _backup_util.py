@@ -194,6 +194,10 @@ def build_backup_zip(sources: list, buf: io.BytesIO, max_bytes: int | None = Non
                 for root, _dirs, files in os.walk(base):
                     # 迁移安全副本独立保留，不能作为剧情存档载荷再次套入备份。
                     _dirs[:] = [name for name in _dirs if name != ".schema_backups"]
+                    # 原文检查点不是旧版恢复白名单载荷；明确排除，避免生成无法恢复的zip。
+                    if os.path.abspath(root) == os.path.abspath(base) and 'context_checkpoints' in _dirs:
+                        _dirs.remove('context_checkpoints')
+                        warnings.append('上下文原文检查点未纳入剧情备份，请单独备份 context_checkpoints 目录')
                     for fname in files:
                         if fname.endswith(_SKIP_SUFFIXES):
                             continue

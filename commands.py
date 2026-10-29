@@ -777,6 +777,7 @@ async def quill_help(event: AstrMessageEvent):
         "【⚙️ 系统 /quill】",
         "  /quill             系统总览（五库状态 + 健康度）",
         "  /quill help        本帮助",
+        "  /quill compact     压缩旧历史，保留原文检查点（额外模型调用）",
         "  /quill debug       注入构成、匹配详情、会话状态、降级链命中分布  🔒",
         "  /quill reset       重开本角色卡剧情（清对话+日志，保留长期记忆）  🔒",
         # L2 修复：这两条写操作与其余条目一样过 _check_group_permission
@@ -1964,3 +1965,28 @@ async def quill_reset(plugin, event: AstrMessageEvent, confirmation=""):
     msg += f"\n（仅影响当前角色卡，其他角色卡的记录未受影响；涉及 {len(result['affected'])} 个入口）"
     event.set_result(MessageEventResult().message(msg))
 
+
+
+async def quill_compact(plugin, event):
+    """手动生成压缩检查点；下一次请求按相同前缀应用，不抢写宿主在途历史。"""
+    permission_error = _check_group_permission(plugin, event)
+    if permission_error:
+        event.set_result(event.plain_result(permission_error))
+        return
+    from .interfaces.scopes import freeze_turn
+    turn = await freeze_turn(plugin, event)
+    await plugin.shared_scopes.acquire(event)
+    try:
+        if plugin.scope_resolver.scope_for(turn.origin_umo) != turn.scope_id:
+            raise ValueError('会话归属已改变，请重试')
+        with plugin._usage.bind(await plugin._usage.identity_for(event, turn.persona_id)):
+            result = await plugin.context_compactor.manual(event, turn)
+        if result.get('status') == 'compressed':
+            text = f"历史已压缩：文本估算 {result['before_tokens']} → {result['estimated_tokens']} Token。原文检查点已保留，下次请求使用摘要；系统设定和最近两轮保留。"
+        else:
+            reason = {'not_enough_history':'可压缩的旧完整轮不足，最近两轮保留','unsupported_tool_or_media_history':'旧历史含工具或媒体，暂不自动拆分','compression_source_too_large':'旧历史超过单次压缩保护上限','provider_unconfigured':'尚未配置可用的压缩模型','summary_not_smaller_or_invalid':'模型摘要无效或没有缩短历史'}.get(result.get('status'),'暂时无法压缩')
+            text = '本次未压缩：' + reason + '。原历史保留。'
+    except Exception as exc:
+        logger.warning('[Quill Context] 手动压缩失败（%s）', type(exc).__name__)
+        text = '压缩失败，原历史保留；请检查压缩模型与存储状态。'
+    event.set_result(event.plain_result(text))

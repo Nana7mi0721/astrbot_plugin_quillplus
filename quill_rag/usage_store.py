@@ -134,13 +134,13 @@ class UsageStore:
         self._last_prune, self._writes_since_prune = time.monotonic(), 0
         self._last_limits = (days, limit)
 
-    async def query(self, *, days=7, scope_id="", persona_id="", provider_id="",
+    async def query(self, *, days=7, scope_id="", source_umo="", persona_id="", provider_id="",
                     purpose="", model="", limit=50, offset=0,
                     retention_days=30, max_records=20000):
         # GET 无清理副作用；汇总覆盖所有匹配样本，limit 只控制明细。
         days = min(max(1, int(days)), max(1, retention_days), 366)
         clauses, args = ["created_at >= ?"], [time.time() - days * 86400]
-        for key, value in (("scope_id", scope_id), ("persona_id", persona_id),
+        for key, value in (("scope_id", scope_id), ("source_umo", source_umo), ("persona_id", persona_id),
                            ("provider_id", provider_id), ("purpose", purpose), ("model", model)):
             if value:
                 clauses.append(f"{key} = ?")
@@ -176,9 +176,15 @@ class UsageStore:
                         sessions[sid]["calls"] += 1
             finally:
                 await cursor.close()
+        # 选择器保留整个日期窗口的入口/逻辑会话，不因当前筛选收缩到一个选项。
+        async with self._lock:
+            inventories = {}
+            for column in ('scope_id','source_umo'):
+                rows = await (await self._db.execute(f"SELECT {column},COUNT(*),MAX(created_at) FROM usage_calls WHERE created_at>=? GROUP BY {column}", (args[0],))).fetchall()
+                inventories[column] = [{column:r[0],'calls':r[1],'last_at':r[2]} for r in rows if r[0]]
         return {"summary": summary.result(), "groups": {
                     key: [{"key": name, **totals.result()} for name, totals in buckets.items()]
-                    for key, buckets in groups.items()}, "sessions": list(sessions.values()),
+                    for key, buckets in groups.items()}, "sessions": inventories["scope_id"], "origins": inventories["source_umo"],
                 "daily": [{"day": day, **totals.result()} for day, totals in sorted(daily.items())],
                 "items": items, "total": summary.calls, "limit": limit, "offset": offset,
                 "timezone": "UTC", "identity_format": "sha256_16"}

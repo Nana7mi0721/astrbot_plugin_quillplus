@@ -207,6 +207,14 @@ class QuillConfig:
         self.usage_retention_days: int = min(366, max(1, _safe_int(usage.get("retention_days", 30), 30)))
         self.usage_max_records: int = min(100000, max(100, _safe_int(usage.get("max_records", 20000), 20000)))
         self.usage_prices_json: str = str(usage.get("prices_json", "{}") or "{}")[:100000]
+        self.usage_display_currency = str(usage.get("display_currency", "original"))
+        if self.usage_display_currency not in ("original", "CNY", "USD"):
+            self.usage_display_currency = "original"
+        self.usage_usd_cny_rate = str(usage.get("usd_cny_rate", "0"))[:40]
+        compression = _get_nested(self._raw, "compression", {}) or {}
+        self.compression_enabled = _safe_bool(compression.get("enabled"), False)
+        self.compression_max_tokens = min(1000000, max(1024, _safe_int(compression.get("max_tokens"), 32000)))
+        self.compression_provider_id = str(compression.get("provider_id", "") or "")[:200]
         cache = _get_nested(self._raw, "cache", {}) or {}
         self.cache_enabled: bool = _safe_bool(cache.get("enabled"), False)
         self.cache_dynamic_to_user_tail: bool = _safe_bool(cache.get("dynamic_to_user_tail"), False)

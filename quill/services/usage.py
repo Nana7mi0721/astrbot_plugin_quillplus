@@ -259,3 +259,60 @@ def validate_prices(text) -> str | None:
         if set(row) - keys - {"currency", "version"}:
             return "价格表包含不支持的字段"
     return None
+
+
+def validate_usage_setting(group, key, value):
+    """费用展示校验共用于单项和批量保存，不把错误汇率当成真实价格。"""
+    if (group, key) == ('usage', 'display_currency') and value not in ('original', 'CNY', 'USD'):
+        return '展示币种必须为 original/CNY/USD'
+    if (group, key) == ('usage', 'usd_cny_rate'):
+        try:
+            rate = Decimal(str(value))
+            if not rate.is_finite() or not (rate == 0 or Decimal("0.000001") <= rate <= 10000):
+                raise ValueError()
+        except (ValueError, InvalidOperation):
+            return '汇率需为0（未设置）或0.000001–10000的有限数值'
+    return None
+
+
+def converted_costs(values, currency, rate):
+    """仅换算视图；来源不合桶，非 CNY/USD 或无汇率的金额保留未转换。"""
+    if currency not in ('CNY', 'USD'):
+        return values, []
+    try:
+        fx = Decimal(str(rate))
+        if not fx.is_finite() or fx <= 0 or fx > 10000:
+            fx = None
+    except (ValueError, InvalidOperation):
+        fx = None
+    result, skipped = {}, []
+    for original, buckets in values.items():
+        if original != currency and (not fx or original not in ('USD', 'CNY')):
+            skipped.append(original)
+            continue
+        for source, amount in buckets.items():
+            value = Decimal(amount)
+            if original != currency:
+                value = value * fx if currency == 'CNY' else value / fx
+            result[source] = result.get(source, Decimal(0)) + value
+    return {currency:{s:format(v,'f') for s,v in result.items()}} if result else {}, skipped
+
+
+def convert_usage_view(result, currency, rate):
+    def adapt(row):
+        values, skipped = converted_costs(row.get('costs_by_source',{}), currency, rate)
+        row['display_costs_by_source'] = values
+        row['unconverted_currencies'] = skipped
+    adapt(result['summary'])
+    for row in result['daily']:
+        adapt(row)
+    for rows in result['groups'].values():
+        for row in rows:
+            adapt(row)
+    for row in result['items']:
+        if row.get('cost_amount') is not None and row.get('currency'):
+            values, skipped = converted_costs({row['currency']:{row['cost_source']:row['cost_amount']}},currency,rate)
+            row['display_costs_by_source'] = values
+            row['unconverted_currencies'] = skipped
+    result['currency_view'] = {'currency':currency,'usd_cny_rate':str(rate),'source':'manual','original_amounts_unchanged':True}
+    return result

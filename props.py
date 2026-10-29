@@ -101,6 +101,26 @@ class QuillConfigProperties:
         return self._plugin.config.usage_max_records
 
     @property
+    def usage_display_currency(self):
+        return self._plugin.config.usage_display_currency
+
+    @property
+    def usage_usd_cny_rate(self):
+        return self._plugin.config.usage_usd_cny_rate
+
+    @property
+    def compression_enabled(self):
+        return self._plugin.config.compression_enabled
+
+    @property
+    def compression_max_tokens(self):
+        return self._plugin.config.compression_max_tokens
+
+    @property
+    def compression_provider_id(self):
+        return self._plugin.config.compression_provider_id
+
+    @property
     def usage_prices_json(self) -> str:
         return self._plugin.config.usage_prices_json
 

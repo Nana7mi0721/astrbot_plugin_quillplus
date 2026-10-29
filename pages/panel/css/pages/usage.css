@@ -83,3 +83,7 @@
 @media (max-width: 760px) {
   .layout:has(#pane-usage.is-active) .sl-item-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
+#pane-usage #usage-settings { margin-top: var(--sp-4); }
+#pane-usage #usage-settings > summary { padding: var(--sp-3) var(--sp-4); }
+#pane-usage #usage-settings .card-body-inner > label:not(.check) { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+#pane-usage #usage-settings .field, #pane-usage #usage-settings .sel-wrap { max-width: 100%; }

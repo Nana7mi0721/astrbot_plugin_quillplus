@@ -177,6 +177,9 @@ async def _quill_dispatch(plugin, event: AstrMessageEvent, args: str) -> None:
     if arg1_lower == "help":
         await _cmds.quill_help(event)
         return
+    if arg1_lower == "compact":
+        await _cmds.quill_compact(plugin, event)
+        return
     if arg1_lower == "reset":
         await _cmds.quill_reset(plugin, event,rest)
         return
@@ -399,6 +402,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         # 安装目录留成半新半旧。这里统一迁到 AstrBot 约定的
         # data/plugin_data/<插件名>/（更新器不碰），并做一次性搬迁。
         self.paths = resolve_data_layout(self.plugin_dir)
+        from .interfaces.context_compact import ContextCompactor
+        self.context_compactor = ContextCompactor(self)
+
         self.scope_resolver = ScopeResolver()
         self.task_registry = TaskRegistry()
         self._usage = UsageRecorder(
@@ -2349,6 +2355,12 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 logger.warning("[Quill Usage] 请求身份采集失败（%s），继续装配", type(exc).__name__)
             with self._usage.bind(identity), bind_turn(turn):
                 await _quill_hooks.handle_llm_request(self, event, req)
+                # 压缩只作用于已完成角色/共享恢复的历史；保留系统和本轮输入。
+                try:
+                    result = await self.context_compactor.apply(event, req, turn)
+                    event.set_extra('_quill_compaction', result)
+                except Exception as exc:
+                    logger.warning('[Quill Context] 压缩失败（%s），保留当前历史', type(exc).__name__)
             if event.get_extra('_quill_shared_context'):
                 # 包括开场白在内的共享旧消息一律不回灌到物理原生历史。
                 for message in req.contexts:

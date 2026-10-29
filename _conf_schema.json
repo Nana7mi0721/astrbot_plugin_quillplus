@@ -382,6 +382,23 @@
         "description": "手动模型单价（每百万 Token）",
         "default": "{}",
         "hint": "JSON：模型名或 provider/model 为键，值含 currency、version、input、output、cache_read、cache_write。没有可靠价格或完整用量时金额保持未知。"
+      },
+      "display_currency": {
+        "type": "string",
+        "description": "费用展示币种",
+        "default": "original",
+        "options": [
+          "original",
+          "CNY",
+          "USD"
+        ],
+        "hint": "仅换算展示，不改变原始账单与来源。"
+      },
+      "usd_cny_rate": {
+        "type": "string",
+        "description": "手动汇率：1 USD 对应 CNY",
+        "default": "0",
+        "hint": "0 表示未设置；需自行填写有效汇率，不自动外连获取。"
       }
     }
   },
@@ -412,6 +429,30 @@
         "description": "素材采样窗口（轮）",
         "default": 3,
         "hint": "1–100 轮，按会话与角色确定稳定种子。"
+      }
+    }
+  },
+  "compression": {
+    "type": "object",
+    "description": "上下文压缩",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "自动压缩历史",
+        "default": false,
+        "hint": "接近文本估算上限的85%时压缩旧完整轮，保留最近两轮；会产生额外模型调用。"
+      },
+      "max_tokens": {
+        "type": "int",
+        "description": "上下文文本估算 Token 上限",
+        "default": 32000,
+        "hint": "1024–1000000；估算并非模型硬窗口，系统和当前输入不会删除。"
+      },
+      "provider_id": {
+        "type": "string",
+        "description": "压缩模型供应商 ID",
+        "default": "",
+        "hint": "留空使用当前主回复模型。"
       }
     }
   }

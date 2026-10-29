@@ -8,8 +8,8 @@ import {mountTrend} from './usage_charts.js';
 let offset=0,total=0,snapshot=null,flight=null,pending=null,activeParams='',wanted='',disposeChart=()=>{};
 let metric='io',dimension='model',rankMetric='calls',bucketIndex=0,showAll=false;
 const expanded=new Set(), LIMIT=50;
-const FILTERS={scope_id:'#usage-scope',purpose:'#usage-purpose',model:'#usage-model',provider_id:'#usage-provider',persona_id:'#usage-persona'};
-const labels={scope_id:'会话',purpose:'用途',model:'模型',provider_id:'供应商',persona_id:'角色'};
+const FILTERS={scope_id:'#usage-scope',source_umo:'#usage-origin',purpose:'#usage-purpose',model:'#usage-model',provider_id:'#usage-provider',persona_id:'#usage-persona'};
+const labels={scope_id:'逻辑会话',source_umo:'物理入口',purpose:'用途',model:'模型',provider_id:'供应商',persona_id:'角色'};
 const table=(title,headers,rows)=>`<div class="table-wrap"><table class="data" aria-label="${esc(title)}"><thead><tr>${headers.map(h=>`<th scope="col">${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(row=>`<tr>${row.map(v=>`<td>${esc(String(v))}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${headers.length}">当前筛选无记录</td></tr>`}</tbody></table></div>`;
 const card=(title,body)=>`<section class="card"><div class="card-head"><h3>${title}</h3></div><div class="card-body"><div class="card-body-inner">${body}</div></div></section>`;
 const options=(values,selected)=>Object.entries(values).map(([key,name])=>`<option value="${esc(key)}" ${key===selected?'selected':''}>${esc(name)}</option>`).join('');
@@ -25,9 +25,15 @@ function chips(f){$('#usage-chips').innerHTML=Object.entries(f).filter(([key])=>
 function renderOverview(){
   const d=snapshot.data,s=d.summary;
   const kpi=(name,value,note)=>`<div class="usage-kpi"><div class="usage-kpi-name">${name}</div><strong>${value}</strong><div class="usage-caption">${note}</div></div>`;
-  const money=Object.entries(s.costs_by_source||{}).flatMap(([currency,sources])=>Object.entries(sources).map(([source,value])=>`<div><b>${esc(currency)} ${amount(value)}</b><span class="usage-caption">${esc(SOURCE[source]||source)}</span></div>`)).join('');
-  $('#usage-overview').innerHTML=`<div class="usage-kpis">${kpi('可见调用',fmt(s.calls),`${fmt(s.turns)} 个用户轮 · ${fmt(s.non_user_calls)} 次非用户调用`)}${kpi('已报告输入',compact(s.input_total),`${s.field_coverage.input_total}/${s.calls} 次 · ${fmt(s.input_total)} Token`)}${kpi('已报告输出',compact(s.output),`${s.field_coverage.output}/${s.calls} 次 · ${fmt(s.output)} Token`)}${kpi('费用按币种与来源',money||'—',`${fmt(s.unpriced_calls)} 次费用未知`)}</div>`;
+  const money=Object.entries(s.display_costs_by_source??s.costs_by_source??{}).flatMap(([currency,sources])=>Object.entries(sources).map(([source,value])=>`<div><b>${esc(currency)} ${amount(value)}</b><span class="usage-caption">${esc(SOURCE[source]||source)}</span></div>`)).join('');
+  $('#usage-overview').innerHTML=`<div class="usage-kpis">${kpi('可见调用',fmt(s.calls),`${fmt(s.turns)} 个用户轮 · ${fmt(s.non_user_calls)} 次非用户调用`)}${kpi('已报告输入',compact(s.input_total),`${s.field_coverage.input_total}/${s.calls} 次 · ${fmt(s.input_total)} Token`)}${kpi('已报告输出',compact(s.output),`${s.field_coverage.output}/${s.calls} 次 · ${fmt(s.output)} Token`)}${kpi('费用按币种与来源',money||'—',`${fmt(s.unpriced_calls)} 次费用未知${s.unconverted_currencies?.length?' · 未换算：'+esc(s.unconverted_currencies.join('、')):''}`)}</div>`;
   $('#usage-snapshot').textContent=`${d.enabled?'正在记录':'记录已关闭，仍可查看历史'} · 已更新 ${new Date(snapshot.at).toLocaleTimeString()} · 当前快照：${Object.entries(snapshot.filters).map(([k,v])=>`${labels[k]||'天数'}=${v}`).join('，')}`;
+  $('#usage-snapshot').textContent+=d.currency_view?.currency!=='original'?` · 换算展示 ${d.currency_view.currency}（手动汇率 1 USD=${d.currency_view.usd_cny_rate} CNY，原始金额保留）`:'';
+  const compression=d.context_compression;
+  if(compression){
+    const relevant=compression.recent.filter(r=>!snapshot.filters.scope_id||r.scope_hash===snapshot.filters.scope_id).sort((a,b)=>b.updated_at-a.updated_at)[0];
+    $('#usage-context-status').textContent=`自动压缩${compression.enabled?'已开启':'已关闭'} · 文本估算上限 ${fmt(compression.limit)} Token，85% 触发。`+(relevant?` 最近观测：${fmt(relevant.estimated_tokens)} Token（逻辑会话 ${relevant.scope_hash}）。`:' 尚无本轮上下文观测。');
+  }
   const meter=(name,rate)=>`<div><h3>${name} <span>${percent(rate)}</span></h3><div class="usage-meter" role="img" aria-label="${name} ${percent(rate)}">${rate==null?'<span>—</span>':`<i style="width:${Math.max(0,Math.min(100,rate*100))}%"></i>`}</div></div>`;
   $('#usage-cache').innerHTML=card('缓存与报告质量',`<div class="usage-cache-grid">${meter('有报告样本的命中率',s.cache_hit_rate)}${meter('缓存报告覆盖',s.cache_coverage)}</div><p class="usage-caption">适用完成调用 ${fmt(s.cache_applicable_calls)} 次；有报告 ${fmt(s.cache_reported_calls)} 次；未知 ${fmt(s.cache_unknown_calls)} 次。命中率输入分母 ${fmt(s.cache_eligible_input)} Token。缓存读已包含于输入，不重复相加。</p><details><summary>记录完整性与观测范围</summary><p>${esc(d.coverage_note||'')} 至少部分用量已知 ${s.known_usage_calls}/${s.calls} 次；宿主未暴露完整调用链 ${fmt(s.partial_calls)} 次。</p><p>台账累计未写入或未确认 ${fmt(d.dropped_records)} 条；损坏隔离 ${fmt(d.quarantined_records)} 条。此处累计诊断不随筛选改变。</p></details>`);
 }
@@ -45,7 +51,7 @@ function renderDetails(){
   const rows=snapshot.data.items;
   $('#usage-details').innerHTML=card('调用明细',`<p class="usage-caption">共 ${total} 次匹配调用，分页只影响此表。时间为 UTC；展开查看完整元数据。</p><div class="table-wrap"><table class="data" aria-label="调用明细"><thead><tr>${['时间 UTC','用途 / 模型','输入 / 输出','缓存读','费用 / 来源','状态 / 覆盖','详情'].map(h=>`<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${rows.map((r,i)=>{
     const u=r.usage||{},open=expanded.has(r.call_id),id='usage-detail-'+i;
-    const fields={'入口':r.source_umo,'会话':r.scope_id,'角色':r.persona_id,'供应商或端点':r.provider_id,'模型':r.model,'输入 Token':fmt(u.input_total),'输出 Token':fmt(u.output),'缓存读':fmt(u.input_cached),'缓存写数值':fmt(u.cache_write),'缓存写报告证据':u.cache_write_reported===true?'已报告':'未报告','缓存写来源':u.cache_write_source,'用量来源':u.usage_source,'费用':r.cost_amount==null?'未知':`${r.currency} ${r.cost_amount}`,'计价来源':SOURCE[r.cost_source]||r.cost_source,'费用说明':r.cost_note,'价格版本':r.price_snapshot?.version,'调用 ID':r.call_id};
+    const fields={'入口':r.source_umo,'会话':r.scope_id,'角色':r.persona_id,'供应商或端点':r.provider_id,'模型':r.model,'输入 Token':fmt(u.input_total),'输出 Token':fmt(u.output),'缓存读':fmt(u.input_cached),'缓存写数值':fmt(u.cache_write),'缓存写报告证据':u.cache_write_reported===true?'已报告':'未报告','缓存写来源':u.cache_write_source,'用量来源':u.usage_source,'费用':r.cost_amount==null?'未知':`${r.currency} ${r.cost_amount}`,'计价来源':SOURCE[r.cost_source]||r.cost_source,'费用说明':r.cost_note,'换算展示':Object.entries(r.display_costs_by_source||{}).flatMap(([c,b])=>Object.entries(b).map(([source,v])=>`${c} ${v} / ${SOURCE[source]||source}`)).join('；')||'未换算','价格版本':r.price_snapshot?.version,'调用 ID':r.call_id};
     return `<tr><td>${esc(new Date(r.created_at*1000).toISOString().replace('T',' ').slice(0,19))}</td><td class="usage-model">${esc(r.purpose)}<br>${esc(r.model||'未报告')}</td><td>${fmt(u.input_total)} / ${fmt(u.output)}</td><td>${fmt(u.input_cached)}</td><td>${r.cost_amount==null?'未知':esc(`${r.currency} ${r.cost_amount}`)}<br><span class="usage-caption">${esc(SOURCE[r.cost_source]||r.cost_source||'未报告')}</span></td><td>${esc(r.status)}<br><span class="usage-caption">${esc(r.billing_coverage)}</span></td><td><button type="button" class="btn btn--gray" data-usage-detail="${i}" aria-expanded="${open}" aria-controls="${id}">${open?'收起':'展开'}</button></td></tr><tr id="${id}" ${open?'':'hidden'}><td colspan="7"><dl class="usage-detail">${Object.entries(fields).map(([k,v])=>`<dt>${k}</dt><dd>${esc(v==null||v===''?'未报告':String(v))}</dd>`).join('')}</dl></td></tr>`;
   }).join('')||'<tr><td colspan="7">当前筛选无记录</td></tr>'}</tbody></table></div>`);
 }
@@ -57,12 +63,32 @@ function render(data,f,key){
   $('#usage-results').hidden=false;
   if(bucketIndex>=costBuckets(data.summary).length)bucketIndex=0;
   const selected=$('#usage-scope').value;
-  $('#usage-scope').innerHTML='<option value="">全部会话</option>'+(data.sessions||[]).filter(r=>r.scope_id).map(r=>`<option value="${esc(r.scope_id)}">${esc(r.scope_id)} (${r.calls})</option>`).join('');
+  $('#usage-scope').innerHTML='<option value="">全部会话</option>'+(data.sessions||[]).filter(r=>r.scope_id).map(r=>`<option value="${esc(r.scope_id)}">${esc(r.label||r.scope_id)} · ${esc(r.scope_id.slice(0,8))} (${r.calls})</option>`).join('');
   if(selected&&!Array.from($('#usage-scope').options).some(o=>o.value===selected)){const o=document.createElement('option');o.value=o.textContent=selected;$('#usage-scope').append(o);}
   $('#usage-scope').value=selected;enhanceSelects($('#usage-filters'));
+  const originSelected=$('#usage-origin').value;
+  $('#usage-origin').innerHTML='<option value="">全部入口</option>'+(data.origins||[]).map(r=>`<option value="${esc(r.source_umo)}">${esc(r.label||r.source_umo)} · ${esc(r.source_umo.slice(0,8))} (${r.calls})</option>`).join('');
+  $('#usage-origin').value=originSelected;enhanceSelects($('#usage-filters'));
   renderOverview();renderDetails();pager();
 }
+let settingsLoaded=false;
+async function loadUsageSettings(){
+  const cfg=await api('config/all');
+  for(const [g,k] of [['compression','enabled'],['compression','max_tokens'],['compression','provider_id'],['usage','display_currency'],['usage','usd_cny_rate']]){
+    const e=document.getElementById(`u-${g}-${k.replaceAll('_','-')}`);
+    if(e.type==='checkbox')e.checked=cfg[g][k];else e.value=cfg[g][k];
+  }
+  enhanceSelects($('#usage-settings'));settingsLoaded=true;
+}
+$('#usage-settings-save').addEventListener('click',async()=>{
+  const button=$('#usage-settings-save');button.disabled=true;
+  try{
+    const updates=[['compression','enabled'],['compression','max_tokens'],['compression','provider_id'],['usage','display_currency'],['usage','usd_cny_rate']].map(([group,key])=>{const e=document.getElementById(`u-${group}-${key.replaceAll('_','-')}`);return {group,key,value:e.type==='checkbox'?e.checked:e.type==='number'?Number(e.value):e.value};});
+    await apiPost('config/save_batch',{updates});$('#usage-settings-status').textContent='设置已保存';await loadUsage();
+  }catch(e){$('#usage-settings-status').textContent='保存失败：'+e.message;}finally{button.disabled=false;}
+});
 export function loadUsage(reset=true){
+  if(!settingsLoaded)loadUsageSettings().catch(e=>{$('#usage-settings-status').textContent='读取设置失败：'+e.message;});
   if(reset)offset=0;
   const f=filters(),key=new URLSearchParams(f).toString(),params=key+`&limit=${LIMIT}&offset=${offset}`;
   wanted=params;chips(f);
@@ -97,7 +123,7 @@ $('#pane-usage').addEventListener('change',e=>{
   else if(id==='usage-dimension'){dimension=e.target.value;showAll=false;}
   else if(id==='usage-rank-metric')rankMetric=e.target.value;
   else if(id==='usage-cost-bucket')bucketIndex=Number(e.target.value);
-  else if(id==='usage-days'||id==='usage-scope'){loadUsage();return;}
+  else if(id==='usage-days'||id==='usage-scope'||id==='usage-origin'){loadUsage();return;}
   else return;
   renderVisuals();
   queueMicrotask(()=>document.getElementById(id)?._selApi?.btn.focus({preventScroll:true}));

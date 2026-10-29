@@ -665,15 +665,26 @@
       <div class="page">
         <div class="card" id="usage-filters"><div class="card-body"><div class="card-body-inner">
               <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-days">时间范围</label></div><div class="cfg-row-control"><select class="field" id="usage-days"><option value="1">近 24 小时</option><option value="7" selected>近 7×24 小时</option><option value="30">近 30×24 小时</option><option value="366">保留期内全部</option></select></div></div>
-              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-scope">会话标识（已脱敏）</label></div><div class="cfg-row-control"><select class="field" id="usage-scope"><option value="">全部会话</option></select></div></div>
+              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-scope">逻辑会话 / 会话组</label></div><div class="cfg-row-control"><select class="field" id="usage-scope"><option value="">全部会话</option></select></div></div>
           <details><summary>更多筛选</summary>
-              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-purpose">用途</label></div><div class="cfg-row-control"><select class="field" id="usage-purpose"><option value="">全部用途</option><option value="main">主回复</option><option value="decision_probe">决策连通性测试</option><option value="decision">剧情决策</option><option value="status_extract">状态提取</option><option value="memory_summary">单轮摘要</option><option value="context_summary">多轮摘要</option><option value="reflection">闲时反思</option><option value="persona_convert">人格转换</option><option value="rerank">重排</option><option value="rerank_llm">模型重排</option><option value="embedding">向量化</option></select></div></div>
+              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-purpose">用途</label></div><div class="cfg-row-control"><select class="field" id="usage-purpose"><option value="">全部用途</option><option value="main">主回复</option><option value="decision_probe">决策连通性测试</option><option value="decision">剧情决策</option><option value="status_extract">状态提取</option><option value="memory_summary">单轮摘要</option><option value="context_summary">多轮摘要</option><option value="context_compact">上下文压缩</option><option value="reflection">闲时反思</option><option value="persona_convert">人格转换</option><option value="rerank">重排</option><option value="rerank_llm">模型重排</option><option value="embedding">向量化</option></select></div></div>
               <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-model">模型（精确筛选）</label></div><div class="cfg-row-control"><input class="field" id="usage-model" placeholder="留空显示全部"></div></div>
               <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-provider">供应商 ID（精确筛选）</label></div><div class="cfg-row-control"><input class="field" id="usage-provider" placeholder="留空显示全部"></div></div>
               <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-persona">角色 ID（精确筛选）</label></div><div class="cfg-row-control"><input class="field" id="usage-persona" placeholder="留空显示全部"></div></div>
           </details>
+          <div class="cfg-row"><div class="cfg-row-text"><label for="usage-origin">物理入口（可跨组统计）</label></div><div class="cfg-row-control"><select class="field" id="usage-origin"><option value="">全部入口</option></select></div></div>
           <div id="usage-chips" aria-label="已选筛选"></div>
         </div></div></div>
+<details class="card" id="usage-settings"><summary>上下文压缩与费用展示设置</summary><div class="card-body"><div class="card-body-inner">
+<p class="usage-caption">以下设置为全局配置，作用于所有会话；达到文本估算上限85%时压缩旧完整轮，保留最近两轮。会有额外模型调用，原文检查点保存在插件数据目录。工具/媒体历史不强行压缩；估算不等于模型硬窗口。手动命令：/quill compact。</p>
+<label class="check"><input type="checkbox" id="u-compression-enabled"><span>自动压缩历史</span></label>
+<label>上下文文本估算上限（Token）<input class="field" type="number" id="u-compression-max-tokens" min="1024" max="1000000"></label>
+<label>压缩模型供应商 ID（留空使用主模型）<input class="field" id="u-compression-provider-id"></label>
+<label>费用展示币种<select class="field" id="u-usage-display-currency"><option value="original">原币种</option><option value="CNY">统一 CNY</option><option value="USD">统一 USD</option></select></label>
+<label>手动汇率：1 USD = 多少 CNY<input class="field" id="u-usage-usd-cny-rate" inputmode="decimal"></label>
+<p class="usage-caption">0 表示未设置汇率；原币种与来源保留，其他币种不自动猜测。此设置只改变换算视图，不改变真实账单。</p>
+<button type="button" class="btn btn--filled" id="usage-settings-save">保存设置</button><p id="usage-settings-status" role="status"></p><p id="usage-context-status" class="usage-caption"></p>
+</div></div></details>
         <p id="usage-message" role="status" aria-live="polite"></p>
         <p class="usage-caption" id="usage-snapshot"></p>
         <div id="usage-results" hidden aria-busy="false">
@@ -802,7 +813,7 @@
       <div class="page">
         <section class="cfg-section" id="sec-usage-cache">
           <div class="cfg-section-head"><h2>用量与提示词缓存</h2><span class="cfg-section-sub">计费未知会明确标注；缓存优化需显式开启</span></div>
-<div class="card"><div class="card-head"><h3>用量台账</h3></div><div class="card-body"><div class="card-body-inner">
+<div class="card"><div class="card-head"><h3>上下文压缩与费用换算</h3></div><div class="card-body"><div class="card-body-inner"><div class="cfg-field"><label for="c-usage-display-currency" class="cfg-field-label">费用展示币种</label><select class="field" id="c-usage-display-currency"><option value="original">原币种</option><option value="CNY">CNY</option><option value="USD">USD</option></select></div><div class="cfg-field"><label for="c-usage-usd-cny-rate" class="cfg-field-label">手动汇率 1 USD = CNY</label><input class="field" id="c-usage-usd-cny-rate" type="text"></div><div class="cfg-field"><label for="c-compression-enabled" class="cfg-field-label">自动压缩历史（额外模型调用）</label><label class="switch"><input id="c-compression-enabled" type="checkbox"><span class="switch-track"></span></label></div><div class="cfg-field"><label for="c-compression-max-tokens" class="cfg-field-label">文本估算 Token 上限（85%触发）</label><input class="field" id="c-compression-max-tokens" type="number"></div><div class="cfg-field"><label for="c-compression-provider-id" class="cfg-field-label">压缩模型供应商 ID（留空主模型）</label><input class="field" id="c-compression-provider-id" type="text"></div></div></div></div><div class="card"><div class="card-head"><h3>用量台账</h3></div><div class="card-body"><div class="card-body-inner">
 <div class="cfg-field"><label class="cfg-field-label" for="c-usage-enabled">记录模型用量</label><label class="switch"><input type="checkbox" id="c-usage-enabled"><span class="switch-track"></span></label><span class="hint">仅保存调用元数据与供应商返回的计数，不记录提示词或回复。</span></div>
 <div class="cfg-field"><label class="cfg-field-label" for="c-usage-retention-days">用量保留天数</label><input class="field" type="number" id="c-usage-retention-days" min="1" max="366" step="1"><span class="hint">1–366 天；仅清理用量台账。</span></div>
 <div class="cfg-field"><label class="cfg-field-label" for="c-usage-max-records">用量记录上限</label><input class="field" type="number" id="c-usage-max-records" min="100" max="100000" step="1"><span class="hint">100–100000 条；常规清理最多延后 99 条，调整上限后在下次记录时清理。过期记录不参与查询。</span></div>
