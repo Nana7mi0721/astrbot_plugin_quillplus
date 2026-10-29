@@ -136,7 +136,7 @@ class UsageStore:
 
     async def query(self, *, days=7, scope_id="", source_umo="", persona_id="", provider_id="",
                     purpose="", model="", limit=50, offset=0,
-                    retention_days=30, max_records=20000):
+                    retention_days=30, max_records=20000, scope_groups=None):
         # GET 无清理副作用；汇总覆盖所有匹配样本，limit 只控制明细。
         days = min(max(1, int(days)), max(1, retention_days), 366)
         clauses, args = ["created_at >= ?"], [time.time() - days * 86400]
@@ -147,7 +147,7 @@ class UsageStore:
                 args.append(value)
         limit, offset = max(1, min(200, int(limit))), max(0, int(offset))
         summary, items, sessions = _Totals(), [], {}
-        groups = {key: {} for key in ("purpose", "model", "persona_id", "provider_id")}
+        groups = {key: {} for key in ("group", "purpose", "model", "persona_id", "provider_id")}
         daily = {}
         async with self._lock:
             if self._db is None:
@@ -162,7 +162,10 @@ class UsageStore:
                             items.append(record)
                         summary.add(record)
                         for dimension, buckets in groups.items():
-                            key = record.get(dimension) or "unknown"
+                            if dimension == "group":
+                                key = (scope_groups or {}).get(record.get("scope_id") or "", "独立会话")
+                            else:
+                                key = record.get(dimension) or "unknown"
                             if key not in buckets:
                                 buckets[key] = _Totals()
                             buckets[key].add(record)

@@ -772,10 +772,16 @@ class QuillRoutes:
         except (ValueError, TypeError):
             return error_response("用量筛选参数无效", status_code=400)
         try:
-            data = await recorder.query(**filters)
+            # M2.7：用量台账按发生时 scope_id 归属，这里把会话组名（含已解散标记）带进分组维度，
+            # 让用户能直接看到「某个群 / 这组私聊一共花了多少」，而不是 scope 短哈希。
+            scope_groups = {}
+            shared = getattr(self.plugin, 'shared_scopes', None)
+            if shared:
+                scope_groups = {g['scope_id']: ('会话组：' if g.get('active') else '已解散：') + g['name'] for g in shared.index['groups']}
+            data = await recorder.query(**filters, scope_groups=scope_groups)
             import hashlib
             labels = {}
-            groups = getattr(self.plugin, 'shared_scopes', None)
+            groups = shared
             if groups:
                 for group in groups.index['groups']:
                     labels[hashlib.sha256(group['scope_id'].encode()).hexdigest()[:16]] = '会话组：' + group['name']
