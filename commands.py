@@ -1974,9 +1974,9 @@ async def quill_compact(plugin, event):
         event.set_result(event.plain_result(permission_error))
         return
     from .interfaces.scopes import freeze_turn
-    turn = await freeze_turn(plugin, event)
     await plugin.shared_scopes.acquire(event)
     try:
+        turn = await freeze_turn(plugin, event)
         if plugin.scope_resolver.scope_for(turn.origin_umo) != turn.scope_id:
             raise ValueError('会话归属已改变，请重试')
         with plugin._usage.bind(await plugin._usage.identity_for(event, turn.persona_id)):
@@ -1984,7 +1984,7 @@ async def quill_compact(plugin, event):
         if result.get('status') == 'compressed':
             text = f"历史已压缩：文本估算 {result['before_tokens']} → {result['estimated_tokens']} Token。原文检查点已保留，下次请求使用摘要；系统设定和最近两轮保留。"
         else:
-            reason = {'not_enough_history':'可压缩的旧完整轮不足，最近两轮保留','unsupported_tool_or_media_history':'旧历史含工具或媒体，暂不自动拆分','compression_source_too_large':'旧历史超过单次压缩保护上限','provider_unconfigured':'尚未配置可用的压缩模型','summary_not_smaller_or_invalid':'模型摘要无效或没有缩短历史'}.get(result.get('status'),'暂时无法压缩')
+            reason = {'not_enough_history':'当前角色可压缩的旧完整轮不足，最近两轮保留','unsupported_tool_or_media_history':'旧历史含工具或媒体，暂不自动拆分','compression_source_too_large':'旧历史超过单次压缩保护上限','provider_unconfigured':'尚未配置可用的压缩模型','summary_not_smaller_or_invalid':'模型摘要无效或没有缩短历史','checkpoint_capacity_reached':'原文检查点容量不足，未调用摘要模型；请先备份并整理检查点'}.get(result.get('status'),'暂时无法压缩')
             text = '本次未压缩：' + reason + '。原历史保留。'
     except Exception as exc:
         logger.warning('[Quill Context] 手动压缩失败（%s）', type(exc).__name__)

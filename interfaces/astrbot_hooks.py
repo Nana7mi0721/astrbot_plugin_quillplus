@@ -1073,7 +1073,7 @@ async def handle_llm_request(
     9.  ``_check_activation``（激活词/【】括号/WR 关键词；WR 匹配异常内部吞）；
     10. ``worldbook_always_activate`` 强制 ``activated=True, wr_activated=False``；
     11. **未激活 → reset_quill_rounds + return**（gate 本体，编排控制流）；
-    12. ``increment_quill_rounds``；旧路径 quill_rounds>1 跳常驻；M2 保留常驻稳定前缀；
+    12. ``increment_quill_rounds``；所有布局每轮重新装配常驻，system 不由历史承载；
     13. ``_rewrite_smt_tool_description``（仅激活路径；无角色卡跳过）；
     14. extra_info 组装（含 session_vars）；
     15. ``_prompt_builder_for_request(_sb_effective)``（浅拷贝对齐状态栏开关）；
@@ -1329,9 +1329,8 @@ async def handle_llm_request(
     if quill_rounds is None:
         quill_rounds = await plugin.state_manager.increment_quill_rounds(target_id)
         event.set_extra('_quill_assembly_round', quill_rounds)
-    skip_constants = quill_rounds > 1 and not plugin.props.cache_enabled
-    if skip_constants:
-        logger.info(f"[Quill] 连续第 {quill_rounds} 轮激活，跳过 Layer 1 常驻")
+    # R1：宿主不把 system 保存进对话历史，旧布局同样必须每轮带上常驻。
+    skip_constants = False
 
     # 改写 send_message_to_user 描述（含状态栏强制要求）
     # 无角色卡时跳过：避免 LLM 在无人设约束时进入 Agent 死循环
