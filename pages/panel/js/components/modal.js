@@ -67,7 +67,11 @@ function autoSizeModalTextareas(root) {
 function closeModal() {
   closeScrim($("#scrim"));
   const saveBtn = $("#modalSaveBtn");
-  if (saveBtn) saveBtn.hidden = false;
+  if (saveBtn) {
+    saveBtn.hidden = false;
+    saveBtn.disabled = false;
+    saveBtn.textContent = "保存";
+  }
   S._modalState = null;
   S._modalMode = null;
 }

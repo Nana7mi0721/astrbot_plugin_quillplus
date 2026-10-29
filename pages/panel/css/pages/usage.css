@@ -1,32 +1,45 @@
 /* U1 内容区：复用系统控件与主题令牌；图形尺寸是工程布局，不是控件尺度。 */
 #pane-usage { --usage-series-output: var(--green); }
-#pane-usage .page-head h2 { line-height: 32px; letter-spacing: 0; }
-#pane-usage .page-sub, #pane-usage .usage-caption { color: var(--label-2); }
-#pane-usage .usage-caption { display: block; font-size: 11px; line-height: 14px; margin-top: var(--sp-1); overflow-wrap: anywhere; }
-#pane-usage .cfg-row-text { min-width: 0; }
-#pane-usage .cfg-row-control { max-width: 60%; }
-#pane-usage .cfg-row-control > .field, #pane-usage .cfg-row-control > .sel-wrap { max-width: 100%; }
-#pane-usage summary { cursor: pointer; min-height: var(--h-control); line-height: 24px; }
-#pane-usage summary:focus-visible, #pane-usage .usage-rank-row:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-#pane-usage .usage-more { position: relative; }
-#pane-usage .usage-more[open] { z-index: 2; }
-#pane-usage .usage-more button { position: absolute; right: 0; white-space: nowrap; }
-#pane-usage #usage-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+/* 页头、页副标题不单独覆盖：与其余页面共用 .page-head h2（26/22/−.02em）与 .page-sub（label-3）。 */
+#pane-usage .usage-caption { display: block; font-size: 11px; line-height: 14px; margin-top: var(--sp-1); overflow-wrap: anywhere; color: var(--label-2); }
+/* 长说明走正文档 13/16；11px 只留给图例、轴标签这类元信息。 */
+#pane-usage .usage-note { font-size: 13px; line-height: 16px; color: var(--label-2); }
+#pane-usage #usage-snapshot { margin: var(--sp-2) 0 var(--sp-3); }
+/* 结果区按 section 排布：相邻块之间必须有 16px 间距，卡片不再贴在一起。 */
+#pane-usage #usage-results > * + * { margin-top: var(--sp-4); }
+#pane-usage #usage-results > .usage-note { margin: var(--sp-4) 0 0; }
+/* 筛选条：常显网格，标签在上、控件在下；不再用折叠三角改变卡片高度。 */
+#pane-usage .usage-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--sp-3) var(--sp-4); }
+#pane-usage .usage-filter { display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
+#pane-usage .usage-filter > span { font-size: 11px; line-height: 14px; color: var(--label-2); }
+#pane-usage .usage-filter .field, #pane-usage .usage-filter .sel-wrap { width: 100%; max-width: none; }
+#pane-usage #usage-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-3); }
+#pane-usage #usage-chips:empty { display: none; }
 #pane-usage #usage-chips button { max-width: 100%; height: auto; min-height: var(--h-control); overflow-wrap: anywhere; white-space: normal; }
-#pane-usage .usage-kpis { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: var(--sp-3); margin: var(--sp-4) 0; }
-#pane-usage .usage-kpi { background: var(--bg-primary); border-radius: var(--r-md); padding: var(--sp-4); min-width: 0; overflow-wrap: anywhere; }
+/* KPI：单条统计带，1px 分隔线，整条只有一层阴影；不再是四个独立卡片。 */
+#pane-usage .usage-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--fill-primary); border: 1px solid var(--fill-primary); border-radius: var(--r-md); box-shadow: var(--shadow-1); overflow: hidden; }
+#pane-usage .usage-kpi { background: var(--bg-primary); padding: var(--sp-4); min-width: 0; overflow-wrap: anywhere; }
 #pane-usage .usage-kpi > strong { display: block; font-size: 22px; line-height: 26px; font-weight: 600; margin-top: var(--sp-2); font-variant-numeric: tabular-nums; }
 #pane-usage .usage-kpi strong b { font-size: 15px; line-height: 20px; }
 #pane-usage .usage-kpi strong > div + div { margin-top: var(--sp-2); }
 #pane-usage .usage-kpi-name { font-size: 13px; line-height: 16px; font-weight: 600; }
-#pane-usage .usage-chart-grid { display: grid; grid-template-columns: minmax(0,2fr) minmax(0,1fr); gap: var(--sp-4); align-items: start; }
-#pane-usage .usage-chart-grid > .card { min-width: 0; }
-#pane-usage .usage-chart-tools { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
-#pane-usage .usage-chart-tools label { display: flex; gap: var(--sp-2); align-items: center; min-width: 0; max-width: 100%; }
-#pane-usage .usage-chart-tools .sel-wrap { min-width: 0; max-width: 100%; }
+/* 趋势 + 排行合成一张卡：左图右榜，高度由内容决定，不再拉伸图卡留白。 */
+#pane-usage .usage-trend-card .card-body-inner > *:last-child { margin-bottom: 0; }
+#pane-usage .usage-trend-actions { margin-left: auto; }
+#pane-usage .usage-trend-layout { display: grid; grid-template-columns: minmax(0, 1fr) 272px; gap: 18px; align-items: stretch; }
+#pane-usage .usage-trend-main, #pane-usage .usage-trend-side { min-width: 0; }
+#pane-usage .usage-trend-main { display: flex; flex-direction: column; }
+#pane-usage .usage-trend-side { display: flex; flex-direction: column; min-height: 0; }
+#pane-usage .usage-chart-tools { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: flex-end; }
+#pane-usage .usage-chart-tools .usage-filter { flex: 0 0 220px; }
+#pane-usage .usage-chart-tools .usage-filter > span { white-space: nowrap; }
+#pane-usage .usage-trend-side .usage-chart-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); align-items: end; }
+#pane-usage .usage-trend-side .usage-chart-tools .usage-filter { flex: none; }
+#pane-usage .usage-rank-heading { font-size: 13px; line-height: 16px; font-weight: 600; margin-bottom: var(--sp-2); }
 #pane-usage .usage-legend { display: flex; flex-wrap: wrap; gap: var(--sp-2); font-size: 11px; line-height: 14px; margin: var(--sp-3) 0; color: var(--label-2); }
 #pane-usage .usage-legend i { display: inline-block; width: 8px; height: 8px; margin-right: var(--sp-1); }
-#pane-usage #usage-trend { min-width: 0; }
+#pane-usage #usage-trend { min-width: 0; flex: 1; min-height: 240px; display: flex; flex-direction: column; }
+#pane-usage .usage-bucket-hint { margin: var(--sp-2) 0 0; }
 #pane-usage #usage-trend svg { display: block; width: 100%; font-variant-numeric: tabular-nums; }
 #pane-usage .usage-grid { stroke: var(--separator); stroke-width: .5; }
 #pane-usage .usage-axis { fill: var(--label-2); font-size: 10px; }
@@ -36,54 +49,59 @@
 #pane-usage .usage-hit { cursor: pointer; }
 #pane-usage .usage-hit:focus-visible { outline: none; stroke: var(--accent); stroke-width: 1; }
 #pane-usage .usage-hit:hover { fill: var(--fill-tertiary); }
-#pane-usage .usage-tip { min-height: 42px; font-size: 11px; line-height: 14px; overflow-wrap: anywhere; color: var(--label-2); }
-#pane-usage #usage-ranking { margin-top: var(--sp-3); }
-#pane-usage .usage-rank-row { display: block; width: 100%; text-align: left; background: transparent; border: 0; padding: var(--sp-2) 0; color: var(--label-1); font: inherit; cursor: pointer; }
+#pane-usage .usage-tip { min-height: 42px; font-size: 11px; line-height: 14px; overflow-wrap: anywhere; color: var(--label-2); margin: var(--sp-1) 0 0; }
+#pane-usage #usage-ranking { margin-top: 0; }
+#pane-usage .usage-rank-row { display: block; width: 100%; text-align: left; background: transparent; border: 0; padding: 6px 8px 7px; color: var(--label-1); font: inherit; cursor: pointer; border-radius: var(--r-menu); }
+#pane-usage .usage-rank-row:hover:not(:disabled) { background: var(--fill-quaternary); }
 #pane-usage .usage-rank-row:disabled { cursor: default; }
 #pane-usage .usage-rank-head { display: flex; justify-content: space-between; gap: var(--sp-2); font-size: 13px; line-height: 16px; }
 #pane-usage .usage-rank-head > span { min-width: 0; overflow-wrap: anywhere; }
 #pane-usage .usage-rank-head b { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-#pane-usage .usage-rank-track, #pane-usage .usage-meter { display: block; height: 6px; background: var(--fill-tertiary); border-radius: var(--r-sm); margin: var(--sp-2) 0; overflow: hidden; }
+#pane-usage .usage-rank-track, #pane-usage .usage-meter { display: block; height: 6px; background: var(--fill-tertiary); border-radius: var(--r-sm); margin: var(--sp-1) 0; overflow: hidden; }
 #pane-usage .usage-rank-track i, #pane-usage .usage-meter i { display: block; height: 100%; background: var(--accent); }
-#pane-usage .usage-cache-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--sp-4); }
+#pane-usage .usage-rank-row .usage-caption { margin-top: 0; }
+#pane-usage .usage-cache-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
 #pane-usage .usage-cache-grid h3 { font-size: 13px; line-height: 16px; }
 #pane-usage .usage-cache-grid h3 span { display: block; font-size: 22px; line-height: 26px; margin-top: var(--sp-2); font-variant-numeric: tabular-nums; }
 #pane-usage .table-wrap { max-width: 100%; overflow: auto; }
 #pane-usage td { vertical-align: top; }
-#pane-usage .usage-model { min-width: 120px; max-width: 220px; overflow-wrap: anywhere; }
-#pane-usage .usage-detail { display: grid; grid-template-columns: minmax(80px,1fr) minmax(0,3fr); gap: var(--sp-2); white-space: normal; }
-#pane-usage .usage-detail dd { margin: 0; overflow-wrap: anywhere; }
+#pane-usage .usage-model { min-width: 120px; }
+#pane-usage .usage-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3) var(--sp-5); white-space: normal; }
+#pane-usage .usage-detail-item { min-width: 0; }
+#pane-usage .usage-detail dt { font-size: 11px; line-height: 14px; color: var(--label-3); }
+#pane-usage .usage-detail dd { margin: 2px 0 0; font-size: 13px; line-height: 16px; overflow-wrap: anywhere; }
 #pane-usage [aria-busy="true"] { opacity: .65; }
+/* 设置与趋势数据都放在对话框里：关闭时完全不占页面高度，卡片不会再上下跳。 */
+#pane-usage .usage-dialog { position: fixed; inset: 0; margin: auto; width: min(560px, calc(100vw - 48px)); max-height: min(720px, calc(100vh - 64px)); padding: 0; border: 0; border-radius: var(--r-lg); background: var(--bg-primary); color: var(--label); box-shadow: var(--shadow-window); }
+#pane-usage .usage-dialog--wide { width: min(880px, calc(100vw - 48px)); }
+#pane-usage .usage-dialog::backdrop { background: var(--scrim); }
+#pane-usage .usage-dialog-head { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-4); border-bottom: .5px solid var(--separator); }
+#pane-usage .usage-dialog-head h3 { flex: 1; min-width: 0; font-size: 15px; line-height: 20px; font-weight: 600; letter-spacing: -.01em; }
+#pane-usage .usage-dialog-body { max-height: calc(100vh - 240px); padding: var(--sp-4); overflow: auto; }
+#pane-usage .usage-dialog-actions { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); border-top: .5px solid var(--separator); }
+#pane-usage .usage-dialog-spacer { flex: 1; }
+#pane-usage #usage-settings .field, #pane-usage #usage-settings .sel-wrap { max-width: 100%; }
+#pane-usage #usage-settings .cfg-row-title { display: block; }
+#pane-usage #usage-settings .row-desc { display: block; margin-top: 2px; }
+@media (max-width: 1200px) {
+  #pane-usage .usage-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 1000px) {
-  #pane-usage .usage-chart-grid { grid-template-columns: minmax(0,1fr); }
-  #pane-usage .usage-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  #pane-usage .usage-trend-layout { grid-template-columns: minmax(0, 1fr); }
+  #pane-usage .usage-trend-side .usage-chart-tools { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 540px) {
-  #pane-usage .usage-kpis, #pane-usage .usage-cache-grid { grid-template-columns: minmax(0,1fr); }
+  #pane-usage .usage-kpis, #pane-usage .usage-cache-grid { grid-template-columns: minmax(0, 1fr); }
 }
-/* 窄窗口只在用量页收为图标导航，仍可通过原有 title 和按钮返回其他页面。 */
+/* 窄窗口收为图标导航：规则对所有页面生效，切页时侧栏不再 56↔232px 跳变。 */
 @media (max-width: 760px) {
-  .layout:has(#pane-usage.is-active) .sidebar { width: 56px; }
-  .layout:has(#pane-usage.is-active) .sidebar-head { padding: var(--sp-3); }
-  .layout:has(#pane-usage.is-active) .sidebar-nav { padding: var(--sp-2); }
-  .layout:has(#pane-usage.is-active) .sidebar-title,
-  .layout:has(#pane-usage.is-active) .sidebar-ver,
-  .layout:has(#pane-usage.is-active) .sl-badge,
-  .layout:has(#pane-usage.is-active) .sidebar-label,
-  .layout:has(#pane-usage.is-active) .sidebar-foot { display: none; }
-  .layout:has(#pane-usage.is-active) .sl-item { padding: 0; justify-content: center; }
+  .sidebar { width: 56px; }
+  .sidebar-head { padding: var(--sp-3); }
+  .sidebar-nav { padding: var(--sp-2); }
+  .sidebar-title, .sidebar-ver, .sl-badge, .sidebar-label, .sidebar-foot { display: none; }
+  .sl-item { padding: 0; justify-content: center; }
+  .sl-item-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #pane-usage .page-head-bar-inner { flex-wrap: wrap; }
   #pane-usage .card-head h3 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-  #pane-usage .cfg-row { flex-wrap: wrap; }
-  #pane-usage .cfg-row-control { max-width: 100%; min-width: 0; }
+  #pane-usage .usage-detail { grid-template-columns: minmax(0, 1fr); }
 }
-#pane-usage .usage-chart-grid > .card { margin: 0; }
-#pane-usage .usage-chart-tools label { white-space: nowrap; }
-
-@media (max-width: 760px) {
-  .layout:has(#pane-usage.is-active) .sl-item-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-}
-#pane-usage #usage-settings { margin-top: var(--sp-4); }
-#pane-usage #usage-settings > summary { padding: var(--sp-3) var(--sp-4); }
-#pane-usage #usage-settings .card-body-inner > label:not(.check) { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
-#pane-usage #usage-settings .field, #pane-usage #usage-settings .sel-wrap { max-width: 100%; }

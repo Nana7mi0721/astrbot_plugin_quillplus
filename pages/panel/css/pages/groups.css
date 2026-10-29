@@ -1,30 +1,42 @@
-/* M7 内容区沿用现有 macOS 27 令牌与卡片；不在内容卡片叠加玻璃材质。 */
-#pane-groups #groups-list { margin-top: var(--sp-4); }
-#pane-groups .group-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
-#pane-groups .cfg-row-text { min-width: 0; }
-#pane-groups .cfg-row-control { max-width: 60%; }
-#pane-groups .cfg-row-control > .field,
-#pane-groups .cfg-row-control > .sel-wrap { max-width: 100%; }
+/* 会话组：列表为主，新建/编辑使用通用模态框；不在页面常驻建组表单。 */
+#pane-groups .group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: var(--sp-4); margin-top: var(--sp-4); }
+#pane-groups .group-card .card-head h3 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#pane-groups .group-card-title { appearance: none; background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; min-width: 0; overflow-wrap: anywhere; }
+#pane-groups .group-card-title:hover { color: var(--accent-text); }
+#pane-groups .group-card-title:disabled { cursor: default; color: var(--label-3); }
+#pane-groups .group-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; margin-top: var(--sp-3); }
+#pane-groups .group-origins { margin: var(--sp-2) 0 0; padding-left: var(--sp-4); overflow-wrap: anywhere; line-height: 16px; color: var(--label-2); }
+#pane-groups .group-origins li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#pane-groups .group-origins li + li { margin-top: var(--sp-1); }
+#pane-groups #groups-archived-card { margin-top: var(--sp-4); }
 #pane-groups .group-choices { min-width: 0; border: 0; padding: 0; margin: 0; }
 #pane-groups .group-choices legend { padding: 0; margin-bottom: var(--sp-2); }
-#pane-groups .group-member { padding: var(--sp-2) 0; border-bottom: .5px solid var(--separator); overflow-wrap: anywhere; }
-#pane-groups .group-member:last-child { border-bottom: 0; }
-#pane-groups .group-member .check,
-#pane-groups .group-member.check { display: flex; min-height: var(--h-control); align-items: flex-start; line-height: 18px; }
-#pane-groups .group-member .check input { margin-top: var(--sp-1); }
-#pane-groups .group-member .check > span { min-width: 0; }
-#pane-groups .group-member small { display: block; color: var(--label-2); font-size: 11px; line-height: 14px; }
-#pane-groups .group-history { margin: var(--sp-2) 0 0 var(--sp-6); }
-#pane-groups .group-member:has(input:disabled) { color: var(--label-2); }
-#pane-groups .group-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; margin: 0; font-size: 13px; line-height: 18px; }
-#pane-groups .group-origins { margin: 0; padding-left: var(--sp-4); overflow-wrap: anywhere; line-height: 18px; }
-#pane-groups .group-origins li + li { margin-top: var(--sp-1); }
-#pane-groups .card-head h3 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#pane-groups .cfg-row-control { max-width: 60%; }
 
-#pane-groups .page-head h2 { line-height: 32px; letter-spacing: 0; }
-#pane-groups .card-head h3 { letter-spacing: 0; }
-#pane-groups .group-preview:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-#pane-groups .cfg-row-text .row-desc { display: block; }
-#pane-groups .page-sub, #pane-groups .card-head-sub { color: var(--label-2); }
-#pane-groups .group-choices legend { font-size: 13px; line-height: 16px; font-weight: 600; color: var(--label-1); letter-spacing: 0; text-transform: none; }
-#pane-groups #groups-list:not(:empty) { margin-bottom: var(--sp-4); }
+/* 模态框内的建组表单 */
+.group-modal-form .group-choices { min-width: 0; border: 0; padding: 0; margin: 0; }
+.group-modal-form .group-title { display: block; padding: 0; margin: 0 0 var(--sp-2); font-size: 13px; line-height: 16px; font-weight: 600; color: var(--label-1); }
+.group-modal-form .group-member-list { max-height: 260px; overflow-y: auto; border-top: .5px solid var(--separator); padding-right: var(--sp-2); }
+.group-modal-form .group-modal-preview { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-4); }
+.group-modal-form .group-preview,
+#pane-groups .group-preview,
+.group-dialog .group-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; margin: var(--sp-2) 0 0; padding: var(--sp-3); border-radius: var(--r-sm); background: var(--fill-quaternary); color: var(--label-2); font-size: 13px; line-height: 16px; }
+.group-modal-form .group-preview { max-height: 200px; }
+
+.group-member { padding: var(--sp-2) 0; border-bottom: .5px solid var(--separator); overflow-wrap: anywhere; }
+.group-member:last-child { border-bottom: 0; }
+.group-member .check,
+.group-member.check { display: flex; min-height: var(--h-control); align-items: flex-start; line-height: 16px; }
+.group-member .check input { margin-top: var(--sp-1); }
+.group-member .check > span { min-width: 0; }
+.group-member small { display: block; color: var(--label-2); font-size: 11px; line-height: 14px; }
+.group-history { margin: var(--sp-1) 0 0 var(--sp-6); }
+.group-member:has(input:disabled) { color: var(--label-2); }
+.group-preview:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* 近期消息弹窗 */
+.group-dialog { position: fixed; inset: 0; margin: auto; width: min(720px, calc(100vw - 48px)); max-height: min(720px, calc(100vh - 64px)); padding: 0; border: 0; border-radius: var(--r-lg); background: var(--bg-primary); color: var(--label); box-shadow: var(--shadow-window); }
+.group-dialog::backdrop { background: var(--scrim); }
+.group-dialog-head { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-4); border-bottom: .5px solid var(--separator); }
+.group-dialog-head h3 { margin: 0; font-size: 15px; line-height: 20px; font-weight: 600; }
+.group-dialog-body { max-height: calc(100vh - 200px); overflow: auto; padding: var(--sp-4); }

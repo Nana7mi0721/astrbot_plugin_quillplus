@@ -277,6 +277,10 @@ function enhanceSelect(sel) {
     menu.classList.remove("is-out");
     closeSelMenus(wrap);
     closeCtxMenu();
+    // <dialog> 是 top layer：挂在 body 下的浮层会被压在弹窗后面，必须迁到弹窗内。
+    const dialogHost = sel.closest("dialog");
+    if (dialogHost) { if (menu.parentNode !== dialogHost) dialogHost.appendChild(menu); }
+    else if (menu.parentNode !== document.body) document.body.appendChild(menu);
     buildOptions();
     menu.hidden = false;
     S._selOpen = { wrap, close };

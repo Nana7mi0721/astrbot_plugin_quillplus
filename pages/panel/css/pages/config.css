@@ -178,18 +178,21 @@
    拉伸对齐的空洞代价极小，统一按行等高。 */
 #sec-inject > .cfg-cols,
 #sec-rag > .cfg-cols:first-of-type,
+#sec-usage-cache > .cfg-cols,
 #sec-system > .cfg-cols,
 .rag-overview {
   align-items: stretch;
 }
 #sec-inject > .cfg-cols > .card,
 #sec-rag > .cfg-cols:first-of-type > .card,
+#sec-usage-cache > .cfg-cols > .card,
 #sec-system > .cfg-cols > .card,
 .rag-overview > .card {
   height: 100%;
 }
 #sec-inject > .cfg-cols > .card > .card-body,
 #sec-rag > .cfg-cols:first-of-type > .card > .card-body,
+#sec-usage-cache > .cfg-cols > .card > .card-body,
 #sec-system > .cfg-cols > .card > .card-body,
 .rag-overview > .card > .card-body {
   height: calc(100% - var(--h-row));

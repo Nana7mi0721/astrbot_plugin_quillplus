@@ -37,7 +37,7 @@ export async function loadTasks() {
       const result = row.result || {};
       const summary = Object.entries(result).filter(([key]) => ["processed","stored","imported","failed","duplicates"].includes(key)).map(([key,value]) => `${({processed:"处理",stored:"写入",imported:"新增",failed:"失败",duplicates:"重复"})[key]} ${typeof value === "boolean" ? Number(value) : value}`).join(" · ");
       return `<tr><td>${esc(kindNames[row.kind] || "后台处理")}<span class="task-id mono">${esc(row.task_id.slice(0,8))}</span></td><td><span class="cell-truncate task-target" title="${esc(row.key)}">${esc(row.key)}</span></td><td class="task-state"><span class="badge ${row.status==="failed" ? "badge--red" : row.status==="completed" ? "badge--green" : ""}">${esc(statusNames[row.status] || row.status)}</span></td><td>${row.progress} / ${row.total ?? "未知"}</td><td><span class="cell-truncate task-result" title="${esc(summary || row.message || "")}">${esc(summary || row.message || "暂无")}</span></td><td>${active(row) && row.status !== "cancelling" ? `<button type="button" class="btn btn--gray" data-action="tasks-cancel" data-task-id="${esc(row.task_id)}">取消</button>` : ""}</td></tr>`;
-    }).join("") : '<tr><td colspan="6">暂无后台任务</td></tr>'}</tbody></table></div>`);
+    }).join("") : '<tr><td colspan="6" class="t3" style="text-align:center">暂无后台任务</td></tr>'}</tbody></table></div>`);
     if (rows.some(active)) timer = setTimeout(() => {
       if (document.querySelector("#pane-tasks")?.classList.contains("is-active") && !document.hidden) loadTasks();
     }, 1500);
