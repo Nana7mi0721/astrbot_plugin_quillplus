@@ -787,7 +787,7 @@ async def quill_help(event: AstrMessageEvent):
         "  /quill statusbar [on|off|auto]  状态栏开关（仅本会话；不带参数看当前生效值）  🔒",
         "  /quill test <wr|wb|mem|kb> <文字>  测试检索命中",
         "  /stream [on|off|auto]  流式模式开关（不带参数看当前值）  🔒",
-        "  /reinject          重置注入状态，下次激活重新注入全部常驻素材  🔒",
+        "  /reinject          重置注入轮次  🔒",
         "",
         "━━━ 🔒 = 写操作，群聊需管理员（私聊不受限）━━━",
         "━━━ 白名单在插件配置·权限 admin_users，留空时群聊写指令全部拒绝 ━━━",
@@ -1907,7 +1907,7 @@ async def statusbar_dispatch(plugin, event: AstrMessageEvent, arg: str):
 # ================================================================
 
 async def reinject_dispatch(plugin, event: AstrMessageEvent):
-    """/reinject — 重置 quill_rounds，下次激活重新注入全部常驻内容"""
+    """/reinject — 重置注入轮次，常驻内容本就随每次激活请求发送"""
     msg = _check_group_permission(plugin, event)
     if msg:
         event.set_result(MessageEventResult().message(msg))
@@ -1915,7 +1915,7 @@ async def reinject_dispatch(plugin, event: AstrMessageEvent):
     target_id = _get_target_id(event)
     await plugin.state_manager.reset_quill_rounds(target_id)
     event.set_result(MessageEventResult().message(
-        "已重置注入状态。下次触发 Quill 时将重新注入全部常驻素材。"
+        "已重置注入轮次。常驻世界书和素材仍随每次激活请求发送。"
     ))
 
 

@@ -46,6 +46,22 @@ class ContextCompactor:
         pointer=self.root/(key+'.latest')
         if not pointer.exists():
             return None
+        # P4：隔离坏指针但保留不可变原文文件。不能让一个坏 latest 永久毒化此会话。
+        try:
+            return self._load(pointer,key)
+        except (ValueError,OSError,TypeError) as exc:
+            bad=pointer.with_name(pointer.name+'.bad.'+uuid4().hex+'.'+type(exc).__name__)
+            try:
+                os.replace(pointer,bad)
+            except OSError:
+                # 目录不可写时无法自愈；继续拒绝压缩而不是重复付费。
+                raise ValueError('压缩检查点不可读且无法隔离指针') from exc
+            logger.warning('[Quill Context] 已隔离不可读检查点指针（%s），原文文件保留',type(exc).__name__)
+            return {'unreadable':True,'error_class':type(exc).__name__}
+
+    def _load(self, pointer, key):
+        if pointer.stat().st_size>128:
+            raise ValueError('压缩检查点指针过长')
         name=pointer.read_text(encoding='utf-8').strip()
         if len(name)!=32 or any(c not in '0123456789abcdef' for c in name):
             raise ValueError('压缩检查点指针无效')
@@ -53,8 +69,12 @@ class ContextCompactor:
         if target.stat().st_size>2000000:
             raise ValueError('压缩检查点超出读取保护上限')
         value=json.loads(target.read_text(encoding='utf-8'))
-        if value.get('key')!=key or value.get('version')!=1:
+        if not isinstance(value,dict) or value.get('key')!=key or value.get('version')!=1:
             raise ValueError('压缩检查点版本或归属不匹配')
+        source=value.get('source')
+        if not isinstance(source,list) or len(source)<2 or any(not isinstance(m,dict) for m in source) or digest(source)!=value.get('source_digest') or not isinstance(value.get('summary'),str) or not value['summary']:
+            raise ValueError('压缩检查点内容无效')
+        value['checkpoint_id']=name
         return value
 
     def _check_capacity(self, size, reservation=None):
@@ -99,8 +119,9 @@ class ContextCompactor:
         with self.save_lock:
             if reservation not in self.reservations:
                 raise ValueError('压缩检查点容量预留已失效')
-            self._save(record,reservation)
+            name=self._save(record,reservation)
             self.reservations.pop(reservation,None)
+            return name
 
     def _save(self, record, reservation):
         self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -118,6 +139,7 @@ class ContextCompactor:
             os.replace(temporary,pointer)
         finally:
             temporary.unlink(missing_ok=True)
+        return name
 
     @staticmethod
     def project(history, record, shared):
@@ -136,10 +158,20 @@ class ContextCompactor:
         async with lock:
             original=list(req.contexts or [])
             record=await asyncio.to_thread(self.load,key)
+            read_issue=record if record and record.get('unreadable') else None
+            if read_issue:
+                record=None
             history=self.project(original,record,shared) if record else original
+            # P2：独立会话成功保存后，摘要本身已成为原生历史，不能再按旧前缀套用。
+            # 识别精确摘要，保留父检查点链接；共享流继续使用原文前缀投影。
+            persisted=bool(not shared and record and original and original[0].get('role')=='assistant' and original[0].get('content')==record['summary'])
+            checkpoint_state='none' if not record else 'projected' if history is not original else 'native_persisted' if persisted else 'source_mismatch'
             before=estimate(req.system_prompt or '')+estimate(req.prompt or '')+sum(estimate(m.get('content','')) for m in history)
             cfg=self.plugin.props
             state={'scope_hash':hashlib.sha256(turn.scope_id.encode()).hexdigest()[:16],'estimated_tokens':before,'limit':cfg.compression_max_tokens,'enabled':cfg.compression_enabled,'estimator':'utf8_bytes_div3_text_only','updated_at':time.time()}
+            state.update(checkpoint_state=checkpoint_state,checkpoint_id=record.get('checkpoint_id') if record else None)
+            if read_issue:
+                state.update(checkpoint_warning='checkpoint_unreadable',checkpoint_error_class=read_issue['error_class'])
             self.status[key]=state
             while len(self.status)>250:self.status.pop(next(iter(self.status)))
             def result(status):
@@ -164,6 +196,9 @@ class ContextCompactor:
             raw_source=original[:raw_cut]
             new_record={'version':1,'key':key,'created_at':time.time(),'source':raw_source,
                         'source_digest':digest(raw_source),'summary':''}
+            if record and (persisted or history is not original):
+                new_record['parent_checkpoint_id']=record['checkpoint_id']
+            new_record['source_form']='native_persisted_summary' if persisted else 'raw_history'
             provider_id=cfg.compression_provider_id
             provider=self.plugin.context.get_provider_by_id(provider_id) if provider_id else await selected_provider(self.plugin.context,event)
             if not provider:
@@ -183,17 +218,18 @@ class ContextCompactor:
                     return result('summary_not_smaller_or_invalid')
                 new_record['summary']=summary
                 # 先持久化原文检查点，再替换请求视图；失败不会删除源历史。
-                await asyncio.to_thread(self.save,new_record,reservation)
+                checkpoint_id=await asyncio.to_thread(self.save,new_record,reservation)
                 req.contexts=self.project(original,new_record,shared)
             finally:
                 await asyncio.to_thread(self.release,reservation)
             after=estimate(req.system_prompt or '')+estimate(req.prompt or '')+sum(estimate(m.get('content','')) for m in req.contexts)
-            state.update(estimated_tokens=after,before_tokens=before,status='compressed',still_over_threshold=after>=cfg.compression_max_tokens*.85)
+            state.update(estimated_tokens=after,before_tokens=before,status='compressed',checkpoint_state='prepared',checkpoint_id=checkpoint_id,still_over_threshold=after>=cfg.compression_max_tokens*.85)
             logger.info('[Quill Context] 历史压缩完成：文本估算 %s → %s，原文检查点已保留',before,after)
             return state
 
     async def manual(self,event,turn):
-        from astrbot.core.provider.entities import ProviderRequest
+        # P5：请求实体已有公开导出；宿主内部文件移动不应破坏手动压缩入口。
+        from astrbot.api.provider import ProviderRequest
         conversation=None
         if turn.scope_id!=turn.origin_umo:
             from ..quill.services.shared_context import history_view
@@ -207,5 +243,8 @@ class ContextCompactor:
             manager=self.plugin.context.conversation_manager
             conversation=await manager.get_conversation(turn.origin_umo,cid) if cid else None
             history=json.loads(conversation.history) if conversation and conversation.history else []
+            # 与宿主 strip_checkpoint_messages 相同：WebChat 存档分隔符不是发给模型的消息。
+            # 只剔除明确的元数据角色；工具、媒体及未知角色仍由 apply 保守拒绝。
+            history=[m for m in history if m.get('role')!='_checkpoint']
         req=ProviderRequest(contexts=history,conversation=conversation,prompt='',system_prompt='')
         return await self.apply(event,req,turn,force=True)

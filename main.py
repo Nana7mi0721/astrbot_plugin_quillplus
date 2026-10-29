@@ -2555,7 +2555,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
     @register_command("reinject", alias={"重新注入", "/reinject"})
     async def cmd_reinject(self, event: AstrMessageEvent):
-        """强制重置注入状态，下次激活重新注入全部常驻素材。用法：/reinject"""
+        """重置注入轮次；常驻内容仍随每次激活请求发送。用法：/reinject"""
         with bind_turn(await freeze_turn(self,event)):
             await _cmds.reinject_dispatch(self, event)
 

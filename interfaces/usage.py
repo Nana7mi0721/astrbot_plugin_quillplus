@@ -196,8 +196,6 @@ class UsageRecorder:
         served_raw = raw if raw is not None else response
         served = field(served_raw, "model") or field(served_raw, "model_version")
         producer = origin.get('_provider_type','')
-        if purpose == 'main' and origin.get('_fallback_possible',True):
-            producer = ''  # 请求选择不证明实际原生提取器，不能替未知回退报告零命中。
         usage = normalize_usage(response, purpose=purpose, provider_type=producer) if usage_supported else normalize_usage(None, purpose=purpose)
         fallback_unknown = purpose == 'main' and origin.get('_fallback_possible',True)
         price = reported_cost(response, currency_hint=None if fallback_unknown else origin.get("_reported_currency")) if usage_supported else None
@@ -335,6 +333,10 @@ class UsageRecorder:
         for key in ('scope_id', 'source_umo'):
             if filters.get(key) and not (len(filters[key]) == 16 and all(c in '0123456789abcdef' for c in filters[key])):
                 filters[key] = hashlib.sha256(filters[key].encode()).hexdigest()[:16]
+        # M2.7：台账已脱敏为摘要键，组标签映射必须使用同一身份；名称不能充当聚合主键。
+        if filters.get('scope_groups'):
+            filters['scope_groups'] = {hashlib.sha256(key.encode()).hexdigest()[:16]: label
+                                       for key, label in filters['scope_groups'].items()}
         result = await self.store.query(**filters, retention_days=cfg.usage_retention_days,
                                         max_records=cfg.usage_max_records)
         from ..quill.services.usage import convert_usage_view

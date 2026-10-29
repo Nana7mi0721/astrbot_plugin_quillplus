@@ -373,14 +373,15 @@ class WritingResourceManager:
 
         # 旧逻辑只删影子表留下空壳，会让迁移前 integrity_check 永久失败。
         # 与恢复副本共用限定修复计划；真正数据损坏仍由完整检查拒绝，不泛化容错。
-        known, plan = legacy_fts_repair_plan(table_rows, trigger_rows,
-            (await (await c.execute("PRAGMA schema_version")).fetchone())[0])
+        known, plan = legacy_fts_repair_plan(table_rows, trigger_rows)
         if plan:
             if not self.schema_status.get("backup"):
                 raise RuntimeError("孤儿 FTS 清理缺少已校验备份，拒绝写入")
             try:
                 for statement, args in plan:
                     await c.execute(statement, args)
+                cookie=(await (await c.execute("PRAGMA schema_version")).fetchone())[0]
+                await c.execute(f"PRAGMA schema_version={cookie + 1}")
                 await self.conn.commit()
             except BaseException:
                 await self.conn.rollback()

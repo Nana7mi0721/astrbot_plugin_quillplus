@@ -51,7 +51,7 @@ class SchemaCompatibilityError(StorageError):
     pass
 
 
-def legacy_fts_repair_plan(tables, triggers, schema_version):
+def legacy_fts_repair_plan(tables, triggers):
     """仅识别已知历史索引的孤儿空壳；不放行未知虚拟表或真实数据损坏。"""
     names = {row[0] for row in tables}
     orphans = []
@@ -76,7 +76,6 @@ def legacy_fts_repair_plan(tables, triggers, schema_version):
         for suffix in ("_data", "_idx", "_docsize", "_config", "_content"):
             if name + suffix in names:
                 plan.append(("DROP TABLE " + quote(name + suffix), ()))
-    plan.append((f"PRAGMA schema_version={schema_version + 1}", ()))
     return orphans, plan
 
 
@@ -91,13 +90,15 @@ def _verify_restorable(path: Path, kind=""):
             if kind == "writing":
                 orphans, plan = legacy_fts_repair_plan(
                     db.execute("SELECT name,sql FROM sqlite_master WHERE type='table'").fetchall(),
-                    db.execute("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger'").fetchall(),
-                    db.execute("PRAGMA schema_version").fetchone()[0])
+                    db.execute("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger'").fetchall())
                 if plan:
                     try:
                         db.execute("BEGIN IMMEDIATE")
                         for sql, args in plan:
                             db.execute(sql, args)
+                        # P6：DDL 自身也可能递增 cookie；按此连接执行后的值失效缓存，不能回写规划时旧值。
+                        cookie=db.execute("PRAGMA schema_version").fetchone()[0]
+                        db.execute(f"PRAGMA schema_version={cookie + 1}")
                         db.commit()
                     except BaseException:
                         db.rollback()
@@ -166,7 +167,7 @@ async def prepare_database(connection, path: str, kind: str) -> dict:
     orphan_fts = []
     if kind == "writing":
         orphan_fts, _ = legacy_fts_repair_plan(
-            await (await connection.execute("SELECT name,sql FROM sqlite_master WHERE type='table'")).fetchall(), [], 0)
+            await (await connection.execute("SELECT name,sql FROM sqlite_master WHERE type='table'")).fetchall(), [])
     if names and (version < target or orphan_fts):
         backup = await asyncio.to_thread(_backup, path, kind, version)
         logger.info("[Quill Schema] %s 旧库快照已写入，恢复副本通过 integrity_check", kind)

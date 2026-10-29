@@ -297,7 +297,7 @@ async def handle_waiting_llm_request(plugin, event: AstrMessageEvent) -> None:
         await plugin.state_manager.reset_quill_rounds(target_id)
         logger.info("[Quill] /reinject 已重置 quill_rounds")
         event.set_result(MessageEventResult().message(
-            "已重置注入状态。下次触发 Quill 时将重新注入全部常驻素材。"
+            "已重置注入轮次。常驻世界书和素材仍随每次激活请求发送。"
         ))
         return
 

@@ -15,6 +15,11 @@ from uuid import uuid4
 
 import aiosqlite
 
+try:
+    from ..quill.services.usage import native_cache_reported
+except ImportError:  # 保留直接脚本加载。
+    from quill.services.usage import native_cache_reported
+
 
 def _private_record(record):
     """M12：台账只保留与 Trace 一致的不可逆短标识；迁移旧元数据，不碰剧情库。"""
@@ -136,7 +141,7 @@ class UsageStore:
 
     async def query(self, *, days=7, scope_id="", source_umo="", persona_id="", provider_id="",
                     purpose="", model="", limit=50, offset=0,
-                    retention_days=30, max_records=20000):
+                    retention_days=30, max_records=20000, scope_groups=None):
         # GET 无清理副作用；汇总覆盖所有匹配样本，limit 只控制明细。
         days = min(max(1, int(days)), max(1, retention_days), 366)
         clauses, args = ["created_at >= ?"], [time.time() - days * 86400]
@@ -147,7 +152,7 @@ class UsageStore:
                 args.append(value)
         limit, offset = max(1, min(200, int(limit))), max(0, int(offset))
         summary, items, sessions = _Totals(), [], {}
-        groups = {key: {} for key in ("purpose", "model", "persona_id", "provider_id")}
+        groups = {key: {} for key in ("group", "purpose", "model", "persona_id", "provider_id")}
         daily = {}
         async with self._lock:
             if self._db is None:
@@ -158,11 +163,20 @@ class UsageStore:
                 while rows := await cursor.fetchmany(256):
                     for row in rows:
                         record = json.loads(row[0])
+                        # P1：只重解释旧版漏判的宿主归一化证据，原始台账、计数和金额均不改写。
+                        usage = record.get('usage') or {}
+                        if usage.get('usage_source') == 'native' and not usage.get('cache_reported') and native_cache_reported(usage):
+                            record['usage'] = {**usage, 'cache_reported': True, 'cache_unknown': False,
+                                               'cache_report_source': 'host_normalized', 'cache_evidence_reclassified': True}
                         if offset <= summary.calls < offset + limit:
                             items.append(record)
                         summary.add(record)
                         for dimension, buckets in groups.items():
-                            key = record.get(dimension) or "unknown"
+                            if dimension == "group":
+                                scope = record.get("scope_id") or ""
+                                key = scope if scope in (scope_groups or {}) else "独立会话"
+                            else:
+                                key = record.get(dimension) or "unknown"
                             if key not in buckets:
                                 buckets[key] = _Totals()
                             buckets[key].add(record)
@@ -183,7 +197,7 @@ class UsageStore:
                 rows = await (await self._db.execute(f"SELECT {column},COUNT(*),MAX(created_at) FROM usage_calls WHERE created_at>=? GROUP BY {column}", (args[0],))).fetchall()
                 inventories[column] = [{column:r[0],'calls':r[1],'last_at':r[2]} for r in rows if r[0]]
         return {"summary": summary.result(), "groups": {
-                    key: [{"key": name, **totals.result()} for name, totals in buckets.items()]
+                    key: [{"key": name, **({"label": (scope_groups or {}).get(name, name)} if key == "group" else {}), **totals.result()} for name, totals in buckets.items()]
                     for key, buckets in groups.items()}, "sessions": inventories["scope_id"], "origins": inventories["source_umo"],
                 "daily": [{"day": day, **totals.result()} for day, totals in sorted(daily.items())],
                 "items": items, "total": summary.calls, "limit": limit, "offset": offset,

@@ -32,6 +32,12 @@ def _first(*values):
     return next((v for v in values if v is not None), None)
 
 
+def native_cache_reported(usage) -> bool:
+    """有非零原生用量的一组归一化数值；全零宿主默认对象不是证据。"""
+    return count(field(usage, 'input_cached')) is not None and any(
+        (count(field(usage, key)) or 0) > 0 for key in ('input_other', 'input_cached', 'output'))
+
+
 def normalize_usage(response: Any, *, purpose="main", provider_type="") -> dict:
     """计数与报告证据分开；宿主默认零不冒充供应商真实零。"""
     raw = field(response, "raw_completion")
@@ -132,12 +138,14 @@ def normalize_usage(response: Any, *, purpose="main", provider_type="") -> dict:
     native = field(response, "usage")
     other, cached, output = (count(field(native, name)) for name in ("input_other", "input_cached", "output"))
     if any(v is not None and v > 0 for v in (other, cached, output)):
-        # 只对已审阅的宿主提取器认定真实零；第三方默认字段仍不冒充供应商证据。
-        cache_known = cached is not None and (cached > 0 or provider_type in ('anthropic_chat_completion', 'openai_chat_completion', 'openai_responses', 'gemini'))
+        # P1：有非零计数的原生用量是一组宿主归一化证据，不依赖请求侧适配器名。
+        # 回退与子类也保留零命中；全零默认对象仍在下方标为未核实，不冒充供应商原始字段。
+        cache_known = native_cache_reported(native)
         result.update(input_other=other, input_cached=cached, output=output,
                       input_total=other + cached if other is not None and cached is not None else None,
                       usage_source="native", cache_reported=cache_known,
                       cache_unknown=not cache_known,
+                      cache_report_source="host_normalized" if cache_known else "not_exposed",
                       input_other_semantics="host_may_include_cache_write",
                       cache_write_source="host_not_exposed")
     elif native is not None and any(v is not None for v in (other, cached, output)):
