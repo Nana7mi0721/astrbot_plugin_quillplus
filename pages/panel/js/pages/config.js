@@ -145,6 +145,7 @@ function applySettings(providers, cfg) {
   fillProviderSelect($("#c-rag-rerank"), providers.rerank, "（不使用重排）");
   fillProviderSelect($("#c-rag-llm"), providers.llm, "（退化为文本截断）");
   fillProviderSelect($("#c-sb-llm"), providers.llm, "（回退到 RAG 摘要 LLM）");
+  fillProviderSelect($("#c-compression-provider-id"), providers.llm, "（默认主模型）");
 
   CFG_FIELDS.forEach(([group, key, sel, kind]) => {
     const el = $(sel);
@@ -464,7 +465,13 @@ function switchTab(tab) {
   else if (tab === "groups") loadGroups();
   else if (tab === "usage") loadUsage();
   else if (tab === "trace") loadTracePage();
-  else if (tab === "config") { loadGlobalSettings(); loadHealth(); }
+  else if (tab === "config") {
+    loadGlobalSettings();
+    loadHealth();
+    // 切页时容器刚从 display:none 变为可见，scrollTop 被重置为 0 且没有 scroll
+    // 事件；不主动标一次，导航会停在上次的分区（首次进入甚至是最后一个分区）。
+    markCfgNav("sec-inject");
+  }
 }
 
 function updateBadge(id, count) {
@@ -542,8 +549,9 @@ function initConfigNavObserver() {
     const barBottom = bar ? bar.getBoundingClientRect().bottom : 0;
     let current = sections[0].id;
     for (const s of sections) {
-      // 留 1px 容差，避免恰好贴线时的抖动。
-      if (s.getBoundingClientRect().top - barBottom <= 1) current = s.id;
+      // 留 16px 容差：scrollToSection 会多留 12px 呼吸位，判定线必须覆盖它，
+      // 否则点击导航后高亮仍停在上一个分区（贴线抖动也一并吸收）。
+      if (s.getBoundingClientRect().top - barBottom <= 16) current = s.id;
       else break;
     }
     // 滚到最底部时最后一段可能永远够不到判定线，此时直接选它，否则底部

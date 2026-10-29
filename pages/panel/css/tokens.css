@@ -157,7 +157,9 @@
   --btn-bordered-disabled: rgba(0, 0, 0, .04);
   --btn-prominent-idle: linear-gradient(rgba(0, 0, 0, .03), rgba(0, 0, 0, .03)), linear-gradient(#0088FF, #0088FF);
   --btn-prominent-clicked: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#0078F0, #0078F0);
-  --btn-prominent-disabled: #0078F0;
+  /* 禁用态不沿用强调色：kit 的 disabled prominent 是灰填充，比 idle 更淡。
+     旧值 #0078F0 反而比 #0088FF 更深，禁用按钮看起来比可点还醒目（A1）。 */
+  --btn-prominent-disabled: var(--btn-bordered-disabled);
   --btn-tinted-idle: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#0088FF, #0088FF);
   --btn-tinted-clicked: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#0091FF, #0091FF);
   --btn-tinted-disabled: linear-gradient(rgba(0, 0, 0, .1), rgba(0, 0, 0, .1)), linear-gradient(#0088FF, #0088FF);
@@ -357,7 +359,7 @@
   --btn-bordered-disabled: rgba(255, 255, 255, .04);
   --btn-prominent-idle: #0091FF;
   --btn-prominent-clicked: linear-gradient(rgba(255, 255, 255, .1), rgba(255, 255, 255, .1)), linear-gradient(#0A99FF, #0A99FF);
-  --btn-prominent-disabled: #0A99FF;
+  --btn-prominent-disabled: var(--btn-bordered-disabled);
   --btn-tinted-idle: linear-gradient(rgba(255, 255, 255, .14), rgba(255, 255, 255, .14)), linear-gradient(#0091FF, #0091FF);
   --btn-tinted-clicked: var(--btn-tinted-idle);
   --btn-tinted-disabled: var(--btn-tinted-idle);
@@ -367,6 +369,10 @@
   --btn-destructive-prominent-idle: #FF4245;
   --btn-destructive-prominent-clicked: linear-gradient(rgba(255, 255, 255, .1), rgba(255, 255, 255, .1)), linear-gradient(#FF4747, #FF4747);
   --btn-destructive-prominent-disabled: #FF4747;
+
+  /* 深色焦点环：kit 的 global.focusRing 是跨外观的固定 token（0,136,255 两层），
+     深色不另造色相；此处显式重定义是为了让深色 block 自带完整焦点语义（C4）。 */
+  --focus-ring: 0 0 0 3.5px rgba(0, 136, 255, .25), inset 0 0 0 1px rgba(0, 136, 255, .15);
 
   /* 深色控件填充 / 轨道 / 输入框 / 开关 / 分段控件 */
   --control-off: rgba(255, 255, 255, .1);

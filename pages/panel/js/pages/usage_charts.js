@@ -10,7 +10,7 @@ export function mountTrend(host, rows, metric, bucket) {
     const fields=metric==='io'?['input_total','output']:[metric];
     const values=rows.flatMap(r=>fields.map(f=>valueOf(r,f,bucket))).filter(v=>v!=null);
     if (!rows.length || !values.length) { const p=document.createElement('p');p.textContent=rows.length?'所选指标未报告，无法绘图。':'当前筛选无记录。';host.append(p);return; }
-    const width=Math.max(260,host.clientWidth), height=240, left=62, right=12, top=16, bottom=32;
+    const width=Math.max(260,host.clientWidth), height=Math.max(240,Math.round(host.clientHeight)||240), left=62, right=12, top=16, bottom=32;
     const raw=Math.max(0,...values.map(Number)), exp=10**Math.floor(Math.log10((raw||4)/4));
     const peak=[1,2,2.5,5,10].map(m=>m*exp*4).find(v=>v>=raw)||4;
     const plotW=width-left-right, plotH=height-top-bottom, slot=plotW/rows.length;
@@ -40,7 +40,7 @@ export function mountTrend(host, rows, metric, bucket) {
     host.append(root,tip);
     if(focused)Array.from(host.querySelectorAll('[data-day]')).find(e=>e.dataset.day===focused)?.focus({preventScroll:true});
   };
-  draw();let oldWidth=host.clientWidth;
-  observer=new ResizeObserver(()=>{if(host.clientWidth!==oldWidth){oldWidth=host.clientWidth;draw();}});observer.observe(host);
+  draw();let oldWidth=host.clientWidth,oldHeight=host.clientHeight;
+  observer=new ResizeObserver(()=>{if(host.clientWidth!==oldWidth||host.clientHeight!==oldHeight){oldWidth=host.clientWidth;oldHeight=host.clientHeight;draw();}});observer.observe(host);
   return ()=>observer.disconnect();
 }

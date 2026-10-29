@@ -31,6 +31,7 @@ const ACTIONS = {
   "group-edit": el => editGroup(el.dataset.id),
   "group-preview": () => previewGroup(),
   "group-save": () => saveGroup(),
+  "group-recent-close": () => $("#group-recent-dialog")?.close(),
   "group-archive": el => archiveGroup(el.dataset.id),
   "group-recent": el => showGroupRecent(el.dataset.id),
   "group-actors-link": () => linkGroupActors(),
@@ -173,6 +174,7 @@ const ACTIONS = {
 /* 统一的保存入口（供模态框分派与全局快捷键复用） */
 async function saveModal() {
   const st = S._modalState;
+  if (st && st.type === "group") return saveGroup();
   if (st && st.type === "persona") return savePersona();
   if (st && st.type === "wb-entry") return saveWBEntry();
   if (st && st.type === "wb-create") return saveWBCreate();
@@ -375,11 +377,14 @@ function bindEvents() {
         }
       }
     }
-    // 保留原 Alt+1..7；新增用量/任务/会话组分别用 Alt+8/9/0。必须放在 typing 早返回之前：面板里几乎总有输入框持有焦点
+    // Alt+数字按侧栏视觉顺序切页：前五项是内容/知识系统，后五项是系统组。
+    // 不能再用「旧 Alt+1..7 + 新页排末尾」的兼容数组——那会让 Alt+6/7 指向
+    // 屏幕上看不见对应位置的页面（C2）。Alt+8 仍是模型用量，与侧栏 title 一致。
+    // 必须放在 typing 早返回之前：面板里几乎总有输入框持有焦点
     // （搜索框、配置项），否则用户在任意输入框内都无法用快捷键切页。
     if (e.altKey && /^[0-9]$/.test(e.key)) {
       e.preventDefault();
-      const tabs = ["wr", "wb", "persona", "rag", "memory", "trace", "config", "usage", "tasks", "groups"];
+      const tabs = ["wr", "wb", "persona", "rag", "memory", "groups", "tasks", "usage", "trace", "config"];
       switchTab(tabs[(Number(e.key) + 9) % 10]);
       return;
     }

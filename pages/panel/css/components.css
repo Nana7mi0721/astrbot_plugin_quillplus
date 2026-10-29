@@ -35,7 +35,9 @@
 /* prominent：实心强调色 */
 .btn--filled { background: var(--btn-prominent-idle); color: var(--on-accent); font-weight: 600; }
 .btn--filled:active:not(:disabled) { background: var(--btn-prominent-clicked); }
-.btn--filled:disabled { background: var(--btn-prominent-disabled); color: var(--on-accent); }
+/* 禁用 prominent 用灰填充 + tertiary 文字，和 bordered 的禁用档同一条规则，
+   避免「满饱和蓝按钮看起来可点、点了没反应」（A1）。 */
+.btn--filled:disabled { background: var(--btn-prominent-disabled); color: var(--label-3); }
 
 /* tinted：强调色 + 深色罩，白字（kit 的 Bordered Tinted 就是饱和色，不是淡底） */
 .btn--tinted { background: var(--btn-tinted-idle); color: var(--on-accent); }

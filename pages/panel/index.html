@@ -142,17 +142,17 @@
       </div>
       <div class="sidebar-group">
         <div class="sidebar-label">系统</div>
-        <button type="button" class="sl-item" data-tab="groups"><svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg><span class="sl-item-label">会话组</span></button>
+        <button type="button" class="sl-item" data-tab="groups"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg><span class="sl-item-label">会话组</span></button>
         <button type="button" class="sl-item" data-tab="tasks">
-          <svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg>
+          <svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>
           <span class="sl-item-label">后台任务</span>
         </button>
         <button type="button" class="sl-item" data-tab="usage" title="模型用量（Alt+8）">
-          <svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>
+          <svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg>
           <span class="sl-item-label">模型用量</span>
         </button>
         <button type="button" class="sl-item" data-tab="trace">
-          <svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg>
+          <svg class="icon" aria-hidden="true"><use href="#i-flask"/></svg>
           <span class="sl-item-label">注入诊断</span>
         </button>
         <button type="button" class="sl-item" data-tab="config">
@@ -613,28 +613,23 @@
     <section class="tab-pane" id="pane-groups" role="region" aria-label="会话组">
       <div class="page-head-bar"><div class="page-head-bar-inner">
         <div class="page-head"><h2>会话组</h2><span class="page-sub">跨入口继续同一段角色剧情</span></div>
-        <div class="toolbar"><button type="button" class="btn btn--gray" data-action="groups-refresh">刷新入口</button><button type="button" class="btn btn--gray" data-action="group-new">新建会话组</button></div>
+        <div class="toolbar">
+          <button type="button" class="btn btn--gray" data-action="groups-refresh"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新入口</button>
+          <span class="grow"></span>
+          <div class="toolbar-actions"><button type="button" class="btn btn--filled" data-action="group-new"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建会话组</button></div>
+        </div>
       </div></div>
       <div class="page">
-        <div class="note">同组共享角色、状态、记忆和近期文字剧情；回复仍发送到发起本轮的入口。未入组会话保持独立。图片、语音和工具内部过程暂不跨入口复制。</div>
-        <div id="groups-list" aria-live="polite"></div>
-        <div class="card"><div class="card-head"><h3>已解散档案</h3></div><div class="card-body"><div class="card-body-inner" id="groups-archived"></div></div></div>
-        <div class="card" id="group-form" role="form" aria-label="会话组设置">
-          <div class="card-head"><h3 id="group-form-title">新建会话组</h3></div>
-          <div class="card-body"><div class="card-body-inner">
-            <input type="hidden" id="group-id">
-            <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="group-name">名称</label></div><div class="cfg-row-control"><input class="field" id="group-name" maxlength="80" placeholder="为这段共同剧情命名"></div></div>
-            <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="group-persona">共享角色</label></div><div class="cfg-row-control"><select class="field" id="group-persona"></select></div></div>
-            <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="group-seed">初始状态</label><span class="row-desc">复制一个入口的角色变量，原数据仍保留。</span></div><div class="cfg-row-control"><select class="field" id="group-seed"></select></div></div>
-            <p class="row-desc">默认从此刻开始共享。选择已观测入口，可逐个纳入同角色的旧记忆与日志。</p>
-            <fieldset class="group-choices"><legend class="group-title">共享入口与旧历史</legend><div id="group-members"></div></fieldset>
-            <div class="group-actions"><button type="button" class="btn btn--gray" data-action="group-preview">预览共享范围</button><button type="button" class="btn btn--filled" id="group-confirm" data-action="group-save" disabled>确认共享并保存</button></div>
-            <pre id="group-preview" class="group-preview" tabindex="0" aria-label="共享范围预览" aria-live="polite">请先预览共享范围。</pre>
-          </div></div>
-        </div>
-        <div class="card"><div class="card-head"><h3>近期消息</h3><span class="card-head-sub">仅管理员可读</span></div><div class="card-body"><div class="card-body-inner"><pre id="group-recent" class="group-preview" tabindex="0" aria-label="共享近期消息">选择会话组的「查看近期消息」。</pre></div></div></div>
-        <div class="card"><div class="card-head"><h3>参与者关联</h3></div><div class="card-body"><div class="card-body-inner"><p class="row-desc">只有确认账号属于同一人时才关联；相同昵称、头像或数字 ID 不会自动关联，也不会因此获得管理员权限。</p><fieldset class="group-choices"><legend class="sr-only">选择参与者</legend><div id="group-actors"></div></fieldset><div class="group-actions"><button type="button" class="btn btn--gray" data-action="group-actors-link">确认属于同一人</button><button type="button" class="btn btn--gray" data-action="group-actors-unlink">解除所选关联</button></div></div></div></div>
+        <div class="note">同组共享角色、状态、记忆和近期文字剧情；回复仍发送到发起本轮的入口。未入组会话保持独立。图片、语音和工具内部过程暂不跨入口复制。<br>新入口必须先在该私聊或群聊发送一次 <code>/quill</code>；发送后点上方「刷新入口」，或切回本页时会自动重新读取。</div>
+        <div id="groups-capability"></div>
+        <div id="groups-list" class="group-grid" aria-live="polite"></div>
+        <div class="card" id="groups-archived-card" hidden><div class="card-head"><h3>已解散档案</h3><span class="card-head-sub">保留组历史，成员已恢复独立数据</span></div><div class="card-body"><div class="card-body-inner" id="groups-archived"></div></div></div>
+        <div class="card" style="margin-top:var(--sp-4)"><div class="card-head"><h3>参与者关联</h3><span class="card-head-sub">仅管理员可操作</span></div><div class="card-body"><div class="card-body-inner"><p class="row-desc">只有确认账号属于同一人时才关联；相同昵称、头像或数字 ID 不会自动关联，也不会因此获得管理员权限。</p><fieldset class="group-choices"><legend class="sr-only">选择参与者</legend><div id="group-actors"></div></fieldset><div class="group-actions"><button type="button" class="btn btn--gray" data-action="group-actors-link">确认属于同一人</button><button type="button" class="btn btn--gray" data-action="group-actors-unlink">解除所选关联</button></div></div></div></div>
       </div>
+      <dialog class="group-dialog" id="group-recent-dialog" aria-labelledby="group-recent-title">
+        <div class="group-dialog-head"><h3 id="group-recent-title">近期消息</h3><button type="button" class="icon-btn" data-action="group-recent-close" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+        <div class="group-dialog-body"><pre id="group-recent" class="group-preview" tabindex="0">选择会话组的「查看近期消息」。</pre></div>
+      </dialog>
     </section>
 
     <section class="tab-pane" id="pane-tasks" role="region" aria-label="后台任务">
@@ -660,36 +655,26 @@
     <section class="tab-pane" id="pane-usage" role="region" aria-label="模型用量">
       <div class="page-head-bar"><div class="page-head-bar-inner">
         <div class="page-head"><h2>模型用量</h2><span class="page-sub">消耗趋势与来源</span></div>
-        <div class="toolbar"><button type="button" class="btn btn--filled" data-action="usage-refresh">刷新</button><details class="usage-more"><summary>更多</summary><button type="button" class="btn btn--gray" data-action="usage-clear">清空用量台账…</button></details></div>
+        <div class="toolbar"><button type="button" class="btn btn--gray" data-action="usage-refresh">刷新</button><button type="button" class="btn btn--gray" data-action="usage-settings-open">设置</button></div>
       </div></div>
       <div class="page">
-        <div class="card" id="usage-filters"><div class="card-body"><div class="card-body-inner">
-              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-days">时间范围</label></div><div class="cfg-row-control"><select class="field" id="usage-days"><option value="1">近 24 小时</option><option value="7" selected>近 7×24 小时</option><option value="30">近 30×24 小时</option><option value="366">保留期内全部</option></select></div></div>
-              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-scope">逻辑会话 / 会话组</label></div><div class="cfg-row-control"><select class="field" id="usage-scope"><option value="">全部会话</option></select></div></div>
-          <details><summary>更多筛选</summary>
-              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-purpose">用途</label></div><div class="cfg-row-control"><select class="field" id="usage-purpose"><option value="">全部用途</option><option value="main">主回复</option><option value="decision_probe">决策连通性测试</option><option value="decision">剧情决策</option><option value="status_extract">状态提取</option><option value="memory_summary">单轮摘要</option><option value="context_summary">多轮摘要</option><option value="context_compact">上下文压缩</option><option value="reflection">闲时反思</option><option value="persona_convert">人格转换</option><option value="rerank">重排</option><option value="rerank_llm">模型重排</option><option value="embedding">向量化</option></select></div></div>
-              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-model">模型（精确筛选）</label></div><div class="cfg-row-control"><input class="field" id="usage-model" placeholder="留空显示全部"></div></div>
-              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-provider">供应商 ID（精确筛选）</label></div><div class="cfg-row-control"><input class="field" id="usage-provider" placeholder="留空显示全部"></div></div>
-              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-persona">角色 ID（精确筛选）</label></div><div class="cfg-row-control"><input class="field" id="usage-persona" placeholder="留空显示全部"></div></div>
-          </details>
-          <div class="cfg-row"><div class="cfg-row-text"><label for="usage-origin">物理入口（可跨组统计）</label></div><div class="cfg-row-control"><select class="field" id="usage-origin"><option value="">全部入口</option></select></div></div>
+        <div class="card" id="usage-filters"><div class="card-head"><h3>筛选</h3><span class="card-head-sub">时间、会话与入口</span></div><div class="card-body"><div class="card-body-inner">
+          <div class="usage-filter-grid">
+            <label class="usage-filter"><span>时间范围</span><select class="field" id="usage-days"><option value="1">近 24 小时</option><option value="7" selected>近 7×24 小时</option><option value="30">近 30×24 小时</option><option value="366">保留期内全部</option></select></label>
+            <label class="usage-filter"><span>逻辑会话 / 会话组</span><select class="field" id="usage-scope"><option value="">全部会话</option></select></label>
+            <label class="usage-filter"><span>用途</span><select class="field" id="usage-purpose"><option value="">全部用途</option><option value="main">主回复</option><option value="decision_probe">决策连通性测试</option><option value="decision">剧情决策</option><option value="status_extract">状态提取</option><option value="memory_summary">单轮摘要</option><option value="context_summary">多轮摘要</option><option value="context_compact">上下文压缩</option><option value="reflection">闲时反思</option><option value="persona_convert">人格转换</option><option value="rerank">重排</option><option value="rerank_llm">模型重排</option><option value="embedding">向量化</option></select></label>
+            <label class="usage-filter"><span>模型</span><input class="field" id="usage-model" placeholder="留空显示全部"></label>
+            <label class="usage-filter"><span>供应商 ID</span><input class="field" id="usage-provider" placeholder="留空显示全部"></label>
+            <label class="usage-filter"><span>角色 ID</span><input class="field" id="usage-persona" placeholder="留空显示全部"></label>
+            <label class="usage-filter"><span>物理入口</span><select class="field" id="usage-origin"><option value="">全部入口</option></select></label>
+          </div>
           <div id="usage-chips" aria-label="已选筛选"></div>
         </div></div></div>
-<details class="card" id="usage-settings"><summary>上下文压缩与费用展示设置</summary><div class="card-body"><div class="card-body-inner">
-<p class="usage-caption">以下设置为全局配置，作用于所有会话；达到文本估算上限85%时压缩旧完整轮，保留最近两轮。会有额外模型调用，原文检查点保存在插件数据目录。工具/媒体历史不强行压缩；估算不等于模型硬窗口。手动命令：/quill compact。</p>
-<label class="check"><input type="checkbox" id="u-compression-enabled"><span>自动压缩历史</span></label>
-<label>上下文文本估算上限（Token）<input class="field" type="number" id="u-compression-max-tokens" min="1024" max="1000000"></label>
-<label>压缩模型供应商 ID（留空使用主模型）<input class="field" id="u-compression-provider-id"></label>
-<label>费用展示币种<select class="field" id="u-usage-display-currency"><option value="original">原币种</option><option value="CNY">统一 CNY</option><option value="USD">统一 USD</option></select></label>
-<label>手动汇率：1 USD = 多少 CNY<input class="field" id="u-usage-usd-cny-rate" inputmode="decimal"></label>
-<p class="usage-caption">0 表示未设置汇率；原币种与来源保留，其他币种不自动猜测。此设置只改变换算视图，不改变真实账单。</p>
-<button type="button" class="btn btn--filled" id="usage-settings-save">保存设置</button><p id="usage-settings-status" role="status"></p><p id="usage-context-status" class="usage-caption"></p>
-</div></div></details>
         <p id="usage-message" role="status" aria-live="polite"></p>
-        <p class="usage-caption" id="usage-snapshot"></p>
+        <p class="usage-note" id="usage-snapshot"></p>
         <div id="usage-results" hidden aria-busy="false">
           <div id="usage-overview"></div>
-          <p class="usage-caption">近 N×24 小时按 UTC 日期分组；仅显示有记录跨度及中间日期，实际受保留期与记录上限影响。未知量不填零。</p>
+          <p class="usage-note">近 N×24 小时按 UTC 日期分组；仅显示有记录跨度及中间日期，实际受保留期与记录上限影响。未知量不填零。</p>
           <div id="usage-visuals"></div><div id="usage-cache"></div><div id="usage-details"></div>
         </div>
       </div>
@@ -697,6 +682,29 @@
         <span class="pager-info" id="usage-pagination" aria-live="polite"></span>
         <div class="pager-nav"><button type="button" class="btn btn--gray" data-action="usage-prev" disabled>上一页</button><button type="button" class="btn btn--gray" data-action="usage-next" disabled>下一页</button></div>
       </div></div></div>
+      <dialog class="usage-dialog" id="usage-settings-dialog" aria-labelledby="usage-settings-title">
+        <div class="usage-dialog-head"><h3 id="usage-settings-title">用量设置</h3><button type="button" class="btn btn--gray" data-action="usage-settings-close">关闭</button></div>
+        <div class="usage-dialog-body" id="usage-settings">
+          <p class="usage-note">以下设置为全局配置，作用于所有会话；达到文本估算上限 85% 时压缩旧完整轮，保留最近两轮。会有额外模型调用，原文检查点保存在插件数据目录。工具/媒体历史不强行压缩；估算不等于模型硬窗口。手动命令：/quill compact。</p>
+          <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="u-compression-enabled">自动压缩历史</label><span class="row-desc">达到上限 85% 时触发，保留最近两轮。</span></div><div class="cfg-row-control"><label class="switch"><input type="checkbox" id="u-compression-enabled"><span class="switch-track"></span></label></div></div>
+          <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="u-compression-max-tokens">上下文文本估算上限（Token）</label></div><div class="cfg-row-control"><input class="field" type="number" id="u-compression-max-tokens" min="1024" max="1000000"></div></div>
+          <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="u-compression-provider-id">压缩模型供应商</label><span class="row-desc">从 AstrBot 供应商配置读取；留空使用主模型。</span></div><div class="cfg-row-control"><select class="field" id="u-compression-provider-id"></select></div></div>
+          <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="u-usage-display-currency">费用展示币种</label><span class="row-desc">可选原币种、CNY 或 USD；只影响换算视图。</span></div><div class="cfg-row-control"><select class="field" id="u-usage-display-currency"><option value="original">原币种</option><option value="CNY">统一 CNY</option><option value="USD">统一 USD</option></select></div></div>
+          <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="u-usage-usd-cny-rate">手动汇率：1 USD = 多少 CNY</label></div><div class="cfg-row-control"><input class="field" id="u-usage-usd-cny-rate" inputmode="decimal"></div></div>
+          <p class="usage-note" id="usage-currency-hint"></p>
+          <p class="usage-note">0 表示未设置汇率；原币种与来源保留，其他币种不自动猜测。此设置只改变换算视图，不改变真实账单。</p>
+          <p id="usage-settings-status" role="status"></p><p id="usage-context-status" class="usage-caption"></p>
+        </div>
+        <div class="usage-dialog-actions">
+          <button type="button" class="btn btn--destructive-tinted" data-action="usage-clear">清空用量台账…</button>
+          <span class="usage-dialog-spacer"></span>
+          <button type="button" class="btn btn--filled" id="usage-settings-save">保存设置</button>
+        </div>
+      </dialog>
+      <dialog class="usage-dialog usage-dialog--wide" id="usage-trend-dialog" aria-labelledby="usage-trend-title">
+        <div class="usage-dialog-head"><h3 id="usage-trend-title">日级趋势数据</h3><button type="button" class="btn btn--gray" data-action="usage-trend-close">关闭</button></div>
+        <div class="usage-dialog-body" id="usage-trend-table"></div>
+      </dialog>
     </section>
 
     <section class="tab-pane" id="pane-trace" role="region" aria-label="注入诊断">
@@ -811,21 +819,6 @@
       </div>
 
       <div class="page">
-        <section class="cfg-section" id="sec-usage-cache">
-          <div class="cfg-section-head"><h2>用量与提示词缓存</h2><span class="cfg-section-sub">计费未知会明确标注；缓存优化需显式开启</span></div>
-<div class="card"><div class="card-head"><h3>上下文压缩与费用换算</h3></div><div class="card-body"><div class="card-body-inner"><div class="cfg-field"><label for="c-usage-display-currency" class="cfg-field-label">费用展示币种</label><select class="field" id="c-usage-display-currency"><option value="original">原币种</option><option value="CNY">CNY</option><option value="USD">USD</option></select></div><div class="cfg-field"><label for="c-usage-usd-cny-rate" class="cfg-field-label">手动汇率 1 USD = CNY</label><input class="field" id="c-usage-usd-cny-rate" type="text"></div><div class="cfg-field"><label for="c-compression-enabled" class="cfg-field-label">自动压缩历史（额外模型调用）</label><label class="switch"><input id="c-compression-enabled" type="checkbox"><span class="switch-track"></span></label></div><div class="cfg-field"><label for="c-compression-max-tokens" class="cfg-field-label">文本估算 Token 上限（85%触发）</label><input class="field" id="c-compression-max-tokens" type="number"></div><div class="cfg-field"><label for="c-compression-provider-id" class="cfg-field-label">压缩模型供应商 ID（留空主模型）</label><input class="field" id="c-compression-provider-id" type="text"></div></div></div></div><div class="card"><div class="card-head"><h3>用量台账</h3></div><div class="card-body"><div class="card-body-inner">
-<div class="cfg-field"><label class="cfg-field-label" for="c-usage-enabled">记录模型用量</label><label class="switch"><input type="checkbox" id="c-usage-enabled"><span class="switch-track"></span></label><span class="hint">仅保存调用元数据与供应商返回的计数，不记录提示词或回复。</span></div>
-<div class="cfg-field"><label class="cfg-field-label" for="c-usage-retention-days">用量保留天数</label><input class="field" type="number" id="c-usage-retention-days" min="1" max="366" step="1"><span class="hint">1–366 天；仅清理用量台账。</span></div>
-<div class="cfg-field"><label class="cfg-field-label" for="c-usage-max-records">用量记录上限</label><input class="field" type="number" id="c-usage-max-records" min="100" max="100000" step="1"><span class="hint">100–100000 条；常规清理最多延后 99 条，调整上限后在下次记录时清理。过期记录不参与查询。</span></div>
-<div class="cfg-field"><label class="cfg-field-label" for="c-usage-prices-json">手动模型单价（每百万 Token）</label><textarea class="field" rows="5" id="c-usage-prices-json" spellcheck="false"></textarea><span class="hint">JSON：模型名或 provider/model 为键，值含 currency、version、input、output、cache_read、cache_write。没有可靠价格或完整用量时金额保持未知。</span></div>
-</div></div></div>
-<div class="card"><div class="card-head"><h3>稳定上下文布局</h3></div><div class="card-body"><div class="card-body-inner">
-<div class="cfg-field"><label class="cfg-field-label" for="c-cache-enabled">启用稳定提示词布局</label><label class="switch"><input type="checkbox" id="c-cache-enabled"><span class="switch-track"></span></label><span class="hint">开启后重排段序与分组，覆盖世界书注入位置；可能改变模型行为、增加常驻输入。动态状态后置，关闭恢复旧布局。</span></div>
-<div class="cfg-field"><label class="cfg-field-label" for="c-cache-dynamic-to-user-tail">临时动态上下文</label><label class="switch"><input type="checkbox" id="c-cache-dynamic-to-user-tail"><span class="switch-track"></span></label><span class="hint">仅在已知宿主/Provider 序列化路径启用；不支持时退到系统尾部，不自动重发请求。</span></div>
-<div class="cfg-field"><label class="cfg-field-label" for="c-cache-stable-sampling">稳定素材采样</label><label class="switch"><input type="checkbox" id="c-cache-stable-sampling"><span class="switch-track"></span></label><span class="hint">仅缓存布局启用时有效；在窗口内保持随机池样本，改变采样节奏。</span></div>
-<div class="cfg-field"><label class="cfg-field-label" for="c-cache-sampling-window">素材采样窗口（轮）</label><input class="field" type="number" id="c-cache-sampling-window" min="1" max="100" step="1"><span class="hint">1–100 轮，按会话与角色确定稳定种子。</span></div>
-</div></div></div>
-        </section>
         <!-- ══ 1. 注入引擎 ══ -->
         <section class="cfg-section" id="sec-inject">
           <div class="cfg-section-head">
@@ -1227,6 +1220,42 @@
           </div>
         </section>
 
+        <section class="cfg-section" id="sec-usage-cache">
+          <div class="cfg-section-head"><h2>用量与提示词缓存</h2><span class="cfg-section-sub">计费未知会明确标注；缓存优化需显式开启</span></div>
+
+          <div class="card">
+            <div class="card-head"><h3>用量台账</h3></div>
+            <div class="card-body"><div class="card-body-inner">
+              <div class="cfg-field"><label class="cfg-field-label" for="c-usage-enabled">记录模型用量</label><label class="switch"><input type="checkbox" id="c-usage-enabled"><span class="switch-track"></span></label><span class="hint">仅保存调用元数据与供应商返回的计数，不记录提示词或回复。</span></div>
+              <div class="cfg-field"><label class="cfg-field-label" for="c-usage-retention-days">用量保留天数</label><input class="field" type="number" id="c-usage-retention-days" min="1" max="366" step="1"><span class="hint">1–366 天；仅清理用量台账。</span></div>
+              <div class="cfg-field"><label class="cfg-field-label" for="c-usage-max-records">用量记录上限</label><input class="field" type="number" id="c-usage-max-records" min="100" max="100000" step="1"><span class="hint">100–100000 条；常规清理最多延后 99 条，调整上限后在下次记录时清理。过期记录不参与查询。</span></div>
+              <div class="cfg-field"><label class="cfg-field-label" for="c-usage-prices-json">手动模型单价（每百万 Token）</label><textarea class="field" rows="5" id="c-usage-prices-json" spellcheck="false"></textarea><span class="hint">JSON：模型名或 provider/model 为键，值含 currency、version、input、output、cache_read、cache_write。没有可靠价格或完整用量时金额保持未知。</span></div>
+            </div></div>
+          </div>
+
+          <div class="cfg-cols" style="margin-top:var(--sp-4)">
+            <div class="card">
+              <div class="card-head"><h3>上下文压缩与费用换算</h3></div>
+              <div class="card-body"><div class="card-body-inner">
+                <div class="cfg-field"><label for="c-usage-display-currency" class="cfg-field-label">费用展示币种</label><select class="field" id="c-usage-display-currency"><option value="original">原币种</option><option value="CNY">CNY</option><option value="USD">USD</option></select><span class="hint">只改变换算展示，不改变原始金额与来源。</span></div>
+                <div class="cfg-field"><label for="c-usage-usd-cny-rate" class="cfg-field-label">手动汇率 1 USD = CNY</label><input class="field" id="c-usage-usd-cny-rate" type="text"><span class="hint">0 表示未设置汇率；其他币种不自动猜测。</span></div>
+                <div class="cfg-field"><label for="c-compression-enabled" class="cfg-field-label">自动压缩历史（额外模型调用）</label><label class="switch"><input id="c-compression-enabled" type="checkbox"><span class="switch-track"></span></label><span class="hint">达到文本估算上限 85% 时压缩旧完整轮，保留最近两轮；原文检查点保存在插件数据目录。</span></div>
+                <div class="cfg-field"><label for="c-compression-max-tokens" class="cfg-field-label">文本估算 Token 上限（85%触发）</label><input class="field" type="number" id="c-compression-max-tokens" step="1024"><span class="hint">按文本估算，不等于模型硬窗口；工具/媒体历史不强行压缩。</span></div>
+                <div class="cfg-field"><label for="c-compression-provider-id" class="cfg-field-label">压缩模型供应商</label><select class="field field--wide" id="c-compression-provider-id"></select><span class="hint">从 AstrBot 供应商配置读取；留空使用主模型。</span></div>
+              </div></div>
+            </div>
+
+            <div class="card">
+              <div class="card-head"><h3>稳定上下文布局</h3></div>
+              <div class="card-body"><div class="card-body-inner">
+                <div class="cfg-row"><div class="cfg-row-text"><div class="cfg-row-title"><label for="c-cache-enabled">启用稳定提示词布局</label></div><div class="row-desc">把注入段按固定顺序与分组排列，让连续请求尽量共享同一前缀，从而提升供应商侧缓存命中率。开启后会覆盖世界书注入位置，可能改变模型行为并增加常驻输入；关闭恢复旧布局。</div></div><div class="cfg-row-control"><label class="switch"><input type="checkbox" id="c-cache-enabled"><span class="switch-track"></span></label></div></div>
+                <div class="cfg-row"><div class="cfg-row-text"><div class="cfg-row-title"><label for="c-cache-dynamic-to-user-tail">临时动态上下文</label></div><div class="row-desc">在支持的宿主与 Provider 序列化路径上，把每轮变化的动态上下文移到用户消息尾部，避免打断前缀缓存；不支持时自动退回系统尾部，不自动重发请求。</div></div><div class="cfg-row-control"><label class="switch"><input type="checkbox" id="c-cache-dynamic-to-user-tail"><span class="switch-track"></span></label></div></div>
+                <div class="cfg-row"><div class="cfg-row-text"><div class="cfg-row-title"><label for="c-cache-stable-sampling">稳定素材采样</label></div><div class="row-desc">让随机素材在采样窗口内保持同一批样本，避免每轮抽到不同素材导致缓存前缀失效；仅在稳定提示词布局开启时有效。</div></div><div class="cfg-row-control"><label class="switch"><input type="checkbox" id="c-cache-stable-sampling"><span class="switch-track"></span></label></div></div>
+                <div class="cfg-row"><div class="cfg-row-text"><div class="cfg-row-title"><label for="c-cache-sampling-window">素材采样窗口（轮）</label></div><div class="row-desc">每多少轮重新抽取一次素材。数值越大，缓存前缀越稳定但素材多样性越低；按会话与角色固定种子。</div></div><div class="cfg-row-control"><div class="unit-wrap"><input class="field" type="number" id="c-cache-sampling-window" min="1" max="100" step="1"><span class="unit">轮</span></div></div></div>
+              </div></div>
+            </div>
+          </div>
+        </section>
         <!-- ══ 5. 系统与安全 ══ -->
         <section class="cfg-section" id="sec-system">
           <div class="cfg-section-head">

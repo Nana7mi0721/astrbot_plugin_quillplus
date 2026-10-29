@@ -7,13 +7,10 @@
 #pane-tasks .task-id { display: inline-block; margin-left: var(--sp-2); font-size: 11px; line-height: 14px; color: var(--label-2); }
 #pane-tasks .task-state { min-width: 120px; }
 #pane-tasks .task-result { max-width: 240px; }
-#pane-tasks .task-diagnostic { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; margin: 0; font-size: 13px; line-height: 18px; }
-#pane-tasks .task-recovery { margin: 0; padding-left: var(--sp-4); line-height: 18px; overflow-wrap: anywhere; }
+#pane-tasks .task-diagnostic { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; margin: 0; font-size: 13px; line-height: 16px; }
+#pane-tasks .task-recovery { margin: 0; padding-left: var(--sp-4); line-height: 16px; overflow-wrap: anywhere; }
 #pane-tasks td:last-child { white-space: nowrap; }
 
-#pane-tasks .page-head h2 { line-height: 32px; letter-spacing: 0; }
-#pane-tasks .card-head h3 { letter-spacing: 0; }
 #pane-tasks .task-diagnostic:empty { display: none; }
 #pane-tasks .task-diagnostic:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 #pane-tasks .cfg-row-text .row-desc { display: block; }
-#pane-tasks .page-sub { color: var(--label-2); }
