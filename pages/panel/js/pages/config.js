@@ -1,6 +1,6 @@
 import { loadTasks } from "./tasks.js";
 import { loadGroups } from "./groups.js";
-import { loadUsage } from "./usage.js";
+import { loadUsage, disposeUsage } from "./usage.js";
 /* pages/config.js — 由 index.html 拆分生成（可读性优先，逻辑与拆分前逐行一致） */
 import { S } from "../state.js";
 import { api, apiPost } from "../api.js";
@@ -423,6 +423,7 @@ function filterConfig(query) {
 
 
 function switchTab(tab) {
+  if (tab !== "usage") disposeUsage();
   // 仅当「离开」配置页且存在未保存修改时才拦截。
   // 面板 iframe 未授予 allow-modals，原生 confirm 恒返回 false 会把用户
   // 永久锁在配置页，因此这里用自绘对话框；用户确认后清除脏标记再跳转。

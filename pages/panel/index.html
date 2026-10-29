@@ -656,26 +656,31 @@
       </div>
     </section>
 
-    <!-- ───── 模型用量（M2）───── -->
+    <!-- 用量页：内容区复用原有卡片与表单，图形使用全量聚合。 -->
     <section class="tab-pane" id="pane-usage" role="region" aria-label="模型用量">
       <div class="page-head-bar"><div class="page-head-bar-inner">
-        <div class="page-head"><h2>模型用量</h2><span class="page-sub">观测到的调用、缓存与费用</span></div>
-        <div class="toolbar">
-          <button type="button" class="btn btn--sm btn--filled" data-action="usage-refresh">查询</button>
-          <button type="button" class="btn btn--sm btn--gray" data-action="usage-clear">清空用量台账</button>
-        </div>
+        <div class="page-head"><h2>模型用量</h2><span class="page-sub">消耗趋势与来源</span></div>
+        <div class="toolbar"><button type="button" class="btn btn--filled" data-action="usage-refresh">刷新</button><details class="usage-more"><summary>更多</summary><button type="button" class="btn btn--gray" data-action="usage-clear">清空用量台账…</button></details></div>
       </div></div>
       <div class="page">
-        <div class="note">汇总涵盖全部匹配记录，明细单独分页。未知用量、费用不填零；会话标识已脱敏，时间表按 UTC 汇总。</div>
-        <div class="card"><div class="card-head"><h3>筛选</h3></div><div class="card-body"><div class="card-body-inner">
-              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-days">时间范围</label></div><div class="cfg-row-control"><select class="field" id="usage-days"><option value="1">近 1 天</option><option value="7" selected>近 7 天</option><option value="30">近 30 天</option><option value="366">保留期内全部</option></select></div></div>
+        <div class="card" id="usage-filters"><div class="card-body"><div class="card-body-inner">
+              <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-days">时间范围</label></div><div class="cfg-row-control"><select class="field" id="usage-days"><option value="1">近 24 小时</option><option value="7" selected>近 7×24 小时</option><option value="30">近 30×24 小时</option><option value="366">保留期内全部</option></select></div></div>
               <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-scope">会话标识（已脱敏）</label></div><div class="cfg-row-control"><select class="field" id="usage-scope"><option value="">全部会话</option></select></div></div>
+          <details><summary>更多筛选</summary>
               <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-purpose">用途</label></div><div class="cfg-row-control"><select class="field" id="usage-purpose"><option value="">全部用途</option><option value="main">主回复</option><option value="decision_probe">决策连通性测试</option><option value="decision">剧情决策</option><option value="status_extract">状态提取</option><option value="memory_summary">单轮摘要</option><option value="context_summary">多轮摘要</option><option value="reflection">闲时反思</option><option value="persona_convert">人格转换</option><option value="rerank">重排</option><option value="rerank_llm">模型重排</option><option value="embedding">向量化</option></select></div></div>
               <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-model">模型（精确筛选）</label></div><div class="cfg-row-control"><input class="field" id="usage-model" placeholder="留空显示全部"></div></div>
               <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-provider">供应商 ID（精确筛选）</label></div><div class="cfg-row-control"><input class="field" id="usage-provider" placeholder="留空显示全部"></div></div>
               <div class="cfg-row"><div class="cfg-row-text"><label class="cfg-row-title" for="usage-persona">角色 ID（精确筛选）</label></div><div class="cfg-row-control"><input class="field" id="usage-persona" placeholder="留空显示全部"></div></div>
+          </details>
+          <div id="usage-chips" aria-label="已选筛选"></div>
         </div></div></div>
-        <div id="usage-results" aria-live="polite"></div>
+        <p id="usage-message" role="status" aria-live="polite"></p>
+        <p class="usage-caption" id="usage-snapshot"></p>
+        <div id="usage-results" hidden aria-busy="false">
+          <div id="usage-overview"></div>
+          <p class="usage-caption">近 N×24 小时按 UTC 日期分组；仅显示有记录跨度及中间日期，实际受保留期与记录上限影响。未知量不填零。</p>
+          <div id="usage-visuals"></div><div id="usage-cache"></div><div id="usage-details"></div>
+        </div>
       </div>
       <div class="pager-bar"><div class="pager-bar-inner"><div class="pager">
         <span class="pager-info" id="usage-pagination" aria-live="polite"></span>

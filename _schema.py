@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -50,16 +51,61 @@ class SchemaCompatibilityError(StorageError):
     pass
 
 
-def _verify_restorable(path: Path):
-    # 真正打开恢复副本，而不是仅检查备份文件存在。SQLite backup 已包含 WAL 中提交。
+def legacy_fts_repair_plan(tables, triggers, schema_version):
+    """仅识别已知历史索引的孤儿空壳；不放行未知虚拟表或真实数据损坏。"""
+    names = {row[0] for row in tables}
+    orphans = []
+    for name, sql in tables:
+        if name not in ("knowledge_fts", "knowledge_base_fts") or not sql:
+            continue
+        content = re.search(r"content\s*=\s*['\"]?(knowledge_base)['\"]?(?:\s*[,)]|\s*$)", sql, re.I)
+        if re.search(r"USING\s+fts5\s*\(", sql, re.I) and content and content[1] not in names:
+            orphans.append(name)
+    if not orphans:
+        return [], []
+    quote = lambda name: '"' + name.replace('"', '""') + '"'
+    plan = []
+    for name, target, sql in triggers:
+        if target == "writing_resource" and sql and any(re.search(r"\b" + fts + r"\b", sql) for fts in orphans):
+            plan.append(("DROP TRIGGER IF EXISTS " + quote(name), ()))
+    # DROP TABLE 会尝试构造缺少内容表/影子表的旧索引。限定名称、FTS5 声明和缺表
+    # 三重证据后才删除其 schema 壳；实际素材与当前 writing_resource_fts 均不在计划内。
+    plan.append(("PRAGMA writable_schema=ON", ()))
+    for name in orphans:
+        plan.append(("DELETE FROM sqlite_master WHERE type='table' AND name=?", (name,)))
+        for suffix in ("_data", "_idx", "_docsize", "_config", "_content"):
+            if name + suffix in names:
+                plan.append(("DROP TABLE " + quote(name + suffix), ()))
+    plan.append((f"PRAGMA schema_version={schema_version + 1}", ()))
+    return orphans, plan
+
+
+def _verify_restorable(path: Path, kind=""):
+    # 快照保持原样；在恢复副本上实际执行限定修复，再检查整个库，不能吞掉损坏错误。
     with tempfile.TemporaryDirectory(prefix="quill_schema_verify_", dir=path.parent) as temporary:
         restored = Path(temporary) / "restored.db"
         shutil.copyfile(path, restored)
         if hashlib.sha256(path.read_bytes()).digest() != hashlib.sha256(restored.read_bytes()).digest():
             raise StorageError("迁移备份副本校验失败")
-        # sqlite3 的 with 只结束事务，不关闭句柄；Windows 必须在删恢复副本前关闭。
-        with closing(sqlite3.connect(restored.as_uri() + "?mode=ro", uri=True)) as db:
-            if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+        with closing(sqlite3.connect(restored)) as db:
+            if kind == "writing":
+                orphans, plan = legacy_fts_repair_plan(
+                    db.execute("SELECT name,sql FROM sqlite_master WHERE type='table'").fetchall(),
+                    db.execute("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger'").fetchall(),
+                    db.execute("PRAGMA schema_version").fetchone()[0])
+                if plan:
+                    try:
+                        db.execute("BEGIN IMMEDIATE")
+                        for sql, args in plan:
+                            db.execute(sql, args)
+                        db.commit()
+                    except BaseException:
+                        db.rollback()
+                        raise
+                    finally:
+                        db.execute("PRAGMA writable_schema=OFF")
+                    logger.warning("[Quill Schema] 恢复副本移除了已知孤儿 FTS 壳 %s，继续完整检查；原始快照保留", orphans)
+            if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
                 raise StorageError("迁移备份无法通过完整性检查")
 
 
@@ -69,7 +115,19 @@ def _backup(path: str, kind: str, version: int) -> str:
     target = folder / f"{kind}.v{version}.{uuid4().hex}.db"
     # 失败的快照/校验副本也保留，不能在升级失败时删掉唯一的恢复线索。
     snapshot_sqlite(path, str(target))
-    _verify_restorable(target)
+    os.chmod(target, 0o600)
+    # 相同一致性快照的失败重试不堆积副本；只在确有相同恢复线索时删除冗余新快照。
+    digest = hashlib.sha256(target.read_bytes()).digest()
+    for existing in folder.glob(f"{kind}.v{version}.*.db"):
+        if existing != target and existing.stat().st_size == target.stat().st_size and hashlib.sha256(existing.read_bytes()).digest() == digest:
+            target.unlink()
+            target = existing
+            break
+    try:
+        _verify_restorable(target, kind)
+    except Exception:
+        logger.error("[Quill Schema] 恢复副本校验失败，原始快照保留于 %s", target)
+        raise
     os.chmod(target, 0o600)  # POSIX 权限；Windows 权限继承目录 ACL，不宣称已收紧 ACL。
     return str(target)
 
@@ -105,11 +163,15 @@ async def prepare_database(connection, path: str, kind: str) -> dict:
     if version == target and missing:
         raise SchemaCompatibilityError("数据库版本与实际表结构不一致", detail="schema_version_mismatch")
     backup = None
-    if version < target and names:
+    orphan_fts = []
+    if kind == "writing":
+        orphan_fts, _ = legacy_fts_repair_plan(
+            await (await connection.execute("SELECT name,sql FROM sqlite_master WHERE type='table'")).fetchall(), [], 0)
+    if names and (version < target or orphan_fts):
         backup = await asyncio.to_thread(_backup, path, kind, version)
         logger.info("[Quill Schema] %s 旧库快照已写入，恢复副本通过 integrity_check", kind)
     return {"version": version, "target_version": target,
-            "backup": backup, "kind": kind, "fresh": not names,"migration_steps":steps}
+            "backup": backup, "kind": kind, "fresh": not names,"migration_steps":steps,"legacy_fts_orphans":orphan_fts}
 
 
 async def finish_database(connection, *, kind):

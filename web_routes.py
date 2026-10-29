@@ -689,7 +689,7 @@ class QuillRoutes:
                 "documents":getattr(self.plugin,"rag_vector_store",None),"writing":self.plugin.wr_manager}
         result={}
         for name,store in stores.items():
-            status=dict(getattr(store,"schema_status",{}) or getattr(self.plugin,"_rag_storage_status",{}).get(name,{}) or {})
+            status=dict(getattr(store,"schema_status",{}) or (getattr(self.plugin,"_wr_storage_status",{}) if name == "writing" else getattr(self.plugin,"_rag_storage_status",{}).get(name,{})) or {})
             if status:
                 status["backup_verified"]=bool(status.pop("backup",None))
             result[name]={"available":store is not None and getattr(store,"_conn",None) is not None,**status}

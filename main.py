@@ -657,6 +657,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 category_dedup_limit = self.config.wr_dedup_limit
                 self.wr_manager = WritingResourceManager(wr_path, category_dedup_limit=category_dedup_limit)
                 await self.wr_manager.initialize()
+                self._wr_storage_status = {}
                 stats = await self.wr_manager.get_stats()
                 logger.info(
                     f"[Quill] 写作素材库已加载: {stats['total_entries']} 条 "
@@ -664,8 +665,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 )
                 logger.info(f"[Quill] 最大注入: {self.props.wr_max_entries} 条")
             except Exception as e:
+                self._wr_storage_status = {"error":type(e).__name__,"available":False}
+                if self.wr_manager is not None:
+                    try:
+                        await self.wr_manager.close()
+                    except Exception as close_error:
+                        logger.error("[Quill] 素材库失败连接关闭异常: %s", type(close_error).__name__)
                 self.wr_manager = None
-                logger.warning(f"[Quill] 写作素材库初始化失败: {e}")
+                logger.error(f"[Quill] 写作素材库初始化失败: {e}")
         else:
             logger.info("[Quill] 写作素材库已禁用")
 

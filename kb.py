@@ -42,9 +42,9 @@ except ModuleNotFoundError:  # 直接运行本文件做自测：先把 AstrBot �
     from astrbot.api import logger
 
 if __package__:
-    from ._schema import prepare_database, finish_database
+    from ._schema import prepare_database, finish_database, legacy_fts_repair_plan
 else:
-    from _schema import prepare_database, finish_database
+    from _schema import prepare_database, finish_database, legacy_fts_repair_plan
 
 
 class WritingResourceManager:
@@ -335,8 +335,7 @@ class WritingResourceManager:
         已经消失；或者虚拟表本身也没了（只在触发器 SQL 里留个名字）。两种都会让
         对 writing_resource 的写全部失败，所以这里同时处理：
           1. 扫描所有 FTS 虚拟表，找出内容表已不存在的「悬空索引」；
-          2. 连同它的 _data/_idx/_docsize/_config 影子表一起 DROP（否则下次启动
-             还会被当成悬空索引反复命中）；
+          2. 已知历史索引在备份校验后移除 schema 空壳及残留影子表；
           3. 把引用这些悬空索引的触发器清掉，包括引用一个根本不存在的表的触发器。
         幂等，每次启动跑一遍无副作用。
         """
@@ -356,8 +355,9 @@ class WritingResourceManager:
         await c.execute(
             "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger'"
         )
+        trigger_rows = await c.fetchall()
         dropped = []
-        for name, target, sql in await c.fetchall():
+        for name, target, sql in trigger_rows:
             if target != "writing_resource" or not sql:
                 continue
             # 命中悬空索引，或引用了一个连 sqlite_master 里都没有的表
@@ -371,19 +371,26 @@ class WritingResourceManager:
                 await c.execute(f"DROP TRIGGER IF EXISTS {name}")
                 dropped.append((name, hit[0], orphan_fts.get(hit[0], "已不存在")))
 
-        for name in list(orphan_fts):
-            logger.warning(
-                f"[WR] 清理悬空 FTS 索引 {name}（其内容表 {orphan_fts[name]} 已不存在）"
-            )
-            # 只删影子表，不删虚拟表本身：内容表缺失时 fts5 模块无法构造这个
-            # 虚拟表，DROP TABLE 会报 "vtable constructor failed"。影子表清掉后
-            # 它已是空壳，只要没有触发器引用就不会再被触碰。整个清理都是尽力而为，
-            # 任何一步失败都不该阻断启动（关键修复是上面 DROP TRIGGER）。
-            for suffix in ("_data", "_idx", "_docsize", "_config"):
-                try:
-                    await c.execute(f"DROP TABLE IF EXISTS {name}{suffix}")
-                except Exception as e:
-                    logger.debug(f"[WR] 清理影子表 {name}{suffix} 失败（可忽略）: {e}")
+        # 旧逻辑只删影子表留下空壳，会让迁移前 integrity_check 永久失败。
+        # 与恢复副本共用限定修复计划；真正数据损坏仍由完整检查拒绝，不泛化容错。
+        known, plan = legacy_fts_repair_plan(table_rows, trigger_rows,
+            (await (await c.execute("PRAGMA schema_version")).fetchone())[0])
+        if plan:
+            if not self.schema_status.get("backup"):
+                raise RuntimeError("孤儿 FTS 清理缺少已校验备份，拒绝写入")
+            try:
+                for statement, args in plan:
+                    await c.execute(statement, args)
+                await self.conn.commit()
+            except BaseException:
+                await self.conn.rollback()
+                raise
+            finally:
+                await c.execute("PRAGMA writable_schema=OFF")
+            if [r[0] for r in await (await c.execute("PRAGMA integrity_check")).fetchall()] != ["ok"]:
+                raise RuntimeError("孤儿 FTS 清理后完整性检查失败，备份已保留")
+            self.schema_status["legacy_fts_removed"] = known
+            logger.warning("[WR] 已移除历史孤儿 FTS 空壳 %s；素材、命中计数和日志保留", known)
 
         if dropped or orphan_fts:
             await self.conn.commit()
