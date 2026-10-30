@@ -35,3 +35,31 @@ def lint_entries(entries):
         if str(row.get('content','')).lstrip().startswith(('指令：','指令:','开启助手模式停止生成剧情')):
             issues.append({'entry_id':row['entry_id'],'code':'control_instruction','enabled':row.get('enabled',False)})
     return issues
+
+
+CONTROL_ENTRY_IDS={'summary_mode','progress_continue','progress_speedup','progress_detail','progress_next'}
+
+
+def repair_candidates(entries):
+    """R2：只生成待确认候选，不把同ID或文字命中当成自动覆写授权。"""
+    import hashlib
+    import json
+    result=[]
+    for row in entries:
+        if not (row.get('enabled') or row.get('is_constant')):
+            continue
+        reasons=[]
+        if row.get('entry_id') in CONTROL_ENTRY_IDS:
+            reasons.append('历史流程控制条目标识；可能已经过用户改写，需核对正文')
+        if any(k in str(row.get('content','')) for k in ('开启助手模式','停止生成剧情','【总结完毕】')):
+            reasons.append('正文包含切换助手/停止剧情的控制语句')
+        if not reasons:
+            continue
+        # 命中计数不参与版本指纹；检索本身不应令确认失效。正文/关键词/开关必须相同。
+        fields={k:row.get(k) for k in ('entry_id','name','category','content','keywords','aliases','enabled','is_constant')}
+        fingerprint=hashlib.sha256(json.dumps(fields,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+        result.append({'entry_id':row['entry_id'],'name':row.get('name') or row['entry_id'],
+                       'enabled':bool(row.get('enabled')),'is_constant':bool(row.get('is_constant')),
+                       'reasons':reasons,'preview':str(row.get('content',''))[:1200],
+                       'content_chars':len(str(row.get('content',''))),'fingerprint':fingerprint})
+    return sorted(result,key=lambda r:r['entry_id'])

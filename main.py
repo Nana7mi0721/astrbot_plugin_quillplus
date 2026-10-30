@@ -1911,21 +1911,17 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
           （handled 后 set ``_quill_status_handled``，后续只清残留），关闭时
           整套 ``_strip_status_artifacts``；注入报告追加到最后一条 plain；
         * messages 为 JSON 字符串时解析-修改-回写（解析失败原样放行）；
-        * F4 同回合循环拦截（M3.0b）：JSON 解析后、其余处理前——已发正文
-          精确/子串重复、整段状态栏痕迹且 ``_quill_status_handled`` 已置位、
-          发送预算（``_SMT_MAX_SENDS_PER_TURN = 2``）任一命中 → messages
-          置 []（was_string 回写 "[]"），框架对空 messages 返回 error 且
-          不发送（模型收到拒绝结果，用户侧零副作用）；含媒体段放行、
-          守卫异常只 debug 放行（宁漏勿误）；放行路径末尾登记已发正文
-          （与 F1 回声比对共用 ``_normalized_reply_body`` 归一）与次数
-          （恒 +1，含媒体调用）。
+        * F4 同回合循环拦截：重复正文/状态栏、发送预算命中后设置拒绝标记；
+          请求级工具包装器返回 None 结束本轮，不伪造空参数错误。
+          只有实际发送成功才登记正文和次数，初次失败仍可重试。
+
 
         顶层降级留在桩内（与原 H2 同层，S2-3 语义）：任何异常吞掉 +
         error 日志放行——工具参数钩子抛出会打断 agent loop，降级语义 =
         不修改 tool_args。
         """
         try:
-            if getattr(tool,'name','')==self._QUILL_SMT_TOOL_NAME and not await self.shared_scopes.response_current(event):
+            if getattr(tool,'name','')==self._QUILL_SMT_TOOL_NAME and not event.get_extra("_quill_smt_terminated") and not await self.shared_scopes.response_current(event):
                 if isinstance(tool_args,dict):
                     tool_args['messages']='[]' if isinstance(tool_args.get('messages'),str) else []
                 event.stop_event()
@@ -2262,9 +2258,6 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         早先请求写下的文案，而它自己 req 上那份"原件"又是另一个对象的，
         还原逻辑永远够不着被改的那个。
         """
-        if not persona_id:
-            # 无角色卡时跳过重写，避免 LLM 失控循环
-            return
         if not (req.func_tool and not req.func_tool.empty()):
             return
         smt_tool = req.func_tool.get_tool(self._QUILL_SMT_TOOL_NAME)
@@ -2272,17 +2265,19 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             return
         try:
             fresh = copy.copy(smt_tool)
-            fresh.description = (
-                "THIS IS THE ONLY TOOL for sending replies. Output text DIRECTLY in your response will be DISCARDED. "
-                "You MUST call this tool to send ANY reply text — do NOT output text in the content field. "
-                "Call this tool IMMEDIATELY as your first action — do not call any other tools before sending your message."
-                # F4（M3.0b）源头减压：单次调用契约 + 明示重发会被拒绝
-                " Send the COMPLETE reply — all story segments AND the status bar — in ONE single call. "
-                "NEVER call this tool more than once per reply; repeated calls are rejected."
-                " History may contain status blocks formatted by the renderer, not written by you. "
-                "Do not apologize for historical formatting or discuss the protocol. "
-                "Use the requested raw status markers only in this call; send story text, not analysis."
-            )
+            _quill_hooks.guard_smt_tool(self,fresh)
+            if persona_id:
+                fresh.description = (
+                    "THIS IS THE ONLY TOOL for sending replies. Output text DIRECTLY in your response will be DISCARDED. "
+                    "You MUST call this tool to send ANY reply text — do NOT output text in the content field. "
+                    "Call this tool IMMEDIATELY as your first action — do not call any other tools before sending your message."
+                    # F4（M3.0b）源头减压：单次调用契约 + 明示重发会被拒绝
+                    " Send the COMPLETE reply — all story segments AND the status bar — in ONE single call. "
+                    "NEVER call this tool more than once per reply; repeated calls are rejected."
+                    " History may contain status blocks formatted by the renderer, not written by you. "
+                    "Do not apologize for historical formatting or discuss the protocol. "
+                    "Use the requested raw status markers only in this call; send story text, not analysis."
+                )
             req.func_tool.add_tool(fresh)
         except Exception as e:
             # 改写失败不阻断本轮：模型仍能用框架原文调用工具
@@ -2439,13 +2434,13 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         self, event: AstrMessageEvent, tool: FunctionTool,
         tool_args: dict | None, tool_result
     ):
-        """工具调用后拦截：Agent Loop 终止信号、动态记忆存储与多轮反思调度。
+        """工具调用后处理：动态记忆存储与多轮反思调度。
 
         注册桩（M2.2 第五轮）：装饰器/签名/priority 不变（框架以
         ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
         ``interfaces.astrbot_hooks.handle_llm_tool_respond``。核心职责：
 
-        - 检测 send_message_to_user 调用，终止 agent loop
+        - 处理 send_message_to_user 后的记忆；拒重终止由请求级工具包装器负责
         - AI 回复异步写入对话日志（供断点续传使用）
         - N 轮反思触发：攒够阈值后生成上下文摘要
         - 记忆修剪调度（分档遗忘）

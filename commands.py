@@ -834,6 +834,9 @@ async def quill_status(plugin, event: AstrMessageEvent):
                 if wr_cats:
                     ext_info = f" (仅限: {', '.join(wr_cats)})"
             lines.append(f"  写作素材库: {stats['enabled_entries']} 条启用 / 共 {stats['total_entries']} 条{ext_info}")
+            from .quill.services.writing_lint import repair_candidates
+            pending=len(repair_candidates(await plugin.wr_manager.get_all_entries(enabled_only=False)))
+            if pending:lines.append(f"    {pending} 条流程素材待确认，请在面板「素材体检」核对后处理")
         except Exception:
             lines.append("  写作素材库: 查询失败")
     else:
@@ -1097,7 +1100,7 @@ async def quill_debug(plugin, event: AstrMessageEvent):
         try:
             pdata = await plugin.persona_manager.get_persona(persona_id)
             if pdata and pdata.get("name"):
-                persona_label = f"{pdata.get('name')} ({persona_id})"
+                persona_label = pdata["name"] if pdata["name"]==persona_id else f"{pdata['name']} ({persona_id})"
         except Exception as e:
             logger.debug(f"[Quill] /quill debug 读取角色卡名失败（回退裸 id）: {e}")
     lines.append(f"  Target: {target_id}")

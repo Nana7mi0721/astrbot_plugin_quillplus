@@ -17,7 +17,7 @@ import { reindexRAG, deleteRAGDocument, deleteRAGGroup, loadRAG, loadRAGModelInf
 import { loadTracePage, onTraceSessionChange, refreshTrace, toggleTraceTurn,
          runSimulate, runLint, toggleTraceLive, copyPreviewText } from "./pages/trace.js";
 import { deleteWB, deleteWBEntry, exportWBSt, importWBSt, onWBSearchInput, openWBCreateModal, openWBEntryModal, reloadWB, saveWBCreate, saveWBEntry, setWBOnlyConst, toggleWB } from "./pages/worldbook.js";
-import { openWRLint, _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, saveWREntry, toggleWREntry, updateWRBatchBar, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState } from "./pages/writing.js";
+import { repairWRSelected, openWRLint, _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, saveWREntry, toggleWREntry, updateWRBatchBar, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState } from "./pages/writing.js";
 import { $, debounce, withBusy } from "./utils.js";
 
 export { ACTIONS, bindEvents, debouncedMemLoad, debouncedWBFilter, debouncedWRLoad, quillInit, saveModal };
@@ -80,6 +80,7 @@ const ACTIONS = {
   "wr-delete": (el) => deleteWREntry(el.closest(".wr-card").dataset.eid, el),
   "wr-test": () => openWRTestModal(),
   "wr-lint": () => openWRLint(),
+  "wr-repair-selected": () => repairWRSelected(),
   "wr-export": (el) => exportWR(el),
   "wr-batch-toggle": (el) => wrBatchToggle(el.dataset.value === "1"),
   "wr-batch-delete": () => wrBatchDelete(),

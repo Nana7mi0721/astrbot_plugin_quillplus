@@ -228,7 +228,7 @@ _MUTATING_ROUTES: frozenset = frozenset({
     "memory_progress", "memory_summarize_task", "memory_import_task",
     "groups_list", "groups_preview", "groups_save", "groups_archive", "groups_recent", "groups_actors",
     "usage_stats", "usage_clear",  # 全会话元数据也需要管理身份。
-    "wr_lint", "rag_reindex",
+    "wr_lint", "wr_repair", "rag_reindex",
 })
 
 # 新增写入口默认要求管理身份；只有这些既有 POST 查询明确按只读处理。
@@ -425,6 +425,7 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/wr/test",         self.wr_test,        ["POST"],   "测试写作素材库匹配")
         _r(f"/{PLUGIN_NAME}/wr/categories",   self.wr_categories,  ["GET"],    "列出写作素材库分类")
         _r(f"/{PLUGIN_NAME}/wr/lint", self.wr_lint, ["GET"], "写作素材只读体检")
+        _r(f"/{PLUGIN_NAME}/wr/repair", self.wr_repair, ["POST"], "确认停用流程素材")
         _r(f"/{PLUGIN_NAME}/wr/batch_delete", self.wr_batch_delete,["POST"],   "批量删除写作素材库条目")
         _r(f"/{PLUGIN_NAME}/wr/batch_toggle", self.wr_batch_toggle,["POST"],   "批量启用/禁用写作素材库条目")
 
@@ -1500,9 +1501,22 @@ class QuillRoutes:
     async def wr_lint(self):
         if not self.wr_manager:
             return error_response('写作素材库不可用',status_code=503)
-        from .quill.services.writing_lint import lint_entries
+        from .quill.services.writing_lint import lint_entries, repair_candidates
         entries=await self.wr_manager.get_all_entries(enabled_only=False)
-        return json_response({'issues':lint_entries(entries),'entries':len(entries),'seed_repair':getattr(self.wr_manager,'seed_repair',{})})
+        return json_response({'issues':lint_entries(entries),'entries':len(entries),'seed_repair':getattr(self.wr_manager,'seed_repair',{}),'repair_candidates':repair_candidates(entries)})
+
+    @_api_handler
+    async def wr_repair(self):
+        if not self.wr_manager:
+            return error_response('写作素材库不可用',status_code=503)
+        data=await _json_body()
+        if data.get('confirm')!='DISABLE_CONTROL_MATERIALS':
+            return error_response('请确认停用所选流程素材，不会改写正文',status_code=400)
+        try:
+            result=await self.wr_manager.disable_control_candidates(data.get('selections'))
+        except ValueError as exc:
+            return error_response(str(exc),status_code=409)
+        return json_response(result)
 
     @_api_handler
     async def rag_reindex(self):

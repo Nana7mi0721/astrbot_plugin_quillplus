@@ -63,14 +63,59 @@ _SMT_SENT_TEXTS_KEY = "_send_message_to_user_current_session_plain_texts"
 # F4（M3.0b，BASELINE §8.2 F4）：同回合 SMT 循环拦截的登记键。
 _SMT_SENT_BODIES_KEY = "_quill_smt_sent_bodies"
 _SMT_SEND_COUNT_KEY = "_quill_smt_send_count"
+_SMT_BLOCK_KEY = "_quill_smt_block_reason"
 # 发送预算：合法的分割发送是两条（历史上「正文一段、状态栏单独一段」的
 # 模式，实测 7 轮里 3 轮如此）；同回合循环失败实测连发 3-4 条——预算取 2，
-# 再多的调用几乎必然是循环失败（拦截方式：messages 置 []，框架对空
-# messages 直接返回 error 且不发送任何内容）。
+# 再多的调用几乎必然是循环失败。拒绝由请求级工具包装器返回 None，
+# 使用宿主已发送工具的 DONE 契约，不伪造参数错误诱导重试。
 _SMT_MAX_SENDS_PER_TURN = 2
 # 子串判重（规则 1）的最小候选长度：短正文（一句短对话）偶然是已发长文
 # 的子串属合法新消息，不拦；真实的残尾/分段重发形态远长于此。
 _SMT_SUBSTR_MIN_LEN = 20
+
+
+def guard_smt_tool(plugin, tool):
+    """R1：仅包装请求副本的协程入口；不改共享工具或宿主 runner。"""
+    import inspect
+    original=getattr(tool,"_quill_smt_original",None)
+    if original is None:
+        original=tool.handler or tool.call
+    if not inspect.iscoroutinefunction(original):
+        logger.warning("[Quill] SMT 非协程工具不支持终止包装，保留原执行契约")
+        return
+    is_handler=bool(tool.handler)
+    async def guarded(context, **kwargs):
+        event=context if is_handler else context.context.event
+        if event.get_extra("_quill_activated") and (event.get_extra(_SMT_BLOCK_KEY) or event.get_extra("_quill_smt_terminated") or (event.get_extra(_SMT_SEND_COUNT_KEY) and not kwargs.get("messages"))):
+            # 工具 executor 会发送遗留 event.result；先清除，避免终止时重发正文。
+            event.clear_result()
+            event.set_extra("_quill_smt_terminated",True)
+            # None 终止时宿主没有 final_llm_resp，H4 不会触发；已发剧情仍须完成共享轮。
+            try:
+                await plugin.shared_scopes.finish(event,None)
+            except Exception as exc:
+                logger.error('[Quill] SMT终止后共享历史提交失败（%s），保留中断恢复路径',type(exc).__name__)
+            return None  # AstrBot local runner 的公开工具返回语义：结束本轮。
+        before=list(event.get_extra(_SMT_SENT_TEXTS_KEY) or [])
+        result=await original(context,**kwargs)
+        # 只有确认成功的实际发送进入拒重账本；参数/权限/平台错误可正常重试。
+        after=event.get_extra(_SMT_SENT_TEXTS_KEY) or []
+        sent=isinstance(result,str) and result.startswith("Message sent to session ")
+        if event.get_extra("_quill_activated") and (sent or len(after)>len(before)):
+            messages=kwargs.get("messages",[])
+            if isinstance(messages,str):
+                messages=json.loads(messages)
+            text="\n".join(m["text"] for m in messages if isinstance(m,dict) and m.get("type")=="plain" and isinstance(m.get("text"),str))
+            body=_normalized_reply_body(plugin,text)
+            bodies=list(event.get_extra(_SMT_SENT_BODIES_KEY) or [])
+            if body:bodies.append(body)
+            event.set_extra(_SMT_SENT_BODIES_KEY,bodies)
+            event.set_extra(_SMT_SEND_COUNT_KEY,int(event.get_extra(_SMT_SEND_COUNT_KEY) or 0)+1)
+        return result
+    if is_handler:tool.handler=guarded
+    else:tool.call=guarded
+    tool._quill_smt_original=original
+    tool._quill_smt_guarded=True
 
 
 # ── M1a trace 采集辅助（R1：故障隔离，采集异常只记 warning）─────────
@@ -355,8 +400,8 @@ async def handle_using_llm_tool(
     3. F4 同回合循环拦截（M3.0b 新增，BASELINE §8.2 F4）：守卫段——
        已发正文精确/子串重复、重复状态栏（bar-only 且
        ``_quill_status_handled`` 已置位）、发送预算
-       （``_SMT_MAX_SENDS_PER_TURN = 2``）任一命中 → messages 置 []
-       （was_string 回写 "[]"）并 return，后续一切不跑；
+       （``_SMT_MAX_SENDS_PER_TURN = 2``）任一命中 → 标记拒绝并 return，
+       请求级工具包装器不执行发送，返回 None 终止本轮；
     4. telegram/tg 平台剥离 plain 段 Markdown（逐字下沉
        quill/services/response.py，调用点一行）；
     5. 状态栏（全平台）：开启时首条 plain 走六级链
@@ -366,9 +411,7 @@ async def handle_using_llm_tool(
        plain（``_append_inject_report``）；每个 plain 段追加 F5 剧情分支
        箭头全角归一（M3.0b，``_response_mod.normalize_plot_markers``）；
     6. JSON 回写（was_string 时序列化回去）；
-    7. F4 记录段（M3.0b 新增）：放行路径登记已发正文（重算处理后的
-       plain concat 经 ``_normalized_reply_body`` 归一，与 F1 回声比对
-       共用同一函数）与发送次数（恒 +1，含媒体调用）。
+    7. 成功发送账本由请求级工具包装器提交；仅放行并不代表发送成功。
 
     下沉决策（本轮评估记录）：telegram 剥离（``strip_markdown`` 正则组与
     逐段套用循环）在原 main.py 即为零 self 依赖的模块级纯函数/自由段，
@@ -380,7 +423,7 @@ async def handle_using_llm_tool(
         return
     if not event.get_extra("_quill_activated"):
         return
-    if not tool_args:
+    if not isinstance(tool_args,dict):
         return
 
     platform = ""
@@ -408,20 +451,16 @@ async def handle_using_llm_tool(
         messages = messages_raw
 
     # ── F4（M3.0b，BASELINE §8.2 F4）：同回合 SMT 循环调用拦截 ────────
-    # 真机实证：同一回合内模型反复调用 send_message_to_user（正文+状态栏
-    # → 单独状态栏 → 两遍变体正文），插件照单全发，用户被迫手动停止
-    # agent。框架 message_tools.py 对空 messages 直接返回
-    # "error: messages parameter is empty or invalid." 且**不发送任何内容**，
-    # 故把 tool_args["messages"] 置 [] 即等于「拒绝本次发送」：模型收到
-    # error 结果，用户侧零副作用。
-    #
+    # R1：把重复发送变成 messages=[] 会返回参数错误，真实模型可持续重试。
+    # 本钩子只标记拒绝；请求级包装器消费标记并返回 None，让宿主结束本轮。
     # 守卫位于 JSON 解析之后、其余全部处理之前：拦截时 H2 后续（Markdown
     # 剥离/状态栏链/报告/扫描/记录）一律不跑。仅当 messages 是 list 时
     # 执行；整体 try/except——判定自身异常只 debug 放行原路径（宁漏勿误，
     # 不吞 H2 其他处理）。与 F1 回声比对共用 _normalized_reply_body（经
     # plugin 动态分发 _scrub_inject_report / _strip_status_artifacts），
     # 保证判定两侧归一对称。
-    if isinstance(messages, list):
+    event.set_extra(_SMT_BLOCK_KEY,None)
+    if isinstance(messages, list) and getattr(tool,"_quill_smt_guarded",False):
         try:
             _plain_concat = "\n".join(
                 m.get("text") for m in messages
@@ -442,7 +481,9 @@ async def handle_using_llm_tool(
             _count = event.get_extra(_SMT_SEND_COUNT_KEY)
             _count = _count if isinstance(_count, int) else 0
 
-            _reason = ""
+            _reason = "本轮已结束" if event.get_extra("_quill_smt_terminated") else ""
+            if not messages and _count:
+                _reason = "正文已发送后的空调用"
             if not _has_media:
                 if _body:
                     # 规则 1：精确重复；或候选（≥ _SMT_SUBSTR_MIN_LEN）是
@@ -465,9 +506,7 @@ async def handle_using_llm_tool(
                     # 规则 3：发送预算（合法分割两条、循环失败实测 3-4 条）
                     _reason = "发送预算"
             if _reason:
-                tool_args["messages"] = (
-                    json.dumps([], ensure_ascii=False) if was_string else []
-                )
+                event.set_extra(_SMT_BLOCK_KEY,_reason)
                 logger.info(
                     f"[Quill] F4 已拦截第 {_count + 1} 次 "
                     f"send_message_to_user（{_reason}），本次调用不发送"
@@ -526,33 +565,6 @@ async def handle_using_llm_tool(
     if was_string:
         tool_args["messages"] = json.dumps(messages, ensure_ascii=False)
 
-    # ── F4 记录段（M3.0b）：放行路径的已发正文/次数登记 ────────────────
-    # 重算**处理后**的 plain concat（本函数已在各段改写 msg["text"]），
-    # 经 _normalized_reply_body 归一后非空才登记；发送次数恒 +1（含媒体
-    # 调用——媒体调用放行同样消耗本轮预算）。与 F1 回声比对
-    # （handle_llm_response）共用同一归一函数，保证两侧对称。
-    # 整体 try/except：记录自身异常只 debug 放行，不影响本钩子语义。
-    try:
-        _bodies = event.get_extra(_SMT_SENT_BODIES_KEY)
-        if not (isinstance(_bodies, list)
-                and all(isinstance(s, str) for s in _bodies)):
-            _bodies = []
-        _concat = ""
-        if isinstance(messages, list):
-            _concat = "\n".join(
-                m.get("text") for m in messages
-                if isinstance(m, dict) and m.get("type") == "plain"
-                and isinstance(m.get("text"), str)
-            )
-        _body = _normalized_reply_body(plugin, _concat)
-        if _body:
-            _bodies.append(_body)
-            event.set_extra(_SMT_SENT_BODIES_KEY, _bodies)
-        _count = event.get_extra(_SMT_SEND_COUNT_KEY)
-        _count = _count if isinstance(_count, int) else 0
-        event.set_extra(_SMT_SEND_COUNT_KEY, _count + 1)
-    except Exception as e:
-        logger.debug(f"[Quill] F4 已发记录异常，放行: {e}", exc_info=True)
 
 
 async def handle_llm_response(
@@ -793,7 +805,7 @@ async def handle_llm_tool_respond(
     plugin, event: AstrMessageEvent, tool: FunctionTool,
     tool_args: dict | None, tool_result
 ) -> None:
-    """工具调用后拦截：Agent Loop 终止信号、动态记忆存储与多轮反思调度（H5）。
+    """工具调用后处理：动态记忆存储与多轮反思调度（H5）。
 
     （业务逻辑自 main.py 逐字搬移，M2.2 第五轮；``self`` → ``plugin``。
     验证走 E2E：.build/harness/quilltest/run.py --tier2，行为契约与降级怪癖见
@@ -841,6 +853,10 @@ async def handle_llm_tool_respond(
         return
 
     if not event.get_extra("_quill_activated"):
+        return
+
+    # R1：失败工具不能抢占记忆去重标记，否则成功重试的正文没有机会入日志。
+    if getattr(tool,"_quill_smt_guarded",False) and not event.get_extra(_SMT_SEND_COUNT_KEY):
         return
 
     logger.info("[Quill] send_message_to_user 已调用")
@@ -1101,7 +1117,7 @@ async def handle_llm_request(
     10. ``worldbook_always_activate`` 强制 ``activated=True, wr_activated=False``；
     11. **未激活 → reset_quill_rounds + return**（gate 本体，编排控制流）；
     12. ``increment_quill_rounds``；所有布局每轮重新装配常驻，system 不由历史承载；
-    13. ``_rewrite_smt_tool_description``（仅激活路径；无角色卡跳过）；
+    13. 请求级 SMT 终止保护；有角色卡时改写描述；
     14. extra_info 组装（含 session_vars）；
     15. ``_prompt_builder_for_request(_sb_effective)``（浅拷贝对齐状态栏开关）；
     16. ``build_system_prompt``——世界书+WR 注入点（``worldbook_enabled``
@@ -1360,7 +1376,7 @@ async def handle_llm_request(
     skip_constants = False
 
     # 改写 send_message_to_user 描述（含状态栏强制要求）
-    # 无角色卡时跳过：避免 LLM 在无人设约束时进入 Agent 死循环
+    # 无角色卡仅跳过描述改写，仍保留请求级拒重终止保护。
     await plugin._rewrite_smt_tool_description(req, persona_id)
 
     if wr_activated and plugin.wr_manager and plugin.props.debug:

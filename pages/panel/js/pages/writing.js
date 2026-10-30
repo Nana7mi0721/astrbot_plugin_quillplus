@@ -7,7 +7,7 @@ import { createTagInput } from "../components/taginput.js";
 import { updateBadge } from "../pages/config.js";
 import { $, $$, catTone, downloadJSON, esc, withBusy } from "../utils.js";
 
-export { openWRLint, WR_FALLBACK_GAP, WR_FALLBACK_ROW_H, WR_MIN_CARD_W, WR_MIN_PER_PAGE, WR_PAGER_BLOCK, _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, renderWRGrid, renderWRPager, saveWREntry, toggleWREntry, updateWRBatchBar, updateWRStats, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState };
+export { repairWRSelected, openWRLint, WR_FALLBACK_GAP, WR_FALLBACK_ROW_H, WR_MIN_CARD_W, WR_MIN_PER_PAGE, WR_PAGER_BLOCK, _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, renderWRGrid, renderWRPager, saveWREntry, toggleWREntry, updateWRBatchBar, updateWRStats, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState };
 
 const wrState = { entries: [], total: 0, page: 1, perPage: 9 };
 const _wrSelected = new Set();
@@ -74,6 +74,8 @@ async function loadWR(_retried) {
     if (category) params.set("category", category);
     if (onlyConst) params.set("is_constant", "true");
     const data = await api("/wr/list?" + params.toString());
+    const lint=$('[data-action="wr-lint"]');
+    if(lint)lint.textContent=data.repair_pending?`素材体检 · ${data.repair_pending} 条待确认`:"素材体检";
     wrState.entries = data.items || [];
     wrState.total = data.total || 0;
     // 页码夹紧：窗口 resize / 筛选 / 删除 / 批量删除都会改变总页数，
@@ -440,19 +442,47 @@ function openWRTestModal() {
 
 /* ══ G. 世界书 ═══════════════════════════════════════════════════════ */
 
-let wrLintEpoch=0;
+let wrLintEpoch=0, wrRepairFlight=false;
+let wrLintRows=[];
 async function openWRLint() {
   const epoch=++wrLintEpoch;
   const scrim=$("#scrim");
   S._modalMode="wr-lint";S._modalState=null;
   $("#modalTitle").textContent="写作素材体检";
+  wrLintRows=[];
   $("#modalBody").textContent="正在检查…";
   $("#modalSaveBtn").hidden=true;
   openModal();
   try {
     const data=await api("/wr/lint");
     if(epoch!==wrLintEpoch||!scrim.classList.contains("is-open")||S._modalMode!=="wr-lint")return;
+    wrLintRows=data.repair_candidates||[];
     const labels={broad_keyword:"关键词过宽，自动匹配忽略",duplicate_keyword:"关键词重复",empty_effective_keys:"没有有效自动匹配词",control_instruction:"包含流程指令，请核对是否应禁用"};
-    $("#modalBody").innerHTML=`<p class="hint">检查自动匹配过宽与控制指令；自定义条目保留，由你核对后编辑。共 ${esc(data.entries)} 条；已知原始种子如需纠正会先保存备份，条目正文与命中计数保留。</p><div class="table-wrap"><table class="data"><thead><tr><th>条目</th><th>问题</th><th>状态</th></tr></thead><tbody>${data.issues.map(x=>`<tr><td>${esc(x.entry_id)}</td><td>${esc(labels[x.code]||x.code)} ${esc(x.keyword||"")}</td><td>${x.enabled?"已启用":"已禁用"}</td></tr>`).join("")||'<tr><td colspan="3">未发现问题</td></tr>'}</tbody></table></div>`;
+    $("#modalBody").innerHTML=`<p class="hint">检查自动匹配过宽与控制指令；自定义条目保留，由你核对后编辑。共 ${esc(data.entries)} 条；自动修正仅匹配已核对的原样种子，其他历史版本需自行确认。</p>
+      <h3>流程素材待确认（${wrLintRows.length}）</h3>
+      <p>仅凭条目标识无法判断是否由你改写。请先核对正文，勾选后只停用所选条目并取消常驻；先保存库备份，保留正文、关键词和命中次数。默认不选择任何条目。</p>
+      ${wrLintRows.map((r,i)=>`<div class="result-card"><label class="check"><input type="checkbox" name="wr-repair-choice" value="${i}"><span>${esc(r.name)} · ${esc(r.entry_id)}（${r.enabled?"已启用":"已停用"}${r.is_constant?" · 常驻":""}）</span></label><p class="hint">${esc(r.reasons.join("；"))}</p><details><summary>核对正文（共 ${r.content_chars} 字，预览最多1200字）</summary><p class="result-body">${esc(r.preview)}</p></details></div>`).join("")||'<p>没有待确认的流程素材。</p>'}
+      <div class="toolbar"><button type="button" class="btn btn--destructive-tinted" data-action="wr-repair-selected" ${!wrLintRows.length||wrRepairFlight?"disabled":""}>备份并停用所选…</button><button type="button" class="btn btn--gray" data-action="wr-lint">重新体检</button></div>
+      <h3>匹配与内容检查</h3><div class="table-wrap"><table class="data"><thead><tr><th>条目</th><th>问题</th><th>状态</th></tr></thead><tbody>${data.issues.map(x=>`<tr><td>${esc(x.entry_id)}</td><td>${esc(labels[x.code]||x.code)} ${esc(x.keyword||"")}</td><td>${x.enabled?"已启用":"已禁用"}</td></tr>`).join("")||'<tr><td colspan="3">未发现问题</td></tr>'}</tbody></table></div>`;
   } catch(error) { if(epoch===wrLintEpoch&&scrim.classList.contains("is-open")&&S._modalMode==="wr-lint")$("#modalBody").textContent="检查失败："+error.message; }
+}
+
+async function repairWRSelected() {
+  if(wrRepairFlight||S._modalMode!=="wr-lint")return;
+  const epoch=wrLintEpoch;
+  const rows=Array.from(document.querySelectorAll('input[name="wr-repair-choice"]:checked')).map(e=>wrLintRows[Number(e.value)]).filter(Boolean);
+  if(!rows.length){showToast("请先核对正文并勾选待停用条目","warning");return;}
+  sandboxConfirm(`确认备份素材库并停用所选 ${rows.length} 条素材？同时取消所选条目的常驻。正文、关键词与命中计数保留，未选条目不变。`,async()=>{
+    if(wrRepairFlight||epoch!==wrLintEpoch||S._modalMode!=="wr-lint"||!$("#scrim").classList.contains("is-open"))return;
+    wrRepairFlight=true;
+    const button=$('[data-action="wr-repair-selected"]');if(button)button.disabled=true;
+    try{
+      const result=await apiPost("/wr/repair",{confirm:"DISABLE_CONTROL_MATERIALS",selections:rows.map(r=>({entry_id:r.entry_id,fingerprint:r.fingerprint}))});
+      showToast(`已备份并停用 ${result.updated} 条素材，正文与计数保留。备份：${result.backup}`,"success");
+      await loadWR();
+      if(epoch===wrLintEpoch&&S._modalMode==="wr-lint"&&$("#scrim").classList.contains("is-open"))await openWRLint();
+    }catch(error){showToast(error.message);}
+    finally{wrRepairFlight=false;const current=$('[data-action="wr-repair-selected"]');if(current)current.disabled=!wrLintRows.length;}
+  },true);
+  $("#alertOk").textContent="备份并停用";
 }

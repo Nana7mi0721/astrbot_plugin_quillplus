@@ -104,6 +104,8 @@ async def handle_wr_list(wr_manager, category=None, search=None, page=1, per_pag
     if not wr_manager:
         return err("写作素材库未加载")
     entries = await wr_manager.get_all_entries(enabled_only=False)
+    from .quill.services.writing_lint import repair_candidates
+    repair_pending=len(repair_candidates(entries))
     if category:
         entries = [e for e in entries if e.get("category") == category]
     if search:
@@ -120,7 +122,7 @@ async def handle_wr_list(wr_manager, category=None, search=None, page=1, per_pag
         entries = [e for e in entries if bool(e.get("is_constant")) == is_c]
     total = len(entries)
     items = entries[(page - 1) * per_page: (page - 1) * per_page + per_page]
-    return ok({"items": items, "total": total, "page": page, "per_page": per_page})
+    return ok({"items": items, "total": total, "page": page, "per_page": per_page,"repair_pending":repair_pending})
 
 
 async def handle_wr_get(wr_manager, entry_id=None):

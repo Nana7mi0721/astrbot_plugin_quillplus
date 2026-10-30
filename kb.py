@@ -452,6 +452,49 @@ class WritingResourceManager:
         self.seed_repair={'updated':len(changes),'backup':backup.name}
         logger.warning('[WR] 已纠正 %s 条原始种子关键词/控制条目，内容与命中计数保留，原库快照已保存',len(changes))
 
+    async def disable_control_candidates(self, selections):
+        """R2：确认后只停用所选候选并取消常驻；先备份，全部指纹一致才整体提交。"""
+        from pathlib import Path
+        from uuid import uuid4
+        try:
+            from .quill.services.writing_lint import repair_candidates
+            from ._backup_util import snapshot_sqlite
+        except ImportError:
+            from quill.services.writing_lint import repair_candidates
+            from _backup_util import snapshot_sqlite
+        if not isinstance(selections,list) or not selections or len(selections)>100:
+            raise ValueError('请选择1至100条待确认素材')
+        expected={}
+        for row in selections:
+            if not isinstance(row,dict) or not isinstance(row.get('entry_id'),str) or not isinstance(row.get('fingerprint'),str):
+                raise ValueError('候选参数无效，请重新体检')
+            if row['entry_id'] in expected:
+                raise ValueError('候选条目重复')
+            expected[row['entry_id']]=row['fingerprint']
+        def validate(rows):
+            candidates={r['entry_id']:r for r in repair_candidates(rows)}
+            if any(eid not in candidates or candidates[eid]['fingerprint']!=fp for eid,fp in expected.items()):
+                raise ValueError('所选素材已变更或不再待处理，请重新体检后确认')
+        async with self._lock:
+            validate(await self.get_all_entries(enabled_only=False))
+            folder=Path(self.db_path).parent/'.schema_backups'
+            folder.mkdir(parents=True,exist_ok=True,mode=0o700)
+            backup=folder/('writing.control_disable.'+uuid4().hex+'.db')
+            await asyncio.to_thread(snapshot_sqlite,self.db_path,str(backup))
+            os.chmod(backup,0o600)
+            try:
+                await self.conn.execute('BEGIN IMMEDIATE')
+                # 外部直接写SQLite不受进程锁保护；持事务再次核对后才更新。
+                validate(await self.get_all_entries(enabled_only=False))
+                for eid in expected:
+                    await self.conn.execute('UPDATE writing_resource SET enabled=0,is_constant=0,updated_at=CURRENT_TIMESTAMP WHERE entry_id=?',(eid,))
+                await self.conn.commit()
+            except BaseException:
+                await self.conn.rollback()
+                raise
+        logger.info('[WR] 已备份并停用 %s 条用户确认的流程素材，正文和计数保留',len(expected))
+        return {'updated':len(expected),'backup':backup.name}
+
     async def close(self):
         if self._conn:
             await self._conn.close()
