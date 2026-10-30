@@ -1411,10 +1411,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         if scope!=origin.umo:
             turn=self.scope_resolver.resolve(origin,await self.state_manager.get_selected_persona_id(origin.umo))
             await self.shared_scopes.waiting_supported(event,turn)
+        try:
+            await _quill_hooks.prepare_output_flags(self,event)
+        except Exception as exc:
+            logger.warning('[Quill] 提前设置输出模式失败（%s），保留宿主模式',type(exc).__name__)
 
     @filter.on_waiting_llm_request(priority=100)
     async def on_waiting_llm_request(self, event: AstrMessageEvent):
-        """在流式决策前切换角色卡专属对话并控制流式模式。
+        """切换角色卡专属对话；输出旗标已在 AdapterMessage 阶段准备。
 
         注册桩（M2.2 第二轮）：装饰器/签名/priority 不变（框架以
         ``__module__`` 精确匹配绑定，BASELINE §1.2），实现委托
@@ -1428,15 +1432,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
           新建独立对话 / 切换到不同对话成功后重置 ``quill_rounds``，
           消除换卡后首轮跳 Layer 1 常驻（BASELINE §8.2 F2；同卡快路径
           与首次接管当前对话不重置，重置失败只 warning）；
-        * 拦截字面 ``/reinject`` / ``/重新注入``（按 **sender_id** 非
-          target_id 重置 quill_rounds 并回执，不继续流式决策）；
-        * 按 ``state.stream_mode`` off/on/auto 设置 ``enable_streaming``
-          extra（auto 且激活词/【】括号时关流式）。
+        * 拦截字面 ``/reinject`` / ``/重新注入``，按 target_id 重置轮次并回执；
+        * 输出旗标由前置 AdapterMessage 钩子准备，本钩子不再声称能修改本轮局部流式值。
 
-        降级怪癖（BASELINE §2 H1 行，与 H6 相反，刻意保留）：**无钩子级
-        顶层 try**——``state_manager.get_state`` 抛出会**上抛框架**；仅
-        "取 message_str/_get_target_id"的内层小块 except: return 静默。
-        桩体因此不做任何 try 包裹。
+        角色对话隔离自带异常降级；取事件身份失败则退出，轮次重置异常
+        交由宿主记录。输出旗标不在这个阶段重新决策。
         """
         try:
             await self.shared_scopes.observe(event)
@@ -2279,6 +2279,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 # F4（M3.0b）源头减压：单次调用契约 + 明示重发会被拒绝
                 " Send the COMPLETE reply — all story segments AND the status bar — in ONE single call. "
                 "NEVER call this tool more than once per reply; repeated calls are rejected."
+                " History may contain status blocks formatted by the renderer, not written by you. "
+                "Do not apologize for historical formatting or discuss the protocol. "
+                "Use the requested raw status markers only in this call; send story text, not analysis."
             )
             req.func_tool.add_tool(fresh)
         except Exception as e:

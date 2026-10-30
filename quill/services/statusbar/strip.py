@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 
 from .parsers import _DEFAULT_LOVE_FIELDS_RAW, _build_raw_status_re
-from .tokens import LOVE_DATA_TAG, STATUS_END_TAG, STATUS_TAG
+from .tokens import LOVE_DATA_TAG, STATUS_END_TAG, STATUS_TAG, PLOT_PATH_PATTERN
 
 # 聚合所有状态栏变体的剥离正则（disabled 模式 + dedup 清理用）
 # 前 4 条与字段名无关（靠标签/标记识别），字段名只出现在 _strip_bare_fields 里，
@@ -69,9 +69,10 @@ _STRIP_PATTERNS: list = [
     (re.compile(r'(?m)^[ \t]*' + re.escape(LOVE_DATA_TAG) + r'[^\n]*(?:\r?\n|$)'), ''),
     (re.compile(re.escape(STATUS_TAG) + r'[\s\S]*?' + re.escape(STATUS_END_TAG)), ''),
     (re.compile(
-        r'[>|]{2,}\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*[|<]{2,}\s*.+?\s*[|<]{2,}\s*(?:Select|请选择|选择)\s*[>|]{2,}',
+        r'(?m)^[ \t]*'+PLOT_PATH_PATTERN+r'[ \t]*(?:\r?\n|$)',
         re.DOTALL | re.IGNORECASE
     ), ''),
+    (re.compile(r'(?m)^[ \t]*【状态栏】[ \t]*(?:\r?\n|$)'), ''),
     (re.compile(r'\[状态栏\][\s\S]*?\[/状态栏\]'), ''),
     # B1：本条的**唯一**目的是擦掉「裸写的状态栏标题行」，但旧写法
     #   re.compile(r'状态栏[：:][\s\S]*?(?=\n\n|\Z)')

@@ -3,6 +3,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """H3 历史 contexts 清洗的增量游标缓存（v5.3.0 M3.4，债务 D8）。
 
+P7 补充：当前对 user/assistant 的字符串及连续 text 片段共用缓存；推理、
+媒体和工具是保留边界，不把非文本结构转成字符串，也不移动图片前后的正文。
+下文记录旧字符串实现的设计缘由，新行为以当前入口和真实数组验收为准。
+
 问题（PLAN §M3.4 / BASELINE D8）
 --------------------------------
 ``on_llm_request``（H3）每轮对**全部**历史 contexts 做两遍正则清洗：
@@ -93,9 +97,10 @@ import hashlib
 from collections import OrderedDict
 
 from .statusbar.strip import _STRIP_PATTERNS
+from .message_content import text_content, map_text_content
 
 # 世代指纹的固定成分：报告行格式 / 剥离正则集在代码层面变化时 +1。
-SCHEMA_GEN = 1
+SCHEMA_GEN = 3
 
 # 内存护栏：会话游标数上限（LRU 超限淘汰最旧）。
 MAX_SESSIONS = 256
@@ -242,28 +247,7 @@ def scrub_inject_report_history(plugin, target_id: str, contexts: list) -> list:
     语义（eligible 项一律 ``{**c, ...}``）与非 eligible 项原样透传逐字
     保持。返回新列表（调用方照旧整体赋回 req.contexts）。
     """
-    cursor = _cursors_for(plugin).cursor_for(target_id).scrub
-    gen = _inputs_fingerprint(plugin)
-    _reset_if_stale(cursor, gen)
-    cache = cursor.cache
-    new_seq: list = []
-    out: list = []
-    for c in contexts:
-        if isinstance(c, dict) and isinstance(c.get("content"), str):
-            raw = c.get("content", "")
-            key = _digest(raw)
-            cleaned = cache.get(key)
-            if cleaned is None:
-                cleaned = plugin._scrub_inject_report(raw)
-                if len(cache) < MAX_PASS_CACHE:
-                    cache[key] = cleaned
-            new_seq.append(key)
-            out.append({**c, "content": cleaned})
-        else:
-            out.append(c)
-    cursor.last_seq = new_seq
-    _gc_pass_cache(cursor, new_seq)
-    return out
+    return _clean_history(plugin,target_id,contexts,'scrub',plugin._scrub_inject_report,False)
 
 
 def strip_status_history(plugin, target_id: str, contexts: list) -> list:
@@ -291,30 +275,27 @@ def strip_status_history(plugin, target_id: str, contexts: list) -> list:
     凭空多出若干空消息，部分 provider 还会直接判为非法请求。丢弃是唯一
     语义正确的处理——这条消息剥离后本就不含任何可回放内容。
     """
-    cursor = _cursors_for(plugin).cursor_for(target_id).strip
-    gen = _inputs_fingerprint(plugin)
-    _reset_if_stale(cursor, gen)
-    cache = cursor.cache
-    new_seq: list = []
-    out: list = []
-    for c in contexts:
-        if isinstance(c, dict) and isinstance(c.get("content"), str):
-            raw = c.get("content", "")
-            key = _digest(raw)
-            clean = cache.get(key)
-            if clean is None:
-                clean = plugin._strip_status_artifacts(
-                    raw, plugin.props.love_fields
-                )
-                if len(cache) < MAX_PASS_CACHE:
-                    cache[key] = clean
-            new_seq.append(key)
-            if not clean:
-                # M13：整条被剥离干净（或本来就是空串）→ 丢弃，不写回空内容。
-                continue
-            out.append({**c, "content": clean} if clean != raw else c)
-        else:
-            out.append(c)
-    cursor.last_seq = new_seq
-    _gc_pass_cache(cursor, new_seq)
+    return _clean_history(plugin,target_id,contexts,'strip',lambda text:plugin._strip_status_artifacts(text,plugin.props.love_fields),True)
+
+
+def _clean_history(plugin,target_id,contexts,channel,transform,drop_empty):
+    cursor=getattr(_cursors_for(plugin).cursor_for(target_id),channel)
+    _reset_if_stale(cursor,_inputs_fingerprint(plugin))
+    cache=cursor.cache;seq=[];out=[]
+    def clean(raw):
+        key=_digest(raw);seq.append(key)
+        if key in cache:
+            return cache[key]
+        value=transform(raw)
+        if len(cache)<MAX_PASS_CACHE:cache[key]=value
+        return value
+    for message in contexts:
+        if not isinstance(message,dict) or message.get('role') not in ('user','assistant') or not isinstance(message.get('content'),(str,list)):
+            out.append(message);continue
+        content=map_text_content(message['content'],clean)
+        if drop_empty and not content and not message.get('tool_calls'):
+            continue
+        out.append({**message,'content':content} if content!=message['content'] else message)
+    cursor.last_seq=seq
+    _gc_pass_cache(cursor,seq)
     return out

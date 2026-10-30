@@ -13,6 +13,7 @@ import os
 import re as _re
 import json
 import sqlite3
+import asyncio
 from typing import List, Dict, Optional, Any
 
 import aiosqlite
@@ -413,6 +414,43 @@ class WritingResourceManager:
         await self._rebuild_fts_index()
         self.schema_status["previous_version"]=self.schema_status["version"]
         self.schema_status["version"]=await finish_database(self._conn,kind="writing")
+        await self._repair_known_seed()
+
+    async def _repair_known_seed(self):
+        """P6：只纠正内容/关键词仍与已知出厂数据一致的行，先快照；用户编辑不覆写。"""
+        from pathlib import Path
+        import hashlib
+        from uuid import uuid4
+        try:
+            from ._backup_util import snapshot_sqlite
+        except ImportError:
+            from _backup_util import snapshot_sqlite
+        manifest_path=Path(__file__).parent/'seed/wr_repair_manifest.json'
+        manifest=json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else {}
+        changes=[]
+        for row in await self.get_all_entries(enabled_only=False):
+            fix=manifest.get(row['entry_id'])
+            changed=bool(fix and (row['keywords']!=fix['keywords'] or row.get('aliases',[])!=fix['aliases'] or (fix['disable'] and (row.get('enabled') or row.get('is_constant')))))
+            if changed and hashlib.sha256(row['content'].encode()).hexdigest()==fix['content_sha256'] and row['keywords']==fix['old_keywords'] and row.get('aliases',[])==fix['old_aliases']:
+                changes.append((row['entry_id'],fix))
+        self.seed_repair={'updated':0}
+        if not changes:
+            return
+        folder=Path(self.db_path).parent/'.schema_backups';folder.mkdir(parents=True,exist_ok=True,mode=0o700)
+        backup=folder/('writing.seed_repair.'+uuid4().hex+'.db')
+        await asyncio.to_thread(snapshot_sqlite,self.db_path,str(backup))
+        os.chmod(backup,0o600)
+        async with self._lock:
+            try:
+                await self.conn.execute('BEGIN IMMEDIATE')
+                for eid,fix in changes:
+                    await self.conn.execute('UPDATE writing_resource SET keywords=?,aliases=?,enabled=CASE WHEN ? THEN 0 ELSE enabled END,is_constant=CASE WHEN ? THEN 0 ELSE is_constant END WHERE entry_id=?',
+                        (json.dumps(fix['keywords'],ensure_ascii=False),json.dumps(fix['aliases'],ensure_ascii=False),fix['disable'],fix['disable'],eid))
+                await self.conn.commit()
+            except BaseException:
+                await self.conn.rollback();raise
+        self.seed_repair={'updated':len(changes),'backup':backup.name}
+        logger.warning('[WR] 已纠正 %s 条原始种子关键词/控制条目，内容与命中计数保留，原库快照已保存',len(changes))
 
     async def close(self):
         if self._conn:
@@ -705,7 +743,7 @@ class WritingResourceManager:
         matched_keywords: List[str] = []
 
         for kw in keywords:
-            if kw and kw.lower() in user_input_lower:
+            if self._keyword_matches(kw,user_input_lower):
                 match_score += 3
                 matched_keywords.append(kw)
 
@@ -716,7 +754,7 @@ class WritingResourceManager:
                 match_score *= 0.3
 
         for alias in aliases:
-            if alias and alias.lower() in user_input_lower:
+            if self._keyword_matches(alias,user_input_lower):
                 match_score += 2
                 matched_keywords.append(f"({alias})")
 
@@ -730,6 +768,14 @@ class WritingResourceManager:
                 match_score += 1
 
         return match_score, matched_keywords
+
+    @staticmethod
+    def _keyword_matches(keyword,text):
+        try:
+            from .quill.services.writing_lint import keyword_matches
+        except ImportError:
+            from quill.services.writing_lint import keyword_matches
+        return keyword_matches(keyword,text)
 
     def _dedup_by_category(self, entries: List[Dict],
                            dropped: Optional[List[Dict]] = None) -> List[Dict]:
@@ -881,7 +927,7 @@ class WritingResourceManager:
         for r in rows:
             row_id = r[0]
             for kw in self._ensure_list(r[1]):
-                if kw and kw.lower() in user_input_lower:
+                if self._keyword_matches(kw,user_input_lower):
                     matched_ids.append(row_id)
                     matched_kw_by_id[row_id] = kw
                     break

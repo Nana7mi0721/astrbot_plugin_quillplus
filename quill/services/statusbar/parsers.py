@@ -32,7 +32,7 @@ import re
 from ...core.logbridge import logger  # noqa: F401  # 方法体 logger 引用经 logbridge 桥接
 from ..trace import hash_target_id
 from . import decision_client as _dec_mod
-from .tokens import LOVE_DATA_TAG, STATUS_END_TAG, STATUS_TAG
+from .tokens import LOVE_DATA_TAG, STATUS_END_TAG, STATUS_TAG, PLOT_PATH_PATTERN
 
 
 def _round_options_match(owner, rd: dict) -> bool:
@@ -93,7 +93,7 @@ _STATUS_BLOCK_RE = re.compile(r'\*\*状态栏\*\*[\s\S]*?```([\s\S]*?)```')
 # 的 ASCII >>> 不可拦截，源头换格式）；正则改为双形式——【】新形态与
 # 旧 ASCII/全角形态（模型旧习惯/旧卡指示）都能解析。
 _PLOT_PATH_RE = re.compile(
-    r'(?:[>|＞]{2,}\s*|【)\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*(?:[|<＜]{2,}\s*|】)\s*(.+?)\s*(?:[|<＜]{2,}\s*|【)\s*(?:Select|请选择|选择)\s*(?:[>|＞]{2,}|】)',
+    PLOT_PATH_PATTERN,
     re.DOTALL | re.IGNORECASE
 )
 

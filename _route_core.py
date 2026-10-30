@@ -723,6 +723,8 @@ async def handle_rag_search(vector_store, embedding_provider, reranker, query, t
     try:
         from .quill_rag.retrieval import QuillRetriever
         results: list = []
+        degraded=[]
+        from .quill_rag.retrieval import rag_ok
         # 本地路：embedding/vector_store 任一缺失就跳过（组件为 None 时
         # search_documents 会走异常路径，与其空跑不如不发请求）
         if vector_store is not None and embedding_provider is not None:
@@ -732,15 +734,18 @@ async def handle_rag_search(vector_store, embedding_provider, reranker, query, t
                 reranker=reranker,
                 top_k=top_k,
             )
-            results.extend(await retriever.search_documents(query))
+            local=await retriever.search_documents(query)
+            if not rag_ok(local):degraded.append('本地文档检索不可用，请检查待重建段数与嵌入模型')
+            results.extend(local)
         # 内置库路：不依赖本地组件，embedding/reranker 未配置也能检索
         if kb_source is not None and getattr(kb_source, "available", False):
             try:
-                kb_results = await kb_source.search(query)
+                kb_results = await kb_source.search(query,include_low_relevance=True)
+                if not rag_ok(kb_results):degraded.append('内置知识库检索不可用')
                 results.extend(kb_results)
             except Exception as e:
                 logger.warning("[Quill] 内置知识库检索测试失败: %s", e, exc_info=True)
-        return ok({"results": results, "query": query})
+        return ok({"results": results, "query": query,'degraded':degraded})
     except Exception as e:
         return err(error_text("检索失败", e))
 

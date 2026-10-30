@@ -250,21 +250,51 @@ async def handle_decorating_result(plugin, event: AstrMessageEvent) -> None:
         )
 
 
+async def prepare_output_flags(plugin, event: AstrMessageEvent) -> None:
+    """P0/P2：local runner 在 waiting 钩子之前读取旗标，必须在 AdapterMessage 阶段决定。"""
+    target_id=plugin._get_target_id(event)
+    text=event.message_str or ''
+    state=await plugin.state_manager.get_state(target_id)
+    persona_id=await plugin.state_manager.get_selected_persona_id(target_id)
+    persona=await plugin.persona_manager.get_persona(persona_id) if persona_id else None
+    history=[]
+    scope=plugin.scope_resolver.scope_for(target_id)
+    manager=getattr(plugin.context,'conversation_manager',None)
+    if scope!=target_id:
+        from ..quill.services.shared_context import history_view
+        rows=await plugin.shared_scopes.store.recent(scope,persona_id)
+        history=history_view(rows,{o['origin_key']:o for o in plugin.shared_scopes.index['origins']})
+    elif manager:
+        mapping=await plugin.state_manager.get_persona_conv_map(target_id)
+        cid=mapping.get(persona_id or '')
+        if cid:
+            conversation=await manager.get_conversation(target_id,cid)
+            if conversation and conversation.history:
+                history=json.loads(conversation.history)
+    activated,wr=await plugin._check_activation(text,_prompt_mod.build_context_text(text,history),persona)
+    active=bool(activated or wr or plugin.activation_detector.check_brackets(text) or plugin.props.worldbook_always_activate)
+    if scope!=target_id and text.strip().isdigit():
+        active=True  # 共享菜单续接在 waiting 阶段才重建，提前保留非流式处理机会。
+    if state.stream_mode in ('on','off'):
+        event.set_extra('enable_streaming',state.stream_mode=='on')
+    elif active:
+        event.set_extra('enable_streaming',False)
+    # WebChat 的默认 True 不能架空宿主明确的推理显示设置，包括未激活的普通轮。
+    cfg=plugin.context.get_config(event.unified_msg_origin)
+    event.set_extra('enable_reasoning',bool((cfg.get('provider_settings') or {}).get('display_reasoning_text',False)) and bool(event.get_extra('enable_reasoning',True)))
+    event.set_extra('_quill_output_prepared',True)
+
+
 async def handle_waiting_llm_request(plugin, event: AstrMessageEvent) -> None:
-    """LLM 请求等待期：切换角色卡专属对话并控制流式模式（H1）。
+    """LLM 请求等待期：切换角色卡专属对话并处理重新注入（H1）。
 
     （业务逻辑自 main.py 逐字搬移，M2.2 第二轮；``self`` → ``plugin``。
     验证走 E2E：.build/harness/quilltest/run.py --tier2，行为契约与降级怪癖
     见 main.py 注册桩 docstring 与 BASELINE §2 H1 行。）
 
-    与 H6 的关键差异（降级怪癖，刻意保真）：本函数**没有**钩子级顶层
-    try——``plugin.state_manager.get_state`` 抛出会原样上抛框架；唯一
-    的异常处理是"取 message_str/_get_target_id"的内层小块
-    ``except: return``。角色卡对话隔离步骤（
-    ``plugin._ensure_persona_conversation``）自带全量 try/except，隔离
-    失败只记日志放行，不影响后续流式决策——经 plugin 的薄转发调用
-    （转发最终落在 quill/services/character.py），与原
-    ``self._ensure_persona_conversation`` 动态分发路径逐字等价。
+    输出旗标已由 AdapterMessage 前置阶段准备；此时 local runner 已读走
+    局部值，不能再靠修改 extra 控制本轮流式。角色卡对话隔离步骤自带
+    异常降级，取事件身份失败则退出；轮次重置异常仍由宿主记录。
     """
     # 必须最先执行：本事件早于 AstrBot 的 _get_session_conv()，
     # 在这里切换对话才能对本轮生效（详见 quill/services/character.py）。
@@ -301,23 +331,7 @@ async def handle_waiting_llm_request(plugin, event: AstrMessageEvent) -> None:
         ))
         return
 
-    # 读取对话维度流式偏好
-    state = await plugin.state_manager.get_state(target_id)
-
-    if state.stream_mode == "off":
-        event.set_extra("enable_streaming", False)
-        return
-    if state.stream_mode == "on":
-        event.set_extra("enable_streaming", True)
-        return
-
-    # auto 模式：激活时关闭流式
-    activated = plugin.activation_detector.should_activate(user_input)
-    has_bracket = plugin.activation_detector.check_brackets(user_input)
-
-    if activated or has_bracket:
-        event.set_extra("enable_streaming", False)
-        logger.info("[Quill] 已关闭流式输出")
+    # 不再在此伪称本轮已关闭流式；local runner 已读走局部值。
 
 
 async def handle_using_llm_tool(
@@ -732,6 +746,11 @@ async def handle_llm_response(
     # 情况下仍有一道）。置空后：注入报告段对空文本天然跳过，gate 后的
     # 落库同样短路——垃圾不进记忆库。
     _smt_count = event.get_extra(_SMT_SEND_COUNT_KEY)
+    if isinstance(_smt_count,int) and _smt_count>=1:
+        # P1：正文去重后宿主仍可能把 reasoning 插回空链；禁止产生第二条纯推理消息。
+        event.set_extra('enable_reasoning',False)
+        event.set_extra('_llm_reasoning_content',None)
+        resp.reasoning_content=''
     if (isinstance(_smt_count, int) and _smt_count >= 1
             and (resp.completion_text or "").strip()):
         resp.completion_text = ""
@@ -957,6 +976,13 @@ async def _decision_plot_route(
     probs: dict[str, float] = {}
     confidence = 0.0
     numeric_direct = pick is not None
+    failures=getattr(plugin,'_decision_failures',None)
+    if not isinstance(failures,dict):
+        failures={};plugin._decision_failures=failures
+    failures.pop(target_id,None)
+    def note_failure(detail):
+        failures[target_id]={'message':detail,'at':time.time()}
+        while len(failures)>250:failures.pop(next(iter(failures)))
 
     if numeric_direct:
         # 显式数字选择零成本零风险，直接视为确定判定（不消耗判定调用）。
@@ -976,7 +1002,7 @@ async def _decision_plot_route(
         recent = []
         for c in (getattr(req, "contexts", None) or [])[-6:]:
             if isinstance(c, dict):
-                recent.append(f"{c.get('role', 'user')}: {str(c.get('content', ''))[:400]}")
+                recent.append(f"{c.get('role', 'user')}: {_prompt_mod.text_content(c.get('content', ''))[:400]}")
         answers = await _dec_mod.decision_evaluate(
             base_url,
             api_key,
@@ -984,6 +1010,7 @@ async def _decision_plot_route(
             _dec_mod.build_route_state(user_msg, recent, options),
             _dec_mod.build_plot_questions(options),
             api_format=api_format,
+            on_error=note_failure,
             call_observer=lambda operation: plugin._usage.invoke(
                 operation, purpose="decision", base_url=base_url, model=model, timeout=8.0),
         )

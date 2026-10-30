@@ -184,7 +184,7 @@ class UsageRecorder:
 
     async def _record(self, response, *, purpose, provider_id="", model="", identity=None,
                      call_id=None, started=None, status="completed", coverage="plugin_call_boundary",
-                     error=None, usage_supported=True):
+                     error=None, usage_supported=True, error_detail=None):
         if not self._enabled():
             return
         origin = dict(identity or _identity.get() or {})
@@ -227,7 +227,7 @@ class UsageRecorder:
                 ("endpoint_hash" if str(provider_id).startswith("endpoint:") else "explicit_call"),
             "purpose": purpose, "status": status, "billing_coverage": coverage,
             "duration_ms": max(0, int((time.perf_counter() - started) * 1000)) if started else None,
-            "usage": usage, "error_class": error, **price,
+            "usage": usage, "error_class": error, "error_detail":error_detail, **price,
         }
         record["price_snapshot_at"] = origin.get("_price_snapshot_at", record["created_at"]) if price.get("price_snapshot") else None
         cfg = self.settings()
@@ -312,9 +312,10 @@ class UsageRecorder:
                               status="cancelled", error="CancelledError")
             raise
         except Exception as exc:
+            from ..quill.services.diagnostics import safe_error_detail
             await self.record(None, purpose=purpose, provider_id=provider_id, model=model,
                               identity=identity, call_id=call_id, started=started,
-                              status="error", error=type(exc).__name__)
+                              status="error", error=type(exc).__name__,error_detail=safe_error_detail(exc))
             raise
         await self.record(result, purpose=purpose, provider_id=provider_id, model=model,
                           identity=identity, call_id=call_id, started=started,

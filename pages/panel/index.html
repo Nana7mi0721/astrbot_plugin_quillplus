@@ -206,6 +206,7 @@
                 <button type="button" class="btn btn--filled" data-action="wr-new">
                   <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建条目
                 </button>
+                <button type="button" class="btn btn--gray" data-action="wr-lint">素材体检</button>
                 <button type="button" class="btn btn--gray" data-action="wr-test">
                   <svg class="icon icon--sm" aria-hidden="true"><use href="#i-flask"/></svg>匹配测试
                 </button>
@@ -1059,12 +1060,12 @@
               <div class="cfg-field">
                 <label class="cfg-field-label" for="c-sb-decision-model">模型 ID</label>
                 <div class="row-wrap">
-                  <input class="field field--wide grow" type="text" id="c-sb-decision-model" spellcheck="false" autocomplete="off" placeholder="inception/mercury-decide:free" style="max-width:none">
+                  <input class="field field--wide grow" type="text" id="c-sb-decision-model" spellcheck="false" autocomplete="off" placeholder="inception/mercury-decide" style="max-width:none">
                   <button type="button" class="btn btn--gray" data-action="decision-probe">
                     <svg class="icon icon--sm" aria-hidden="true"><use href="#i-zap"/></svg>测试连接
                   </button>
                 </div>
-                <span class="hint">如 <code>inception/mercury-decide:free</code>、<code>typesafe/jev-1.14</code>、<code>openai/gpt-6-luna-decisions</code>。「测试连接」按上面填写的地址、密钥与本处模型真发一次判定请求，不必先保存。</span>
+                <span class="hint">如 <code>inception/mercury-decide</code>、<code>typesafe/jev-1.14</code>、<code>openai/gpt-6-luna-decisions</code>。「测试连接」按上面填写的地址、密钥与本处模型真发一次判定请求，不必先保存。</span>
                 <div id="decisionProbeResult" role="status" aria-live="polite"></div>
               </div>
               <div class="cfg-field">

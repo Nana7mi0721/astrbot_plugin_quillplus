@@ -313,6 +313,16 @@ def _post_json(url: str, headers: dict, payload: dict, timeout: float) -> dict:
             if e.code in (429, 529) and attempt == 1:
                 time.sleep(0.6)
                 continue
+            detail=_read_error_body(e)
+            try:
+                data=json.loads(detail);err=data.get('error',data)
+                if isinstance(err,dict):detail=str(err.get('message') or err.get('type') or '服务拒绝请求')
+            except (ValueError,AttributeError):
+                pass
+            for secret in headers.values():
+                if secret and ('Bearer ' in secret or secret==headers.get('x-api-key')):
+                    detail=detail.replace(secret,'[已隐藏凭据]').replace(secret.removeprefix('Bearer '),'[已隐藏凭据]')
+            e.quill_error_detail=f'HTTP {e.code}: '+detail
             raise
     raise RuntimeError("unreachable")  # pragma: no cover
 
@@ -327,6 +337,7 @@ async def decision_evaluate(
     timeout: float = DECISION_TIMEOUT_S,
     post_fn: Callable | None = None,
     call_observer: Callable | None = None,
+    on_error: Callable | None = None,
 ) -> dict | None:
     """一次判定调用，返回**归一化后**的 ``{问题名: 答案}``；任何失败返回 None。
 
@@ -358,6 +369,9 @@ async def decision_evaluate(
                 asyncio.to_thread(post, url, headers, payload, timeout), timeout=timeout + 2.0)
         raw = await call_observer(request_once) if call_observer else await request_once()
     except Exception as e:
+        if on_error:
+            from ..diagnostics import safe_error_detail
+            on_error(safe_error_detail(e))
         # M14 教训：api_base 拼错导致永久 404 时，用户与开发者都拿不到任何
         # 线索。fail-open 语义不变，只是不再静默——具体原因（HTTP 码 / DNS /
         # 超时）由 _post_json 抛出的异常带上来。
@@ -508,11 +522,14 @@ async def decision_probe(
 def _read_error_body(e: urllib.error.HTTPError) -> str:
     """把 HTTPError 的响应体读成一行文本（服务端的错误说明通常比状态码有用）。"""
     try:
-        raw = e.read()
+        if hasattr(e,'_quill_error_body'):
+            return e._quill_error_body
+        raw = e.read(4096)
         text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
     except Exception:
         return str(getattr(e, "reason", e))[:300]
-    return text.strip()[:300]
+    e._quill_error_body=text.strip()[:300]
+    return e._quill_error_body
 
 
 def _truncate_json(raw: Any) -> str:

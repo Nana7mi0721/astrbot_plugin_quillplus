@@ -7,7 +7,7 @@ import { enhanceSelects } from "../components/select.js";
 import { loadGlobalSettings, updateBadge } from "../pages/config.js";
 import { $, $$, esc, fileToB64, withBusy } from "../utils.js";
 
-export { deleteRAGDocument, deleteRAGGroup, getRAGConfig, loadRAG, loadRAGModelInfo, moveRAGDocument,
+export { reindexRAG, deleteRAGDocument, deleteRAGGroup, getRAGConfig, loadRAG, loadRAGModelInfo, moveRAGDocument,
          newRAGGroup, processRAGFiles, providerRows, renameRAGGroup, setRAGKbEnabled, testRAGSearch,
          toggleRAGBig, toggleRAGGroup };
 
@@ -148,8 +148,9 @@ function kbDocRow(d) {
 }
 
 /** 插件文档库大组：自定义分组 + 未分组，可建组/改名/删组/移动文档/上传。 */
-function pluginBigHtml(docs, groups) {
+function pluginBigHtml(docs, groups, index = null) {
   const chunks = docs.reduce((s, d) => s + (d.chunk_count || 0), 0);
+  const indexInfo=index?`${Number(index.faiss_vectors||0)} 条真实向量 · ${Number(index.pending_chunks||0)} 段待重建${index.dim_mismatch?" · 维度不一致":""}${chunks&&!index.available?" · 当前索引不可检索":""}`:"本地索引状态不可用，请检查存储";
   const byGroup = new Map(groups.map(g => [g, []]));
   const ungrouped = [];
   docs.forEach(d => {
@@ -168,8 +169,8 @@ function pluginBigHtml(docs, groups) {
     title: "插件文档库",
     badge: ' <span class="badge badge--accent">本插件</span>',
     desc: "上传到本插件的文档，共用插件自己的向量库与嵌入模型；分组只是归类，检索预算仍是全局的",
-    metaHtml: `${docs.length} 个文档 · ${chunks} 个分块 · ${groups.length} 个分组`,
-    actions: `<button type="button" class="btn btn--sm btn--gray" data-action="rag-group-new">新建分组</button>
+    metaHtml: `${docs.length} 个文档 · ${chunks} 个分块 · ${groups.length} 个分组 · ${indexInfo}`,
+    actions: `<button type="button" class="btn btn--sm btn--gray" data-action="rag-reindex" ${chunks?"":"disabled"}>重建向量</button><button type="button" class="btn btn--sm btn--gray" data-action="rag-group-new">新建分组</button>
       ${target}
       <button type="button" class="btn btn--sm" data-action="rag-pick">上传</button>`,
     bodyHtml: body,
@@ -381,7 +382,7 @@ async function loadRAG() {
     const kbs = data.astrbot_kbs || [];
     if (!host) return;
     // 两个平级大组：插件文档库（可写）+ AstrBot 兼容（只读，开关关掉时不渲染）
-    const sections = [pluginBigHtml(docs, groups)];
+    const sections = [pluginBigHtml(docs, groups, data.index_status)];
     if (ragKbEnabled()) sections.push(kbBigHtml(kbs));
     host.innerHTML = sections.join("");
     // 分组下拉走「模型选择」同款自绘 UI（原生 select 仍是唯一值存储，
@@ -484,12 +485,13 @@ async function testRAGSearch(btn) {
               <span class="result-rank">${i + 1}</span>
               <span class="result-source">${esc(src)}</span>
               <span class="badge">块 #${it.chunk_index} · ${esc(it.content).length} 字符</span>
-              <span class="result-score">相关度 ${Number(it.score || 0).toFixed(4)}${it.rerank_score !== undefined ? ` · 重排 ${Number(it.rerank_score).toFixed(4)}` : ""}</span>
+              <span class="result-score">${it.score_semantics?"宿主分数（非绝对相关度）":"相关度"} ${Number(it.score || 0).toFixed(4)}${it.low_relevance?" · 低相关候选，不自动注入":""}${it.rerank_score !== undefined ? ` · 重排 ${Number(it.rerank_score).toFixed(4)}` : ""}</span>
             </div>
             <div class="result-body">${esc(it.content)}</div>
           </div>`;
           }).join("")
         : renderEmptyState("search", "没有匹配结果", "换个检索词，或调整返回结果数量");
+      if(data.degraded?.length)host.insertAdjacentHTML("afterbegin",`<p class="hint">${esc(data.degraded.join("；"))}</p>`);
     } catch (e) {
       host.innerHTML = `<div class="fs-13" style="color:var(--red-text)">${esc(e.message)}</div>`;
     }
@@ -497,3 +499,10 @@ async function testRAGSearch(btn) {
 }
 
 /* ══ J. 动态记忆 ═════════════════════════════════════════════════════ */
+
+function reindexRAG() {
+  sandboxConfirm("重建会为全部已有文档重新调用嵌入模型，可能产生费用。文档文本保留；失败时保留原索引。继续？",async()=>{
+    try { const data=await apiPost("/rag/reindex",{confirm:"REINDEX"});showToast(data.reused?"已有重建任务，可到后台任务查看":"已提交重建，可到后台任务查看进度","success");await loadRAG(); }
+    catch(error){showToast("重建未启动："+error.message,"error");}
+  });
+}

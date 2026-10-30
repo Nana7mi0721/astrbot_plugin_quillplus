@@ -144,6 +144,11 @@ class QuillRetriever:
         if not self.vector_store:
             return _rag_failed('文档库暂不可用，请检查存储状态')
         try:
+            index_status=await self.vector_store.get_stats()
+            if not index_status['total_chunks']:
+                return []
+            if not index_status['faiss_vectors'] or index_status.get('dim_mismatch'):
+                return _rag_failed('文档索引待重建，本次未调用查询嵌入模型')
             query_emb = await self.embedding.embed([query])
             if not query_emb:
                 return _rag_failed("embedding 返回空向量")
@@ -161,7 +166,7 @@ class QuillRetriever:
             if not raw_results:
                 if funnel is not None:
                     funnel.update({"candidates": 0, "matched": 0, "filtered": []})
-                return []
+                return _rag_failed('文档索引不完整，部分文本待重建') if index_status.get('pending_chunks') else []
             if self.reranker:
                 kept = await self.reranker.rerank(query, raw_results, top_k=self.top_k)
                 if funnel is not None:
@@ -188,7 +193,7 @@ class QuillRetriever:
                             "reason": f"rerank_dropped(粗召回名次{n + 1})",
                         })
                     funnel["filtered"] = near_miss
-                return kept
+                return RagResult(kept,ok=False,error='文档索引不完整，部分文本待重建') if index_status.get('pending_chunks') else kept
             kept = raw_results[: self.top_k]
             if funnel is not None:
                 funnel["candidates"] = len(raw_results)
@@ -198,7 +203,7 @@ class QuillRetriever:
                      "reason": "max_entries_cap"}
                     for e in raw_results[len(kept):]
                 ]
-            return kept
+            return RagResult(kept,ok=False,error='文档索引不完整，部分文本待重建') if index_status.get('pending_chunks') else kept
         except Exception as e:
             # M3.2 D4：底层 StorageError（或 embedding 失败）在此降级为带失败
             # 标记的空结果——注入侧行为不变（本轮无文档内容），健康度能记到失败。

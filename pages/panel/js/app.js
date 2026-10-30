@@ -13,11 +13,11 @@ import { closeSelMenus, enhanceSelects } from "./components/select.js";
 import { discardChanges, filterConfig, initConfigNavObserver, loadGlobalSettings, loadHealth, markDirty, probeDecisionModel, saveAllChanges, scrollToSection, setStreamModeAll, switchTab, syncSidebarBadges } from "./pages/config.js";
 import { changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, onMemorySessionChange, pruneMemories, summarizeMemory, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin } from "./pages/memory.js";
 import { closeAstrbotImportModal, closeImportTextModal, deletePersona, exportPersona, filterCheckboxes, filterWBEntries, importFromAstrbot, importPersona, importPersonaFromText, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openImportTextModal, openPersonaModal, renderPersonaPage, savePersona, selectAstrbotPersona, switchPersonaView, syncExtList, syncRagGroup, toggleExtBig, toggleExtGroup } from "./pages/persona.js";
-import { deleteRAGDocument, deleteRAGGroup, loadRAG, loadRAGModelInfo, moveRAGDocument, newRAGGroup, processRAGFiles, renameRAGGroup, setRAGKbEnabled, testRAGSearch, toggleRAGBig, toggleRAGGroup } from "./pages/rag.js";
+import { reindexRAG, deleteRAGDocument, deleteRAGGroup, loadRAG, loadRAGModelInfo, moveRAGDocument, newRAGGroup, processRAGFiles, renameRAGGroup, setRAGKbEnabled, testRAGSearch, toggleRAGBig, toggleRAGGroup } from "./pages/rag.js";
 import { loadTracePage, onTraceSessionChange, refreshTrace, toggleTraceTurn,
          runSimulate, runLint, toggleTraceLive, copyPreviewText } from "./pages/trace.js";
 import { deleteWB, deleteWBEntry, exportWBSt, importWBSt, onWBSearchInput, openWBCreateModal, openWBEntryModal, reloadWB, saveWBCreate, saveWBEntry, setWBOnlyConst, toggleWB } from "./pages/worldbook.js";
-import { _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, saveWREntry, toggleWREntry, updateWRBatchBar, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState } from "./pages/writing.js";
+import { openWRLint, _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, saveWREntry, toggleWREntry, updateWRBatchBar, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState } from "./pages/writing.js";
 import { $, debounce, withBusy } from "./utils.js";
 
 export { ACTIONS, bindEvents, debouncedMemLoad, debouncedWBFilter, debouncedWRLoad, quillInit, saveModal };
@@ -79,6 +79,7 @@ const ACTIONS = {
   "wr-edit": (el) => openWRModal(el.closest(".wr-card").dataset.eid),
   "wr-delete": (el) => deleteWREntry(el.closest(".wr-card").dataset.eid, el),
   "wr-test": () => openWRTestModal(),
+  "wr-lint": () => openWRLint(),
   "wr-export": (el) => exportWR(el),
   "wr-batch-toggle": (el) => wrBatchToggle(el.dataset.value === "1"),
   "wr-batch-delete": () => wrBatchDelete(),
@@ -130,6 +131,7 @@ const ACTIONS = {
   "rag-refresh": (el) => withBusy(el, "", () => Promise.all([loadRAG(), loadRAGModelInfo()])),
   "rag-pick": () => $("#ragFile")?.click(),
   "rag-search": (el) => testRAGSearch(el),
+  "rag-reindex": () => reindexRAG(),
   "rag-delete": (el) => deleteRAGDocument(el.dataset.value, el),
   // 大组（插件文档库 / AstrBot 兼容）与子知识库组的展开
   "rag-big-toggle": (el) => toggleRAGBig(el),

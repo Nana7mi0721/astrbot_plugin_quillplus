@@ -808,7 +808,7 @@ async def quill_status(plugin, event: AstrMessageEvent):
         pdata = await plugin.persona_manager.get_persona(persona_id)
         persona_name = pdata.get("name", persona_id) if pdata else persona_id
         if plugin.wb_manager:
-            ext = pdata.get("quill_extensions", {})
+            ext = (pdata or {}).get("quill_extensions", {})
             p_wb_mode = ext.get("wb_mode", "disabled")
             p_bound_worldbooks = ext.get("bound_worldbooks", []) if p_wb_mode == "custom" else None
             if p_bound_worldbooks is not None:
@@ -833,7 +833,7 @@ async def quill_status(plugin, event: AstrMessageEvent):
                 wr_cats = ext.get("bound_writing_resource", []) if ext else []
                 if wr_cats:
                     ext_info = f" (仅限: {', '.join(wr_cats)})"
-            lines.append(f"  写作素材库: {stats['total_entries']} 条启用{ext_info}")
+            lines.append(f"  写作素材库: {stats['enabled_entries']} 条启用 / 共 {stats['total_entries']} 条{ext_info}")
         except Exception:
             lines.append("  写作素材库: 查询失败")
     else:
@@ -856,7 +856,7 @@ async def quill_status(plugin, event: AstrMessageEvent):
         try:
             vs_stats = await plugin.rag_vector_store.get_stats()
             doc_count = vs_stats.get("total_docs", 0)
-            lines.append(f"  Doc RAG: {doc_count} 条向量")
+            lines.append(f"  Doc RAG: {doc_count} 个文档 / {vs_stats.get('faiss_vectors',0)} 条向量 / {vs_stats.get('pending_chunks',0)} 段待重建")
         except Exception:
             lines.append("  Doc RAG: 查询失败")
     else:
@@ -1092,6 +1092,7 @@ async def quill_debug(plugin, event: AstrMessageEvent):
     # M1a-Fix 1.4（M0 可读性联动）：裸 persona_id 对人不可读，查出角色卡
     # 名一并显示；查询失败回退裸 id，不让诊断指令因展示层挂掉。
     persona_label = persona_id or '默认'
+    pdata=None
     if persona_id and getattr(plugin, "persona_manager", None):
         try:
             pdata = await plugin.persona_manager.get_persona(persona_id)
@@ -1102,6 +1103,10 @@ async def quill_debug(plugin, event: AstrMessageEvent):
     lines.append(f"  Target: {target_id}")
     lines.append(f"  Session: {session_id}")
     lines.append(f"  Persona: {persona_label}")
+    if plugin.props.worldbook_always_activate:
+        current_persona=pdata
+        if (current_persona or {}).get('quill_extensions',{}).get('wb_mode','disabled')=='disabled':
+            lines.append('  世界书未注入原因：当前角色世界书模式为禁用（或未绑定角色）；常驻模式只跳过激活，不覆盖角色的显式关闭。')
 
     # 状态栏配置（M2.3：配置读取统一走 plugin.props 实时访问器）
     lines.append(f"  状态栏: {'启用' if plugin.props.status_bar_enabled else '关闭'}")
@@ -1216,7 +1221,8 @@ async def quill_debug(plugin, event: AstrMessageEvent):
                 pick_txt = f" → 分支 {pick}（选项已变更，判定时文字：{_label}）"
         lines.append(f"  Decision 推荐选择度: {dist}{pick_txt}（置信度 {float(rd.get('confidence', 0)):.2f}）")
     elif getattr(plugin.config, "status_bar_decision_enabled", False):
-        lines.append("  Decision: 已启用，本轮无判定（未触发/低置信/判定失败均静默跳过）")
+        failure=(getattr(plugin,'_decision_failures',None) or {}).get(target_id)
+        lines.append('  Decision: 调用失败，'+failure['message'] if failure else '  Decision: 已启用，最近一轮无判定；可能未触发、未配置或未达到阈值。')
 
     event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
 
@@ -1593,7 +1599,7 @@ async def doc_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
             if local_ready:
                 results.extend(await plugin.rag_retriever.search_documents(query))
             if kb_ready:
-                results.extend(await plugin.rag_kb_source.search(query))
+                results.extend(await plugin.rag_kb_source.search(query,include_low_relevance=True))
             if not results:
                 event.set_result(MessageEventResult().message("未找到匹配的文档。"))
                 return
@@ -1607,7 +1613,9 @@ async def doc_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str):
                 if source.startswith("kb:") and doc_name:
                     source = f"{source}/{doc_name}"
                 source_str = f" ({source})" if source else ""
-                lines.append(f"  [{score:.2f}]{source_str} {content}")
+                note='（低相关候选，文字依据不足，不自动注入）' if r.get('low_relevance') else ''
+                if r.get('score_semantics'):note+='（宿主相对/重排分，非绝对相关度）'
+                lines.append(f"  [{score:.2f}]{source_str}{note} {content}")
             event.set_result(MessageEventResult().message("\n".join(lines)).use_t2i(False))
         except Exception as e:
             event.set_result(MessageEventResult().message(error_text("搜索失败", e)))
@@ -1848,8 +1856,9 @@ async def stream_dispatch(plugin, event: AstrMessageEvent, arg: str):
     new_mode = _MODE_MAP[arg]
     await plugin.state_manager.set_stream_mode(target_id, new_mode)
     mode_names = {"on": "开启（强制流式）", "off": "关闭（强制无流式）", "auto": "自动（默认）"}
+    note='\n强制流式会绕过宿主的发送前装饰；需要完整状态栏清洗与渲染时请用 auto/off。' if new_mode=='on' else ''
     event.set_result(MessageEventResult().message(
-        f"流式模式已设为: {mode_names[new_mode]}"
+        f"流式模式已设为: {mode_names[new_mode]}{note}"
     ))
 
 

@@ -228,6 +228,7 @@ _MUTATING_ROUTES: frozenset = frozenset({
     "memory_progress", "memory_summarize_task", "memory_import_task",
     "groups_list", "groups_preview", "groups_save", "groups_archive", "groups_recent", "groups_actors",
     "usage_stats", "usage_clear",  # 全会话元数据也需要管理身份。
+    "wr_lint", "rag_reindex",
 })
 
 # 新增写入口默认要求管理身份；只有这些既有 POST 查询明确按只读处理。
@@ -423,6 +424,7 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/wr/import",       self.wr_import,      ["POST"],   "导入写作素材库")
         _r(f"/{PLUGIN_NAME}/wr/test",         self.wr_test,        ["POST"],   "测试写作素材库匹配")
         _r(f"/{PLUGIN_NAME}/wr/categories",   self.wr_categories,  ["GET"],    "列出写作素材库分类")
+        _r(f"/{PLUGIN_NAME}/wr/lint", self.wr_lint, ["GET"], "写作素材只读体检")
         _r(f"/{PLUGIN_NAME}/wr/batch_delete", self.wr_batch_delete,["POST"],   "批量删除写作素材库条目")
         _r(f"/{PLUGIN_NAME}/wr/batch_toggle", self.wr_batch_toggle,["POST"],   "批量启用/禁用写作素材库条目")
 
@@ -478,6 +480,7 @@ class QuillRoutes:
         # M3.1：base64 变体与正身共用同一 handler（通道消歧收敛于 upload.read_upload）
         _r(f"/{PLUGIN_NAME}/rag/upload_base64", self.rag_upload,    ["POST"],   "上传文档(Base64)")
         _r(f"/{PLUGIN_NAME}/rag/documents",    self.rag_documents,  ["GET"],    "列出已上传文档")
+        _r(f"/{PLUGIN_NAME}/rag/reindex", self.rag_reindex, ["POST"], "重新嵌入已有文档")
         _r(f"/{PLUGIN_NAME}/rag/kb_documents", self.rag_kb_documents, ["GET"],  "列出内置库的文档"),
         _r(f"/{PLUGIN_NAME}/rag/groups",       self.rag_groups,     ["POST"],   "插件文档分组操作"),
         _r(f"/{PLUGIN_NAME}/rag/delete",       self.rag_delete,     ["POST"],   "删除文档")
@@ -1492,6 +1495,28 @@ class QuillRoutes:
         return json_response(await handle_provider_list(self.context))
 
     # ── WR ────────────────────────────────────────────────────
+
+    @_api_handler
+    async def wr_lint(self):
+        if not self.wr_manager:
+            return error_response('写作素材库不可用',status_code=503)
+        from .quill.services.writing_lint import lint_entries
+        entries=await self.wr_manager.get_all_entries(enabled_only=False)
+        return json_response({'issues':lint_entries(entries),'entries':len(entries),'seed_repair':getattr(self.wr_manager,'seed_repair',{})})
+
+    @_api_handler
+    async def rag_reindex(self):
+        data=await _json_body()
+        if data.get('confirm')!='REINDEX':
+            return error_response('重建将调用嵌入模型并产生用量，请确认 REINDEX',status_code=400)
+        store=self.rag.get('vector_store');provider=self.rag.get('embedding')
+        if store is None or provider is None:
+            return error_response('文档存储或嵌入模型不可用',status_code=503)
+        selected=self.context.get_provider_by_id(provider.provider_id) if provider.provider_id else None
+        def current():
+            return self.rag.get('vector_store') is store and self.rag.get('embedding') is provider and (not provider.provider_id or self.context.get_provider_by_id(provider.provider_id) is selected)
+        record,reused=self.plugin._start_task('document_reindex','all',lambda handle:store.reindex(provider,handle,validate=current))
+        return json_response({'task':record.to_dict(),'reused':reused},status_code=202)
 
     @_api_handler
     async def wr_list(self):

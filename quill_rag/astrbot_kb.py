@@ -273,7 +273,7 @@ class AstrBotKBSource:
 
     async def search(self, query: str, kb_names: Optional[list[str]] = None,
                      top_k: Optional[int] = None,
-                     doc_filters: Optional[dict] = None) -> RagResult:
+                     doc_filters: Optional[dict] = None, include_low_relevance=False) -> RagResult:
         """检索内置知识库，结果映射为插件 Doc RAG 的 dict 形状。
 
         Args:
@@ -333,6 +333,7 @@ class AstrBotKBSource:
             return RagResult([])
 
         mapped: list[dict] = []
+        from ..quill.services.relevance import has_text_support
         for r in resp.get("results") or []:
             kb_name = str(r.get("kb_name", "") or "")
             content = str(r.get("content", "") or "")
@@ -346,6 +347,8 @@ class AstrBotKBSource:
                 # 附加信息：面板检索测试 / 注入报告可选用，注入格式化器忽略
                 "kb_name": kb_name,
                 "doc_name": str(r.get("doc_name", "") or ""),
+                'score_semantics':'host_relative_or_rerank_unverified',
+                'low_relevance':not has_text_support(query,content+' '+str(r.get('doc_name',''))),
             })
 
         if need_filter:
@@ -357,6 +360,8 @@ class AstrBotKBSource:
                 if allowed is None or r["doc_name"] in allowed:
                     kept.append(r)
             mapped = kept
+        if not include_low_relevance:
+            mapped=[r for r in mapped if not r['low_relevance']]
         if len(mapped) > final_k:
             mapped = mapped[:final_k]
         return RagResult(mapped)

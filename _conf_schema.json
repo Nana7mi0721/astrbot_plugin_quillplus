@@ -288,7 +288,7 @@
         "type": "string",
         "description": "决策模型 ID",
         "default": "",
-        "hint": "OpenRouter 填模型全名，如 inception/mercury-decide:free（免费）、typesafe/jev-1.14、openai/gpt-6-luna-decisions、cloudflare/clef；直连 TypeSafe 填 jev-latest；直连 OpenAI 填 gpt-6-luna。"
+        "hint": "OpenRouter 填模型全名，如 inception/mercury-decide（付费，使用前测试可用性）、typesafe/jev-1.14、openai/gpt-6-luna-decisions、cloudflare/clef；直连 TypeSafe 填 jev-latest；直连 OpenAI 填 gpt-6-luna。"
       },
       "decision_api_format": {
         "type": "string",

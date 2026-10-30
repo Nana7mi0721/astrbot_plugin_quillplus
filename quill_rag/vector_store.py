@@ -156,6 +156,8 @@ class FaissVectorStore:
             return
 
         if not os.path.exists(self.index_path):
+            self._index=None;self.dim=0
+            await self._exec_write('UPDATE chunks SET faiss_id=-1 WHERE faiss_id>=0')
             logger.info("[Quill RAG] 无既有 FAISS 索引，维度将由首批真实向量决定")
             return
         try:
@@ -173,7 +175,7 @@ class FaissVectorStore:
                 # 切换了 embedding provider，维度不匹配，重建空索引。
                 logger.warning(
                     f"[Quill RAG] FAISS 索引 dim={loaded_dim} 与期望 dim={self.expected_dim} 不一致，"
-                    f"重建空索引（旧文档需重新上传或随上传回填，不自动重嵌入）。"
+                    f"重建空索引（文本保留，可在面板确认重建向量，不自动重嵌入）。"
                 )
                 self._index = None
                 await asyncio.to_thread(self._remove_index_file)
@@ -308,7 +310,7 @@ class FaissVectorStore:
 
         **不自动重烧 API 配额**（PLAN M3.3 决策）：重建只丢「派生数据」
         （FAISS 索引），chunks 表的文本原样保留，后续 add 慢慢回填；需要
-        立即全量恢复的用户在面板重新上传即可。面板可感知：
+        立即全量恢复的用户可在面板确认重建向量。面板可感知：
         :meth:`get_stats` 的 ``last_rebuild`` / ``dim`` 字段 + 本条 WARNING 日志。
         """
         old_dim = self.dim
@@ -327,6 +329,11 @@ class FaissVectorStore:
         self._create_index(new_dim)
 
     async def add(self, texts: list[str], embeddings: list[list[float]], source: str, doc_id: str = ""):
+        # 同时保护维度变更、pending写入与索引发布，避免重建提交在三步之间插入。
+        async with self._lock:
+            return await self._add(texts,embeddings,source,doc_id)
+
+    async def _add(self, texts, embeddings, source, doc_id):
         """F11 修复：SQLite 先写 pending 行（faiss_id=-1）拿 rowid → FAISS 写入 →
         失败则回滚 SQLite → 成功则回填 faiss_id。保证两库一致性。
 
@@ -499,6 +506,8 @@ class FaissVectorStore:
         让 FAISS 断言炸成 StorageError；面板经 get_stats().dim_mismatch 可见。
         """
         if self._index is None or self.dim <= 0 or self._index.ntotal == 0:
+            if (await self._exec_fetchone('SELECT COUNT(*) FROM chunks'))[0]:
+                raise StorageError('文档向量索引为空，已有文本待重建',detail='document_index_pending')
             return []
         try:
             # S1-4: L2 归一化 query
@@ -510,7 +519,7 @@ class FaissVectorStore:
                     "（下次上传文档时将按新维度重建索引）",
                     query.shape[1], self.dim,
                 )
-                return []
+                raise StorageError('查询与文档索引维度不一致，请重建索引',detail='document_index_dimension_mismatch')
             qnorm = np.linalg.norm(query)
             if qnorm > 0:
                 query = query / qnorm
@@ -586,6 +595,11 @@ class FaissVectorStore:
             ) from e
 
     async def delete_by_source(self, source: str) -> int:
+        # 与全量重建发布互斥，不能在删完FAISS但尚未删映射时发布旧快照。
+        async with self._lock:
+            return await self._delete_by_source(source)
+
+    async def _delete_by_source(self, source: str) -> int:
         """删除某文档的所有块，并尝试从 FAISS 索引中移除对应向量。
 
         顺序：先查 faiss_id → 再删 FAISS 向量 → 成功后删 SQLite。
@@ -660,10 +674,10 @@ class FaissVectorStore:
         try:
             total_chunks = (await self._exec_fetchone("SELECT COUNT(*) FROM chunks"))[0]
             total_docs = (await self._exec_fetchone("SELECT COUNT(DISTINCT source) FROM chunks"))[0]
+            pending = (await self._exec_fetchone('SELECT COUNT(*) FROM chunks WHERE faiss_id<0'))[0]
         except Exception as e:
             logger.warning("[Quill RAG] get_stats 失败: %s", e, exc_info=True)
-            total_chunks = 0
-            total_docs = 0
+            raise StorageError('无法读取文档索引状态',detail='document_stats_unavailable') from e
         return {
             "total_chunks": total_chunks,
             "total_docs": total_docs,
@@ -671,7 +685,81 @@ class FaissVectorStore:
             "dim": self.dim,
             "dim_mismatch": self._dim_mismatch,
             "last_rebuild": self._last_rebuild,
+            "pending_chunks": max(pending,total_chunks-(self._index.ntotal if self._index else 0)),
+            "available": bool(self._index is not None and self._index.ntotal>0 and not self._dim_mismatch),
         }
+
+    async def reindex(self, embedding_provider, handle, *, validate=None):
+        """P4：显式付费恢复已有文本；模型阶段不动现有索引，提交前复核全部文本。"""
+        import faiss
+        import shutil
+        from pathlib import Path
+        from uuid import uuid4
+        rows=await self._exec_fetchall('SELECT id,content FROM chunks ORDER BY id')
+        snapshot=[(r[0],r[1]) for r in rows]
+        if not rows:
+            handle.record.result={'chunks':0};return handle.record.result
+        candidate=None;dimension=0
+        for start in range(0,len(rows),32):
+            await handle.checkpoint(start,total=len(rows),message='重新嵌入已有文档（会计入用量）')
+            if validate and not validate():
+                raise StorageError('嵌入模型或文档组件已切换，请重试')
+            batch=rows[start:start+32]
+            vectors=await embedding_provider.embed([r[1] for r in batch])
+            array=np.asarray(vectors,dtype=np.float32)
+            if array.ndim!=2 or len(array)!=len(batch) or array.shape[1]<=0 or not np.isfinite(array).all():
+                raise StorageError('嵌入结果数量或数值无效，旧索引保留')
+            if candidate is None:
+                dimension=array.shape[1];candidate=faiss.IndexIDMap2(faiss.IndexFlatIP(dimension))
+            if array.shape[1]!=dimension:
+                raise StorageError('重建过程中嵌入维度改变，旧索引保留')
+            norms=np.linalg.norm(array,axis=1,keepdims=True)
+            if np.any(norms==0):
+                raise StorageError('嵌入模型返回零向量，旧索引保留')
+            candidate.add_with_ids(array/norms,np.asarray([r[0] for r in batch],dtype=np.int64))
+        await handle.checkpoint(len(rows),total=len(rows),message='核对来源并提交索引')
+        path=Path(self.index_path);name=uuid4().hex
+        temporary=path.with_name(path.name+'.'+name+'.tmp');backup=path.with_name(path.name+'.'+name+'.bak')
+        def prepare_file():
+            with temporary.open('xb') as f:
+                os.chmod(temporary,0o600)
+                f.write(_HEADER_STRUCT.pack(INDEX_MAGIC,INDEX_FORMAT_VERSION,dimension));f.write(faiss.serialize_index(candidate).tobytes());f.flush();os.fsync(f.fileno())
+            if path.exists():
+                shutil.copyfile(path,backup);os.chmod(backup,0o600)
+        committed=False
+        try:
+            async with self._lock:
+                if validate and not validate():
+                    raise StorageError('嵌入模型或文档组件已切换，旧索引保留')
+                current=await self._exec_fetchall('SELECT id,content FROM chunks ORDER BY id')
+                if [(r[0],r[1]) for r in current]!=snapshot:
+                    raise StorageError('文档在重建期间发生变更，请重试；现有索引保留')
+                # 提交区不再响应用户取消，避免文件与映射各提交一半；任务取消仍在模型批次生效。
+                work=asyncio.create_task(asyncio.to_thread(prepare_file))
+                try:
+                    await asyncio.shield(work)
+                except asyncio.CancelledError:
+                    await asyncio.gather(work,return_exceptions=True)
+                    raise
+                existed=path.exists()
+                try:
+                    await self._conn.execute('BEGIN IMMEDIATE')
+                    await self._conn.execute('UPDATE chunks SET faiss_id=id')
+                    os.replace(temporary,path)
+                    await self._conn.commit()
+                except BaseException:
+                    await self._conn.rollback()
+                    if backup.exists():os.replace(backup,path)
+                    elif not existed:path.unlink(missing_ok=True)
+                    raise
+                self._index=candidate;self.dim=dimension;self._dim_mismatch=False
+                self._last_rebuild={'reason':'manual_reindex','chunks':len(rows),'to':dimension}
+                committed=True
+        finally:
+            temporary.unlink(missing_ok=True)
+            if committed:backup.unlink(missing_ok=True)
+        handle.record.result={'chunks':len(rows),'dim':dimension}
+        return handle.record.result
 
     async def load_index(self):
         """重新加载 FAISS 索引（供 /doc reload 调用）。
@@ -680,4 +768,5 @@ class FaissVectorStore:
         锁已可重入（M3.3 D5），持锁调用本方法不再有死锁风险；
         调用方保持无锁调用不变。
         """
-        await self._load_index()
+        async with self._lock:
+            await self._load_index()

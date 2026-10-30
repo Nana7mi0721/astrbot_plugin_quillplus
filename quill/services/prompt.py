@@ -14,6 +14,7 @@ interfaces/astrbot_hooks.handle_llm_request（决策记录见彼处 docstring）
 """
 
 from __future__ import annotations
+from .message_content import text_content
 
 
 def build_context_text(user_input: str, contexts) -> str:
@@ -34,8 +35,8 @@ def build_context_text(user_input: str, contexts) -> str:
         parts = [user_input]
         for msg in recent:
             role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role in ("user", "assistant") and isinstance(content, str):
+            content = text_content(msg.get("content", ""))
+            if role in ("user", "assistant"):
                 parts.append(content)
         context_text = "\n".join(parts)
     return context_text

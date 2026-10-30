@@ -1,0 +1,685 @@
+{
+  "style_onomatopoeia": {
+    "content_sha256": "4c22ff0002467055619d5a96b0890a42fb51dbcd8af3b5821f2a4517b464e0d4",
+    "old_keywords": [
+      "拟声词",
+      "声音",
+      "响",
+      "音效",
+      "太安静"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "拟声词",
+      "声音",
+      "音效",
+      "太安静"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "style_dialogue": {
+    "content_sha256": "40451efbaac42c84b08f9b4f3ee00e9fbaed405611a794beeb3b6c8ff8823677",
+    "old_keywords": [
+      "说",
+      "话",
+      "对白",
+      "台词",
+      "说话",
+      "开口"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "对白",
+      "台词",
+      "说话",
+      "开口"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "style_pov": {
+    "content_sha256": "61eb06a5af91f82ed6f01a541e91f13cd47d1b61a38c6f020d7ebca1f69360ca",
+    "old_keywords": [
+      "视角",
+      "内心",
+      "独白",
+      "心理"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "视角",
+      "独白"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[听觉描写]": {
+    "content_sha256": "cf9afc507db295550d7d5434fdd62746590af8d1478906d10eb2bb3787863251",
+    "old_keywords": [
+      "声音",
+      "响",
+      "听",
+      "安静",
+      "吵"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "声音",
+      "安静"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[温度描写]": {
+    "content_sha256": "07796c44bea2640544519c46359024d2f582566cb9d2ed7e13f56ca8e9f345cb",
+    "old_keywords": [
+      "热",
+      "烫",
+      "冰凉",
+      "温暖",
+      "发冷",
+      "体温"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "冰凉",
+      "温暖",
+      "发冷",
+      "体温"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[行走与移动描写]": {
+    "content_sha256": "a8c47dcccde6518ea76bee2f79e517870b694ceb01a1d0ae70be428c53824354",
+    "old_keywords": [
+      "走",
+      "走路",
+      "移动",
+      "脚步",
+      "过去"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "走路",
+      "移动",
+      "脚步",
+      "过去"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[奔跑与追逐描写]": {
+    "content_sha256": "fdc9729b927974e58087be618053a7eda14cca5828ca1cd8b1caacb4cfecddf6",
+    "old_keywords": [
+      "跑",
+      "奔",
+      "追",
+      "逃",
+      "赶"
+    ],
+    "old_aliases": [],
+    "keywords": [],
+    "aliases": [],
+    "disable": true
+  },
+  "[冲突动作描写]": {
+    "content_sha256": "ecde7e33ddea7c6522bb1fe20c412fd68d2c036279b9c82c2438fc12a8bdb089",
+    "old_keywords": [
+      "打",
+      "冲突",
+      "动手",
+      "拦住",
+      "推开"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "冲突",
+      "动手",
+      "拦住",
+      "推开"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[用餐描写]": {
+    "content_sha256": "6aa8cdb7e27a3c449949b31bf387fcb415044e1955f66f775069b836637f58ed",
+    "old_keywords": [
+      "吃",
+      "饭",
+      "餐",
+      "喝",
+      "筷子"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "筷子"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[睡眠与苏醒描写]": {
+    "content_sha256": "2377073ba13117f776dba660e7c48f14a18c751bc35a49cc318baa0fd792a629",
+    "old_keywords": [
+      "睡",
+      "醒",
+      "做梦",
+      "睁眼",
+      "夜里"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "做梦",
+      "睁眼",
+      "夜里"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[伸手与触碰描写]": {
+    "content_sha256": "ccf7b37f47ce90fd5d35ceab2dbf46af037e4ea9b2c06d46fc8d20985cddedd8",
+    "old_keywords": [
+      "伸手",
+      "碰",
+      "递",
+      "接",
+      "握"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "伸手"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[雨夜场景]": {
+    "content_sha256": "f4a2f3fbd75274ff3b050db9bd40d58ada1f73d827b51159a48e6693d5a3e112",
+    "old_keywords": [
+      "雨",
+      "夜",
+      "下雨",
+      "潮湿",
+      "伞"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "下雨",
+      "潮湿"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[街道场景]": {
+    "content_sha256": "62725f9bca47bd82f35247bfc6f691151e8a0779adda0d839a980e418b743ee4",
+    "old_keywords": [
+      "街道",
+      "街上",
+      "路",
+      "巷子",
+      "集市"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "街道",
+      "街上",
+      "巷子",
+      "集市"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[手部描写]": {
+    "content_sha256": "644c29f1b885cc7722234a0a16acca3d9306d9dcf74a35c76a9fc37c6198723d",
+    "old_keywords": [
+      "手",
+      "手指",
+      "掌心",
+      "指节",
+      "握"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "手指",
+      "掌心",
+      "指节"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[面部表情描写]": {
+    "content_sha256": "2f8403228699409f9e66bc67360cb4e7c4750c1a210d10c36ed327ecc3091af5",
+    "old_keywords": [
+      "脸",
+      "表情",
+      "神情",
+      "皱眉",
+      "笑"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "表情",
+      "神情",
+      "皱眉"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[眼神描写]": {
+    "content_sha256": "dfc3d039c4b4bada813e5a947bab32ee90c04cb52b2e6c91b59ef1c30b9be51a",
+    "old_keywords": [
+      "眼",
+      "眼神",
+      "看",
+      "视线",
+      "目光"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "眼神",
+      "视线",
+      "目光"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[肩背姿态描写]": {
+    "content_sha256": "b3f3209cbbcec6e8c15229108217226e0cad2e690032428de554244e4966392f",
+    "old_keywords": [
+      "肩",
+      "背",
+      "姿态",
+      "站",
+      "坐"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "姿态"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[健硕体型描写技法]": {
+    "content_sha256": "f5ba683dc7b363474f451ffac5f7be8d2d9f3fd17045a0eb5358f04f8a5d872f",
+    "old_keywords": [
+      "健硕",
+      "壮",
+      "肌肉",
+      "体格"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "健硕",
+      "肌肉",
+      "体格"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[清瘦体型描写技法]": {
+    "content_sha256": "a9f6ad127dcefcbefdacb88b9c76f65d8f0365ab3deb6ec145379caa88f73fc8",
+    "old_keywords": [
+      "清瘦",
+      "瘦",
+      "单薄",
+      "纤细"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "清瘦",
+      "单薄",
+      "纤细"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "[冬装描写]": {
+    "content_sha256": "03ae3d322f281e9a7aba473728fc2813dfc799ee9852130a359892bc9d21851d",
+    "old_keywords": [
+      "冬装",
+      "棉衣",
+      "围巾",
+      "厚",
+      "冷天"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "冬装",
+      "棉衣",
+      "围巾",
+      "冷天"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "lang_teasing": {
+    "content_sha256": "65bf7e6366eba5835f9c3549e96cba278f4555c5d442c1e9f1d9f35b4a7a51ef",
+    "old_keywords": [
+      "调侃",
+      "打趣",
+      "玩笑",
+      "逗",
+      "故意"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "调侃",
+      "打趣",
+      "玩笑",
+      "故意"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "lang_inner_monologue": {
+    "content_sha256": "cce5372e814ad572c0805c16dea5c72b292dbfa68c25a6e841b4104f227b402a",
+    "old_keywords": [
+      "内心",
+      "独白",
+      "心想",
+      "念头",
+      "心里"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "独白",
+      "心想",
+      "念头",
+      "心里"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "state_fatigue": {
+    "content_sha256": "bc3b349faf5fd0b7903c9e795c243eb89ca9b14db79bf144ae652b8fe1e0b6ff",
+    "old_keywords": [
+      "累",
+      "疲惫",
+      "困",
+      "倦",
+      "撑不住"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "疲惫",
+      "撑不住"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "state_sleep": {
+    "content_sha256": "2865348debd744d7f4dffa748b5b9139063da1d01cbae8bbd7d8d14108ebdc37",
+    "old_keywords": [
+      "睡",
+      "睡着",
+      "熟睡",
+      "睡态",
+      "梦里"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "睡着",
+      "熟睡",
+      "睡态",
+      "梦里"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "progress_continue": {
+    "content_sha256": "b4c5dbe88f91f57dc066be50ddc6abd4b34abb10d0e230a1c8587b6d038de0b8",
+    "old_keywords": [
+      "继续",
+      "接着写",
+      "然后",
+      "后面呢",
+      "继续剧情",
+      "再写",
+      "续写",
+      "接着来"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "继续",
+      "接着写",
+      "然后",
+      "后面呢",
+      "继续剧情",
+      "再写",
+      "续写",
+      "接着来"
+    ],
+    "aliases": [],
+    "disable": true
+  },
+  "progress_speedup": {
+    "content_sha256": "42db3145b206ddaa5eee95d165a84841790aadb059ba3d08d91e27094748fd48",
+    "old_keywords": [
+      "加速",
+      "快进",
+      "跳过",
+      "快点",
+      "直接",
+      "简短些",
+      "别废话",
+      "快点到"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "加速",
+      "快进",
+      "跳过",
+      "快点",
+      "直接",
+      "简短些",
+      "别废话",
+      "快点到"
+    ],
+    "aliases": [],
+    "disable": true
+  },
+  "progress_detail": {
+    "content_sha256": "cfb2c2b1ddde6167c47d0e1d76a780141e879853206f09af2acabd4ceab2622f",
+    "old_keywords": [
+      "详细",
+      "展开",
+      "具体点",
+      "细写",
+      "放大",
+      "细致",
+      "细节",
+      "慢慢写",
+      "仔细写"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "详细",
+      "展开",
+      "具体点",
+      "细写",
+      "放大",
+      "细致",
+      "细节",
+      "慢慢写",
+      "仔细写"
+    ],
+    "aliases": [],
+    "disable": true
+  },
+  "progress_next": {
+    "content_sha256": "74f3a7b60cabcf0bef3c176b6c98f646a82fb5437c8ee20e5f60cc89fda2ab6c",
+    "old_keywords": [
+      "下一步",
+      "接下来",
+      "新场景",
+      "换场景",
+      "之后呢",
+      "转到",
+      "切换",
+      "之后"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "下一步",
+      "接下来",
+      "新场景",
+      "换场景",
+      "之后呢",
+      "转到",
+      "切换",
+      "之后"
+    ],
+    "aliases": [],
+    "disable": true
+  },
+  "summary_mode": {
+    "content_sha256": "f40831644dab0e502fe59924be3f0dddaf437d440385238c9c7f4fe2af286590",
+    "old_keywords": [
+      "总结",
+      "回顾",
+      "整理一下",
+      "汇总",
+      "助手模式",
+      "状态",
+      "检查",
+      "看看",
+      "梳理"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "总结",
+      "回顾",
+      "整理一下",
+      "汇总",
+      "助手模式",
+      "检查",
+      "梳理"
+    ],
+    "aliases": [],
+    "disable": true
+  },
+  "pool_sight": {
+    "content_sha256": "b36f4cd2e9fab56115c65860da3b3d45bfe637ea54d8697d8825a81f6596ea79",
+    "old_keywords": [
+      "光",
+      "色",
+      "影",
+      "明暗",
+      "倒影"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "明暗",
+      "倒影"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "pool_pressure": {
+    "content_sha256": "6079e1a088426cf88aaa0e671acfbb2b3153c4a1f8891faf78b9cfbe7890876e",
+    "old_keywords": [
+      "压",
+      "贴",
+      "抵",
+      "重量",
+      "接触"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "重量",
+      "接触"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "pool_temperature": {
+    "content_sha256": "6bd7cc584ea38042a9ca7aa41bfe318c1052bb17e6cec541c10f5e42a30ad25f",
+    "old_keywords": [
+      "冷",
+      "暖",
+      "凉",
+      "温差",
+      "冰"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "温差"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "live_breath": {
+    "content_sha256": "e4fee5341422f3c4f2e75b286ae43bc5d64e42df12c16ab19c0c2e78f2b9c4bb",
+    "old_keywords": [
+      "呼吸",
+      "喘",
+      "气息",
+      "吸气",
+      "屏住"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "呼吸",
+      "气息",
+      "吸气",
+      "屏住"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "live_hesitate": {
+    "content_sha256": "9799db03c88097ab0637c85c1c4a281315f3bd70ccd151da95145d80113154e0",
+    "old_keywords": [
+      "犹豫",
+      "迟疑",
+      "停顿",
+      "想说",
+      "悬"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "犹豫",
+      "迟疑",
+      "停顿",
+      "想说"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "live_embarrass": {
+    "content_sha256": "a74325dc36dd9d9b120df5a026048453e6bc03a4a17fd119868836d5d3ac84d2",
+    "old_keywords": [
+      "尴尬",
+      "窘",
+      "难为情",
+      "低头",
+      "不自在"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "尴尬",
+      "难为情",
+      "低头",
+      "不自在"
+    ],
+    "aliases": [],
+    "disable": false
+  },
+  "live_eye": {
+    "content_sha256": "b23323180dc4cdef9abdf44c407e28eb805dbb2fb6349940bf0bec34798b31d0",
+    "old_keywords": [
+      "眼",
+      "看",
+      "视线",
+      "目光",
+      "瞟"
+    ],
+    "old_aliases": [],
+    "keywords": [
+      "视线",
+      "目光"
+    ],
+    "aliases": [],
+    "disable": false
+  }
+}

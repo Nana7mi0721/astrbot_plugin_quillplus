@@ -21,3 +21,6 @@
 LOVE_DATA_TAG = "[LOVE_DATA]"
 STATUS_TAG = "[STATUS]"
 STATUS_END_TAG = "[/STATUS]"
+
+# P7：解析和剥离必须使用同一组新旧标记，不能只升级渲染器。
+PLOT_PATH_PATTERN = r'(?:[>|＞]{2,}\s*|【)\s*(?:Plot\s*Paths|剧情走向|剧情选项)\s*(?:[|<＜]{2,}\s*|】)\s*(.+?)\s*(?:[<>|＞＜]{2,}\s*|【)\s*(?:Select|请选择|选择)\s*(?:[<>|＞＜]{2,}|】)'
