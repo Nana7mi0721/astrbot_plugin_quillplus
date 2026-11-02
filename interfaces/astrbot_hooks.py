@@ -52,6 +52,7 @@ from ..quill.services import history_scrub as _history_scrub_mod
 from ..quill.services import memory as _memory_mod
 from ..quill.services import prompt as _prompt_mod
 from ..quill.services import response as _response_mod
+from ..quill.services import shared_context as _shared_mod
 from ..quill.services import trace as _trace_mod
 from ..quill.services.statusbar import decision_client as _dec_mod
 
@@ -285,6 +286,11 @@ async def handle_decorating_result(plugin, event: AstrMessageEvent) -> None:
         # 剩余正文照常归一）。
         if not ("**状态栏**" in stripped and "```" in stripped):
             stripped = _response_mod.normalize_plot_markers(stripped)
+        # 串台修复兜底：共享会话的来源标记〔来自/发往：…〕只给模型判断，不许出现在
+        # 回复里（实测入口 B 正文第一行原样打出了 `〔发往：webchat 私聊 …〕`）。
+        # 只在本轮确实是共享会话时擦，普通会话不受影响。
+        if event.get_extra('_quill_shared_context'):
+            stripped = _shared_mod.strip_view_markers(stripped)
         if stripped != text:
             comp.text = stripped
             cleaned += 1
@@ -308,7 +314,9 @@ async def prepare_output_flags(plugin, event: AstrMessageEvent) -> None:
     if scope!=target_id:
         from ..quill.services.shared_context import history_view
         rows=await plugin.shared_scopes.store.recent(scope,persona_id)
-        history=history_view(rows,{o['origin_key']:o for o in plugin.shared_scopes.index['origins']})
+        # 只做激活词扫描，不能带来源标签：标签里的「群聊/私聊」会污染关键词命中。
+        history=history_view(rows,{o['origin_key']:o for o in plugin.shared_scopes.index['origins']},
+                             actors=plugin.shared_scopes.index['actors'],decorate=False)
     elif manager:
         mapping=await plugin.state_manager.get_persona_conv_map(target_id)
         cid=mapping.get(persona_id or '')
@@ -560,6 +568,10 @@ async def handle_using_llm_tool(
                 # 模板与渲染模板保持 ASCII 不动。F4 拦截分支已在此前
                 # return，不受影响。
                 msg["text"] = _response_mod.normalize_plot_markers(msg["text"])
+                # 串台修复：共享会话的来源标记只给模型判断，不许进回复。工具直发的
+                # 文本不经过 handle_decorating_result 的兜底，必须在这里也擦一次。
+                if event.get_extra("_quill_shared_context"):
+                    msg["text"] = _shared_mod.strip_view_markers(msg["text"])
 
     # JSON 回写：如果原始类型是字符串，序列化回去
     if was_string:
@@ -1240,7 +1252,8 @@ async def handle_llm_request(
         _trace_note(plugin,target_id,lambda t:t.module_results.append(_trace_mod.TraceModuleResult(
             module='shared_context',ok=True,hits=shared_view['messages'],
             items=[{'source_ref':'logical_transcript:'+str(shared_view['last_seq']),
-                    'score_or_kw':f"临时视图 {shared_view['chars']} 字，上一轮 {shared_view['options']} 个选项"}]
+                    'score_or_kw':f"临时视图 {shared_view['chars']} 字，上一轮 {shared_view['options']} 个选项"
+                                  f" · 当前入口 {shared_view.get('entry') or '未知'}"}]
         )))
     if contexts_is_fresh and not event.get_extra('_quill_shared_context') \
             and getattr(plugin.config, 'rag_enable_chat_logging', True) \

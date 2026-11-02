@@ -2,8 +2,9 @@
 
 ## 一、整体架构
 
-运行时为「注册桩 → 适配层 → 服务层」三级结构（v5.3.0 重构），由 **5 大功能模块** 组成，
-在一次 LLM 请求生命周期中协同工作：
+运行时为「注册桩 → 适配层 → 服务层」三级结构（v5.3.0 重构），由核心 5 个功能模块组成，
+另加 v5.3.5 引入的用量记账、后台任务、会话组与上下文压缩四个横向模块，在一次 LLM
+请求生命周期中协同工作：
 
 | 层级 | 核心文件 | 职责 |
 |------|----------|------|
@@ -18,7 +19,11 @@
 | **内容注入源** | `kb.py`(WR) + `worldbook.py`(WB) + `persona_manager.py` + `quill_rag/*` | 提供素材/设定/记忆/文档 |
 | **输出后处理** | `main.py` 转发的 hook + `quill/services/statusbar/*` | 状态栏解析、Markdown 清理 |
 | **状态持久化** | `state.py` + `persona_manager.py` | 双轴隔离 + 原子写入 |
-| **Web 面板** | `web_routes.py`(HTTP) + `_route_core.py`(纯逻辑) + `pages/panel/` | 配置与内容管理界面 |
+| **用量与费用**（v5.3.5） | `quill/services/usage.py`（计数与会话状态）+ `quill_rag/usage_store.py`（台账与聚合）+ `interfaces/usage.py`（宿主适配） | 每次模型调用一行记录：输入/输出/缓存读写分列、缺失标未知、按币种与来源分桶记账 |
+| **后台任务**（v5.3.5） | `quill/services/tasks.py` + `interfaces/operations.py` | 长操作（记忆导入、手动总结）的进度、复用、安全取消，以及崩溃后按 phase 续做 |
+| **会话组**（v5.3.5，开发中） | `interfaces/groups.py` + `quill/services/shared_context.py` + `quill_rag/scope_store.py` | 多入口（群/私聊/WebChat）共享一段剧情；每条消息带入口与说话人标注，当前请求标注「本入口/别处」 |
+| **上下文压缩**（v5.3.5，默认关闭） | `interfaces/context_compact.py` | 超上限时把旧历史压成摘要，原文先落检查点；失败只告警、保留历史 |
+| **Web 面板** | `web_routes.py`(HTTP) + `_route_core.py`(纯逻辑) + `pages/panel/` | 配置与内容管理界面（十个页面） |
 
 与 AstrBot 原生数据的两处接入（v5.3.2，均为**只读**，不改动 AstrBot 侧数据）：
 
@@ -34,12 +39,25 @@
 > 下列钩子的实现都在 `interfaces/astrbot_hooks.py`（`main.py` 只做转发）；钩子内部调用的服务
 > 位于 `quill/`（纯逻辑）与 `quill_rag/`（检索组件）。
 
-### 阶段 1：流式决策 — `on_waiting_llm_request`
+### 阶段 0：输出旗标前置 — `AdapterMessageEvent` 阶段（v5.3.5）
 
-读取 `state.stream_mode`：
-- `"off"` → 强制关闭流式
-- `"on"` → 强制开启
-- `"auto"`（默认） → 激活词/【】括号命中时关闭流式（保证状态栏正则解析可靠）
+AstrBot 4.29.x 的 local runner 在 `process()` 开头、触发 `on_waiting_llm_request` **之前**
+就把 `enable_streaming` / `enable_reasoning` 读进局部变量，等到了 waiting 钩子再写
+`event.set_extra` 已经来不及。因此流式与推理的判定被前移到本插件自己的
+`shared_scope_capability_guard`（`@filter.custom_filter(_AlreadyAwakeFilter, priority=1000)`，
+`interfaces/astrbot_hooks.py::prepare_output_flags`）：
+
+- `state.stream_mode` 为 `on` / `off` 时直接按它设旗标；`auto`（默认）下**仅当本轮会走 RP
+  激活**才关闭流式（保证状态栏正则能拿到完整文本，普通闲聊仍保持用户设定的流式）。
+- `enable_reasoning` 取宿主 `provider_settings.display_reasoning_text`：宿主没要求显示推理时
+  一律关掉（WebChat 的请求默认值是 `true`，不覆盖会架空宿主设置）。
+- 设完置 `_quill_output_prepared=True`，后续阶段只读不写。
+
+### 阶段 1：流式决策（历史位置）— `on_waiting_llm_request`
+
+v5.3.4 及更早版本在这里读写 `state.stream_mode`。v5.3.5 起旗标已在阶段 0 定稿，本钩子
+**不再写流式/推理旗标**（local runner 已读走局部值，再写只会造成「日志说已关、实际仍流式」）；
+它现在只做角色卡对话切换与 `/reinject` 拦截。
 
 ### 阶段 2：激活检测 + Prompt 装配 — `on_llm_request`
 
@@ -218,6 +236,50 @@
 > 你的密钥（面板会提示「未携带已保存的密钥」）；地址只接受 `http://` / `https://`，其他协议直接拒绝、
 > 不发出任何请求。该操作计入管理员写操作，需 Dashboard 会话或 `admin_users` 白名单内的 API Key。
 
+### `[usage]` — 模型用量与费用（v5.3.5）
+
+| 配置项 | 默认 | 作用 |
+|--------|------|------|
+| `enabled` | `true` | 记录模型用量 |
+| `retention_days` | `30` | 用量保留天数 |
+| `max_records` | `20000` | 用量记录上限 |
+| `prices_json` | `{}` | 手动模型单价（每百万 Token），JSON 对象 |
+| `display_currency` | `original` | 费用展示币种（`original` / `CNY` / `USD`） |
+| `usd_cny_rate` | `0` | 手动汇率：1 USD 对应 CNY，0 表示未设置 |
+
+未知单价的调用记 `unpriced`（不按 0 计价、不猜），供应商未报告缓存字段的调用在
+命中率分母里被剔除、显示「无」而不是 0%。**台账不进剧情备份**，`/quill` 与面板「模型用量」页共用同一份数据。
+
+### `[cache]` — 提示词缓存布局（v5.3.5，试用）
+
+| 配置项 | 默认 | 作用 |
+|--------|------|------|
+| `enabled` | `false` | 启用稳定提示词布局（重排分组、固定协议与常驻前缀） |
+| `dynamic_to_user_tail` | `false` | 把动态上下文改成临时通道（需宿主内部序列化能力，不支持时自动退回普通消息） |
+| `stable_sampling` | `false` | 素材随机池按窗口稳定采样，减少前缀漂移 |
+| `sampling_window` | `3` | 采样窗口（轮） |
+
+开启后注入预算按「系统层 + 当前输入」计算，**不含完整历史**，因此不等于模型 token 窗口；
+与状态栏注入位置、世界书 `injection_position` 的相互作用见「上下文压缩与费用换算」小节。
+
+### `[compression]` — 上下文压缩（v5.3.5，默认关闭）
+
+| 配置项 | 默认 | 作用 |
+|--------|------|------|
+| `enabled` | `false` | 自动压缩历史 |
+| `max_tokens` | `32000` | 上下文文本估算 Token 上限（超过即压缩） |
+| `provider_id` | `""` | 压缩模型供应商，留空用当前会话所选 |
+
+压缩前先把被替换的原文写成 `context_checkpoints/` 下的检查点（单份 ≤2MB、总量与份数有上限），
+压缩失败只告警、保留当前历史；`/quill compact` 可手动触发。含工具调用或媒体的历史暂不压缩。
+
+### `[trace]` — 注入诊断
+
+| 配置项 | 默认 | 作用 |
+|--------|------|------|
+| `enabled` | `true` | 启用注入追踪（面板「注入诊断」页与 `/quill debug` 的数据源） |
+| `buffer_per_session` | `20` | 每会话保留轮数 |
+
 ### `[debug]` / `[permissions]`
 
 | 配置项 | 默认 | 作用 |
@@ -310,3 +372,11 @@ target_id（会话维度：群+用户）
 13. **JEV 结构化判定（v5.3.1 引入，v5.3.3 升级为 Decision 决策模式）**：剧情分支与状态栏判定交给决策模型（不生成文本，只输出类型化判定与置信度）。v5.3.1 借道 AstrBot 的 openai_compatible 提供商直连 TypeSafe `/v1/systemone`；v5.3.3 起凭据（地址/密钥/模型/格式）在插件内独立配置，并兼容整个决策模型生态——System One 族（TypeSafe Jev、OpenRouter 上 13+ 家、Hal-X THX-01、Baseten Elephant-1、云知声 U2 等）与 OpenAI Decisions 族（`/v1/decisions`：GPT-6 Luna 及兼容网关），两族请求/响应格式由客户端自动适配归一。显式数字回复（1/2/3）本地精确匹配、零消耗；任何失败 fail-open，绝不影响正文渲染。
 
 14. **与 AstrBot 原生数据双向兼容（v5.3.2）**：① 内置知识库并入可绑定源（`kb:库名` / `kb:库名/文档名`，只读，总开关 `rag.astrbot_kb_enabled`）；② AstrBot 人格经摘要模型只读转换为角色卡（「由人格导入」，人格本身不变）；③ 插件内文档分组（`grp:组名`）作为**纯元数据**层，与单篇绑定共用同一份 FAISS 索引与检索预算，检索前才展开成文件列表。
+
+15. **用量记账「宁缺勿猜」（v5.3.5）**：输入、输出、缓存读、缓存写**分列存储**，缺字段写「未知」而不是 0；供应商没有报告缓存字段的调用不计入命中率分母（显示「无」，不是 0%）；未知单价记 `unpriced` 而不按 0 计价。三种金额（供应商报告 / 价格快照推算 / 未知）各走各桶，同一币种下才求和，跨币种只并列不换算。台账用一次调用一行、只在调用结束后落盘，记账失败绝不阻断对话。
+
+16. **可恢复的长操作（v5.3.5）**：记忆导入与手动总结走 `TaskRegistry` —— 同目标任务复用（不重复跑）、有并发上限、取消是「当前步骤结束后安全退出」而不是强杀。跨步骤的写操作先登记 `persistent_operations` 并记录回滚所需的身份（哪个会话、哪张卡），崩溃重启后按 phase 续做或回滚，**不在完成时重新查一次「当前卡」**（否则用户中途切卡会写错人）。
+
+17. **会话组：共享剧情但不串台（v5.3.5）**：多个入口（群/私聊/WebChat）绑到同一组后共享一段剧情，但每条历史都带来源标注——`〔来自：入口｜说话人：谁（本入口/别处）〕` 与 `〔发往：入口（本入口/别处）〕`。当前请求额外注入「你此刻在 X 回复 Y」，并明确「带（别处）的是别的入口里发生的事，不要认领那边的场景与道具」。标注与临时声明都经临时通道下发（不进宿主历史、不落库），回复里若出现标注由剥离器擦掉。**能否稳定区分入口取决于所选模型**，弱模型仍可能把另一入口的道具带进来。
+
+18. **上下文压缩先存原文（v5.3.5）**：超过估算上限时把旧历史压成摘要，但**先**把被替换的原文写成检查点（单份 ≤2MB、份数与总量有上限，写前用临时文件验证可写），压缩失败只告警、保留当前历史，绝不因压缩丢掉可回滚原文；含工具调用或媒体的历史不压缩（暂不支持）。估算按字节折算、对中文偏保守，因此上限是「估算值」不是模型真实 token 窗口。

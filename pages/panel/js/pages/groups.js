@@ -20,9 +20,27 @@ function personaName(id) {
   return cards.find(c=>c.id===id)?.name || id || "默认人设";
 }
 
+/* 入口显示名与后端 entry_label 同构：优先库里的可读标签，否则由 UMO 拼一份。
+   模型看到的历史标记也用同一套名字，面板与对话里说的是同一件事。 */
+function originName(o) {
+  const label=String(o?.label||"").trim();
+  if (label) return label;
+  const [platform,kind,session]=String(o?.umo||"").split(":");
+  const kinds={FriendMessage:"私聊",GroupMessage:"群聊",TempMessage:"临时会话",GuildMessage:"频道"};
+  let short=session;
+  if (String(session||"").startsWith("webchat!")) {
+    const parts=String(session).split("!");
+    let tail=parts[2]||"";
+    /* 只对 uuid 形态截 6 位：`m7fix-a` 这种可读短名一律截断会与 `m7fix-b` 撞名。 */
+    if (tail.length>12&&tail.slice(8).includes("-")) tail=tail.slice(0,6);
+    short=parts[2]?`${parts[1]||""}#${tail.slice(0,12)}`:parts[1]||session;
+  }
+  return [platform,kinds[kind]||kind,short].filter(Boolean).join(" ")||o?.umo||"历史来源";
+}
+
 function groupFormHtml(group) {
   const personaOptions='<option value="">默认人设</option>'+cards.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
-  const seedOptions='<option value="">从空状态开始</option>'+inventory.origins.filter(o=>!o.scope_id).map(o=>`<option value="${esc(o.origin_key)}">复制状态：${esc(o.umo)}</option>`).join("");
+  const seedOptions='<option value="">从空状态开始</option>'+inventory.origins.filter(o=>!o.scope_id).map(o=>`<option value="${esc(o.origin_key)}">复制状态：${esc(originName(o))}</option>`).join("");
   return `<div class="group-modal-form"><input type="hidden" id="group-id" value="${esc(group?.scope_id||"")}">
     <div class="form-row">
       <div class="form-group"><label for="group-name">名称</label><input class="field" id="group-name" maxlength="80" placeholder="为这段共同剧情命名"></div>
@@ -45,7 +63,7 @@ export async function loadGroups() {
         <div class="card-head"><h3><button type="button" class="group-card-title" data-action="group-edit" data-id="${esc(group.scope_id)}" ${group.busy?"disabled":""}>${esc(group.name)}</button></h3><span class="card-head-spacer"></span><span class="badge">${members.length} 个入口</span></div>
         <div class="card-body"><div class="card-body-inner">
           <p class="row-desc">共享角色：${esc(personaName(group.persona_id))}${group.busy?" · 正在生成，修改请等待本轮结束":""}</p>
-          <ul class="group-origins">${members.map(o=>`<li title="${esc(o.umo)}">${esc(o.umo)}</li>`).join("")}</ul>
+          <ul class="group-origins">${members.map(o=>`<li title="${esc(o.umo)}">${esc(originName(o))}</li>`).join("")}</ul>
           <div class="group-actions"><button type="button" class="btn btn--gray" data-action="group-edit" data-id="${esc(group.scope_id)}" ${group.busy?"disabled":""}>编辑成员与角色</button><button type="button" class="btn btn--gray" data-action="group-recent" data-id="${esc(group.scope_id)}">查看近期消息</button><button type="button" class="btn btn--destructive-tinted" data-action="group-archive" data-id="${esc(group.scope_id)}" ${group.busy?"disabled":""}>解散</button></div>
         </div></div>
       </article>`;
@@ -86,7 +104,7 @@ export function editGroup(id="") {
   }
   $("#group-members").innerHTML=inventory.origins.map(o=>{
     const foreign=o.scope_id&&o.scope_id!==group?.scope_id;
-    return `<div class="group-member"><label class="check"><input type="checkbox" data-group-member="${esc(o.origin_key)}" ${o.scope_id===group?.scope_id&&group?"checked":""} ${foreign?"disabled":""}><span>${esc(o.umo)} <small>${esc(o.platform_id)} · ${esc(o.message_type)}${foreign?" · 已在其他组":""}</small></span></label>${!group&&!foreign?`<label class="check group-history"><input type="checkbox" data-group-history="${esc(o.origin_key)}">纳入该入口同角色的旧记忆与日志</label>`:""}</div>`;
+    return `<div class="group-member"><label class="check"><input type="checkbox" data-group-member="${esc(o.origin_key)}" ${o.scope_id===group?.scope_id&&group?"checked":""} ${foreign?"disabled":""}><span>${esc(originName(o))} <small>${esc(o.platform_id)} · ${esc(o.message_type)}${foreign?" · 已在其他组":""}</small></span></label>${!group&&!foreign?`<label class="check group-history"><input type="checkbox" data-group-history="${esc(o.origin_key)}">纳入该入口同角色的旧记忆与日志</label>`:""}</div>`;
   }).join("")||'<p class="t2">尚未观测到入口，请先从该入口发送 /quill。</p>';
   enhanceSelects($("#modalBody"));
   preview=null; dirty=false;
@@ -128,7 +146,7 @@ export function archiveGroup(id) {
   const group=inventory.groups.find(g=>g.scope_id===id);
   const members=inventory.origins.filter(o=>o.scope_id===id);
   sandboxConfirm(`解散「${group.name}」？以下入口恢复独立数据：
-${members.map(o=>o.umo).join(String.fromCharCode(10))}
+${members.map(o=>originName(o)).join(String.fromCharCode(10))}
 组历史保留为管理员档案。`,async()=>{
     try { await apiPost("groups/archive",{scope_id:id,revision:group.revision,confirm:"ARCHIVE"}); await loadGroups(); }
     catch(error) { showToast(error.message,"error"); }
@@ -139,7 +157,7 @@ export async function showGroupRecent(id) {
   try {
     const group=inventory.groups.find(g=>g.scope_id===id);
     const result=await api("groups/recent?"+new URLSearchParams({scope_id:id,persona_id:group.persona_id}));
-    $("#group-recent").textContent=result.items.map(row=>`${row.created_at} · ${row.role} · ${row.actor_id||row.source_ref||"角色"}
+    $("#group-recent").textContent=result.items.map(row=>`${row.created_at} · ${row.role} · ${row.origin_label||row.source_ref||"角色"}${row.actor_label?"｜"+row.actor_label:""}
 ${row.content}`).join(String.fromCharCode(10)+String.fromCharCode(10))||"暂无已完成消息。失败或中断的输入不会冒充已完成剧情。";
     $("#group-recent-dialog").showModal();
   } catch(error) { showToast(error.message,"error"); }

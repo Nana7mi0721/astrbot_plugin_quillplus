@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 from astrbot.api import logger
 from .prompt_cache import selected_provider
+from .scopes import physical_origin
 from ..quill.services.message_content import text_content, plain_history_message
 
 
@@ -241,7 +242,8 @@ class ContextCompactor:
             from ..quill.services.shared_context import history_view
             rows=await self.plugin.shared_scopes.store.recent(turn.scope_id,turn.persona_id)
             origins={o['origin_key']:o for o in self.plugin.shared_scopes.index['origins']}
-            history=history_view(rows,origins)
+            history=history_view(rows,origins,actors=self.plugin.shared_scopes.index['actors'],
+                                 current=physical_origin(event).key)
         else:
             # R2：选卡命令尚未切宿主 cid；只能读冻结角色已绑定的对话，不能接管上一张卡。
             mapping=await self.plugin.state_manager.get_persona_conv_map(turn.origin_umo)

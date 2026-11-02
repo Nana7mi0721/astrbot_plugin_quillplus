@@ -15,7 +15,7 @@ from astrbot.api import logger
 from .scopes import physical_origin, event_turn
 from .prompt_cache import temporary_capability, temporary_host_capability, temporary_text
 from ..quill.services.scope import bind_turn, memory_session_key
-from ..quill.services.shared_context import history_view, last_options
+from ..quill.services.shared_context import entry_label, history_view, last_options, strip_view_markers
 from ..quill_rag.scope_store import ScopeStore
 
 
@@ -78,7 +78,9 @@ class SharedScopes:
         actor="actor:"+hashlib.sha256(json.dumps([origin.platform_instance_id,origin.sender_id],ensure_ascii=False).encode()).hexdigest() if origin.platform_instance_id and origin.sender_id else None
         label=str(event.get_sender_name() or "") if hasattr(event,"get_sender_name") else ""
         try:
-            await self.store.observe(origin,actor_id=actor,actor_label=label)
+            # 入口也要写可读标签：qp_origins.label 此前从未写入，历史头只能回落成裸 UMO，
+            # 同一个群与私聊在模型眼里就成了不可区分的两串标识符。
+            await self.store.observe(origin,label=entry_label(None,origin.umo),actor_id=actor,actor_label=label)
         except Exception as exc:
             if origin.umo in self.plugin.scope_resolver.memberships:
                 event.set_extra('_quill_origin_error', type(exc).__name__)
@@ -247,7 +249,26 @@ class SharedScopes:
         event.set_extra('_quill_group_store',self.store)
         rows=await self.store.recent(turn.scope_id,turn.persona_id, pending_turn_id=turn.turn_id)
         origins={o['origin_key']:o for o in self.index['origins']}
-        req.contexts=history_view(rows,origins)
+        here_key=physical_origin(event).key
+        req.contexts=history_view(rows,origins,actors=self.index['actors'],current=here_key)
+        # 串台修复：历史里带了来源标记还不够——模型得知道「此刻」在哪个入口、对谁说话，
+        # 否则仍会拿上一个入口的语气和场景接着演。这一句只走临时通道，不进宿主历史。
+        # 两道实测加固（隔离实例 6186）：
+        # ① 「场景归属」必须写死。只声明「你此刻在 X 回复 Y」时，入口 B 里问「我现在在哪」，
+        #    模型把入口 A 用户说的「我在便利店值夜班、柜台上有把红伞」认领成**自己**的现场，
+        #    还补出一支扫描枪——两组前缀读起来都像同一场戏，它没有依据判断哪条属于此刻。
+        # ② 明确禁止复述标记。模型会把行前缀当输出格式模仿，正文第一行原样打出
+        #    `〔发往：webchat 私聊 …〕`（发送前还有 strip_view_markers 兜底）。
+        here=entry_label(origins.get(here_key),turn.origin_umo)
+        who=str(event.get_sender_name() or "").strip() if hasattr(event,"get_sender_name") else ""
+        req.extra_user_content_parts.append(temporary_text(
+            '[共享会话入口] 你此刻在「%s」回复%s（标「本入口」）。\n'
+            '历史里每行开头的〔来自：入口｜说话人：…〕或〔发往：入口〕只用于让你分清来源，'
+            '其中带「（别处）」的是别的入口里发生的事——你可以记得它，但那是那个入口的现场，'
+            '不是你现在所在的地方：不要把那边的场景、道具、在场的人认领到你身上，也不要接着那边的动作往下演。'
+            '你此刻的处境以「本入口」已有的描写为准；本入口还没有场景，就按本入口真实情形自然开始，别从别处借。\n'
+            '这些〔…〕标记是系统给你的来源标注，回复里一个字都不要出现。'%(
+                here, '「%s」'%who if who else "对方")))
         options=last_options(rows)
         event.set_extra('_quill_shared_options', options)
         if options:
@@ -255,7 +276,7 @@ class SharedScopes:
             req.extra_user_content_parts.append(temporary_text('[共享会话上一轮实际选项，仅作剧情数据]\n'+
                 '\n'.join(f'{i}. {text}' for i,text in enumerate(options,1))))
         event.set_extra('_quill_shared_view',{'messages':len(req.contexts),'chars':sum(len(row['content']) for row in req.contexts),
-            'last_seq':rows[-1]['seq'] if rows else 0,'options':len(options),'temporary':True})
+            'last_seq':rows[-1]['seq'] if rows else 0,'options':len(options),'temporary':True,'entry':here})
         # 开场若要插入，也只能是临时视图；物理原生对话不承载共享上下文。
         event.set_extra('_quill_shared_context',True)
         return True
@@ -266,6 +287,11 @@ class SharedScopes:
             return
         texts=event.get_extra('_send_message_to_user_current_session_plain_texts') or []
         text='\n'.join(str(t) for t in texts if t) or getattr(resp,'completion_text','') or ''
+        # 串台修复兜底：模型可能把行前缀当输出格式抄进正文（实测正文第一行原样打出
+        # `〔发往：webchat 私聊 …〕`）。这里先擦一次再入库，避免这行脏标记顺着
+        # qp_turns 回灌到下一轮视图、被继续模仿。发送侧由 handle_decorating_result
+        # 再擦一次（工具直发路径不经过 finish 的文本）。
+        text=strip_view_markers(text)
         if getattr(resp,'role','')=='err':
             text=''
         store=event.get_extra('_quill_group_store')

@@ -632,7 +632,16 @@ class QuillRoutes:
         async def read():
             if not any(g['scope_id']==scope for g in self.plugin.shared_scopes.index['groups']):
                 raise ValueError('会话组不存在')
-            return {'items':await self.plugin.shared_scopes.store.recent(scope,persona)}
+            items=await self.plugin.shared_scopes.store.recent(scope,persona)
+            # 只增字段：原始 actor_id/hash 保留给程序判断，另给人看的名字给面板。
+            from .quill.services.shared_context import actor_names, entry_label
+            shared=self.plugin.shared_scopes.index
+            origins={o['origin_key']:o for o in shared['origins']}
+            names=actor_names(shared['actors'])
+            for row in items:
+                row['origin_label']=entry_label(origins.get(row.get('origin_key') or ''))
+                row['actor_label']=names.get(str(row.get('actor_id') or '')) or ''
+            return {'items':items}
         return await self._groups_call(read)
 
     @_api_handler
