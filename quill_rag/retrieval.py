@@ -67,10 +67,15 @@ def format_for_prompt(doc_results: list[dict], memory_results: list[dict], core_
         parts.append("<documents>\n" + "\n".join(doc_texts) + "\n</documents>")
 
     if memory_results:
-        mem_texts = [
-            f"  [{i+1}] [记忆] {r['summary']} (引用:{r.get('useful_count', 0)}次)"
-            for i, r in enumerate(memory_results)
-        ]
+        mem_texts = []
+        for i, r in enumerate(memory_results):
+            span = ""
+            if r.get("source_start_id") and r.get("source_end_id"):
+                span = f" [来源:{r['source_start_id']}-{r['source_end_id']}]"
+            dup = " [近重复候选]" if r.get("near_duplicate_of") else ""
+            mem_texts.append(
+                f"  [{i+1}] [记忆] {r['summary']} (引用:{r.get('useful_count', 0)}次){span}{dup}"
+            )
         parts.append("<memories>\n" + "\n".join(mem_texts) + "\n</memories>")
 
     if parts:
@@ -131,7 +136,8 @@ class QuillRetriever:
         return t
 
     async def search_documents(self, query: str, allowed_sources: list[str] = None,
-                               funnel: dict | None = None) -> list[dict]:
+                               funnel: dict | None = None,
+                               allow_llm_fallback: bool = True) -> list[dict]:
         """Doc RAG 检索：FAISS 召回 + Rerank 重排（支持按源文档过滤）。
 
         失败不再静默返回 []：异常时把 0 条结果挂上 `_rag_ok=False`，
@@ -168,7 +174,9 @@ class QuillRetriever:
                     funnel.update({"candidates": 0, "matched": 0, "filtered": []})
                 return _rag_failed('文档索引不完整，部分文本待重建') if index_status.get('pending_chunks') else []
             if self.reranker:
-                kept = await self.reranker.rerank(query, raw_results, top_k=self.top_k)
+                kept = await self.reranker.rerank(
+                    query, raw_results, top_k=self.top_k,
+                    allow_llm_fallback=allow_llm_fallback)
                 if funnel is not None:
                     # M1b 漏斗 + M1b-Fix P1-a：rerank 的返回可能是候选 dict 的
                     # 浅拷贝（P3-1 修复让 provider/LLM 路都 dict(cand) 后，
@@ -249,10 +257,23 @@ class QuillRetriever:
             query_emb = await self.embedding.embed([query])
             if not query_emb:
                 return _rag_failed("embedding 返回空向量")
+            # M6.3：时间/人物线索解析只影响排序，不改变 session/status 的
+            # 前置 SQL 过滤；多取几倍候选后再按时间窗/人物词重排。
+            from ..quill.services import temporal_query
+            analysis = (
+                temporal_query.analyze(query)
+                if getattr(self.config, "rag_temporal_recall_enabled", True)
+                else {"kind": "none", "entities": []}
+            )
+            recall_k = max(self.top_k, int(self.top_k or 3) * 3) if (
+                analysis.get("kind") != "none" or analysis.get("entities")
+            ) else self.top_k
             results = await self.memory_store.search(
-                session_id, query_emb[0], self.top_k,
+                session_id, query_emb[0], recall_k,
                 query_text=query, funnel=funnel,
             )
+            if results and (analysis.get("kind") != "none" or analysis.get("entities")):
+                results = temporal_query.rerank(results, analysis, self.top_k)
             if results:
                 mem_ids = [r["id"] for r in results]
                 self._spawn(self.memory_store.mark_memories_used(mem_ids, 1.5))
@@ -316,20 +337,29 @@ class QuillRetriever:
         async with lock:
             progress = await self.memory_store.ensure_summary_progress(session_id,legacy_last_id)
             logs = await self.memory_store.get_chat_logs_after(session_id,progress["last_log_id"],limit=max(2,min(50,int(limit))))
+            # M6.1：向前两条只读前情，仅用于代词/指代消解；不进入 source 区间、
+            # 不重复提取为新记忆。
+            prior_rows = await self.memory_store.get_chat_logs_before(
+                session_id, progress["last_log_id"], limit=2)
+            prior_context = "\n".join(
+                f"{'用户' if row['role'] == 'user' else 'AI'}：{row['content']}"
+                for row in prior_rows
+            )
             if handle:
                 await handle.checkpoint(0,total=len(logs))
             if len(logs)<2:
                 return {"processed": 0, "stored": False, "summary": "", "reason": "insufficient_logs"}
             if handle:
                 await handle.checkpoint(0,total=len(logs),message="正在总结未消费日志")
-            result = await self._summarize_rows(session_id,logs,progress,handle=handle)
+            result = await self._summarize_rows(
+                session_id, logs, progress, handle=handle, prior_context=prior_context)
             if handle:
                 handle.record.progress = result["processed"]
                 handle.record.total = result["processed"]
                 handle.record.result = {k:v for k,v in result.items() if k != "summary"}
             return result
 
-    async def _summarize_rows(self, session_id, logs, progress, handle=None):
+    async def _summarize_rows(self, session_id, logs, progress, handle=None, prior_context=""):
         if not self.summarizer:
             raise TaskFailure("摘要模型未配置","provider_unconfigured")
         lines = [f"{'用户' if row['role']=='user' else 'AI'}：{row['content']}" for row in logs]
@@ -342,13 +372,15 @@ class QuillRetriever:
         if len(combined)>24000:
             raise TaskFailure("单条对话过长，未消费日志保持原状","input_too_large")
         outcome = await self.summarizer.context_summarize_result(
-            combined,sum(row['role']=='user' for row in logs),session_id=session_id)
+            combined, sum(row['role'] == 'user' for row in logs),
+            session_id=session_id, prior_context=prior_context)
         if not outcome["ok"]:
             message="摘要模型未配置或不可用" if outcome['error'] in ('provider_unconfigured','provider_unavailable') else "摘要未成功，水位未推进"
             raise TaskFailure(message,str(outcome["error"]))
         summary=outcome["text"][:200]
         vector=None
         disposition="empty"
+        near_duplicate_of = None
         if handle:
             await handle.checkpoint(message="正在准备记忆写入")
         if summary:
@@ -359,17 +391,38 @@ class QuillRetriever:
             if not vectors or not vectors[0]:
                 raise TaskFailure("向量化未成功，水位未推进","embedding_failed")
             vector=vectors[0]
-            existing=await self.memory_store.search(session_id,vector,top_k=3)
-            if any(row.get('sim',0)>0.92 for row in existing):
+            existing=await self.memory_store.search(session_id,vector,top_k=5)
+            # M6.1：禁止高余弦自动合并；只跳过规范化后完全同文的重复。
+            from ..quill.services.memory_dedup import classify
+            decision = classify(
+                summary, existing,
+                threshold=float(getattr(self.config, "rag_memory_near_duplicate_threshold", 0.85) or 0.85),
+            )
+            if decision["action"] == "skip":
                 vector=None
                 disposition="duplicate"
             else:
-                disposition="stored"
+                if decision["action"] == "near_duplicate":
+                    near_duplicate_of = (
+                        (decision.get("candidate") or {}).get("record_id")
+                    )
+                    disposition = "near_duplicate"
+                else:
+                    disposition = "stored"
         if handle:
             await handle.checkpoint(message="正在提交总结与水位")
+        from ..quill.services import temporal_query
+        story_time = temporal_query.extract_story_time(summary) or temporal_query.extract_story_time(combined)
+        participants = temporal_query.extract_participants(summary) or temporal_query.extract_participants(combined)
         result=await self.memory_store.commit_summary_batch(
             session_id,progress['last_log_id'],max(row['id'] for row in logs),summary=summary,
-            vector=vector,chat_summary=combined[:100],expected_generation=progress['generation'],outcome=disposition)
+            vector=vector,chat_summary=combined[:100],expected_generation=progress['generation'],
+            outcome=disposition, near_duplicate_of=near_duplicate_of,
+            story_time=story_time or None,
+            event_time=temporal_query.event_time_from_log(logs[-1].get("timestamp")),
+            participants=participants,
+            episode_ref=f"chat_logs:{logs[0]['id']}-{logs[-1]['id']}",
+            source_start_id=logs[0]['id'])
         return {"processed":len(logs),"stored":bool(result['memory_record_id']),"summary":summary,
                 "reason":disposition,"through_id":max(row['id'] for row in logs)}
 

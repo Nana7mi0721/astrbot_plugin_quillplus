@@ -91,6 +91,18 @@ class QuillConfig:
         # 关闭后完全不碰 kb_manager，行为与旧版一致。
         self.rag_astrbot_kb_enabled: bool = _safe_bool(rag.get("astrbot_kb_enabled"), True)
         self.rag_enable_memory: bool = _safe_bool(rag.get("enable_memory"))
+        # M6：时间/人物召回、短回复扩写、近重复阈值、知识页与评估保留份数。
+        self.rag_temporal_recall_enabled: bool = _safe_bool(
+            rag.get("temporal_recall_enabled"), True)
+        self.rag_query_expand_enabled: bool = _safe_bool(
+            rag.get("query_expand_enabled"), False)
+        self.rag_memory_near_duplicate_threshold: float = min(
+            1.0, max(0.0, _safe_float(
+                rag.get("memory_near_duplicate_threshold", 0.85), 0.85)))
+        self.rag_knowledge_pages_auto_refresh: bool = _safe_bool(
+            rag.get("knowledge_pages_auto_refresh"), False)
+        self.rag_eval_max_snapshots: int = min(
+            50, max(1, _safe_int(rag.get("eval_max_snapshots", 5), 5)))
         self.rag_enable_autonomous_reflection: bool = _safe_bool(rag.get("enable_autonomous_reflection"), True)
         self.rag_enable_chat_logging: bool = _safe_bool(rag.get("enable_chat_logging"), True)
         self.rag_chat_log_retention_days: int = _safe_int(rag.get("chat_log_retention_days", 30), 30)

@@ -466,6 +466,8 @@
               <div class="segmented" role="tablist" aria-label="记忆子页">
                 <button type="button" class="is-selected" data-memsub="overview" role="tab" aria-selected="true" aria-controls="mem-overview" id="memsub-overview">系统总览</button>
                 <button type="button" data-memsub="browser" role="tab" aria-selected="false" aria-controls="mem-browser" id="memsub-browser">记忆浏览</button>
+                <button type="button" data-memsub="pages" role="tab" aria-selected="false" aria-controls="mem-pages" id="memsub-pages">知识页</button>
+                <button type="button" data-memsub="eval" role="tab" aria-selected="false" aria-controls="mem-eval" id="memsub-eval">检索评估</button>
                 <button type="button" data-memsub="logs" role="tab" aria-selected="false" aria-controls="mem-logs" id="memsub-logs">对话日志</button>
                 <button type="button" data-memsub="vector" role="tab" aria-selected="false" aria-controls="mem-vector" id="memsub-vector">向量检索</button>
                 <button type="button" data-memsub="io" role="tab" aria-selected="false" aria-controls="mem-io" id="memsub-io">导入导出</button>
@@ -527,6 +529,17 @@
                   <label for="memFilter">按 Session ID 精确筛选</label>
                   <input class="field" type="search" id="memFilter" placeholder="选定会话时此项禁用">
                 </div>
+                <div class="form-group" style="flex:0 0 180px">
+                  <label for="memStatus">状态</label>
+                  <select class="field" id="memStatus">
+                    <option value="">全部</option>
+                    <option value="active">active</option>
+                    <option value="stale">stale</option>
+                    <option value="superseded">superseded</option>
+                    <option value="expired">expired</option>
+                    <option value="archived">archived</option>
+                  </select>
+                </div>
               </div>
               <div class="table-wrap">
                 <table class="data">
@@ -541,6 +554,65 @@
                   <button type="button" class="btn btn--sm btn--gray" id="memNext" data-action="mem-page" data-value="1">下一页</button>
                 </div>
               </div>
+            </div></div>
+          </div>
+        </div>
+
+        <div class="mem-sub" id="mem-pages" role="tabpanel" aria-labelledby="memsub-pages">
+          <div class="card">
+            <div class="card-head">
+              <h3>角色知识页</h3>
+              <span class="card-head-sub">前台只读；刷新走后台任务与用量台账</span>
+              <span class="grow"></span>
+              <button type="button" class="btn btn--sm btn--filled" data-action="mem-pages-load">加载</button>
+            </div>
+            <div class="card-body"><div class="card-body-inner">
+              <div class="cfg-inline" style="margin-bottom:var(--sp-3)">
+                <input class="field grow" type="text" id="memPageSession" placeholder="Session ID（scope::persona）" aria-label="知识页 Session ID" style="max-width:none">
+              </div>
+              <div id="memPageTemplates" class="cfg-inline" style="margin-bottom:var(--sp-3)"></div>
+              <div id="memPagesBody" class="fs-13 t3">输入会话后加载知识页。</div>
+            </div></div>
+          </div>
+        </div>
+
+        <div class="mem-sub" id="mem-eval" role="tabpanel" aria-labelledby="memsub-eval">
+          <div class="card">
+            <div class="card-head">
+              <h3>检索评估用例</h3>
+              <span class="card-head-sub">默认不启用付费 LLM 重排</span>
+              <span class="grow"></span>
+              <button type="button" class="btn btn--sm btn--gray" data-action="eval-load">刷新</button>
+              <button type="button" class="btn btn--sm btn--filled" data-action="eval-run">运行评估</button>
+            </div>
+            <div class="card-body"><div class="card-body-inner">
+              <div class="form-row">
+                <div class="form-group" style="flex:1"><label for="evalCaseId">用例 ID</label><input class="field" type="text" id="evalCaseId" placeholder="temporal-1"></div>
+                <div class="form-group" style="flex:2"><label for="evalQuestion">问题</label><input class="field" type="text" id="evalQuestion" placeholder="上次在酒馆发生了什么？"></div>
+              </div>
+              <div class="fs-12 t3" style="margin-bottom:var(--sp-2)">运行期按当前 top_k / dense_top_k 检索；修改 chunk_size 不会自动重切已上传文档。</div>
+              <label class="fs-12 t3" style="display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-2)">
+                <input type="checkbox" id="evalUseLLM"> 含付费 LLM 重排（默认关闭，开启后写入用量台账）
+              </label>
+              <div class="form-row">
+                <div class="form-group" style="flex:1"><label for="evalScope">scope_id</label><input class="field" type="text" id="evalScope"></div>
+                <div class="form-group" style="flex:1"><label for="evalPersona">persona_id</label><input class="field" type="text" id="evalPersona"></div>
+              </div>
+              <div class="form-group"><label for="evalExpected">期望来源（逗号分隔，支持 doc:/kb:/grp:/mem:/wb:）</label><input class="field field--wide" type="text" id="evalExpected"></div>
+              <div class="form-group"><label for="evalTags">标签（逗号分隔）</label><input class="field field--wide" type="text" id="evalTags" placeholder="temporal,negation"></div>
+              <button type="button" class="btn btn--gray" data-action="eval-save">保存用例</button>
+              <div class="table-wrap" style="margin-top:var(--sp-3)">
+                <table class="data">
+                  <thead><tr><th style="width:150px">用例</th><th>问题</th><th style="width:190px">期望来源</th><th style="width:90px">操作</th></tr></thead>
+                  <tbody id="evalCasesBody"><tr><td colspan="4" class="t3">尚未加载</td></tr></tbody>
+                </table>
+              </div>
+            </div></div>
+          </div>
+          <div class="card" style="margin-top:var(--sp-4)">
+            <div class="card-head"><h3>最近快照</h3></div>
+            <div class="card-body"><div class="card-body-inner">
+              <div id="evalSnapshotsBody" class="fs-13 t3">尚未运行评估。</div>
             </div></div>
           </div>
         </div>
@@ -666,7 +738,7 @@
           <div class="usage-filter-grid">
             <label class="usage-filter"><span>时间范围</span><select class="field" id="usage-days"><option value="1">近 24 小时</option><option value="7" selected>近 7×24 小时</option><option value="30">近 30×24 小时</option><option value="366">保留期内全部</option></select></label>
             <label class="usage-filter"><span>逻辑会话 / 会话组</span><select class="field" id="usage-scope"><option value="">全部会话</option></select></label>
-            <label class="usage-filter"><span>用途</span><select class="field" id="usage-purpose"><option value="">全部用途</option><option value="main">主回复</option><option value="decision_probe">决策连通性测试</option><option value="decision">剧情决策</option><option value="status_extract">状态提取</option><option value="memory_summary">单轮摘要</option><option value="context_summary">多轮摘要</option><option value="context_compact">上下文压缩</option><option value="reflection">闲时反思</option><option value="persona_convert">人格转换</option><option value="rerank">重排</option><option value="rerank_llm">模型重排</option><option value="embedding">向量化</option></select></label>
+            <label class="usage-filter"><span>用途</span><select class="field" id="usage-purpose"><option value="">全部用途</option><option value="main">主回复</option><option value="decision_probe">决策连通性测试</option><option value="decision">剧情决策</option><option value="status_extract">状态提取</option><option value="memory_summary">单轮摘要</option><option value="context_summary">多轮摘要</option><option value="context_compact">上下文压缩</option><option value="reflection">闲时反思</option><option value="knowledge_page_refresh">知识页刷新</option><option value="persona_convert">人格转换</option><option value="rerank">重排</option><option value="rerank_llm">模型重排</option><option value="embedding">向量化</option></select></label>
             <label class="usage-filter"><span>模型</span><input class="field" id="usage-model" placeholder="留空显示全部"></label>
             <label class="usage-filter"><span>供应商 ID</span><input class="field" id="usage-provider" placeholder="留空显示全部"></label>
             <label class="usage-filter"><span>角色 ID</span><input class="field" id="usage-persona" placeholder="留空显示全部"></label>
@@ -1199,6 +1271,42 @@
                 <div class="cfg-row-control">
                   <label class="switch"><input type="checkbox" id="c-rag-autonomous-reflection"><span class="switch-track"></span></label>
                 </div>
+              </div>
+              <div class="cfg-row">
+                <div class="cfg-row-text">
+                  <div class="cfg-row-title">时间与人物线索召回</div>
+                  <div class="cfg-row-desc">按「昨天」「上周」「上次在酒馆」等线索重排记忆；现实时间精确计算，剧情时间保留原文。</div>
+                </div>
+                <div class="cfg-row-control">
+                  <label class="switch"><input type="checkbox" id="c-rag-temporal"><span class="switch-track"></span></label>
+                </div>
+              </div>
+              <div class="cfg-row">
+                <div class="cfg-row-text">
+                  <div class="cfg-row-title">短回复检索扩写</div>
+                  <div class="cfg-row-desc">回复数字选项或短句时仅扩展 RAG 查询，不改变用户输入与世界书匹配。</div>
+                </div>
+                <div class="cfg-row-control">
+                  <label class="switch"><input type="checkbox" id="c-rag-query-expand"><span class="switch-track"></span></label>
+                </div>
+              </div>
+              <div class="cfg-row">
+                <div class="cfg-row-text">
+                  <div class="cfg-row-title">自动刷新角色知识页</div>
+                  <div class="cfg-row-desc">默认关闭；开启后知识页仅在证据变化时后台刷新，无变化跳过且不计费。</div>
+                </div>
+                <div class="cfg-row-control">
+                  <label class="switch"><input type="checkbox" id="c-rag-page-auto"><span class="switch-track"></span></label>
+                </div>
+              </div>
+              <div class="cfg-field">
+                <label class="cfg-field-label" for="c-rag-near-dup">近重复候选阈值</label>
+                <input class="field" type="number" step="0.01" min="0" max="1" id="c-rag-near-dup" value="0.85">
+                <span class="hint">达到阈值的记忆只标为近重复候选，不自动合并；否定/时态/数值/主客体不同仍保留。</span>
+              </div>
+              <div class="cfg-field">
+                <label class="cfg-field-label" for="c-rag-eval-keep">检索评估快照保留份数</label>
+                <div class="unit-wrap"><input class="field" type="number" id="c-rag-eval-keep" value="5"><span class="unit">份</span></div>
               </div>
               <div class="cfg-row">
                 <div class="cfg-row-text">

@@ -7,11 +7,15 @@ import { updateBadge, switchTab } from "../pages/config.js";
 import { getRAGConfig, providerRows } from "../pages/rag.js";
 import { $, $$, downloadBlob, downloadJSON, esc, fmtTime, formatSessionId, withBusy } from "../utils.js";
 
-export { MEM_PER_PAGE, changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, loadMemoryOverview, loadMemorySessions, onMemorySessionChange, pruneMemories, summarizeMemory, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin, updateMemPager };
+export { MEM_PER_PAGE, archiveMemory, changeMemoryPage, createKnowledgePage, deleteEvalCase, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadEvalCases, loadEvalSnapshots, loadKnowledgePages, loadMemoryBrowser, loadMemoryOverview, loadMemorySessions, onMemorySessionChange, pruneMemories, refreshKnowledgePage, restoreMemory, runEval, saveEvalCase, saveKnowledgePinned, summarizeMemory, showMemoryDetail, showMemorySource, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin, updateMemPager };
 
 
 
 const MEM_PER_PAGE = 50;
+let _kpEpoch = 0;
+let _evalEpoch = 0;
+let _snapEpoch = 0;
+let _memEpoch = 0;
 
 function switchMemorySub(sub) {
   $$("[data-memsub]").forEach(b => {
@@ -22,6 +26,8 @@ function switchMemorySub(sub) {
   $$(".mem-sub").forEach(p => p.classList.toggle("is-active", p.id === "mem-" + sub));
   if (sub === "overview") loadMemoryOverview();
   if (sub === "browser") { S._memPage = 1; loadMemorySessions(); loadMemoryBrowser(); }
+  if (sub === "pages") loadKnowledgePages();
+  if (sub === "eval") { loadEvalCases(); loadEvalSnapshots(); }
 }
 
 async function loadMemoryOverview() {
@@ -74,19 +80,22 @@ async function loadMemorySessions() {
 }
 
 async function loadMemoryBrowser() {
+  const epoch = ++_memEpoch;
   const tbody = $("#memTbody");
   const sessionId = $("#memSession")?.value || "";
   const search = ($("#memFilter")?.value || "").trim();
+  const status = ($("#memStatus")?.value || "").trim();
   tbody.innerHTML = '<tr><td colspan="4" class="t3" style="text-align:center">加载中…</td></tr>';
   try {
     // FUNC-P1-6：会话/搜索路径此前无分页参数，后端只回最新 50 条且不带
     // total，页脚把截断数冒充总数。现在与 list_all 同一契约带上分页。
     const url = sessionId
-      ? `/memory/list?session_id=${encodeURIComponent(sessionId)}&page=${S._memPage}&per_page=${MEM_PER_PAGE}`
+      ? `/memory/list?session_id=${encodeURIComponent(sessionId)}&page=${S._memPage}&per_page=${MEM_PER_PAGE}${status ? `&status=${encodeURIComponent(status)}` : ""}`
       : search
-        ? `/memory/list?session_id=${encodeURIComponent(search)}&page=${S._memPage}&per_page=${MEM_PER_PAGE}`
-        : `/memory/list_all?page=${S._memPage}&per_page=${MEM_PER_PAGE}`;
+        ? `/memory/list?session_id=${encodeURIComponent(search)}&page=${S._memPage}&per_page=${MEM_PER_PAGE}${status ? `&status=${encodeURIComponent(status)}` : ""}`
+        : `/memory/list_all?page=${S._memPage}&per_page=${MEM_PER_PAGE}${status ? `&status=${encodeURIComponent(status)}` : ""}`;
     const resp = await api(url);
+    if (epoch !== _memEpoch) return;
     const data = resp.data || resp;
     const mems = data.memories || [];
     const total = data.total || mems.length;
@@ -112,6 +121,8 @@ async function loadMemoryBrowser() {
             <span class="badge ${scoreTone}" title="当前价值分">价值分 ${(m.useful_score || 0).toFixed(1)}</span>
             ${m.is_active ? '<span class="badge">主动记忆</span>' : ""}
             ${isCore ? '<span class="badge badge--yellow" title="核心记忆：无条件注入 prompt，不参与 Top-K 竞争">核心锚定</span>' : ""}
+            ${m.status && m.status !== "active" ? `<span class="badge badge--orange">${esc(m.status)}</span>` : ""}
+            ${m.near_duplicate_of ? `<span class="badge badge--red" title="近重复候选 ${esc(m.near_duplicate_of)}：仅标记，未自动合并">近重复</span>` : ""}
           </div>
         </td>
         <td class="fs-12 t3">${esc(fmtTime(m.timestamp))}</td>
@@ -119,14 +130,50 @@ async function loadMemoryBrowser() {
           <button type="button" class="btn btn--sm ${isCore ? "btn--tinted" : "btn--gray"}" data-action="mem-pin" data-id="${m.id}" data-core="${isCore ? "1" : "0"}"
             title="${isCore ? "取消核心锚定" : "设为核心锚定（无条件注入）"}">${isCore ? "取消钉住" : "钉住"}</button>
           <button type="button" class="btn btn--sm btn--gray" data-action="mem-detail" data-id="${m.id}">详情</button>
+          <button type="button" class="btn btn--sm btn--gray" data-action="mem-source" data-id="${m.id}">来源日志</button>
+          ${!isCore && m.status !== "archived" ? `<button type="button" class="btn btn--sm btn--gray" data-action="mem-archive" data-id="${m.id}">归档</button>` : ""}
+          ${!isCore && m.status !== "active" ? `<button type="button" class="btn btn--sm btn--gray" data-action="mem-restore" data-id="${m.id}">恢复</button>` : ""}
           <button type="button" class="btn btn--sm btn--destructive-tinted" data-action="mem-delete" data-id="${m.id}">删除</button>
         </td>
       </tr>`;
     }).join("");
     updateMemPager(mems.length, total);
   } catch (e) {
+    if (epoch !== _memEpoch) return;
     tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--red-text)">${esc(e.message)}</td></tr>`;
   }
+}
+
+async function showMemorySource(id) {
+  try {
+    const resp = await api(`/memory/source_logs?id=${encodeURIComponent(id)}`);
+    const data = resp.data || resp;
+    const logs = data.logs || [];
+    $("#modalTitle").textContent = `记忆来源日志 #${id}`;
+    $("#modalBody").innerHTML = logs.length
+      ? logs.map(l => `<div class="form-group"><label>${esc(l.role)} · ${esc(l.timestamp || "")}</label><textarea class="field field--wide" rows="3" readonly>${esc(l.content || "")}</textarea></div>`).join("")
+      : '<div class="fs-13 t3">该记忆没有可追溯的日志区间。</div>';
+    $("#modalSaveBtn").hidden = true;
+    openModal();
+  } catch (e) { showToast("读取来源失败：" + e.message); }
+}
+
+async function archiveMemory(id) {
+  sandboxConfirm("归档这条记忆？归档后不再参与检索，但可在状态筛选中恢复。", async () => {
+    try {
+      await apiPost("/memory/status", { id, status: "archived" });
+      showToast("已归档", "success");
+      loadMemoryBrowser();
+    } catch (e) { showToast(e.message); }
+  }, true);
+}
+
+async function restoreMemory(id) {
+  try {
+    await apiPost("/memory/status", { id, status: "active" });
+    showToast("已恢复为 active", "success");
+    loadMemoryBrowser();
+  } catch (e) { showToast(e.message); }
 }
 
 function updateMemPager(shown, total) {
@@ -200,7 +247,7 @@ async function toggleMemoryPin(id, isCore) {
 }
 
 function pruneMemories(btn) {
-  sandboxConfirm("确定执行修剪？系统将按有用性分档自动清理过期记忆，此操作不可撤销。", async () => {
+  sandboxConfirm("确定执行修剪？低价值记忆会先标为过期并可在状态筛选中恢复；超过 180 天的已归档/已过期条目才会物理清理。", async () => {
     await withBusy(btn, "", async () => {
       try {
         const res = await api("/memory/prune", { method: "POST" });
@@ -310,4 +357,217 @@ async function testMemoryVectorSearch(btn) {
         : '<div class="fs-13 t3">没有结果</div>';
     } catch (e) { host.innerHTML = `<div class="fs-13" style="color:var(--red-text)">${esc(e.message)}</div>`; }
   });
+}
+
+/* ── M6.2 角色知识页 ─────────────────────────────────────────── */
+
+async function loadKnowledgePages() {
+  const epoch = ++_kpEpoch;
+  const sid = ($("#memPageSession")?.value || $("#memSession")?.value || "").trim();
+  const host = $("#memPagesBody");
+  if (!host) return;
+  if (!sid) { host.innerHTML = '<div class="fs-13 t3">输入会话后加载知识页。</div>'; return; }
+  host.innerHTML = '<div class="fs-13 t3">加载中…</div>';
+  try {
+    const resp = await api(`/memory/pages?session_id=${encodeURIComponent(sid)}`);
+    if (epoch !== _kpEpoch) return;
+    const data = resp.data || resp;
+    const pages = data.pages || [];
+    const templates = data.templates || [];
+    const tplHost = $("#memPageTemplates");
+    if (tplHost) {
+      tplHost.innerHTML = templates.map(t =>
+        `<button type="button" class="btn btn--sm btn--gray" data-action="mem-page-create" data-key="${esc(t.key)}" data-title="${esc(t.title)}" data-question="${esc(t.question || "")}">新建：${esc(t.title)}</button>`
+      ).join("");
+    }
+    if (!pages.length) {
+      host.innerHTML = '<div class="fs-13 t3">该会话暂无知识页。可先保存固定设定，或从后台创建模板页。</div>';
+      return;
+    }
+    host.innerHTML = pages.map(p => `<div class="card kp-card" data-key="${esc(p.template_key)}" data-title="${esc(p.title)}" style="margin-bottom:var(--sp-3)">
+      <div class="card-head">
+        <h4>${esc(p.title || p.template_key)}</h4>
+        <span class="badge ${p.freshness_status === "fresh" ? "badge--green" : "badge--orange"}">${esc(p.freshness_status || "fresh")}</span>
+        <span class="grow"></span>
+        <button type="button" class="btn btn--sm btn--gray" data-action="mem-page-refresh">刷新</button>
+      </div>
+      <div class="card-body"><div class="card-body-inner">
+        <div class="form-group"><label>固定设定（后台刷新不会覆盖）</label>
+          <textarea class="field field--wide" rows="4" data-kp-pinned>${esc(p.pinned_section || "")}</textarea>
+        </div>
+        <button type="button" class="btn btn--sm btn--gray" data-action="mem-page-save">保存固定设定</button>
+        <div class="form-group" style="margin-top:var(--sp-3)"><label>整理内容 v${Number(p.generation_version || 1)}</label>
+          <pre class="cell-pre" style="white-space:pre-wrap">${esc(p.generated_body || "（尚未生成）")}</pre>
+        </div>
+      </div></div>
+    </div>`).join("");
+  } catch (e) {
+    if (epoch !== _kpEpoch) return;
+    host.innerHTML = `<div class="fs-13" style="color:var(--red-text)">${esc(e.message)}</div>`;
+  }
+}
+
+async function createKnowledgePage(btn) {
+  const sid = ($("#memPageSession")?.value || $("#memSession")?.value || "").trim();
+  if (!sid) { showToast("请先输入会话", "warning"); return; }
+  await withBusy(btn, "创建中…", async () => {
+    try {
+      const task = await apiPost("/memory/pages/refresh_task", {
+        session_id: sid,
+        template_key: btn.dataset.key,
+        title: btn.dataset.title,
+        question: btn.dataset.question || "",
+        force: true,
+      });
+      showToast(task.reused ? "正在使用已有任务" : "知识页创建任务已提交", "info");
+      switchTab("tasks");
+    } catch (e) { showToast(e.message); }
+  });
+}
+
+async function saveKnowledgePinned(btn) {
+  const card = btn.closest(".kp-card");
+  const sid = ($("#memPageSession")?.value || $("#memSession")?.value || "").trim();
+  if (!card || !sid) { showToast("请先选择会话", "warning"); return; }
+  const pinned = card.querySelector("[data-kp-pinned]")?.value || "";
+  await withBusy(btn, "保存中…", async () => {
+    try {
+      await apiPost("/memory/pages/save_pinned", {
+        session_id: sid,
+        template_key: card.dataset.key,
+        title: card.dataset.title,
+        pinned_section: pinned,
+      });
+      showToast("固定设定已保存", "success");
+      loadKnowledgePages();
+    } catch (e) { showToast(e.message); }
+  });
+}
+
+async function refreshKnowledgePage(btn) {
+  const card = btn.closest(".kp-card");
+  const sid = ($("#memPageSession")?.value || $("#memSession")?.value || "").trim();
+  if (!card || !sid) { showToast("请先选择会话", "warning"); return; }
+  await withBusy(btn, "创建中…", async () => {
+    try {
+      const task = await apiPost("/memory/pages/refresh_task", {
+        session_id: sid,
+        template_key: card.dataset.key,
+        title: card.dataset.title,
+        force: false,
+      });
+      showToast(task.reused ? "正在使用已有刷新任务" : "知识页刷新任务已创建", "info");
+      switchTab("tasks");
+    } catch (e) { showToast(e.message); }
+  });
+}
+
+/* ── M6.4 检索评估 ───────────────────────────────────────────── */
+
+async function loadEvalCases() {
+  const epoch = ++_evalEpoch;
+  const tbody = $("#evalCasesBody");
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="4" class="t3">加载中…</td></tr>';
+  try {
+    const resp = await api("/eval/cases");
+    if (epoch !== _evalEpoch) return;
+    const data = resp.data || resp;
+    const cases = data.cases || [];
+    if (!cases.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="t3">暂无用例</td></tr>';
+      return;
+    }
+    tbody.innerHTML = cases.map(c => `<tr>
+      <td class="mono fs-12">${esc(c.case_id)}</td>
+      <td>${esc(c.question)}<div class="fs-12 t3">${esc((c.tags || []).join(" · "))}</div></td>
+      <td class="fs-12">${esc((c.expected_sources || []).join(", "))}</td>
+      <td><button type="button" class="btn btn--sm btn--destructive-tinted" data-action="eval-delete" data-id="${esc(c.case_id)}">删除</button></td>
+    </tr>`).join("");
+  } catch (e) {
+    if (epoch !== _evalEpoch) return;
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red-text)">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function saveEvalCase(btn) {
+  const caseId = ($("#evalCaseId")?.value || "").trim();
+  const question = ($("#evalQuestion")?.value || "").trim();
+  if (!caseId || !question) { showToast("需要用例 ID 与问题", "warning"); return; }
+  const split = (value) => String(value || "").split(/[,，]/).map(x => x.trim()).filter(Boolean);
+  await withBusy(btn, "保存中…", async () => {
+    try {
+      await apiPost("/eval/cases/save", {
+        case_id: caseId,
+        question,
+        scope_id: ($("#evalScope")?.value || "").trim(),
+        persona_id: ($("#evalPersona")?.value || "").trim(),
+        expected_sources: split($("#evalExpected")?.value),
+        tags: split($("#evalTags")?.value),
+      });
+      showToast("评估用例已保存", "success");
+      loadEvalCases();
+    } catch (e) { showToast(e.message); }
+  });
+}
+
+async function deleteEvalCase(caseId) {
+  sandboxConfirm(`删除评估用例「${caseId}」？`, async () => {
+    try {
+      await apiPost("/eval/cases/delete", { case_id: caseId });
+      loadEvalCases();
+    } catch (e) { showToast(e.message); }
+  }, true);
+}
+
+async function runEval(btn) {
+  await withBusy(btn, "创建中…", async () => {
+    try {
+      const task = await apiPost("/eval/run_task", {
+        include_llm_rerank: !!$("#evalUseLLM")?.checked,
+      });
+      showToast(task.reused ? "正在使用已有评估任务" : "评估任务已创建", "info");
+      switchTab("tasks");
+    } catch (e) { showToast(e.message); }
+  });
+}
+
+async function loadEvalSnapshots() {
+  const epoch = ++_snapEpoch;
+  const host = $("#evalSnapshotsBody");
+  if (!host) return;
+  try {
+    const resp = await api("/eval/snapshots");
+    if (epoch !== _snapEpoch) return;
+    const data = resp.data || resp;
+    const snapshots = data.snapshots || [];
+    if (!snapshots.length) {
+      host.innerHTML = '<div class="fs-13 t3">尚未运行评估。</div>';
+      return;
+    }
+    host.innerHTML = snapshots.slice().reverse().map(s => {
+      const m = s.metrics || {};
+      const cfg = s.settings || {};
+      const diffCases = s.diff && Array.isArray(s.diff.cases) ? s.diff.cases : [];
+      const line = ["doc", "memory", "worldbook"].map(route => {
+        const item = m[route] || {};
+        return `${route}: ${item.hit_rate == null ? "—" : (item.hit_rate * 100).toFixed(0) + "%"} / MRR ${item.mrr == null ? "—" : Number(item.mrr).toFixed(3)}`;
+      }).join(" · ");
+      const diffText = diffCases.slice(0, 6).map(item => {
+        const routes = Object.keys(item.routes || {});
+        return item.change === "new"
+          ? `${item.case_id}（新增）`
+          : item.change === "removed"
+            ? `${item.case_id}（移除）`
+          : `${item.case_id}（${routes.join("/") || "结果变化"}）`;
+      }).join("；");
+      return `<div class="result-card"><div class="result-head">
+        <span class="result-source">${esc(s.created_at || "")} · ${Number(s.case_count || 0)} 条 · top_k ${Number(cfg.top_k || 0)} / dense ${Number(cfg.dense_top_k || 0)}${cfg.allow_llm_fallback ? " · 含 LLM 重排" : ""}</span>
+        <span class="result-score">${esc(line)}${diffCases.length ? ` · 变化 ${diffCases.length} 例` : ""}</span>
+      </div>${diffText ? `<div class="fs-12 t3" style="margin-top:var(--sp-2)">${esc(diffText)}</div>` : ""}</div>`;
+    }).join("");
+  } catch (e) {
+    if (epoch !== _snapEpoch) return;
+    host.innerHTML = `<div class="fs-13" style="color:var(--red-text)">${esc(e.message)}</div>`;
+  }
 }

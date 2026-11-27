@@ -20,6 +20,11 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("rag", "enable_autonomous_reflection"),
     ("rag", "chat_log_retention_days"),
     ("rag", "astrbot_kb_enabled"),
+    ("rag", "temporal_recall_enabled"),
+    ("rag", "query_expand_enabled"),
+    ("rag", "memory_near_duplicate_threshold"),
+    ("rag", "knowledge_pages_auto_refresh"),
+    ("rag", "eval_max_snapshots"),
     # worldbook
     ("worldbook", "enabled"), ("worldbook", "max_dynamic_entries"),
     ("worldbook", "max_token_limit"), ("worldbook", "match_sensitivity"),
@@ -251,6 +256,11 @@ _MUTATING_ROUTES: frozenset = frozenset({
     # 会话标识与 Prompt 预览。
     "memory_list", "memory_sessions", "persona_list", "config_all",
     "trace_recent", "trace_detail", "trace_events",
+    # M6：记忆治理、知识页与检索评估的读写入口含跨会话证据/原文。
+    "memory_status", "memory_source_logs", "memory_pages",
+    "memory_page_save_pinned", "memory_page_refresh_task",
+    "eval_cases", "eval_cases_save", "eval_cases_delete",
+    "eval_run_task", "eval_snapshots",
 })
 
 # 新增写入口默认要求管理身份；只有这些既有 POST 查询明确按只读处理。
@@ -522,6 +532,17 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/memory/delete",    self.memory_delete,  ["POST"],   "删除记忆")
         _r(f"/{PLUGIN_NAME}/memory/pin",       self.memory_pin,     ["POST"],   "钉住/取消钉住核心记忆")
         _r(f"/{PLUGIN_NAME}/memory/vector_search", self.memory_vector_search, ["POST"], "向量检索(Debug)")
+        # M6：分层记忆治理 / 知识页
+        _r(f"/{PLUGIN_NAME}/memory/status",      self.memory_status,     ["POST"], "标记记忆状态(管理员)")
+        _r(f"/{PLUGIN_NAME}/memory/source_logs", self.memory_source_logs,["GET"],  "查看记忆来源日志(管理员)")
+        _r(f"/{PLUGIN_NAME}/memory/pages",       self.memory_pages,      ["GET"],  "列出角色知识页(管理员)")
+        _r(f"/{PLUGIN_NAME}/memory/pages/save_pinned", self.memory_page_save_pinned, ["POST"], "保存知识页固定设定(管理员)")
+        _r(f"/{PLUGIN_NAME}/memory/pages/refresh_task", self.memory_page_refresh_task, ["POST"], "刷新知识页(管理员)")
+        _r(f"/{PLUGIN_NAME}/eval/cases",         self.eval_cases,        ["GET"],  "检索评估用例(管理员)")
+        _r(f"/{PLUGIN_NAME}/eval/cases/save",    self.eval_cases_save,   ["POST"], "保存检索评估用例(管理员)")
+        _r(f"/{PLUGIN_NAME}/eval/cases/delete",  self.eval_cases_delete, ["POST"], "删除检索评估用例(管理员)")
+        _r(f"/{PLUGIN_NAME}/eval/run_task",      self.eval_run_task,     ["POST"], "运行检索评估(管理员)")
+        _r(f"/{PLUGIN_NAME}/eval/snapshots",     self.eval_snapshots,    ["GET"],  "检索评估快照(管理员)")
 
         # ── Provider 列表 (配置面板下拉) ──
         _r(f"/{PLUGIN_NAME}/provider/list",    self.provider_list,  ["GET"],    "列出可用模型提供商")
@@ -1222,7 +1243,9 @@ class QuillRoutes:
         # FUNC-P1-6：会话路径补分页参数（解析口径与 memory_list_all 一致）
         page = max(1, request.query.get("page", 1, type=int) or 1)
         per_page = min(max(1, request.query.get("per_page", 50, type=int) or 50), 200)
-        return json_response(await handle_memory_list(memory_store, session_id, page=page, per_page=per_page))
+        status = str(request.query.get("status") or "").strip() or None
+        return json_response(await handle_memory_list(
+            memory_store, session_id, page=page, per_page=per_page, status=status))
 
     @_api_handler
     async def memory_list_all(self):
@@ -1232,7 +1255,9 @@ class QuillRoutes:
             return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         page = max(1, request.query.get("page", 1, type=int) or 1)
         per_page = min(max(1, request.query.get("per_page", 50, type=int) or 50), 200)
-        return json_response(await handle_memory_list_all(memory_store, page=page, per_page=per_page))
+        status = str(request.query.get("status") or "").strip() or None
+        return json_response(await handle_memory_list_all(
+            memory_store, page=page, per_page=per_page, status=status))
 
     @_api_handler
     async def memory_sessions(self):
@@ -1250,6 +1275,194 @@ class QuillRoutes:
         if memory_store is None:
             return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         return json_response(await handle_memory_stats(memory_store))
+
+    @_api_handler
+    async def memory_status(self):
+        """M6：手工标记记忆 active/stale/superseded/archived/expired。"""
+        store = self.rag.get("memory_store")
+        if store is None:
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
+        data = await _json_body()
+        try:
+            memory_id = int(data.get("id") or data.get("memory_id") or 0)
+        except (TypeError, ValueError):
+            memory_id = 0
+        status = str(data.get("status") or "").strip()
+        if not memory_id or not status:
+            return error_response("需要有效 id 与 status", status_code=400)
+        try:
+            changed = await store.set_memory_status(memory_id, status)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        return json_response({"status": "ok", "changed": changed,
+                              "memory_id": memory_id, "memory_status": status})
+
+    @_api_handler
+    async def memory_source_logs(self):
+        """M6：按 memory 的 source_start_id..source_end_id 查看原文证据。"""
+        store = self.rag.get("memory_store")
+        if store is None:
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
+        try:
+            memory_id = int(request.query.get("id", 0) or 0)
+        except (TypeError, ValueError):
+            memory_id = 0
+        if not memory_id:
+            return error_response("缺少 id 参数", status_code=400)
+        memory = await store.get_memory_by_id(memory_id)
+        if memory is None:
+            return error_response("记忆不存在", status_code=404)
+        start, end = memory.get("source_start_id"), memory.get("source_end_id")
+        if not start or not end:
+            return json_response({"status": "ok", "data": {
+                "memory": memory, "logs": [], "reason": "no_source_span"}})
+        logs = await store.get_source_logs(
+            int(start), int(end), session_id=memory.get("session_id") or "")
+        return json_response({"status": "ok", "data": {
+            "memory": memory, "logs": logs}})
+
+    @_api_handler
+    async def memory_pages(self):
+        from .quill.services.knowledge_pages import list_templates
+        store = self.rag.get("memory_store")
+        if store is None:
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
+        session_id = str(request.query.get("session_id") or "").strip()
+        if not session_id:
+            return error_response("缺少 session_id", status_code=400)
+        pages = await store.get_knowledge_pages(session_id)
+        return json_response({"status": "ok", "data": {
+            "session_id": session_id, "pages": pages,
+            "templates": list_templates()}})
+
+    @_api_handler
+    async def memory_page_save_pinned(self):
+        store = self.rag.get("memory_store")
+        if store is None:
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
+        data = await _json_body()
+        session_id = str(data.get("session_id") or "").strip()
+        template_key = str(data.get("template_key") or "").strip()
+        if not session_id or not template_key:
+            return error_response("需要 session_id 与 template_key", status_code=400)
+        title = str(data.get("title") or template_key)[:120]
+        pinned = str(data.get("pinned_section") or "")[:20000]
+        page_id = await store.save_knowledge_pinned(
+            session_id, template_key, title, pinned)
+        return json_response({"status": "ok", "data": {"page_id": page_id}})
+
+    @_api_handler
+    async def memory_page_refresh_task(self):
+        store = self.rag.get("memory_store")
+        if store is None:
+            return error_response("记忆暂不可用，请检查存储状态", status_code=503)
+        data = await _json_body()
+        session_id = str(data.get("session_id") or "").strip()
+        template_key = str(data.get("template_key") or "").strip()
+        if not session_id or not template_key:
+            return error_response("需要 session_id 与 template_key", status_code=400)
+        record, reused = self.plugin._start_knowledge_page_task(
+            session_id, template_key,
+            title=str(data.get("title") or "")[:120],
+            question=str(data.get("question") or "")[:2000],
+            force=bool(data.get("force")),
+        )
+        return json_response({"task_id": record.task_id, "reused": reused,
+                              "task": record.to_dict()}, status_code=202)
+
+    def _eval_root(self) -> str:
+        paths = getattr(self.plugin, "paths", {}) or {}
+        return str(paths.get("state_dir") or "")
+
+    @_api_handler
+    async def eval_cases(self):
+        from .quill.services import rag_eval
+        root = self._eval_root()
+        return json_response({"status": "ok", "data": {
+            "cases": rag_eval.load_cases(root), "root": root}})
+
+    @_api_handler
+    async def eval_cases_save(self):
+        from .quill.services import rag_eval
+        data = await _json_body()
+        cases = data.get("cases")
+        if cases is None and data.get("case_id"):
+            cases = [data]
+        if not isinstance(cases, list) or len(cases) > 500:
+            return error_response("cases 必须是最多 500 条的数组", status_code=400)
+        root = self._eval_root()
+        existing = {c["case_id"]: c for c in rag_eval.load_cases(root)}
+        for item in cases:
+            if isinstance(item, dict) and item.get("case_id"):
+                existing[str(item["case_id"])] = item
+        rag_eval.save_cases(root, list(existing.values()))
+        return json_response({"status": "ok", "data": {
+            "count": len(existing)}})
+
+    @_api_handler
+    async def eval_cases_delete(self):
+        from .quill.services import rag_eval
+        data = await _json_body()
+        case_id = str(data.get("case_id") or "").strip()
+        if not case_id:
+            return error_response("缺少 case_id", status_code=400)
+        root = self._eval_root()
+        cases = [c for c in rag_eval.load_cases(root) if c.get("case_id") != case_id]
+        rag_eval.save_cases(root, cases)
+        return json_response({"status": "ok", "data": {"count": len(cases)}})
+
+    @_api_handler
+    async def eval_run_task(self):
+        from .quill.services import rag_eval
+        data = await _json_body()
+        root = self._eval_root()
+        all_cases = rag_eval.load_cases(root)
+        selected = data.get("case_ids")
+        if isinstance(selected, list) and selected:
+            wanted = {str(item) for item in selected}
+            all_cases = [c for c in all_cases if c.get("case_id") in wanted]
+        if not all_cases:
+            return error_response("没有可运行的评估用例", status_code=400)
+        keep = int(getattr(self.plugin.config, "rag_eval_max_snapshots", 5) or 5)
+        include_llm = bool(data.get("include_llm_rerank"))
+
+        async def work(handle):
+            await handle.checkpoint(0, total=len(all_cases), message="开始检索评估")
+            result = await rag_eval.run_eval(
+                self.plugin.rag_retriever,
+                getattr(self.plugin, "wb_manager", None),
+                all_cases, root=root, keep=keep, handle=handle,
+                allow_llm_fallback=include_llm,
+                doc_groups=getattr(self.plugin, "rag_doc_groups", None))
+            handle.record.result = {
+                "case_count": result.get("case_count"),
+                "metrics": result.get("metrics"),
+                "snapshot": result.get("created_at"),
+            }
+            return result
+
+        record, reused = self.plugin._start_task(
+            "rag_eval",
+            "all:" + str(len(all_cases)) + (":llm" if include_llm else ":deterministic"),
+            work,
+            total=len(all_cases))
+        return json_response({"task_id": record.task_id, "reused": reused,
+                              "task": record.to_dict()}, status_code=202)
+
+    @_api_handler
+    async def eval_snapshots(self):
+        from .quill.services import rag_eval
+        snapshots = rag_eval.load_snapshots(self._eval_root())
+        return json_response({"status": "ok", "data": {
+            "snapshots": [
+                {"created_at": s.get("created_at"),
+                 "case_count": s.get("case_count"),
+                 "metrics": s.get("metrics"),
+                 "settings": s.get("settings"),
+                 "diff": s.get("diff"),
+                 "file": s.get("_file")}
+                for s in snapshots
+            ]}})
 
     @_api_handler
     async def memory_get(self):

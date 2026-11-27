@@ -62,7 +62,8 @@ class QuillSummarizer:
             logger.warning(f"[Quill Memory] 摘要生成失败: {e}")
         return ""
 
-    async def context_summarize(self, combined_text: str, turn_count: int = 0, session_id=None) -> str:
+    async def context_summarize(self, combined_text: str, turn_count: int = 0, session_id=None,
+                                prior_context: str = "") -> str:
         """将多轮对话历史精简为一条摘要。
 
         Args:
@@ -80,7 +81,11 @@ class QuillSummarizer:
             if not provider:
                 return ""
 
-            prompt = f"以下是 {turn_count} 轮对话：\n\n{combined_text}\n\n请总结核心事件："
+            prompt = (
+                (f"【只读前情】以下内容仅用于理解代词与指代，禁止当作新记忆重复提取：\n{prior_context}\n\n"
+                 if prior_context else "")
+                + f"以下是 {turn_count} 轮对话：\n\n{combined_text}\n\n请总结核心事件："
+            )
             response = await self._generate(provider, "context_summary", session_id,
                 prompt=prompt,
                 system_prompt=self.CONTEXT_SUMMARY_PROMPT,
@@ -95,7 +100,8 @@ class QuillSummarizer:
             logger.warning(f"[Quill Memory] 多轮摘要生成失败: {e}")
         return ""
 
-    async def context_summarize_result(self, combined_text: str, turn_count=0, session_id=None):
+    async def context_summarize_result(self, combined_text: str, turn_count=0, session_id=None,
+                                       prior_context: str = ""):
         """M3 显式区分成功空产出与失败；不把空串包装成伪摘要推进水位。"""
         if not self.provider_id or not self.context:
             return {"ok": False, "text": "", "error": "provider_unconfigured"}
@@ -105,7 +111,11 @@ class QuillSummarizer:
                 return {"ok": False, "text": "", "error": "provider_unavailable"}
             response = await self._generate(
                 provider, "context_summary", session_id,
-                prompt=f"以下是 {turn_count} 轮对话：\n\n{combined_text}\n\n请总结核心事件：",
+                prompt=(
+                    (f"【只读前情】以下内容仅用于理解代词与指代，禁止当作新记忆重复提取：\n{prior_context}\n\n"
+                     if prior_context else "")
+                    + f"以下是 {turn_count} 轮对话：\n\n{combined_text}\n\n请总结核心事件："
+                ),
                 system_prompt=self.CONTEXT_SUMMARY_PROMPT,
             )
             if response is None or getattr(response,"role","") == "err":

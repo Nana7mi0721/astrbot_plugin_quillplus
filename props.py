@@ -316,3 +316,28 @@ class QuillConfigProperties:
         同上：v5.2.5 投影清单中的「只写不读」项，访问器保留理由同上。
         """
         return self._plugin.config.rag_chat_log_retention_days
+
+    @property
+    def rag_temporal_recall_enabled(self) -> bool:
+        """M6.3 时间/人物线索召回开关（config.rag.temporal_recall_enabled）。"""
+        return self._plugin.config.rag_temporal_recall_enabled
+
+    @property
+    def rag_query_expand_enabled(self) -> bool:
+        """M6.3 短回复检索扩写开关（config.rag.query_expand_enabled）。"""
+        return self._plugin.config.rag_query_expand_enabled
+
+    @property
+    def rag_memory_near_duplicate_threshold(self) -> float:
+        """M6.1 近重复候选阈值（config.rag.memory_near_duplicate_threshold）。"""
+        return self._plugin.config.rag_memory_near_duplicate_threshold
+
+    @property
+    def rag_knowledge_pages_auto_refresh(self) -> bool:
+        """M6.2 知识页自动刷新开关（默认关闭）。"""
+        return self._plugin.config.rag_knowledge_pages_auto_refresh
+
+    @property
+    def rag_eval_max_snapshots(self) -> int:
+        """M6.4 检索评估快照保留份数。"""
+        return self._plugin.config.rag_eval_max_snapshots

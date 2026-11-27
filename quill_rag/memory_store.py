@@ -146,7 +146,18 @@ class MemoryStore:
                                  "record_id": "TEXT", "source_ref": "TEXT DEFAULT 'legacy'",
                                  "source_start_id": "INTEGER", "source_end_id": "INTEGER",
                                  "trust_level": "TEXT DEFAULT 'derived'", "process_status": "TEXT DEFAULT 'ready'",
-                                 "created_at": "TEXT"},
+                                 "created_at": "TEXT",
+                                 # M6：分层记忆。存量行必须保持 active，禁止批量改
+                                 # pending/重嵌入；DEFAULT 由 SQLite 回填旧行。
+                                 "category": "TEXT NOT NULL DEFAULT 'fact'",
+                                 "status": "TEXT NOT NULL DEFAULT 'active'",
+                                 "near_duplicate_of": "TEXT DEFAULT NULL",
+                                 "event_time": "TEXT DEFAULT NULL",
+                                 "story_time": "TEXT DEFAULT NULL",
+                                 "effective_from": "TEXT DEFAULT NULL",
+                                 "effective_to": "TEXT DEFAULT NULL",
+                                 "participants_json": "TEXT NOT NULL DEFAULT '[]'",
+                                 "episode_ref": "TEXT DEFAULT NULL"},
                     "chat_logs": {"record_id": "TEXT", "origin_ref": "TEXT", "turn_id": "TEXT",
                                   "actor_id": "TEXT", "process_status": "TEXT DEFAULT 'recorded'"},
                 }
@@ -159,6 +170,10 @@ class MemoryStore:
                     await self._conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {table}_record_id ON {table}(record_id)")
                 await self._conn.execute("UPDATE memories SET created_at=timestamp WHERE created_at IS NULL")
                 await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)")
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(session_id,status)")
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(session_id,category)")
                 await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_session ON chat_logs(session_id)")
                 await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_chatlogs_ts ON chat_logs(timestamp)")
                 await self._conn.execute("""CREATE TABLE IF NOT EXISTS summary_watermarks (
@@ -179,6 +194,29 @@ class MemoryStore:
                     status TEXT NOT NULL, phase TEXT NOT NULL, payload TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+                # M6.2：角色知识页。pinned_section 永不被后台刷新覆盖；
+                # generated_body 只按证据重建，source_refs_json 保存可追溯引用。
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS knowledge_pages (
+                    page_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    template_key TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    pinned_section TEXT NOT NULL DEFAULT '',
+                    generated_body TEXT NOT NULL DEFAULT '',
+                    source_refs_json TEXT NOT NULL DEFAULT '[]',
+                    covered_revision INTEGER NOT NULL DEFAULT 0,
+                    generation_version INTEGER NOT NULL DEFAULT 1,
+                    freshness_status TEXT NOT NULL DEFAULT 'fresh',
+                    last_error TEXT DEFAULT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(session_id, template_key))""")
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_knowledge_pages_session "
+                    "ON knowledge_pages(session_id)")
+                # M6.3：首轮暖场标记，替代 quill_rounds==1 的假暖场。
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS session_warmup_flags (
+                    session_id TEXT PRIMARY KEY,
+                    warmed_at TEXT NOT NULL)""")
                 # M5.1：世界书规则时钟与定时效应。worldbook/WorldbookRuleStore
                 # 也直接读写这两张表；由记忆库统一建表，保证 Schema 版本检查
                 # 在空库/旧库升级时都能看到完整结构。
@@ -242,11 +280,38 @@ class MemoryStore:
 
     async def commit_summary_batch(self, session_id: str, after_id: int, through_id: int,
                                    *, summary="", vector=None, chat_summary="",
-                                   expected_generation: int, outcome="stored"):
+                                   expected_generation: int, outcome="stored",
+                                   batch_id: str | None = None,
+                                   category: str = "episode",
+                                   event_time: str | None = None,
+                                   story_time: str | None = None,
+                                   effective_from: str | None = None,
+                                   effective_to: str | None = None,
+                                   participants: list | None = None,
+                                   episode_ref: str | None = None,
+                                   near_duplicate_of: str | None = None,
+                                   source_start_id: int | None = None):
         if through_id <= after_id or after_id < 0:
             raise ValueError("总结日志范围无效")
         record_id = uuid4().hex if summary and vector else None
+        batch_id = batch_id or f"{session_id}:{after_id}:{through_id}"
+        participants_json = json.dumps(
+            [str(item) for item in (participants or []) if str(item).strip()],
+            ensure_ascii=False,
+        )
         async def commit(connection):
+            # M6.1：确定性 batch_id 让重试天然幂等。已存在的批次只补齐水位，
+            # 绝不重复写记忆或重复计世代。
+            existing_batch = await (await connection.execute(
+                "SELECT memory_record_id FROM summary_batches WHERE batch_id=?",
+                (batch_id,))).fetchone()
+            if existing_batch is not None:
+                await connection.execute(
+                    "UPDATE summary_watermarks SET last_log_id=MAX(last_log_id,?),"
+                    "updated_at=CURRENT_TIMESTAMP WHERE session_id=?",
+                    (through_id, session_id))
+                return {"applied": False, "already_consumed": True,
+                        "memory_record_id": existing_batch[0], "batch_id": batch_id}
             generation = await (await connection.execute(
                 "SELECT generation FROM session_generations WHERE session_id=?", (session_id,))).fetchone()
             if (generation[0] if generation else 0) != expected_generation:
@@ -255,23 +320,40 @@ class MemoryStore:
                 "SELECT last_log_id FROM summary_watermarks WHERE session_id=?", (session_id,))).fetchone()
             current = row[0] if row else 0
             if current >= through_id:
-                return {"applied": False, "already_consumed": True, "memory_record_id": None}
+                return {"applied": False, "already_consumed": True,
+                        "memory_record_id": None, "batch_id": batch_id}
             if current != after_id:
                 raise StorageError("总结水位已变化，请重新读取未消费日志")
             if record_id:
+                start_id = int(source_start_id or (after_id + 1))
                 await connection.execute("""INSERT INTO memories
                     (session_id,summary,chat_summary,vector,dim,record_id,source_ref,
-                     source_start_id,source_end_id,created_at)
-                    VALUES(?,?,?,?,?,?, 'chat_logs',?,?,CURRENT_TIMESTAMP)""",
+                     source_start_id,source_end_id,created_at,category,status,
+                     event_time,story_time,effective_from,effective_to,
+                     participants_json,episode_ref,near_duplicate_of)
+                    VALUES(?,?,?,?,?,?, 'chat_logs',?,?,CURRENT_TIMESTAMP,?, 'active',
+                     ?,?,?,?,?,?,?)""",
                     (session_id,summary,chat_summary,self._encode_vector(vector),len(vector),
-                     record_id,after_id+1,through_id))
+                     record_id,start_id,through_id,category,event_time,story_time,
+                     effective_from,effective_to,participants_json,episode_ref,
+                     near_duplicate_of))
+                # 新证据写入后递增世代并让知识页降级为 stale，前台会回落
+                # 到底层记忆补齐最新事实。
+                await connection.execute(
+                    "INSERT INTO session_generations(session_id,generation) VALUES(?,1) "
+                    "ON CONFLICT(session_id) DO UPDATE SET generation=generation+1",
+                    (session_id,))
+                await connection.execute(
+                    "UPDATE knowledge_pages SET freshness_status='stale',"
+                    "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (session_id,))
             await connection.execute("""INSERT INTO summary_batches
                 (batch_id,session_id,after_id,through_id,memory_record_id,status) VALUES(?,?,?,?,?,?)""",
-                (uuid4().hex,session_id,after_id,through_id,record_id,outcome))
+                (batch_id,session_id,after_id,through_id,record_id,outcome))
             await connection.execute("""INSERT INTO summary_watermarks(session_id,last_log_id) VALUES(?,?)
                 ON CONFLICT(session_id) DO UPDATE SET last_log_id=excluded.last_log_id,updated_at=CURRENT_TIMESTAMP""",
                 (session_id,through_id))
-            return {"applied": True, "already_consumed": False, "memory_record_id": record_id}
+            return {"applied": True, "already_consumed": False,
+                    "memory_record_id": record_id, "batch_id": batch_id}
         return await self._exec_tx(commit)
 
     async def clear_session(self, session_id: str, *, memories=True, logs=True, operation_id=None):
@@ -283,7 +365,17 @@ class MemoryStore:
                 if enabled:
                     cursor = await connection.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
                     result[table] = max(0,cursor.rowcount)
+            if memories:
+                await connection.execute(
+                    "UPDATE knowledge_pages SET freshness_status='stale',"
+                    "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (session_id,))
             if logs:
+                # 新剧情从首轮重新暖场；长期记忆仍保留，但不应继承上一段剧情的
+                # “已暖场”状态。
+                await connection.execute(
+                    "DELETE FROM session_warmup_flags WHERE session_id=?",
+                    (session_id,),
+                )
                 # 共享近期流与日志清理在同一事务；保留审计行，读取不再看到旧剧情。
                 pairs = await (await connection.execute("SELECT DISTINCT scope_id,persona_id FROM qp_turns")).fetchall()
                 for scope, persona in pairs:
@@ -325,15 +417,27 @@ class MemoryStore:
                     if not isinstance(old,dict):old={}
                 content=json.dumps({"traits":traits or old.get('traits',''),"facts":facts or old.get('facts','')},ensure_ascii=False)
                 if row:
-                    await connection.execute("UPDATE memories SET summary=?,timestamp=CURRENT_TIMESTAMP,source_ref='reflection',source_start_id=?,source_end_id=? WHERE id=?",(content,previous+1,through_id,row[0]))
+                    await connection.execute(
+                        "UPDATE memories SET summary=?,timestamp=CURRENT_TIMESTAMP,"
+                        "source_ref='reflection',source_start_id=?,source_end_id=?,"
+                        "category='core',status='active',is_active=1 WHERE id=?",
+                        (content,previous+1,through_id,row[0]))
                 else:
-                    await connection.execute("""INSERT INTO memories(session_id,summary,vector,dim,is_core,record_id,source_ref,source_start_id,source_end_id,created_at)
-                        VALUES(?,?,?,0,1,?,'reflection',?,?,CURRENT_TIMESTAMP)""",(session_id,content,b'',uuid4().hex,previous+1,through_id))
+                    await connection.execute("""INSERT INTO memories(session_id,summary,vector,dim,is_core,record_id,source_ref,source_start_id,source_end_id,created_at,category,status,is_active)
+                        VALUES(?,?,?,0,1,?,'reflection',?,?,CURRENT_TIMESTAMP,'core','active',1)""",(session_id,content,b'',uuid4().hex,previous+1,through_id))
                 stored+=1
             for summary,vector in notes:
-                await connection.execute("""INSERT INTO memories(session_id,summary,vector,dim,record_id,source_ref,source_start_id,source_end_id,created_at)
-                    VALUES(?,?,?,?,?,'reflection',?,?,CURRENT_TIMESTAMP)""",(session_id,summary,self._encode_vector(vector),len(vector),uuid4().hex,previous+1,through_id))
+                await connection.execute("""INSERT INTO memories(session_id,summary,vector,dim,record_id,source_ref,source_start_id,source_end_id,created_at,category,status)
+                    VALUES(?,?,?,?,?,'reflection',?,?,CURRENT_TIMESTAMP,'interpretation','active')""",(session_id,summary,self._encode_vector(vector),len(vector),uuid4().hex,previous+1,through_id))
                 stored+=1
+            if stored:
+                await connection.execute(
+                    "INSERT INTO session_generations(session_id,generation) VALUES(?,1) "
+                    "ON CONFLICT(session_id) DO UPDATE SET generation=generation+1",
+                    (session_id,))
+                await connection.execute(
+                    "UPDATE knowledge_pages SET freshness_status='stale',"
+                    "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (session_id,))
             await connection.execute("""INSERT INTO reflection_watermarks(session_id,last_log_id) VALUES(?,?)
                 ON CONFLICT(session_id) DO UPDATE SET last_log_id=excluded.last_log_id,updated_at=CURRENT_TIMESTAMP""",(session_id,through_id))
             return {"stored":stored,"through_id":through_id}
@@ -409,13 +513,214 @@ class MemoryStore:
                 "SELECT id FROM memories WHERE session_id=? AND is_core=1 AND length(vector)=0 ORDER BY id LIMIT 1",
                 (session_id,))).fetchone()
             if row:
-                await connection.execute("UPDATE memories SET summary=?,timestamp=CURRENT_TIMESTAMP WHERE id=?", (core_content,row[0]))
+                await connection.execute(
+                    "UPDATE memories SET summary=?,timestamp=CURRENT_TIMESTAMP,"
+                    "category='core',status='active',is_active=1 WHERE id=?",
+                    (core_content,row[0]))
             else:
                 await connection.execute("""INSERT INTO memories
-                    (session_id,summary,vector,dim,is_core,record_id,source_ref,trust_level,created_at)
-                    VALUES(?,?,?,0,1,?,'core_update','confirmed',CURRENT_TIMESTAMP)""",
+                    (session_id,summary,vector,dim,is_core,record_id,source_ref,trust_level,created_at,category,status,is_active)
+                    VALUES(?,?,?,0,1,?,'core_update','confirmed',CURRENT_TIMESTAMP,'core','active',1)""",
                     (session_id,core_content,b'',uuid4().hex))
+            await connection.execute(
+                "INSERT INTO session_generations(session_id,generation) VALUES(?,1) "
+                "ON CONFLICT(session_id) DO UPDATE SET generation=generation+1",
+                (session_id,))
+            await connection.execute(
+                "UPDATE knowledge_pages SET freshness_status='stale',"
+                "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (session_id,))
         await self._exec_tx(update)
+
+    # ── M6：分层记忆治理 / 知识页 / 暖场标记 ─────────────────────────
+    _MEMORY_STATUSES = ("active", "stale", "superseded", "expired", "archived")
+    _MEMORY_CATEGORIES = ("fact", "episode", "interpretation", "core")
+
+    async def set_memory_status(self, memory_id: int, status: str) -> bool:
+        """手工标记记忆状态；核心记忆只允许保持 active。"""
+        status = str(status or "").strip().lower()
+        if status not in self._MEMORY_STATUSES:
+            raise ValueError("不支持的记忆状态")
+        async def update(connection):
+            row = await (await connection.execute(
+                "SELECT session_id,is_core FROM memories WHERE id=?", (memory_id,))).fetchone()
+            if row is None:
+                return False
+            if int(row[1] or 0) == 1 and status != "active":
+                raise ValueError("核心记忆只能保持 active，不能手工失效")
+            await connection.execute(
+                "UPDATE memories SET status=?,is_active=? WHERE id=?",
+                (status, 1 if status == "active" else 0, memory_id))
+            await connection.execute(
+                "INSERT INTO session_generations(session_id,generation) VALUES(?,1) "
+                "ON CONFLICT(session_id) DO UPDATE SET generation=generation+1",
+                (row[0],))
+            await connection.execute(
+                "UPDATE knowledge_pages SET freshness_status='stale',"
+                "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (row[0],))
+            return True
+        return await self._exec_tx(update)
+
+    async def get_source_logs(self, start_id: int, end_id: int, *,
+                              session_id: str = "", limit: int = 200) -> list[dict]:
+        """按 source_start_id..source_end_id 跳转查看原文证据。"""
+        start_id, end_id = max(0, int(start_id or 0)), max(0, int(end_id or 0))
+        if not start_id or end_id < start_id:
+            return []
+        clauses = ["id BETWEEN ? AND ?"]
+        args: list = [start_id, end_id]
+        if session_id:
+            clauses.append("session_id=?")
+            args.append(session_id)
+        rows = await self._exec_fetchall(
+            "SELECT id,session_id,role,content,timestamp FROM chat_logs WHERE "
+            + " AND ".join(clauses) + " ORDER BY id LIMIT ?",
+            (*args, max(1, min(int(limit or 200), 500))),
+        )
+        return [
+            {"id": r[0], "session_id": r[1], "role": r[2],
+             "content": r[3], "timestamp": r[4]}
+            for r in rows
+        ]
+
+    async def session_revision(self, session_id: str) -> int:
+        row = await self._exec_fetchone(
+            "SELECT generation FROM session_generations WHERE session_id=?",
+            (session_id,))
+        return int(row[0] or 0) if row else 0
+
+    async def get_knowledge_evidence(self, session_id: str, limit: int = 200) -> list[dict]:
+        """知识页刷新用的证据集：只取本 session 的 active 记忆。"""
+        rows = await self._exec_fetchall(
+            "SELECT record_id,summary,chat_summary,category,timestamp,event_time,"
+            "story_time,source_start_id,source_end_id,near_duplicate_of,is_core,"
+            "participants_json "
+            "FROM memories WHERE session_id=? AND status='active' "
+            "ORDER BY timestamp DESC, id DESC LIMIT ?",
+            (session_id, max(1, min(int(limit or 200), 500))),
+        )
+        return [
+            {"record_id": r[0], "summary": r[1], "chat_summary": r[2],
+             "category": r[3], "timestamp": r[4], "event_time": r[5],
+             "story_time": r[6], "source_start_id": r[7], "source_end_id": r[8],
+             "near_duplicate_of": r[9], "is_core": bool(r[10]),
+             "participants_json": r[11]}
+            for r in rows
+        ]
+
+    async def get_knowledge_pages(self, session_id: str) -> list[dict]:
+        rows = await self._exec_fetchall(
+            "SELECT page_id,session_id,template_key,title,pinned_section,"
+            "generated_body,source_refs_json,covered_revision,generation_version,"
+            "freshness_status,last_error,updated_at FROM knowledge_pages "
+            "WHERE session_id=? ORDER BY template_key",
+            (session_id,))
+        return [self._knowledge_row(r) for r in rows]
+
+    async def get_knowledge_page(self, session_id: str, template_key: str) -> dict | None:
+        row = await self._exec_fetchone(
+            "SELECT page_id,session_id,template_key,title,pinned_section,"
+            "generated_body,source_refs_json,covered_revision,generation_version,"
+            "freshness_status,last_error,updated_at FROM knowledge_pages "
+            "WHERE session_id=? AND template_key=?",
+            (session_id, template_key))
+        return self._knowledge_row(row) if row else None
+
+    @staticmethod
+    def _knowledge_row(row) -> dict:
+        try:
+            refs = json.loads(row[6] or "[]")
+        except (TypeError, ValueError):
+            refs = []
+        return {
+            "page_id": row[0], "session_id": row[1], "template_key": row[2],
+            "title": row[3], "pinned_section": row[4], "generated_body": row[5],
+            "source_refs": refs if isinstance(refs, list) else [],
+            "covered_revision": int(row[7] or 0),
+            "generation_version": int(row[8] or 0),
+            "freshness_status": row[9], "last_error": row[10],
+            "updated_at": row[11],
+        }
+
+    async def upsert_knowledge_page(self, *, session_id: str, template_key: str,
+                                    title: str, generated_body: str,
+                                    source_refs: list, covered_revision: int,
+                                    freshness_status: str = "fresh",
+                                    last_error: str | None = None,
+                                    page_id: str | None = None) -> str:
+        """刷新生成正文；pinned_section 永不在此路径被改写。"""
+        page_id = page_id or uuid4().hex
+        refs_json = json.dumps(source_refs or [], ensure_ascii=False)
+        async def upsert(connection):
+            existing = await (await connection.execute(
+                "SELECT page_id FROM knowledge_pages WHERE session_id=? AND template_key=?",
+                (session_id, template_key))).fetchone()
+            if existing:
+                await connection.execute(
+                    "UPDATE knowledge_pages SET generated_body=?,source_refs_json=?,"
+                    "covered_revision=?,generation_version=generation_version+1,"
+                    "freshness_status=?,last_error=?,updated_at=CURRENT_TIMESTAMP "
+                    "WHERE page_id=?",
+                    (generated_body, refs_json, int(covered_revision or 0),
+                     freshness_status, last_error, existing[0]))
+                return existing[0]
+            await connection.execute(
+                "INSERT INTO knowledge_pages(page_id,session_id,template_key,title,"
+                "generated_body,source_refs_json,covered_revision,freshness_status,"
+                "last_error,updated_at) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                (page_id, session_id, template_key, title, generated_body,
+                 refs_json, int(covered_revision or 0), freshness_status, last_error))
+            return page_id
+        return await self._exec_tx(upsert)
+
+    async def save_knowledge_pinned(self, session_id: str, template_key: str,
+                                    title: str, pinned_section: str) -> str:
+        """保存用户手动固定设定；若页面不存在则创建。"""
+        page_id = uuid4().hex
+        async def save(connection):
+            existing = await (await connection.execute(
+                "SELECT page_id FROM knowledge_pages WHERE session_id=? AND template_key=?",
+                (session_id, template_key))).fetchone()
+            if existing:
+                await connection.execute(
+                    "UPDATE knowledge_pages SET pinned_section=?,title=?,"
+                    "updated_at=CURRENT_TIMESTAMP WHERE page_id=?",
+                    (pinned_section, title, existing[0]))
+                return existing[0]
+            await connection.execute(
+                "INSERT INTO knowledge_pages(page_id,session_id,template_key,title,"
+                "pinned_section,updated_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)",
+                (page_id, session_id, template_key, title, pinned_section))
+            return page_id
+        return await self._exec_tx(save)
+
+    async def mark_knowledge_pages_stale(self, session_id: str) -> int:
+        async def mark(connection):
+            cursor = await connection.execute(
+                "UPDATE knowledge_pages SET freshness_status='stale',"
+                "updated_at=CURRENT_TIMESTAMP WHERE session_id=?",
+                (session_id,))
+            return max(0, cursor.rowcount)
+        return await self._exec_tx(mark)
+
+    async def is_warmed(self, session_id: str) -> bool:
+        row = await self._exec_fetchone(
+            "SELECT 1 FROM session_warmup_flags WHERE session_id=?", (session_id,))
+        return row is not None
+
+    async def mark_warmed(self, session_id: str) -> bool:
+        """返回 True 表示本次是首次暖场。"""
+        if not session_id:
+            return False
+        # 已暖场是常态路径。先读后写，避免每轮都走 _exec_tx（它会递增全局
+        # 缓存世代并清空全部会话向量缓存）。
+        if await self.is_warmed(session_id):
+            return False
+        async def mark(connection):
+            cursor = await connection.execute(
+                "INSERT OR IGNORE INTO session_warmup_flags(session_id,warmed_at) "
+                "VALUES(?,CURRENT_TIMESTAMP)", (session_id,))
+            return cursor.rowcount > 0
+        return await self._exec_tx(mark)
 
     async def close(self):
         async with self._lock:
@@ -441,7 +746,11 @@ class MemoryStore:
             raise ValueError(f"BLOB size {len(blob)} != expected {expected}")
         return np.frombuffer(blob, dtype=np.float32).copy()
 
-    async def add(self, session_id: str, summary: str, vector: list[float], chat_summary: str = "", *, record_id=None, source_ref="manual"):
+    async def add(self, session_id: str, summary: str, vector: list[float],
+                  chat_summary: str = "", *, record_id=None, source_ref="manual",
+                  category="fact", near_duplicate_of=None, event_time=None,
+                  story_time=None, effective_from=None, effective_to=None,
+                  participants=None, episode_ref=None):
         """添加一条记忆。
 
         D4（M3.2）：底层失败抛 :class:`StorageError`（六类高频路径之一：add），
@@ -450,15 +759,38 @@ class MemoryStore:
         """
         if not session_id or not summary or not vector:
             return
+        category = str(category or "fact").strip().lower()
+        if category not in ("fact", "episode", "interpretation", "core"):
+            category = "fact"
         dim = len(vector)
         blob = self._encode_vector(vector)
         try:
-            cursor = await self._exec_write(
-                "INSERT INTO memories (session_id,summary,chat_summary,vector,dim,record_id,source_ref,created_at) "
-                "VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(record_id) DO NOTHING",
-                (session_id,summary,chat_summary,blob,dim,record_id or uuid4().hex,source_ref)
+            participants_json = json.dumps(
+                [str(item) for item in (participants or []) if str(item).strip()],
+                ensure_ascii=False,
             )
-            return cursor.rowcount > 0
+            async def insert(connection):
+                cursor = await connection.execute(
+                    "INSERT INTO memories (session_id,summary,chat_summary,vector,dim,"
+                    "record_id,source_ref,created_at,category,status,near_duplicate_of,"
+                    "event_time,story_time,effective_from,effective_to,participants_json,"
+                    "episode_ref) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?,'active',?,?,?,?,?,?,?) "
+                    "ON CONFLICT(record_id) DO NOTHING",
+                    (session_id, summary, chat_summary, blob, dim,
+                     record_id or uuid4().hex, source_ref, category,
+                     near_duplicate_of, event_time, story_time,
+                     effective_from, effective_to, participants_json, episode_ref)
+                )
+                if cursor.rowcount > 0:
+                    await connection.execute(
+                        "INSERT INTO session_generations(session_id,generation) VALUES(?,1) "
+                        "ON CONFLICT(session_id) DO UPDATE SET generation=generation+1",
+                        (session_id,))
+                    await connection.execute(
+                        "UPDATE knowledge_pages SET freshness_status='stale',"
+                        "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (session_id,))
+                return cursor.rowcount > 0
+            return await self._exec_tx(insert)
         except Exception as e:
             note_storage_error("add", e)
             raise StorageError(
@@ -481,9 +813,12 @@ class MemoryStore:
         rows = await self._exec_fetchall(
             '''SELECT id, summary, chat_summary, vector, dim, timestamp,
                       strength, useful_count, useful_score, is_active,
-                      is_core
+                      is_core, record_id, category, status,
+                      source_start_id, source_end_id, near_duplicate_of,
+                      participants_json
                FROM memories
                WHERE session_id = ?
+                 AND status = 'active'
                  AND (is_core = 1 OR is_active = 1 OR (julianday('now') - julianday(timestamp)) < 30)
                ORDER BY timestamp DESC LIMIT 1000''',
             (session_id,)
@@ -564,6 +899,7 @@ class MemoryStore:
                     "SELECT f.rowid, f.rank FROM memories_fts f "
                     "JOIN memories m ON m.id = f.rowid "
                     "WHERE memories_fts MATCH ? AND m.session_id = ? "
+                    "AND m.status = 'active' "
                     "ORDER BY f.rank LIMIT 50",
                     (safe_query, session_id),
                 )
@@ -594,7 +930,8 @@ class MemoryStore:
                 try:
                     rows = await self._exec_fetchall(
                         "SELECT id FROM memories "
-                        "WHERE session_id = ? AND (summary LIKE ? ESCAPE '\\' OR chat_summary LIKE ? ESCAPE '\\') "
+                        "WHERE session_id = ? AND status = 'active' "
+                        "AND (summary LIKE ? ESCAPE '\\' OR chat_summary LIKE ? ESCAPE '\\') "
                         "LIMIT 50",
                         (session_id, f"%{escape_like(tok)}%", f"%{escape_like(tok)}%"),
                     )
@@ -715,6 +1052,12 @@ class MemoryStore:
                     "useful_count": useful_count,
                     "age_days": age_days,
                     "is_core": row[10],
+                    "record_id": row[11],
+                    "category": row[12],
+                    "source_start_id": row[14],
+                    "source_end_id": row[15],
+                    "near_duplicate_of": row[16],
+                    "participants_json": row[17],
                     # B11：vec_score 是「相似度 × 时间衰减 + 引用频次加成」的**排序分**，
                     # 不是相似度本身。去重判定必须用原始余弦 sim，否则一条 cosine 0.80
                     # 但被高频引用的旧记忆（0.80 + 0.12 = 0.92）会把真正的新记忆挤掉。
@@ -801,8 +1144,11 @@ class MemoryStore:
             try:
                 rows = await self._exec_fetchall(
                     "SELECT id, summary, chat_summary, timestamp, strength, "
-                    "useful_count, is_core FROM memories "
-                    f"WHERE session_id = ? AND id IN ({placeholders})",
+                    "useful_count, is_core, record_id, category, "
+                    "source_start_id, source_end_id, near_duplicate_of, "
+                    "participants_json FROM memories "
+                    f"WHERE session_id = ? AND status = 'active' "
+                    f"AND id IN ({placeholders})",
                     (session_id, *chunk),
                 )
             except Exception as e:
@@ -822,6 +1168,12 @@ class MemoryStore:
                     "useful_count": r[5],
                     "age_days": 0.0,
                     "is_core": r[6],
+                    "record_id": r[7],
+                    "category": r[8],
+                    "source_start_id": r[9],
+                    "source_end_id": r[10],
+                    "near_duplicate_of": r[11],
+                    "participants_json": r[12],
                     "sim": 0.0,
                     "vec_score": 0.0,
                     "fts_score": fts_scores.get(r[0], 0.0),
@@ -849,8 +1201,11 @@ class MemoryStore:
             try:
                 rows = await self._exec_fetchall(
                     "SELECT id, summary, chat_summary, timestamp, strength, "
-                    "useful_count, is_core FROM memories "
-                    f"WHERE session_id = ? AND id IN ({placeholders})",
+                    "useful_count, is_core, record_id, category, "
+                    "source_start_id, source_end_id, near_duplicate_of, "
+                    "participants_json FROM memories "
+                    f"WHERE session_id = ? AND status = 'active' "
+                    f"AND id IN ({placeholders})",
                     (session_id, *chunk),
                 )
             except Exception as e:
@@ -871,6 +1226,12 @@ class MemoryStore:
                     "useful_count": r[5],
                     "age_days": 0.0,
                     "is_core": r[6],
+                    "record_id": r[7],
+                    "category": r[8],
+                    "source_start_id": r[9],
+                    "source_end_id": r[10],
+                    "near_duplicate_of": r[11],
+                    "participants_json": r[12],
                     # 无向量分：仅关键词分参与排序（sim 同理为 0，去重判定不会误命中）
                     "sim": 0.0,
                     "vec_score": 0.0,
@@ -905,34 +1266,61 @@ class MemoryStore:
             logger.warning("[Quill Memory] mark_memories_used 失败: %s", e, exc_info=True)
 
     async def prune_memories(self) -> int:
-        """分档遗忘清理任务（无情斩杀低价值记忆）。核心记忆(is_core=1)永不清理。
+        """分档遗忘清理任务（M6.1 起改为软失效）。核心记忆(is_core=1)永不清理。
 
         D4（M3.2）：失败抛 :class:`StorageError`（六类高频路径之一：prune），
         调用方（启动初始化 / 反思调度 spawn）负责捕获降级——此前静默 return 0，
         记忆表膨胀完全不可观测。
         """
         try:
-            # P3-2 修复：除原有 is_active=0 清理外，对 is_active=1 但超过 60 天
-            # 未更新的低价值记忆也执行降级清理，避免记忆表无限膨胀。
-            cursor = await self._exec_write("""
-                DELETE FROM memories
-                WHERE is_core = 0 AND (
-                    (is_active = 0 AND (
-                        (useful_score < 3 AND julianday('now') - julianday(timestamp) > 3)
+            # M6.1：不再默认物理 DELETE。低价值旧记忆先标 expired 并保留，
+            # 面板可恢复/查看来源；is_core=1 永不进入此路径。
+            async def prune(connection):
+                sessions = await (await connection.execute("""
+                    SELECT DISTINCT session_id FROM memories
+                    WHERE is_core = 0 AND status = 'active' AND (
+                        (is_active = 0 AND (
+                            (useful_score < 3 AND julianday('now') - julianday(timestamp) > 3)
+                            OR
+                            (useful_score >= 3 AND useful_score < 10 AND julianday('now') - julianday(timestamp) > 9)
+                        ))
                         OR
-                        (useful_score >= 3 AND useful_score < 10 AND julianday('now') - julianday(timestamp) > 9)
-                    ))
-                    OR
-                    (is_active = 1 AND useful_score < 10
-                     AND julianday('now') - julianday(timestamp) > 60)
-                )
-            """)
-            deleted = cursor.rowcount
-            if deleted > 0:
-                # 被删除的记忆可能仍在会话向量缓存中（幽灵召回），直接清空
-                self._cache.clear()
-                logger.info(f"[Quill Memory] 记忆修剪: 清理了 {deleted} 条过期低价值记忆")
-            return deleted
+                        (is_active = 1 AND useful_score < 10
+                         AND julianday('now') - julianday(timestamp) > 60)
+                    )""")).fetchall()
+                cursor = await connection.execute("""
+                    UPDATE memories SET status='expired', is_active=0
+                    WHERE is_core = 0 AND status = 'active' AND (
+                        (is_active = 0 AND (
+                            (useful_score < 3 AND julianday('now') - julianday(timestamp) > 3)
+                            OR
+                            (useful_score >= 3 AND useful_score < 10 AND julianday('now') - julianday(timestamp) > 9)
+                        ))
+                        OR
+                        (is_active = 1 AND useful_score < 10
+                         AND julianday('now') - julianday(timestamp) > 60)
+                    )""")
+                expired = max(0, cursor.rowcount)
+                for (sid,) in sessions:
+                    await connection.execute(
+                        "INSERT INTO session_generations(session_id,generation) VALUES(?,1) "
+                        "ON CONFLICT(session_id) DO UPDATE SET generation=generation+1",
+                        (sid,))
+                    await connection.execute(
+                        "UPDATE knowledge_pages SET freshness_status='stale',"
+                        "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (sid,))
+                # 物理清理只处理已归档/已过期且超过 180 天的快照保留期数据。
+                cleanup = await connection.execute("""
+                    DELETE FROM memories
+                    WHERE is_core = 0 AND status IN ('archived','expired')
+                      AND julianday('now') - julianday(timestamp) > 180""")
+                return expired, max(0, cleanup.rowcount)
+            expired, cleaned = await self._exec_tx(prune)
+            if expired or cleaned:
+                logger.info(
+                    "[Quill Memory] 记忆修剪: 软失效 %d 条，物理清理 %d 条",
+                    expired, cleaned)
+            return expired
         except Exception as e:
             note_storage_error("prune", e)
             raise StorageError(
@@ -958,7 +1346,28 @@ class MemoryStore:
             logger.warning("[Quill Memory] get_chat_logs_after 失败（%s）", type(e).__name__)
             raise StorageError("读取增量日志失败，水位未推进",detail=type(e).__name__) from e
 
-    async def list_memories(self, session_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
+    async def get_chat_logs_before(self, session_id: str, before_id: int, limit: int = 2) -> list[dict]:
+        """M6.1：取水位之前的最近 N 条日志，仅作指代消解前情。"""
+        if not session_id or before_id <= 0:
+            return []
+        try:
+            rows = await self._exec_fetchall(
+                "SELECT id, role, content, timestamp FROM chat_logs "
+                "WHERE session_id=? AND id<=? ORDER BY id DESC LIMIT ?",
+                (session_id, before_id, max(1, min(int(limit or 2), 5))),
+            )
+            result = [
+                {"id": r[0], "role": r[1], "content": r[2], "timestamp": r[3]}
+                for r in rows
+            ]
+            result.reverse()
+            return result
+        except Exception as e:
+            logger.warning("[Quill Memory] get_chat_logs_before 失败（%s）", type(e).__name__)
+            raise StorageError("读取前情日志失败", detail=type(e).__name__) from e
+
+    async def list_memories(self, session_id: str, limit: int = 50, offset: int = 0,
+                            status: str | None = None) -> list[dict]:
         """列出某 session 的记忆（FUNC-P1-6：增加 offset 分页参数）。
 
         默认参数不变（limit=50, offset=0），既有调用方无需改动。
@@ -966,16 +1375,32 @@ class MemoryStore:
         if not session_id:
             return []
         try:
+            clauses = ["session_id = ?"]
+            args: list = [session_id]
+            if status:
+                clauses.append("status = ?")
+                args.append(str(status))
             rows = await self._exec_fetchall(
-                "SELECT id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active, is_core FROM memories "
-                "WHERE session_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-                (session_id, limit, max(0, offset))
+                "SELECT id, summary, chat_summary, timestamp, strength, useful_count, "
+                "useful_score, is_active, is_core, record_id, source_ref, "
+                "source_start_id, source_end_id, category, status, near_duplicate_of, "
+                "event_time, story_time, effective_from, effective_to, "
+                "participants_json, episode_ref FROM memories WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
+                (*args, limit, max(0, offset))
             )
             return [
                 {
                     "id": r[0], "summary": r[1], "chat_summary": r[2], "timestamp": r[3],
                     "strength": r[4], "useful_count": r[5], "useful_score": r[6], "is_active": r[7],
-                    "is_core": r[8]
+                    "is_core": r[8], "record_id": r[9], "source_ref": r[10],
+                    "source_start_id": r[11], "source_end_id": r[12],
+                    "category": r[13], "status": r[14],
+                    "near_duplicate_of": r[15], "event_time": r[16],
+                    "story_time": r[17], "effective_from": r[18],
+                    "effective_to": r[19], "participants_json": r[20],
+                    "episode_ref": r[21],
                 }
                 for r in rows
             ]
@@ -986,15 +1411,29 @@ class MemoryStore:
     async def set_core(self, memory_id: int, is_core: bool) -> bool:
         """设置/取消记忆的核心锚定状态。核心记忆不参与 Top-K 竞争，直接注入 prompt。"""
         try:
-            # 缓存中的 is_core 标记需要同步失效，否则置锚后的记忆仍参与 Top-K 竞争
-            rows = await self._exec_fetchall("SELECT session_id FROM memories WHERE id = ?", (memory_id,))
-            if rows:
-                await self._invalidate_cache(rows[0][0])
-            cursor = await self._exec_write(
-                "UPDATE memories SET is_core = ? WHERE id = ?",
-                (1 if is_core else 0, memory_id)
-            )
-            return cursor.rowcount > 0
+            async def update(connection):
+                row = await (await connection.execute(
+                    "SELECT session_id FROM memories WHERE id=?", (memory_id,))).fetchone()
+                if row is None:
+                    return False
+                if is_core:
+                    # 已归档/过期条目可以重新钉住，但必须同时恢复 active：
+                    # get_core_memories 只注入 active，否则会出现“钉住却永远不生效”。
+                    await connection.execute(
+                        "UPDATE memories SET is_core=1,status='active',is_active=1 "
+                        "WHERE id=?", (memory_id,))
+                else:
+                    await connection.execute(
+                        "UPDATE memories SET is_core=0 WHERE id=?", (memory_id,))
+                await connection.execute(
+                    "INSERT INTO session_generations(session_id,generation) VALUES(?,1) "
+                    "ON CONFLICT(session_id) DO UPDATE SET generation=generation+1",
+                    (row[0],))
+                await connection.execute(
+                    "UPDATE knowledge_pages SET freshness_status='stale',"
+                    "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (row[0],))
+                return True
+            return await self._exec_tx(update)
         except Exception as e:
             logger.warning("[Quill Memory] set_core 失败: %s", e, exc_info=True)
             return False
@@ -1005,7 +1444,8 @@ class MemoryStore:
             return []
         try:
             rows = await self._exec_fetchall(
-                "SELECT id, summary FROM memories WHERE session_id = ? AND is_core = 1 ORDER BY timestamp DESC",
+                "SELECT id, summary FROM memories WHERE session_id = ? "
+                "AND is_core = 1 AND status = 'active' ORDER BY timestamp DESC",
                 (session_id,)
             )
             return [{"id": r[0], "summary": r[1]} for r in rows]
@@ -1068,6 +1508,17 @@ class MemoryStore:
                     "OR session_id LIKE ? ESCAPE '\\'",
                     (target_id, pattern),
                 )
+                await connection.execute(
+                    "UPDATE knowledge_pages SET freshness_status='stale',"
+                    "updated_at=CURRENT_TIMESTAMP WHERE session_id = ? "
+                    "OR session_id LIKE ? ESCAPE '\\'",
+                    (target_id, pattern),
+                )
+                await connection.execute(
+                    "DELETE FROM session_warmup_flags WHERE session_id = ? "
+                    "OR session_id LIKE ? ESCAPE '\\'",
+                    (target_id, pattern),
+                )
                 return cursor.rowcount
 
             count = await self._exec_tx(delete)
@@ -1080,11 +1531,16 @@ class MemoryStore:
                 context={"target_id": target_id},
             ) from e
 
-    async def count_session_memories(self, session_id: str) -> int:
+    async def count_session_memories(self, session_id: str, status: str | None = None) -> int:
         """统计某 session 的记忆总数（供分页显示真实 total）。"""
         if not session_id:
             return 0
         try:
+            if status:
+                row = await self._exec_fetchone(
+                    "SELECT COUNT(*) FROM memories WHERE session_id = ? AND status = ?",
+                    (session_id, str(status)))
+                return row[0] if row else 0
             row = await self._exec_fetchone(
                 "SELECT COUNT(*) FROM memories WHERE session_id = ?", (session_id,)
             )
@@ -1293,15 +1749,21 @@ class MemoryStore:
         """删除单条记忆（D4：底层失败抛 StorageError，类别 delete；
         「没有这一行」仍是正常返回 False，不是存储失败）。"""
         try:
-            rows = await self._exec_fetchall("SELECT session_id FROM memories WHERE id = ?", (memory_id,))
-            if rows:
-                await self._invalidate_cache(rows[0][0])
-        except Exception as e:
-            logger.warning("[Quill Memory] delete_memory 缓存失效查询失败: %s", e, exc_info=True)
-
-        try:
-            cursor = await self._exec_write("DELETE FROM memories WHERE id = ?", (memory_id,))
-            return cursor.rowcount > 0
+            async def remove(connection):
+                row = await (await connection.execute(
+                    "SELECT session_id FROM memories WHERE id=?", (memory_id,))).fetchone()
+                if row is None:
+                    return False
+                await connection.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+                await connection.execute(
+                    "INSERT INTO session_generations(session_id,generation) VALUES(?,1) "
+                    "ON CONFLICT(session_id) DO UPDATE SET generation=generation+1",
+                    (row[0],))
+                await connection.execute(
+                    "UPDATE knowledge_pages SET freshness_status='stale',"
+                    "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (row[0],))
+                return True
+            return await self._exec_tx(remove)
         except Exception as e:
             note_storage_error("delete", e)
             raise StorageError(
@@ -1325,7 +1787,8 @@ class MemoryStore:
             raise StorageError("记忆统计暂不可用", detail="store_unavailable") from e
         return {"total_memories": total, "total_sessions": sessions, "today_count": today}
 
-    async def list_all_memories(self, limit: int = 200, offset: int = 0) -> list[dict]:
+    async def list_all_memories(self, limit: int = 200, offset: int = 0,
+                                status: str | None = None) -> list[dict]:
         """列出全部记忆（跨 session），按创建时间倒序，支持分页。
 
         M4：排序缺 tiebreaker。timestamp 是秒级字符串，同一秒里写入的多条记忆
@@ -1334,10 +1797,18 @@ class MemoryStore:
         一页都看不到**。加 id 作次级排序键，让分页成为确定的全序切分。
         """
         try:
+            where, args = "", []
+            if status:
+                where, args = " WHERE status = ?", [str(status)]
             rows = await self._exec_fetchall(
-                "SELECT id, session_id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active, is_core, record_id, source_ref, source_start_id, source_end_id, created_at, trust_level, process_status FROM memories "
-                "ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
-                (limit, offset)
+                "SELECT id, session_id, summary, chat_summary, timestamp, strength, "
+                "useful_count, useful_score, is_active, is_core, record_id, "
+                "source_ref, source_start_id, source_end_id, created_at, trust_level, "
+                "process_status, category, status, near_duplicate_of, event_time, "
+                "story_time, effective_from, effective_to, participants_json, "
+                "episode_ref FROM memories" + where
+                + " ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
+                (*args, limit, offset)
             )
             return [
                 {
@@ -1346,6 +1817,9 @@ class MemoryStore:
                     "useful_score": r[7], "is_active": r[8], "is_core": r[9],
                     "record_id":r[10],"source_ref":r[11],"source_start_id":r[12],"source_end_id":r[13],
                     "created_at":r[14],"trust_level":r[15],"process_status":r[16]
+                    ,"category":r[17],"status":r[18],"near_duplicate_of":r[19],
+                    "event_time":r[20],"story_time":r[21],"effective_from":r[22],
+                    "effective_to":r[23],"participants_json":r[24],"episode_ref":r[25]
                 }
                 for r in rows
             ]
@@ -1372,10 +1846,16 @@ class MemoryStore:
             logger.warning("[Quill Memory] list_sessions 失败: %s", e, exc_info=True)
             raise StorageError("会话列表暂不可用", detail="store_unavailable") from e
 
-    async def count_all_memories(self) -> int:
+    async def count_all_memories(self, status: str | None = None) -> int:
         """返回全部记忆总数（用于分页统计）。"""
         try:
-            return (await self._exec_fetchone("SELECT COUNT(*) FROM memories"))[0]
+            if status:
+                row = await self._exec_fetchone(
+                    "SELECT COUNT(*) FROM memories WHERE status = ?",
+                    (str(status),))
+            else:
+                row = await self._exec_fetchone("SELECT COUNT(*) FROM memories")
+            return row[0] if row else 0
         except Exception as e:
             logger.warning("[Quill Memory] count_all_memories 失败: %s", e, exc_info=True)
             return 0
@@ -1385,7 +1865,11 @@ class MemoryStore:
         try:
             row = await self._exec_fetchone(
                 "SELECT id, session_id, summary, chat_summary, timestamp, "
-                "strength, useful_count, useful_score, is_active, is_core FROM memories WHERE id = ?",
+                "strength, useful_count, useful_score, is_active, is_core, "
+                "record_id, source_ref, source_start_id, source_end_id, category, "
+                "status, near_duplicate_of, event_time, story_time, effective_from, "
+                "effective_to, participants_json, episode_ref "
+                "FROM memories WHERE id = ?",
                 (memory_id,)
             )
             if not row:
@@ -1394,7 +1878,14 @@ class MemoryStore:
                 "id": row[0], "session_id": row[1], "summary": row[2],
                 "chat_summary": row[3], "timestamp": row[4],
                 "strength": row[5], "useful_count": row[6],
-                "useful_score": row[7], "is_active": row[8], "is_core": row[9]
+                "useful_score": row[7], "is_active": row[8], "is_core": row[9],
+                "record_id": row[10], "source_ref": row[11],
+                "source_start_id": row[12], "source_end_id": row[13],
+                "category": row[14], "status": row[15],
+                "near_duplicate_of": row[16], "event_time": row[17],
+                "story_time": row[18], "effective_from": row[19],
+                "effective_to": row[20], "participants_json": row[21],
+                "episode_ref": row[22],
             }
         except Exception as e:
             logger.warning("[Quill Memory] get_memory_by_id 失败: %s", e, exc_info=True)
@@ -1424,7 +1915,7 @@ class MemoryStore:
         # 而对话内的 search() 根本不会返回它们——同一个查询在面板与会话里
         # 得到不同结果，用户无法解释。
         _active_where = (
-            " AND (is_core = 1 OR is_active = 1 "
+            " AND status = 'active' AND (is_core = 1 OR is_active = 1 "
             "OR (julianday('now') - julianday(timestamp)) < 30)"
         )
         try:

@@ -800,7 +800,8 @@ async def handle_rag_config(embedding_provider, reranker):
         return err(error_text("获取配置失败", e))
 
 
-async def handle_memory_list(memory_store, session_id=None, page=1, per_page=50):
+async def handle_memory_list(memory_store, session_id=None, page=1, per_page=50,
+                             status=None):
     """列出记忆（可按 session_id 过滤）。
 
     当有 session_id 时返回该 session 的记忆。
@@ -816,8 +817,9 @@ async def handle_memory_list(memory_store, session_id=None, page=1, per_page=50)
             per_page = min(max(1, per_page), 200)
             page = max(1, page)
             offset = (page - 1) * per_page
-            total = await memory_store.count_session_memories(session_id)
-            memories = await memory_store.list_memories(session_id, limit=per_page, offset=offset)
+            total = await memory_store.count_session_memories(session_id, status=status)
+            memories = await memory_store.list_memories(
+                session_id, limit=per_page, offset=offset, status=status)
             total_pages = max(1, (total + per_page - 1) // per_page)
             return ok({
                 "session_id": session_id, "memories": memories,
@@ -825,7 +827,7 @@ async def handle_memory_list(memory_store, session_id=None, page=1, per_page=50)
                 "total_pages": total_pages,
             })
         # 无 session_id：返回全部记忆（倒序），供记忆浏览表格用
-        memories = await memory_store.list_all_memories(200)
+        memories = await memory_store.list_all_memories(200, status=status)
         return ok({"memories": memories, "sessions": []})
     except Exception as e:
         return err(error_text("查询失败", e))
@@ -845,7 +847,7 @@ async def handle_memory_delete(memory_store, memory_id=None, session_id=None):
         return err(error_text("删除失败", e))
 
 
-async def handle_memory_list_all(memory_store, page=1, per_page=50):
+async def handle_memory_list_all(memory_store, page=1, per_page=50, status=None):
     """列出全部记忆（跨 session），按创建时间倒序，支持分页。
 
     返回 total 为数据库中记忆的真实总数（不受分页限制），
@@ -856,8 +858,9 @@ async def handle_memory_list_all(memory_store, page=1, per_page=50):
         per_page = min(max(1, per_page), 200)
         page = max(1, page)
         offset = (page - 1) * per_page
-        total = await memory_store.count_all_memories()
-        memories = await memory_store.list_all_memories(per_page, offset)
+        total = await memory_store.count_all_memories(status=status)
+        memories = await memory_store.list_all_memories(
+            per_page, offset, status=status)
         total_pages = max(1, (total + per_page - 1) // per_page)
         return ok({"memories": memories, "total": total, "page": page, "per_page": per_page, "total_pages": total_pages})
     except Exception as e:

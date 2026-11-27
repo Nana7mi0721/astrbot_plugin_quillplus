@@ -1225,8 +1225,64 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 result = await self.rag_retriever.summarize_incremental(
                     session_id,legacy_last_id=legacy_last_id,handle=handle)
             handle.record.result = {k:v for k,v in result.items() if k != "summary"}
+            # M6.2：默认关闭；只有显式开启自动刷新且本轮确有新记忆时才
+            # 触发知识页任务。无变更页面会在服务层短路，不产生费用。
+            if result.get("stored") and getattr(
+                    self.config, "rag_knowledge_pages_auto_refresh", False):
+                from .quill.services.knowledge_pages import DEFAULT_TEMPLATES
+                for template in DEFAULT_TEMPLATES:
+                    try:
+                        self._start_knowledge_page_task(
+                            session_id, template["key"],
+                            title=template["title"], question=template["question"])
+                    except Exception as exc:
+                        logger.debug(
+                            "[Quill KnowledgePage] 自动刷新调度失败（已忽略）: %s", exc)
             return result
         return self._start_task("memory_summary",session_id,summarize)
+
+    def _start_knowledge_page_task(self, session_id: str, template_key: str, *,
+                                   title: str = "", question: str = "",
+                                   force: bool = False):
+        """M6.2：知识页刷新走 TaskRegistry + M2 用量台账。"""
+        from .quill.services.knowledge_pages import refresh_knowledge_page
+
+        async def work(handle):
+            store = getattr(self.rag_retriever, "memory_store", None)
+            if store is None:
+                raise ValueError("记忆库暂不可用")
+            provider_id = str(getattr(self.config, "rag_llm_provider_id", "") or "")
+            if not provider_id:
+                raise ValueError("未配置摘要 LLM 提供商")
+            recorder = getattr(self, "_usage", None)
+            if recorder is None:
+                raise ValueError("用量台账暂不可用")
+
+            async def generate(**kwargs):
+                await handle.checkpoint(message="正在生成知识页")
+                response = await recorder.generate(
+                    provider_id=provider_id,
+                    purpose="knowledge_page_refresh",
+                    session_id=session_id,
+                    timeout=60,
+                    **kwargs,
+                )
+                if getattr(response, "role", "") == "err":
+                    raise ValueError("knowledge_page_provider_error")
+                text = getattr(response, "completion_text", None)
+                if text is None:
+                    text = getattr(response, "text", "")
+                return str(text or "")
+
+            result = await refresh_knowledge_page(
+                store, generate, session_id=session_id,
+                template_key=template_key, title=title,
+                question=question, force=force)
+            handle.record.result = result
+            return result
+
+        return self._start_task(
+            "knowledge_page_refresh", f"{session_id}:{template_key}", work)
 
     def _spawn(self, coro, *, kind=None, key=None):
         if kind is None:
@@ -2176,6 +2232,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             target_id = self._get_target_id(event)
             persona_id = await self.state_manager.get_persona_id(target_id)
             mem_session_id = self._get_memory_session_id(target_id, persona_id)
+            # M6.3：短回复/数字选项只扩展 RAG 查询，绝不改 user_input 或
+            # 世界书匹配输入。
+            rag_query = self._expand_rag_query(event, req, user_input)
 
             # D9：用 RAG_ERROR_ATTR 常量而不是再写一遍字面量 "_rag_error"——
             # 否则改了常量名这里会静默失配（读不到错误原因，只报 "ok"）。
@@ -2226,7 +2285,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 # 路 1：本地 FAISS Doc RAG
                 if self.rag_retriever and self.rag_retriever.embedding:
                     local_results = await self.rag_retriever.search_documents(
-                        user_input, allowed_sources=plugin_sources, funnel=rag_funnel
+                        rag_query, allowed_sources=plugin_sources, funnel=rag_funnel
                     )
                     local_ok = _rag_ok(local_results)
                     if not local_ok:
@@ -2238,7 +2297,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 # 一个都没绑就不发空跑请求）
                 if kb_ready and (rag_mode != "custom" or kb_names):
                     kb_results = await kb_source.search(
-                        user_input,
+                        rag_query,
                         kb_names=kb_names if rag_mode == "custom" else None,
                         doc_filters=kb_doc_filters if rag_mode == "custom" else None,
                     )
@@ -2252,9 +2311,10 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
             mem_results = []
             core_mems = []
+            knowledge_pages = []
             if self.rag_retriever:
                 mem_results = await self.rag_retriever.search_memories(
-                    mem_session_id, user_input, funnel=mem_funnel
+                    mem_session_id, rag_query, funnel=mem_funnel
                 )
                 logger.info(f"[Quill RAG] 记忆检索: {len(mem_results)} 条 (Session: {mem_session_id})")
 
@@ -2263,6 +2323,46 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 if core_mems:
                     logger.info(f"[Quill RAG] 核心记忆: {len(core_mems)} 条 (Session: {mem_session_id})")
 
+                # M6.2：知识页是只读 SQLite 工作集，零额外 LLM。stale 页
+                # 显式降级，并在没有底层召回时补最近 active 证据，避免
+                # 「过时知识页独占结果」。
+                try:
+                    store = getattr(self.rag_retriever, "memory_store", None)
+                    if store is not None:
+                        knowledge_pages = await store.get_knowledge_pages(mem_session_id)
+                        if any(
+                            str(p.get("freshness_status") or "") in ("stale", "failed")
+                            for p in knowledge_pages
+                        ):
+                            evidence = await store.get_knowledge_evidence(mem_session_id, limit=5)
+                            existing_ids = {
+                                str(value)
+                                for r in mem_results
+                                for value in (r.get("id"), r.get("record_id"))
+                                if value is not None
+                            }
+                            for item in evidence:
+                                rid = item.get("record_id") or item.get("source_end_id") or "?"
+                                if str(rid) in existing_ids:
+                                    continue
+                                mem_results.append({
+                                    "id": item.get("source_end_id") or rid,
+                                    "record_id": item.get("record_id"),
+                                    "summary": item.get("summary") or "",
+                                    "chat_summary": item.get("chat_summary") or "",
+                                    "useful_count": 0,
+                                    "rrf_score": 0.0,
+                                    "temporal_boost": 0.0,
+                                    "source_start_id": item.get("source_start_id"),
+                                    "source_end_id": item.get("source_end_id"),
+                                    "participants_json": item.get("participants_json"),
+                                    "knowledge_page_fallback": True,
+                                })
+                                existing_ids.add(str(rid))
+                except Exception as exc:
+                    logger.warning(
+                        "[Quill KnowledgePage] 读取知识页失败（本轮跳过）: %s", exc)
+
             # format_for_prompt 优先走 retriever 实例方法（H3 快照钉住的调用
             # 契约：步 17 在 retriever 上发生）；模块级纯函数仅为 KB-only 模式
             # （本地栈未初始化、rag_retriever 为 None）兜底。
@@ -2270,6 +2370,14 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 rag_context = self.rag_retriever.format_for_prompt(doc_results, mem_results, core_mems)
             else:
                 rag_context = format_for_prompt(doc_results, mem_results, core_mems)
+            if knowledge_pages:
+                try:
+                    from .quill.services.knowledge_pages import format_for_prompt as _fmt_pages
+                    _page_text = _fmt_pages(knowledge_pages)
+                    if _page_text:
+                        rag_context = _page_text + ("\n\n" + rag_context if rag_context else "")
+                except Exception as exc:
+                    logger.debug("[Quill KnowledgePage] 知识页格式化失败（已跳过）: %s", exc)
             if rag_context:
                 dynamic_prompt += "\n\n" + rag_context
                 logger.info(f"[Quill RAG] 注入上下文: {len(rag_context)} 字符")
@@ -2284,6 +2392,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 stats["doc_sources"] = seen_src
                 stats["mem"] = len(mem_results)
                 stats["core_mem"] = len(core_mems)
+                stats["knowledge_pages"] = len(knowledge_pages)
             # P1-4: 记录 RAG 检索结果，按 rag_ok 判定（见上）。文档路现在有
             # 本地/内置库两段，失败标记在合并前分别取（合并 list 会丢标记）。
             doc_ok = local_ok and kb_ok
@@ -2358,6 +2467,57 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             ])
 
         return dynamic_prompt
+
+    def _expand_rag_query(self, event, req, user_input: str) -> str:
+        """M6.3：仅扩展检索查询；世界书与 user_input 保持原文。"""
+        text = str(user_input or "").strip()
+        if not text or not getattr(self.config, "rag_query_expand_enabled", False):
+            return text
+        try:
+            import re as _re
+            options = event.get_extra("_quill_shared_options") or []
+            index = None
+            if _re.fullmatch(r"[1-9]", text):
+                index = int(text) - 1
+                if 0 <= index < len(options):
+                    picked = str(options[index] or "").strip()
+                    if picked:
+                        return f"{text} {picked}"
+            contents = getattr(req, "contexts", None) or []
+            assistant = ""
+            for item in reversed(contents):
+                if not isinstance(item, dict) or item.get("role") != "assistant":
+                    continue
+                content = item.get("content")
+                if isinstance(content, list):
+                    content = " ".join(
+                        str(part.get("text", "")) for part in content
+                        if isinstance(part, dict))
+                elif not isinstance(content, str):
+                    content = str(content or "")
+                assistant = content.strip()
+                if assistant:
+                    break
+            if index is not None and assistant:
+                # 共享菜单不是唯一来源：普通回复里的「1. … / 2. …」也要能
+                # 还原成对应选项文本。只按行首编号解析，避免把金额/日期当选项。
+                numbered = _re.findall(
+                    r"(?m)^\s*[\(（]?([1-9])(?:[\)）\.、:：]|\s+)\s*(.+?)\s*$",
+                    assistant,
+                )
+                for number, body in numbered:
+                    if int(number) == index + 1:
+                        picked = body.strip(" *_#`")[:240]
+                        if picked:
+                            return f"{text} {picked}"
+            if len(text) > 12:
+                return text
+            tail = assistant[-120:]
+            if tail:
+                return f"{text}\n{tail}"
+        except Exception as exc:
+            logger.debug("[Quill RAG] 查询扩写跳过（%s）", type(exc).__name__)
+        return text
 
     async def _rewrite_smt_tool_description(self, req: ProviderRequest, persona_id: str = "") -> None:
         """改写本请求工具集里的 send_message_to_user 描述。状态栏指令通过 system prompt + tail message 注入。

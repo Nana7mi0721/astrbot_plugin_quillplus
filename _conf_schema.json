@@ -67,6 +67,36 @@
         "default": false,
         "hint": "开启后，在后台自动进行内容压缩与特征提取，跨会话保留长期记忆（不会阻塞聊天）。"
       },
+      "temporal_recall_enabled": {
+        "type": "bool",
+        "description": "启用时间与人物线索召回",
+        "default": true,
+        "hint": "开启后，会把「昨天」「上周」「上次在酒馆」等时间/人物线索用于记忆排序；现实时间按本地日历精确计算，剧情时间保留原文，不伪造公历日期。"
+      },
+      "query_expand_enabled": {
+        "type": "bool",
+        "description": "启用短回复检索扩写",
+        "default": false,
+        "hint": "仅扩展 RAG 检索查询：回复「2」时补上对应剧情选项，短句可附带最近一条回复末尾。不会改变用户输入或世界书匹配文本。"
+      },
+      "memory_near_duplicate_threshold": {
+        "type": "float",
+        "description": "近重复候选阈值",
+        "default": 0.85,
+        "hint": "余弦相似度达到该值的记忆只标记为近重复候选，不自动合并；否定、时态、数值或主客体不同时仍会保留。"
+      },
+      "knowledge_pages_auto_refresh": {
+        "type": "bool",
+        "description": "自动刷新角色知识页",
+        "default": false,
+        "hint": "默认关闭。开启后才会在记忆变更后后台刷新知识页；手动刷新始终可用，且无变更时会跳过，不产生模型费用。"
+      },
+      "eval_max_snapshots": {
+        "type": "int",
+        "description": "检索评估快照保留份数",
+        "default": 5,
+        "hint": "超过份数时按时间轮转删除最旧快照。"
+      },
       "enable_autonomous_reflection": {
         "type": "bool",
         "description": "启用全自动闲时反思",

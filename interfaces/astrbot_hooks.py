@@ -1420,6 +1420,15 @@ async def handle_llm_request(
     # R1：宿主不把 system 保存进对话历史，旧布局同样必须每轮带上常驻。
     skip_constants = False
 
+    # M6.3：只有真正激活的轮次才算暖场；持久标记重启后不会重复触发。
+    first_warmup = False
+    try:
+        _mem_store = getattr(getattr(plugin, "rag_retriever", None), "memory_store", None)
+        if _mem_store is not None and mem_session_id:
+            first_warmup = await _mem_store.mark_warmed(mem_session_id)
+    except Exception as exc:
+        logger.debug("[Quill Memory] 首轮暖场标记失败（已忽略）: %s", exc)
+
     # 改写 send_message_to_user 描述（含状态栏强制要求）
     # 无角色卡仅跳过描述改写，仍保留请求级拒重终止保护。
     await plugin._rewrite_smt_tool_description(req, persona_id)
@@ -1440,6 +1449,7 @@ async def handle_llm_request(
     extra_info = {
         "user_input": user_input,
         "context_text": context_text,
+        "first_warmup": first_warmup,
         "persona_id": turn.persona_id if turn else persona_id,
         "scope_id": turn.scope_id if turn else "",
         "turn_token": turn.turn_id if turn else "",

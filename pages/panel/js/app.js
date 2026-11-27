@@ -11,7 +11,7 @@ import { initListKeys } from "./components/listkeys.js";
 import { closeModal } from "./components/modal.js";
 import { closeSelMenus, enhanceSelects } from "./components/select.js";
 import { discardChanges, filterConfig, initConfigNavObserver, loadGlobalSettings, loadHealth, markDirty, probeDecisionModel, saveAllChanges, scrollToSection, setStreamModeAll, switchTab, syncSidebarBadges } from "./pages/config.js";
-import { changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, onMemorySessionChange, pruneMemories, summarizeMemory, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin } from "./pages/memory.js";
+import { archiveMemory, changeMemoryPage, createKnowledgePage, deleteEvalCase, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadEvalCases, loadKnowledgePages, loadMemoryBrowser, onMemorySessionChange, pruneMemories, refreshKnowledgePage, restoreMemory, runEval, saveEvalCase, saveKnowledgePinned, summarizeMemory, showMemoryDetail, showMemorySource, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin } from "./pages/memory.js";
 import { closeAstrbotImportModal, closeExportModal, closeImportTextModal, deletePersona, filterCheckboxes, filterWBEntries, importFromAstrbot, importPersona, importPersonaFromText, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openExportModal, openImportTextModal, openPersonaModal, renderPersonaPage, runExport, savePersona, selectAstrbotPersona, setAllExportBooks, switchPersonaView, syncExtList, syncRagGroup, toggleExtBig, toggleExtGroup } from "./pages/persona.js";
 import { reindexRAG, deleteRAGDocument, deleteRAGGroup, loadRAG, loadRAGModelInfo, moveRAGDocument, newRAGGroup, processRAGFiles, renameRAGGroup, setRAGKbEnabled, testRAGSearch, toggleRAGBig, toggleRAGGroup } from "./pages/rag.js";
 import { loadTracePage, onTraceSessionChange, refreshTrace, toggleTraceTurn,
@@ -155,8 +155,19 @@ const ACTIONS = {
   // 动态记忆
   "mem-page": (el) => changeMemoryPage(el.dataset.value),
   "mem-detail": (el) => showMemoryDetail(el.dataset.id),
+  "mem-source": (el) => showMemorySource(el.dataset.id),
+  "mem-archive": (el) => archiveMemory(el.dataset.id),
+  "mem-restore": (el) => restoreMemory(el.dataset.id),
   "mem-delete": (el) => deleteMemory(el.dataset.id),
   "mem-pin": (el) => toggleMemoryPin(el.dataset.id, el.dataset.core === "1"),
+  "mem-pages-load": () => loadKnowledgePages(),
+  "mem-page-save": (el) => saveKnowledgePinned(el),
+  "mem-page-refresh": (el) => refreshKnowledgePage(el),
+  "mem-page-create": (el) => createKnowledgePage(el),
+  "eval-load": () => { loadEvalCases(); loadEvalSnapshots(); },
+  "eval-save": (el) => saveEvalCase(el),
+  "eval-delete": (el) => deleteEvalCase(el.dataset.id),
+  "eval-run": (el) => runEval(el),
   "mem-prune": (el) => pruneMemories(el),
   "mem-export": (el) => exportMemories(el),
   "log-load": (el) => loadChatLogs(el),
@@ -279,6 +290,7 @@ function bindEvents() {
     if (t.id === "wrCat" && t.tagName === "SELECT") { wrState.page = 1; loadWR(); return; }
     if (t.id === "wbOnlyConst") { setWBOnlyConst(t.checked); return; }
     if (t.id === "memSession") { onMemorySessionChange(); return; }
+    if (t.id === "memStatus") { S._memPage = 1; loadMemoryBrowser(); return; }
     if (t.id === "traceSession") { onTraceSessionChange(); return; }
     // 文档知识库页的「兼容 AstrBot 知识库」开关：单独落盘一个配置键
     if (t.id === "ragKbToggle") { setRAGKbEnabled(t.checked, t); return; }
