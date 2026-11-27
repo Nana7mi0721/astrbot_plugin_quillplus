@@ -181,9 +181,14 @@ function renderWBEntry(wbName, e) {
   if (cooldown > 0) ruleTags.push("冷却:" + cooldown + "轮");
   const delay = Number(e.delay ?? e.delay_rounds);
   if (delay > 0) ruleTags.push("延迟:" + delay + "轮");
-  if (e.prevent_recursion || e.recursive) ruleTags.push("递归");
+  if (e.exclude_recursion) ruleTags.push("免递归");
+  if (e.prevent_recursion) ruleTags.push("禁递归");
+  else if (e.recursive) ruleTags.push("递归");
   if (e.use_regex) ruleTags.push("正则");
-  if (Number(e.inject_position) === 3) ruleTags.push("深度:" + (Number(e.depth) || 4));
+  if (Number(e.inject_position) === 3) {
+    const d = Number(e.depth);
+    ruleTags.push("深度:" + (Number.isFinite(d) ? d : 4));
+  }
   return `<article class="wb-entry" data-wb="${esc(wbName)}" data-eid="${esc(e.id || "")}">
     <div class="wb-entry-head">
       <div class="grow">
@@ -314,14 +319,14 @@ function openWBEntryModal(wbName, entryId) {
     delay: Number(e.delay ?? e.delay_rounds) || 0,
     group: e.group || "",
     groupMax: Number(e.group_max) > 0 ? Number(e.group_max) : 1,
-    groupWeight: Number(e.group_weight) || 100,
-    priority: Number(e.priority ?? e.order) || 100,
+    groupWeight: Number.isFinite(Number(e.group_weight)) ? Math.max(0, Number(e.group_weight)) : 100,
+    priority: Number.isFinite(Number(e.priority ?? e.order)) ? Math.max(0, Number(e.priority ?? e.order)) : 100,
     scanDepth: e.scan_depth != null ? Number(e.scan_depth) : 0,
     excludeRecursion: !!e.exclude_recursion,
     preventRecursion: !!(e.prevent_recursion ?? e.recursive),
     useRegex: !!e.use_regex,
     injectPosition: [1, 2, 3].includes(Number(e.inject_position)) ? Number(e.inject_position) : 2,
-    depth: Number(e.depth) || 4,
+    depth: Number.isFinite(Number(e.depth)) ? Math.max(0, Number(e.depth)) : 4,
     role: ["system", "user", "assistant"].includes(e.role) ? e.role : "system",
     selectiveLogic: e.selective_logic || legacyLogic[e.key_mode] || "AND_ANY",
     secondary: e.secondary_keys || e.keys_secondary || [],

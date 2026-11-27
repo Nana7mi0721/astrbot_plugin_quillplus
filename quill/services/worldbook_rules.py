@@ -24,6 +24,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
@@ -89,7 +90,12 @@ class WorldbookRuleStore:
             parent = os.path.dirname(os.path.abspath(self.path))
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            self._legacy = self._read_legacy_locked()
+            # 旧版把规则状态存成同名 JSON 文件。直接 sqlite3.connect()
+            # 会抛 "file is not a database"，因此先读出内容并原子改名归档，
+            # 再在原路径建 SQLite。
+            if self._path_is_legacy_json():
+                self._legacy = self._read_legacy_locked()
+                self._archive_legacy_locked()
         self._conn = sqlite3.connect(
             self.path, timeout=10.0, check_same_thread=False
         )
@@ -112,7 +118,7 @@ class WorldbookRuleStore:
         return self._conn
 
     def _read_legacy_locked(self) -> Dict[str, dict]:
-        """旧版 JSON 状态迁移：只读取，迁移后由调用方保留原文件。"""
+        """旧版 JSON 状态迁移：读取后由 :meth:`_archive_legacy_locked` 改名保留。"""
         try:
             if not self.path or not os.path.isfile(self.path):
                 return {}
@@ -125,6 +131,39 @@ class WorldbookRuleStore:
             return raw if isinstance(raw, dict) else {}
         except (OSError, ValueError, TypeError):
             return {}
+
+    def _path_is_legacy_json(self) -> bool:
+        try:
+            if not self.path or not os.path.isfile(self.path):
+                return False
+            with open(self.path, "r", encoding="utf-8") as fh:
+                while True:
+                    ch = fh.read(1)
+                    if not ch:
+                        return False
+                    if not ch.isspace():
+                        return ch == "{"
+        except (OSError, UnicodeDecodeError):
+            return False
+
+    def _archive_legacy_locked(self) -> None:
+        """把旧 JSON 原子改名为 ``*.legacy.json``，避免被 SQLite 当成库文件。"""
+        if not self.path:
+            return
+        target = self.path + ".legacy.json"
+        if os.path.exists(target):
+            target = f"{self.path}.legacy.{int(time.time())}.json"
+        try:
+            os.replace(self.path, target)
+        except OSError:
+            # 改名失败（文件占用）时退回删除原 JSON：数据已读进内存并将在
+            # 下一行导入 SQLite，宁可丢旧文件也不能让连接直接崩溃。
+            try:
+                os.remove(self.path)
+            except OSError:
+                raise sqlite3.DatabaseError(
+                    "旧版规则状态文件无法归档，且目标路径不是 SQLite 数据库"
+                )
 
     def _import_legacy_locked(self) -> None:
         scopes = self._legacy.get("scopes")
@@ -352,14 +391,25 @@ class WorldbookRuleStore:
                 sticky_until = current + sticky if sticky > 0 else 0
                 cooldown_from = sticky_until if sticky_until else current
                 cooldown_until = cooldown_from + cooldown if cooldown > 0 else 0
-            conn.execute(
-                """UPDATE wb_rule_effects SET
-                     sticky_until_turn=?, cooldown_until_turn=?,
-                     last_injected_turn=?, last_triggered_turn=?, updated_at=?
-                   WHERE scope_id=? AND persona_id=? AND rule_id=?""",
-                (sticky_until, cooldown_until, current, current, _now(),
-                 str(scope_id or ""), str(persona_id or ""), str(rule_id)),
-            )
+            if carry:
+                # 粘性顺延不是「关键词命中」：只刷新 last_injected，保留原
+                # last_triggered（否则最近命中时间会被无命中轮次覆盖）。
+                conn.execute(
+                    """UPDATE wb_rule_effects SET
+                         last_injected_turn=?, updated_at=?
+                       WHERE scope_id=? AND persona_id=? AND rule_id=?""",
+                    (current, _now(), str(scope_id or ""),
+                     str(persona_id or ""), str(rule_id)),
+                )
+            else:
+                conn.execute(
+                    """UPDATE wb_rule_effects SET
+                         sticky_until_turn=?, cooldown_until_turn=?,
+                         last_injected_turn=?, last_triggered_turn=?, updated_at=?
+                       WHERE scope_id=? AND persona_id=? AND rule_id=?""",
+                    (sticky_until, cooldown_until, current, current, _now(),
+                     str(scope_id or ""), str(persona_id or ""), str(rule_id)),
+                )
             conn.commit()
 
     def clear_sticky(self, scope_id: str, persona_id: str, rule_id: str) -> None:
@@ -390,7 +440,9 @@ class WorldbookRuleStore:
             "sticky_until": sticky_until,
             "sticky_remaining": max(0, sticky_until - current),
             "cooldown_until": cooldown_until,
-            "cooldown_remaining": max(0, cooldown_until - current + 1),
+            # 与 prompt_builder 的口径一致：剩余 = 截止轮 − 当前轮（不含当前轮）。
+            # cooldown_until=0 时不得返回 1（此前 +1 导致无冷却也显示 F1）。
+            "cooldown_remaining": max(0, cooldown_until - current),
             "last_injected": int(state.get("last_injected", 0) or 0),
             "last_match": int(state.get("last_match", 0) or 0),
         }

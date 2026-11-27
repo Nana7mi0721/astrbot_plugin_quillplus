@@ -1057,10 +1057,12 @@ class MemoryStore:
                         "VALUES(?,1) ON CONFLICT(session_id) DO UPDATE SET "
                         "generation=generation+1", (sid,),
                     )
-                    await connection.execute(
-                        "UPDATE qp_turns SET status='reset' WHERE scope_id=?",
-                        (target_id,),
-                    )
+                # qp_turns 复位必须无条件执行且不在 rows 循环内：没有记忆行
+                # （例如只删到日志）时也要归零，否则新一轮会沿用旧轮次。
+                await connection.execute(
+                    "UPDATE qp_turns SET status='reset' WHERE scope_id=?",
+                    (target_id,),
+                )
                 cursor = await connection.execute(
                     "DELETE FROM memories WHERE session_id = ? "
                     "OR session_id LIKE ? ESCAPE '\\'",

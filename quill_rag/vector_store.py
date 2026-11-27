@@ -348,6 +348,12 @@ class FaissVectorStore:
         """
         if not texts or not embeddings:
             return 0
+        # M6 P1-17：文本/向量一一对应是写入协议；长度不齐时继续写会把
+        # chunk 与向量错位，且后续删除/回填都按 rowid 对齐，界面上无法发现。
+        if len(texts) != len(embeddings):
+            raise ValueError(
+                f"texts/embeddings length mismatch: {len(texts)} != {len(embeddings)}"
+            )
         if doc_id == "":
             doc_id = source
 

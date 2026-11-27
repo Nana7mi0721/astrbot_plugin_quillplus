@@ -131,7 +131,16 @@ class SharedScopes:
                                 )
                             finally:
                                 held.release()
-                        self.plugin._spawn(_finish_then_release())
+                        try:
+                            self.plugin._spawn(_finish_then_release())
+                        except Exception as exc:
+                            # 关停期 _spawn 可能已拒绝新任务；此时必须同步
+                            # 释放组锁，否则排队者永久阻塞。
+                            logger.warning(
+                                "[Quill Scope] 共享轮收尾调度失败（%s），直接释放组锁",
+                                type(exc).__name__,
+                            )
+                            held.release()
                     task.add_done_callback(finished)
                     return
             # 不持管理锁排队，管理员能查状态；被改组后重新解析目标。

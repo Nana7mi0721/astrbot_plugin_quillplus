@@ -158,14 +158,16 @@ def evaluate(condition: str, session_vars: dict | None):
             return False, f"字符串字面量不支持 {op}"
         return ok, "" if ok else f"{var}={actual!r} {op} {expected!r}"
 
-    a_num, l_num = _as_number(actual), _as_number(literal)
-    if a_num is not None and l_num is not None:
-        result = {
-            ">=": a_num >= l_num, ">": a_num > l_num,
-            "<=": a_num <= l_num, "<": a_num < l_num,
-            "==": a_num == l_num, "!=": a_num != l_num,
-        }[op]
-        return result, "" if result else f"{var}={actual} {op} {literal}"
+    # P2：只有排序比较才放宽数值提取。`==` / `!=` 若也走 _extract_numeric，
+    # 「房间101」与「第101天」会被当成同一个 101，造成假等值。
+    if op in (">=", ">", "<=", "<"):
+        a_num, l_num = _as_number(actual), _as_number(literal)
+        if a_num is not None and l_num is not None:
+            result = {
+                ">=": a_num >= l_num, ">": a_num > l_num,
+                "<=": a_num <= l_num, "<": a_num < l_num,
+            }[op]
+            return result, "" if result else f"{var}={actual} {op} {literal}"
 
     # 双方（至少一方）非数值：只有等值比较有意义
     if op == "==":

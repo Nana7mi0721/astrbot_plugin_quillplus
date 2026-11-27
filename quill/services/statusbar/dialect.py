@@ -122,7 +122,9 @@ PROFILES = {
         confidence=0.85,
     ),
     "discord": _profile(
-        "markdown", bold="**", fence=True, table=True, max_chars=2000,
+        # M6 P1-11：Discord 文本消息不保证解析 Markdown 表格；与注释一致
+        # 按 table=False 处理，避免表格被原样显示成竖线噪声。
+        "markdown", bold="**", fence=True, table=False, max_chars=2000,
         streaming="fenced", escape="fence",
         evidence="文本发送，Discord 客户端解释其 Markdown 子集；不能假定表格/HTML",
         confidence=0.85,
@@ -372,8 +374,9 @@ def escape_content(dialect: str, text: str) -> str:
 
     转义只做「会破坏当前模板」的最小集合，不把正文改得面目全非：
 
-    - telegram：正文落在 MarkdownV2 的代码块里，块内只有反斜杠与反引号需要
-      转义；把点号/减号也转义会让用户看到反斜杠。
+    - telegram：正文落在 MarkdownV2 的代码块里，出站由宿主
+      `telegramify_markdown` 统一转义；这里预转义反斜杠反而会产生可见的
+      `\\`，因此与 markdown 方言一样只打断围栏。
     - markdown / slack / kmarkdown：正文在反引号围栏内，围栏只认三个连续
       反引号；把正文里的三连反引号打断成「两连 + 零宽空格 + 单反引号」，
       未闭合的流式围栏就不会提前关掉模板围栏。
@@ -382,8 +385,7 @@ def escape_content(dialect: str, text: str) -> str:
     if not isinstance(text, str) or not text:
         return text
     if dialect == "telegram":
-        # 先转义反斜杠，再转义反引号，避免把新增的反斜杠再转义一遍。
-        return text.replace(BS, BS * 2).replace(TICK, BS + TICK)
+        return text.replace(TICK * 3, TICK * 2 + ZWSP + TICK)
     if dialect in ("markdown", "slack", "kmarkdown"):
         return text.replace(TICK * 3, TICK * 2 + ZWSP + TICK)
     return text

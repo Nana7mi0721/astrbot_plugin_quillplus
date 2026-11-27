@@ -1057,6 +1057,9 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         except Exception as e:
             logger.debug(f"[Quill] 恢复前停止 autoflush 失败（忽略）: {e}")
         await self._close_rag_components()
+        # M6 P1-1：规则状态连接常驻 quill_memory.db；恢复前必须显式关闭，
+        # 否则 Windows 下覆盖数据库会文件锁死、Linux 下写进已删除 inode。
+        self._close_worldbook_rules()
         if self.wr_manager:
             try:
                 await self.wr_manager.close()
@@ -1114,6 +1117,16 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 self.state_manager.start_autoflush()
         logger.info("[Quill] 备份恢复后的组件重建完成")
 
+    def _close_worldbook_rules(self) -> None:
+        """关闭世界书规则状态的常驻 SQLite 连接（恢复/退出共用）。"""
+        rules = getattr(self.wb_manager, "rules", None) if self.wb_manager else None
+        if rules is None:
+            return
+        try:
+            rules.close()
+        except Exception as e:
+            logger.debug(f"[Quill] 世界书规则状态关闭失败（忽略）: {e}")
+
     async def terminate(self) -> None:
         """生命周期终止：取消所有后台任务并关闭数据库连接，防止资源泄漏。"""
         # S2-4 修复：先取消并等待所有后台任务，防止退出时悬挂/资源泄漏
@@ -1153,6 +1166,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 await self.wr_manager.close()
             except Exception as e:
                 logger.warning(f"[Quill] 写作素材库关闭失败: {e}")
+        self._close_worldbook_rules()
         # B4 修复（两处）：
         # 1) 关连接前先排空 retriever 自己的在途任务（_close_rag_components 做了，
         #    terminate 之前漏了）——否则在途的 mark_memories_used 会往刚关掉的

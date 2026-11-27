@@ -245,6 +245,12 @@ _MUTATING_ROUTES: frozenset = frozenset({
     "memory_export", "memory_list_all", "memory_get",
     "chat_log_list", "chat_log_export",
     "persona_export", "persona_export_base64",
+    # M6 P1-12：仍会外带跨会话/角色卡私密内容的只读端点补齐管理员鉴权。
+    # `persona_list` 含 core_prompts/system_prompt/PHI，`config_all` 含
+    # permissions.admin_users，`memory_list/sessions` 与 `trace_*` 暴露
+    # 会话标识与 Prompt 预览。
+    "memory_list", "memory_sessions", "persona_list", "config_all",
+    "trace_recent", "trace_detail", "trace_events",
 })
 
 # 新增写入口默认要求管理身份；只有这些既有 POST 查询明确按只读处理。

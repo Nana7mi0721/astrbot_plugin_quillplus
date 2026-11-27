@@ -32,6 +32,19 @@ class QuillEmbeddingProvider:
 
         # 1. 尝试 API provider
         if self.provider_id and self.context:
+            # M6 P1-14：重启后 _api_dim 仍是 None；若首次 API 抖动就回落
+            # 本地异维模型，会把已按 API 维度建立/持久化的索引打坏。
+            # provider 能报告维度时，先把它当作「已有索引维度」保守锚定。
+            if self._api_dim is None:
+                try:
+                    provider = self.context.get_provider_by_id(self.provider_id)
+                    get_dim = getattr(provider, "get_dim", None)
+                    if callable(get_dim):
+                        reported = int(get_dim() or 0)
+                        if reported > 0:
+                            self._api_dim = reported
+                except Exception:
+                    pass
             try:
                 provider = self.context.get_provider_by_id(self.provider_id)
                 if provider:

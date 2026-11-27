@@ -193,7 +193,17 @@ class QuillRetriever:
                             "reason": f"rerank_dropped(粗召回名次{n + 1})",
                         })
                     funnel["filtered"] = near_miss
-                return RagResult(kept,ok=False,error='文档索引不完整，部分文本待重建') if index_status.get('pending_chunks') else kept
+                # M6 P1-18：pending_chunks 与重排失败可能同时发生。不能因为
+                # 前者就覆盖掉后者原生错误——两段原因都要保留给上层健康度。
+                rerank_error = "" if rag_ok(kept) else getattr(kept, RAG_ERROR_ATTR, "rerank_failed")
+                if index_status.get('pending_chunks'):
+                    error = "文档索引不完整，部分文本待重建"
+                    if rerank_error:
+                        error += f"；重排失败: {rerank_error}"
+                    return RagResult(kept, ok=False, error=error)
+                if rerank_error:
+                    return RagResult(kept, ok=False, error=rerank_error)
+                return kept
             kept = raw_results[: self.top_k]
             if funnel is not None:
                 funnel["candidates"] = len(raw_results)

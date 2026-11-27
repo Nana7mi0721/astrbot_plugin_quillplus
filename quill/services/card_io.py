@@ -215,7 +215,10 @@ def detect_format(obj: dict) -> str:
         return FORMAT_PYGMALION
     if any(key in obj for key in _AGNAI_KEYS):
         return FORMAT_AGNAI
-    if any(key in obj for key in ("name", "description", "personality", "scenario", "first_mes", "mes_example")):
+    # M6 P1-9：只有 `name` 不能证明是 V1——V3 卡级也可能出现 name。至少
+    # 要有一个正文键才按 Tavern V1 扁平卡接管，避免把未知 JSON 误判成 V1。
+    if any(key in obj for key in ("description", "personality", "scenario",
+                                  "first_mes", "mes_example")):
         return FORMAT_TAVERN_V1
     return FORMAT_UNKNOWN_JSON
 
@@ -299,7 +302,7 @@ def _preserve_book(book: dict) -> dict:
 def _trim_preserved(preserved: dict, warnings: list) -> dict:
     """超限字段不静默丢：从 preserved 里摘掉，登记到 omitted，并写进 warnings。"""
     omitted = {}
-    for scope in ("card", "data"):
+    for scope in ("card", "data", "book"):
         bucket = preserved.get(scope)
         if not isinstance(bucket, dict):
             continue
@@ -397,7 +400,16 @@ def _parse_quill(obj: dict, via: str) -> dict:
         card["id"] = obj["id"].strip()
     if isinstance(obj.get("quill_extensions"), dict):
         card["quill_extensions"] = obj["quill_extensions"]
-    preserved = {"card": {}, "data": {}}
+    # M6 P1-9：Quill 卡直接再次导入时继承原 card_source.preserved，
+    # 否则一次「导出 → 导入」会把第三方元数据与书级扩展全部丢掉。
+    old_source = obj.get("card_source") if isinstance(obj.get("card_source"), dict) else {}
+    old_preserved = old_source.get("preserved") if isinstance(old_source.get("preserved"), dict) else {}
+    preserved = {
+        "card": dict(old_preserved.get("card") or {}),
+        "data": dict(old_preserved.get("data") or {}),
+    }
+    if isinstance(old_preserved.get("book"), dict):
+        preserved["book"] = dict(old_preserved["book"])
     known = {
         "id", "name", "summary", "core_prompts", "quill_extensions",
         "avatar_path", "card_source", "system_prompt", "post_history_instructions",
@@ -481,11 +493,9 @@ def parse_json_card(obj: Any, via: str = "json") -> dict:
     if alt_list:
         mes_example = (mes_example + "\n\n【备选开场白】\n" + "\n\n".join(alt_list)).strip()
 
-    summary = description
-    if not summary:
-        summary = _text(data.get("creator_notes")).strip()
-    if not summary:
-        summary = personality[:500]
+    # M6 P1-9：creator_notes 只能作为元数据原样保留，不能冒充角色简介；
+    # 否则导出时 summary 会被写回 description，作者说明变成角色设定。
+    summary = description or personality[:500]
 
     extensions = data.get("extensions") if isinstance(data.get("extensions"), dict) else {}
     quillplus = extensions.get("quillplus") if isinstance(extensions.get("quillplus"), dict) else {}
@@ -526,9 +536,6 @@ def parse_json_card(obj: Any, via: str = "json") -> dict:
         # 报告里的字段名不带 data. 前缀：这是「哪个字段被映射」的用户视角，
         # 而 preserved_fields 用的是 JSON 路径（card.X / data.X），两者语义不同。
         mapped[key] = DATA_FIELD_TARGETS[key]
-    if not description and _text(data.get("creator_notes")).strip():
-        mapped["creator_notes"] = DATA_FIELD_TARGETS["creator_notes"]
-
     preserved: dict = {"card": {}, "data": {}}
     for key, value in data.items():
         if key in CONSUMED_DATA_KEYS:
@@ -592,13 +599,12 @@ def _wpp_block(label_regex: str, source_text: str) -> str:
 # 否则 W++ 文本里的「Name: / Personality:」会被 safe_load 当成普通字典吞掉。
 _YAML_MAX_BYTES = 256 * 1024
 _YAML_MAX_DEPTH = 12
-_YAML_MAX_ALIASES = 20
+_YAML_MAX_NODES = 20000
 _YAML_KEY_RE = re.compile(r"(?m)^\s{0,8}(context|greeting|example_dialogue)\s*:")
-_YAML_ALIAS_RE = re.compile(r"(?:^|[\s\[{,])([&*][A-Za-z0-9_]+)")
 
 
 def _yaml_depth(value: Any, depth: int = 0) -> int:
-    if depth >= _YAML_MAX_DEPTH:
+    if depth > _YAML_MAX_DEPTH:
         return depth
     if isinstance(value, dict):
         return max([_yaml_depth(item, depth + 1) for item in value.values()] or [depth])
@@ -607,11 +613,46 @@ def _yaml_depth(value: Any, depth: int = 0) -> int:
     return depth
 
 
+def _yaml_loader(yaml):
+    """M6 P1-9：自定义 SafeLoader，直接拒绝所有别名并硬限深度/节点数。
+
+    现有「正则数 &/* 出现次数」挡不住 Billion Laughs：18 个别名就足以在
+    safe_load 展开时指数级放大。PyYAML 的 compose_node 是唯一能在构造前
+    统一拦截 AliasEvent 的入口；同时在这里计节点数，比解析完再遍历更早
+    止损。
+    """
+    class _CardSafeLoader(yaml.SafeLoader):
+        def __init__(self, stream):
+            super().__init__(stream)
+            self._quill_depth = 0
+            self._quill_nodes = 0
+
+        def compose_node(self, parent, index):
+            if self.check_event(yaml.AliasEvent):
+                raise CardFormatError("YAML 角色卡使用了别名/锚点，已拒绝解析")
+            self._quill_nodes += 1
+            if self._quill_nodes > _YAML_MAX_NODES:
+                raise CardFormatError(
+                    f"YAML 角色卡节点过多（上限 {_YAML_MAX_NODES}），已拒绝解析"
+                )
+            self._quill_depth += 1
+            try:
+                if self._quill_depth > _YAML_MAX_DEPTH:
+                    raise CardFormatError(
+                        f"YAML 角色卡嵌套过深（上限 {_YAML_MAX_DEPTH} 层），已拒绝解析"
+                    )
+                return super().compose_node(parent, index)
+            finally:
+                self._quill_depth -= 1
+
+    return _CardSafeLoader
+
+
 def _try_yaml_card(raw: str) -> dict | None:
     """解析 oobabooga YAML；不像 YAML 或解析失败都返回 None（继续走后面的分支）。
 
-    安全边界：限大小、限嵌套深度、限锚点/别名数量；只用 safe_load，
-    不允许自定义对象构造（yaml.load 的 Loader 参数永远不传）。
+    安全边界：限大小、限嵌套深度/节点数；只使用 SafeLoader 子类，绝不
+    允许自定义对象构造，并在 compose 阶段直接拒绝别名/锚点。
     """
     if len(raw.encode("utf-8")) > _YAML_MAX_BYTES or not _YAML_KEY_RE.search(raw):
         return None
@@ -619,16 +660,18 @@ def _try_yaml_card(raw: str) -> dict | None:
         import yaml
     except ImportError:
         return None
-    if len(_YAML_ALIAS_RE.findall(raw)) > _YAML_MAX_ALIASES:
-        raise CardFormatError("YAML 角色卡使用了过多锚点/别名，已拒绝解析（上限 20 个）")
+    # 别名/锚点由 _CardSafeLoader.compose_node 在构造前拒绝；不要用正则在
+    # 原文里扫 `*`，正文里的 Markdown 强调会被误判成 AliasEvent。
     try:
-        parsed = yaml.safe_load(raw)
+        parsed = yaml.load(raw, Loader=_yaml_loader(yaml))
+    except CardFormatError:
+        raise
     except Exception:
         return None
     if not isinstance(parsed, dict):
         return None
     if _yaml_depth(parsed) > _YAML_MAX_DEPTH:
-        raise CardFormatError("YAML 角色卡嵌套过深（上限 12 层），已拒绝解析")
+        raise CardFormatError(f"YAML 角色卡嵌套过深（上限 {_YAML_MAX_DEPTH} 层），已拒绝解析")
     return parsed
 
 

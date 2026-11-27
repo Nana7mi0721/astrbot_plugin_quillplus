@@ -238,18 +238,24 @@ class PromptBuilder:
             parts = []
             p_name = persona_data.get("name", persona_data.get("id", ""))
             cp = persona_data.get("core_prompts") or {}
-            # M5.3：system_prompt 是受限系统层，不并入人格正文。支持
-            # {{original}} 占位符（在 inject_prompt 里展开为宿主原文）。
+            # M5.3 / M6 P1-7：system_prompt 是卡内受限层，不并入人格正文。
+            # 它**不能**与 Quill 协议一起排在宿主 original_prompt 之前；这里
+            # 只通过 stats 出参交给 hooks，在宿主原文之后单独插入。没有 stats
+            # 的旧调用面（自检）退回 stable，保持可用性。
             system_prompt = (
                 persona_data.get("system_prompt")
                 or cp.get("system_prompt") or ""
             ).strip()
             if system_prompt:
-                stable_sections.append(PromptSection(
-                    name="system_prompt",
-                    content="## [系统提示]\n" + system_prompt,
-                    priority=0,
-                ))
+                _card_system = "## [系统提示]\n" + system_prompt
+                if stats is not None:
+                    stats["_card_system_prompt"] = _card_system
+                else:
+                    stable_sections.append(PromptSection(
+                        name="system_prompt",
+                        content=_card_system,
+                        priority=2,
+                    ))
             personality = (cp.get("personality") or "").strip()
             scenario = (cp.get("scenario") or "").strip()
             examples = (cp.get("examples_of_dialogue") or "").strip()
@@ -298,7 +304,8 @@ class PromptBuilder:
                 priority=10,
             ))
 
-        # M5.3：PHI 是近期对话尾部的独立低权段，不能混进人格/系统提示。
+        # M5.3 / M6 P1-7：PHI 是近期对话尾部的独立低权段，不能混进人格/
+        # 系统提示，也不能在关闭缓存时被提升到 stable（那会排到宿主原文前）。
         if persona_data:
             post_history = (
                 persona_data.get("post_history_instructions")
@@ -307,13 +314,11 @@ class PromptBuilder:
                 ) or ""
             ).strip()
             if post_history:
-                (dynamic_sections if self.cache_enabled else stable_sections).append(
-                    PromptSection(
-                        name="post_history_instructions",
-                        content="## [后置指令]\n" + post_history,
-                        priority=1,
-                    )
-                )
+                dynamic_sections.append(PromptSection(
+                    name="post_history_instructions",
+                    content="## [后置指令]\n" + post_history,
+                    priority=2,
+                ))
 
         # --- Layer 3: safety wrapper (stable content but after dynamic) ---
         (stable_sections if self.cache_enabled else dynamic_sections).append(PromptSection(
@@ -378,37 +383,52 @@ class PromptBuilder:
         return stable_prompt, dynamic_prompt
 
     def inject_prompt(self, original_prompt: str, stable_prompt: str, dynamic_prompt: str = "",
-                      injection_position: str = "system_end") -> str:
+                      injection_position: str = "system_end", card_prompt: str = "") -> str:
         """Merge the assembled prompt with AstrBot's original system prompt.
 
         Args:
             original_prompt: AstrBot 原始 system prompt（含角色卡）
             stable_prompt: 协议层（Layer 0 + 常驻内容）
             dynamic_prompt: 动态内容（Layer 2 关键词匹配）
+            card_prompt: 卡内受限 system_prompt（必须排在宿主原文之后）
             injection_position: 注入位置。
                 "system_end" → stable → original → dynamic（默认，dynamic 在末尾）
                 "user_prefix" → dynamic → stable → original（dynamic 最前，更高服从度）
 
-        Order (system_end): stable (protocol) → original (persona card) → dynamic.
+        Order (system_end): stable (protocol) → original (host) → card system → dynamic.
         Quill 协议放在最前面确保 AI 优先看到"发送协议"和"禁止跳场景"，
-        角色卡放在中间保持角色定义，动态内容在最后不影响前缀缓存。
+        宿主原文紧随协议之后充当权限锚点，卡内 system_prompt 只能落在它
+        之后；动态内容在最后不影响前缀缓存。
         """
         stable_prompt = stable_prompt or ""
         original_prompt = original_prompt or ""
         dynamic_prompt = dynamic_prompt or ""
+        card_prompt = card_prompt or ""
 
-        # M5.3：system_prompt 的 {{original}} 占位符语义——把宿主原文嵌入
-        # 受限系统层，同时不再在下方重复拼接 original_prompt。
-        if "{{original}}" in stable_prompt:
-            stable_prompt = stable_prompt.replace("{{original}}", original_prompt)
+        # M5.3 / M6 P1-7：{{original}} 是「显式引用宿主原文」的唯一语法。
+        # 三条文本（stable / card / dynamic）同源展开；一旦展开过就不能再把
+        # original_prompt 拼一遍，否则宿主文本重复且权限层级混乱。
+        used_original = False
+        for name in ("stable_prompt", "card_prompt", "dynamic_prompt"):
+            value = locals()[name]
+            if "{{original}}" in value:
+                value = value.replace("{{original}}", original_prompt)
+                used_original = True
+                if name == "stable_prompt":
+                    stable_prompt = value
+                elif name == "card_prompt":
+                    card_prompt = value
+                else:
+                    dynamic_prompt = value
+        if used_original:
             original_prompt = ""
 
         if injection_position == "user_prefix":
             # 动态内容最前（高服从度模式）
-            parts = [p for p in [dynamic_prompt, stable_prompt, original_prompt] if p]
+            parts = [p for p in [dynamic_prompt, stable_prompt, original_prompt, card_prompt] if p]
         else:
-            # 默认：协议 → 角色卡 → 动态内容
-            parts = [p for p in [stable_prompt, original_prompt, dynamic_prompt] if p]
+            # 默认：协议 → 宿主原文 → 卡内受限系统层 → 动态内容
+            parts = [p for p in [stable_prompt, original_prompt, card_prompt, dynamic_prompt] if p]
 
         return "\n\n".join(parts) if parts else ""
 
@@ -514,7 +534,14 @@ class PromptBuilder:
                         )
                         wr_constant_hits += 1
                 # Random pool \u2192 separate list
-                for pool_entries in pools.values():
+                # 预设已固定感官维度时，跳过随机感官池，避免两条相反的
+                # 感官指令同时进入常驻层。
+                _fixed_sensory = bool(
+                    preset and (preset.get("choices") or {}).get("sensory")
+                )
+                for _pool_name, pool_entries in pools.items():
+                    if _fixed_sensory and _pool_name == "random_sensory":
+                        continue
                     if pool_entries:
                         sampler = random
                         if extra_info.get("_cache_seed"):
@@ -561,17 +588,6 @@ class PromptBuilder:
                 for _c_idx, entry in enumerate(wb_constants):
                     content = entry.get("content", "")
                     if content:
-                        # M5.3：深度位条目改为按消息深度插入历史，不并入 system prompt。
-                        if int(entry.get("_rule_inject_position", 0) or 0) == 3:
-                            if stats is not None:
-                                stats.setdefault("_depth_injections", []).append({
-                                    "depth": int(entry.get("_rule_depth", 4) or 4),
-                                    "role": str(entry.get("_rule_role", "system") or "system"),
-                                    "content": content,
-                                    "source": entry.get("_source_worldbook", ""),
-                                })
-                            wb_constant_hits += 1
-                            continue
                         # 与 Layer 2 同一判据：预算用尽即停，不再注入后续条目
                         token_count = self._estimate_tokens(content)
                         if wb_max_token > 0 and wb_accumulated_tokens + token_count > wb_max_token:
@@ -591,6 +607,19 @@ class PromptBuilder:
                                     })
                             break
                         wb_accumulated_tokens += token_count
+                        # M5.3：深度位条目改为按消息深度插入历史，不并入 system prompt；
+                        # 它仍然消耗世界书 token 预算（此前直接 continue 绕过了上限）。
+                        if int(entry.get("_rule_inject_position", 0) or 0) == 3:
+                            if stats is not None:
+                                stats.setdefault("_depth_injections", []).append({
+                                    "depth": (4 if entry.get("_rule_depth") is None
+                                              else max(0, int(entry.get("_rule_depth")))),
+                                    "role": str(entry.get("_rule_role", "system") or "system"),
+                                    "content": content,
+                                    "source": entry.get("_source_worldbook", ""),
+                                })
+                            wb_constant_hits += 1
+                            continue
                         layer1_parts.append(
                             "\u3010\u4e16\u754c\u89c2\u3011\n" + content
                         )
@@ -666,9 +695,21 @@ class PromptBuilder:
 
         # M5.2：显式预设的每个维度都必须有一条固定素材；缺失时加载并补进
         # 常驻层，保证「第一人称 / 第三人称」不会因关键词抖动同时/交替出现。
-        if preset and wr_manager is not None and wr_mode != "disabled":
-            for dimension in preset.get("dimension_options") or {}:
-                eid = (preset.get("choices") or {}).get(dimension)
+        if (not skip_constants) and preset and wr_manager is not None and wr_mode != "disabled":
+            # M6 P1-5：预设自带 max_entries / max_chars 预算，按 DIMENSIONS
+            # 顺序（choices 的插入序）落地上限，避免常驻层被预设撑爆。
+            _pb_budget = preset.get("budget") or {}
+            try:
+                _pb_max_entries = int(_pb_budget.get("max_entries", 5))
+            except (TypeError, ValueError):
+                _pb_max_entries = 5
+            try:
+                _pb_max_chars = int(_pb_budget.get("max_chars", 2600))
+            except (TypeError, ValueError):
+                _pb_max_chars = 2600
+            _pb_used_entries = 0
+            _pb_used_chars = 0
+            for _dimension, eid in (preset.get("choices") or {}).items():
                 if not eid or eid in seen_ids:
                     continue
                 try:
@@ -684,9 +725,16 @@ class PromptBuilder:
                     continue
                 content = entry.get("content", "")
                 if content:
+                    if (_pb_used_entries >= _pb_max_entries
+                            or _pb_used_chars + len(content) > _pb_max_chars):
+                        if stats is not None:
+                            stats.setdefault("_wr_preset_dropped", []).append(eid)
+                        continue
                     seen_ids.add(eid)
                     layer1_parts.append("\u3010\u7d20\u6750\u3011\n" + content)
                     wr_constant_hits += 1
+                    _pb_used_entries += 1
+                    _pb_used_chars += len(content)
 
         if matching_text and wb_manager and wb_mode != "disabled":
             try:
@@ -711,19 +759,6 @@ class PromptBuilder:
                 for _m_idx, entry in enumerate(wb_matched):
                     content = entry.get("content", "")
                     if content:
-                        # M5.3：深度位条目改为按消息深度插入历史，不并入 system prompt；
-                        # 它仍算「实际注入」，推进粘性/冷却。
-                        if int(entry.get("_rule_inject_position", 0) or 0) == 3:
-                            if stats is not None:
-                                stats.setdefault("_depth_injections", []).append({
-                                    "depth": int(entry.get("_rule_depth", 4) or 4),
-                                    "role": str(entry.get("_rule_role", "system") or "system"),
-                                    "content": content,
-                                    "source": entry.get("_source_worldbook", ""),
-                                })
-                            wb_match_hits += 1
-                            _wb_rule_committed.append(entry)
-                            continue
                         # Token 估算：CJK ≈ 1 token/字，ASCII ≈ 0.25 token/字
                         token_count = self._estimate_tokens(content)
                         if wb_max_token > 0 and wb_accumulated_tokens + token_count > wb_max_token:
@@ -738,6 +773,20 @@ class PromptBuilder:
                                     })
                             break
                         wb_accumulated_tokens += token_count
+                        # M5.3：深度位条目改为按消息深度插入历史，不并入 system prompt；
+                        # 它仍算「实际注入」，推进粘性/冷却，并已计入 token 预算。
+                        if int(entry.get("_rule_inject_position", 0) or 0) == 3:
+                            if stats is not None:
+                                stats.setdefault("_depth_injections", []).append({
+                                    "depth": (4 if entry.get("_rule_depth") is None
+                                              else max(0, int(entry.get("_rule_depth")))),
+                                    "role": str(entry.get("_rule_role", "system") or "system"),
+                                    "content": content,
+                                    "source": entry.get("_source_worldbook", ""),
+                                })
+                            wb_match_hits += 1
+                            _wb_rule_committed.append(entry)
+                            continue
                         layer2_parts.append(
                             "\u3010\u4e16\u754c\u89c2\u3011\n" + content
                         )

@@ -866,6 +866,42 @@ class WorldbookManager:
                         "sticky": reason == "sticky",
                     })
 
+        # M5.1 互斥组先于递归选择：被组规则淘汰的条目不应再作为递归父节点
+        # 扩散（P2：此前先递归后分组，落选条目仍能在递归带出命中）。
+        def _apply_group_limits(items: List[dict]) -> List[dict]:
+            grouped_local: dict = {}
+            ungrouped_local: List[dict] = []
+            for item in items:
+                group = str(item.get('_rule_group') or '')
+                if group:
+                    grouped_local.setdefault(group, []).append(item)
+                else:
+                    ungrouped_local.append(item)
+            selected_local: List[dict] = []
+            for group, members in grouped_local.items():
+                limit = max([
+                    self._entry_nonneg(m, '_rule_group_max', 999) for m in members
+                ] + [1])
+                members.sort(key=lambda x: (
+                    -int(x.get('_match_score', 0) or 0),
+                    -int(x.get('_rule_priority', 0) or 0),
+                    -int(x.get('_rule_group_weight', 0) or 0),
+                    str(x.get('_rule_id', '')),
+                ))
+                winner = members[0].get('_rule_id', '') if members else ''
+                if limit > 0:
+                    for dropped in members[limit:]:
+                        _filtered.append({
+                            "worldbook": dropped.get('_source_worldbook', ''),
+                            "title": dropped.get('title', ''),
+                            "reason": f"group_lost({group}; winner={winner})",
+                        })
+                    members = members[:limit]
+                selected_local.extend(members)
+            return selected_local + ungrouped_local
+
+        entries = _apply_group_limits(entries)
+
         # M5.1 有界递归：默认关闭；仅把被选条目的正文当作额外匹配文本，
         # 受 max_steps / max_tokens / visited 三重约束，路径写进 _recursion_path。
         if entries and rec_enabled and rec_steps > 0 and rec_tokens > 0:
@@ -874,7 +910,6 @@ class WorldbookManager:
                 (e, 1) for e in entries
                 if not e.get('_rule_prevent_recursion')
             ]
-            visited: set = set()
             scan_budget = 64
             token_budget = rec_tokens
             while queue and scan_budget > 0 and token_budget > 0:
@@ -895,12 +930,20 @@ class WorldbookManager:
                                 entry, "exclude_recursion", default=False):
                             continue
                         rule_id = self._entry_rule_id(wb_name, entry)
-                        if rule_id in seen_ids or rule_id in visited:
+                        # 只用「已入选」集合防环：此前把未命中的候选也写进
+                        # 跨父共享的 visited，导致父条目 A 没匹配上的 C 被永久
+                        # 拉黑，父条目 B 即使含 C 的关键词也永远触发不到。
+                        if rule_id in seen_ids:
                             continue
-                        if not (self._coerce_str_list(entry.get('keys', []))
-                                or self._coerce_str_list(entry.get('keys_secondary', []))):
+                        if not (
+                            self._coerce_str_list(
+                                self._entry_alias(entry, "keys", "key", default=[]))
+                            or self._coerce_str_list(
+                                self._entry_alias(
+                                    entry, "secondary_keys", "keys_secondary",
+                                    "keysecondary", default=[]))
+                        ):
                             continue
-                        visited.add(rule_id)
                         scan_budget -= 1
                         state, rule_id, block_reason = self._rule_gate(
                             wb_name, entry, round_no, _scope_id, _persona_id, simulate)
@@ -950,38 +993,9 @@ class WorldbookManager:
                     if scan_budget <= 0:
                         break
 
-        # M5.1 互斥组：组内按 (activation_score, priority, group_weight,
-        # rule_id) 确定性排序取前 group_max 个；默认 group_max=1。
-        grouped: dict = {}
-        ungrouped: List[dict] = []
-        for item in entries:
-            group = str(item.get('_rule_group') or '')
-            if group:
-                grouped.setdefault(group, []).append(item)
-            else:
-                ungrouped.append(item)
-        selected: List[dict] = []
-        for group, items in grouped.items():
-            limit = max([
-                self._entry_nonneg(item, '_rule_group_max', 999) for item in items
-            ] + [1])
-            items.sort(key=lambda x: (
-                -int(x.get('_match_score', 0) or 0),
-                -int(x.get('_rule_priority', 0) or 0),
-                -int(x.get('_rule_group_weight', 0) or 0),
-                str(x.get('_rule_id', '')),
-            ))
-            winner = items[0].get('_rule_id', '') if items else ''
-            if limit > 0:
-                for dropped in items[limit:]:
-                    _filtered.append({
-                        "worldbook": dropped.get('_source_worldbook', ''),
-                        "title": dropped.get('title', ''),
-                        "reason": f"group_lost({group}; winner={winner})",
-                    })
-                items = items[:limit]
-            selected.extend(items)
-        entries = selected + ungrouped
+        # 递归可能带出同组新条目，入选后再执行一次互斥选择，保证最终
+        # 注入集合仍满足 group_max。
+        entries = _apply_group_limits(entries)
 
         # 稳定排序：score 降序、priority 降序、group_weight 降序、rule_id 升序。
         entries.sort(key=lambda x: (
@@ -1234,8 +1248,13 @@ class WorldbookManager:
                 else cls._entry_nonneg_alias(e, "scan_depth", "scan_window", default=0, cap=999)
             ),
             "exclude_recursion": cls._safe_bool(e.get("exclude_recursion"), False),
+            # 旧 `recursive=true` 语义是「允许递归」，与 `prevent_recursion`
+            # 相反。只有条目显式带 `recursive` 且未声明 `prevent_recursion`
+            # 时才取反；否则默认 False（允许递归，但仍受全局开关约束）。
             "prevent_recursion": cls._safe_bool(
-                e.get("prevent_recursion"), cls._safe_bool(e.get("recursive"), False)
+                e.get("prevent_recursion"),
+                (not cls._safe_bool(e.get("recursive"), False))
+                if e.get("recursive") is not None else False,
             ),
             "use_regex": cls._safe_bool(e.get("use_regex"), False),
             "inject_position": position,
@@ -1430,8 +1449,8 @@ class WorldbookManager:
 
     # ── 角色卡内嵌世界书（Issue #1） ─────────────────────────────────────
 
-    @staticmethod
-    def _embedded_to_st_entry(e: dict) -> dict:
+    @classmethod
+    def _embedded_to_st_entry(cls, e: dict) -> dict:
         """character_book 条目（V2/V3 spec 形态）→ ST 条目形态。
 
         spec 与 ST 编辑器导出的字段名不同：keys/key、secondary_keys/keysecondary、
@@ -1456,13 +1475,13 @@ class WorldbookManager:
         # 冲突时保守取禁用。`enabled is None` 视为未表态，不参与判定。
         if "enabled" in st and st["enabled"] is not None:
             st["disable"] = (
-                self._safe_bool(st.get("disable"))
-                or (not self._safe_bool(st["enabled"], True))
+                cls._safe_bool(st.get("disable"))
+                or (not cls._safe_bool(st["enabled"], True))
             )
         else:
             # 只有 disable（原生 ST 形态）时统一成 bool：`"false"` 这类字符串脏值
             # 走 `not bool(...)` 会被当成 True，这里一次性收干净。
-            st["disable"] = self._safe_bool(st.get("disable"))
+            st["disable"] = cls._safe_bool(st.get("disable"))
         ext = st.get("extensions")
         if isinstance(ext, dict) and "position" in ext and "position" not in st:
             st["position"] = ext.get("position")

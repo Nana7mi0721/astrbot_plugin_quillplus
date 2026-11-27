@@ -42,6 +42,7 @@ _QEXT_KEYS = (
     "bound_rag_docs",
     "wr_mode",
     "bound_writing_resource",
+    "wr_preset_id",
 )
 
 _ABS_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|/)")
@@ -134,24 +135,63 @@ def _entry_payload(entry: dict, index: int, book_name: str) -> dict:
         inject = int(inject or 0)
     except (TypeError, ValueError):
         inject = 0
+    def _int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    def _bool(value, default=False):
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
     keys = entry.get("keys")
+    secondary = entry.get("secondary_keys", entry.get("keys_secondary"))
+    secondary = [str(key) for key in secondary if _text(key).strip()] if isinstance(secondary, list) else []
+    priority = _int(entry.get("priority", entry.get("order", 10)), 10)
+    depth = _int(entry.get("depth", 4), 4)
+    role = str(entry.get("role") or "system").strip().lower()
+    if role not in ("system", "user", "assistant"):
+        role = "system"
+    quill_extra = {
+        "is_constant": _bool(entry.get("is_constant")),
+        "inject_position": inject,
+        "condition": _text(entry.get("condition")),
+        "depth": depth,
+        "role": role,
+        "sticky": _int(entry.get("sticky", entry.get("sticky_rounds", 0)), 0),
+        "cooldown": _int(entry.get("cooldown", entry.get("cooldown_rounds", 0)), 0),
+        "group": _text(entry.get("group")),
+        "group_max": _int(entry.get("group_max", 1), 1),
+        "group_weight": _int(entry.get("group_weight", 100), 100),
+        "priority": priority,
+        "recursive": _bool(entry.get("recursive")),
+        "prevent_recursion": _bool(entry.get("prevent_recursion")),
+        "scan_depth": _int(entry.get("scan_depth", entry.get("scan_window", 0)), 0),
+    }
     return {
         "id": index,
         "keys": [str(key) for key in keys if _text(key).strip()] if isinstance(keys, list) else [],
+        "secondary_keys": secondary,
+        "selective": bool(secondary),
+        "constant": _bool(entry.get("is_constant")),
         "content": _text(entry.get("content")),
-        "enabled": bool(entry.get("enabled", True)),
-        "insertion_order": index,
+        "enabled": _bool(entry.get("enabled", True), True),
+        "insertion_order": priority,
         "case_sensitive": False,
         "name": _text(entry.get("title")).strip() or f"条目 {index + 1}",
-        "priority": 10,
+        "priority": priority,
+        "depth": depth,
+        "role": role,
+        "probability": _int(entry.get("probability", 100), 100),
+        "useProbability": _bool(entry.get("use_probability", entry.get("useProbability", True)), True),
         "position": "before_char" if inject == 1 else "after_char",
         "extensions": {
             "quillplus": {
                 "source_book": book_name,
                 "source_entry_id": _text(entry.get("id")),
-                "is_constant": bool(entry.get("is_constant")),
-                "inject_position": inject,
-                "condition": _text(entry.get("condition")),
+                **quill_extra,
             }
         },
     }
@@ -280,6 +320,12 @@ def build_card(persona: dict, version: str = "v2", books: list[dict] | None = No
     if character_book is not None:
         data["character_book"] = character_book
     if version == "v3":
+        source_value = meta.get("source", [])
+        if isinstance(source_value, str):
+            # M6 P1-10：V3 规范 source 是字符串数组；旧卡可能存成单个 URL。
+            source_value = [source_value] if source_value.strip() else []
+        elif not isinstance(source_value, list):
+            source_value = []
         data.update({
             # V3 元数据原样回写：nickname 规范上是字符串，但第三方卡常塞多语言
             # 对象；_text() 会把它变成 "{'zh': ...}" 这种 Python repr。
@@ -288,11 +334,14 @@ def build_card(persona: dict, version: str = "v2", books: list[dict] | None = No
             if isinstance(meta.get("group_only_greetings"), list) else [],
             "creator_notes_multilingual": meta.get("creator_notes_multilingual")
             if isinstance(meta.get("creator_notes_multilingual"), dict) else {},
-            "source": meta.get("source", ""),
-            "creation_date": meta.get("creation_date", 0),
-            "modification_date": meta.get("modification_date", 0),
+            "source": source_value,
             "assets": meta.get("assets") if isinstance(meta.get("assets"), list) else [],
         })
+        # 缺失日期省略而不是填 0：0 会被部分前端渲染成 1970-01-01。
+        for key in ("creation_date", "modification_date"):
+            value = meta.get(key)
+            if value not in (None, "", 0):
+                data[key] = value
     return {"spec": spec, "spec_version": spec_version, "data": data}, warnings
 
 

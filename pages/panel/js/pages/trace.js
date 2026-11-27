@@ -16,6 +16,9 @@ const TRACE_LIMIT = 20;
 /* SSE/轮询订阅的重入锁：快速连点「实时」按钮时，等待 subscribeSSE 期间
    再次进入会创建第二条订阅、泄漏第一条。用同步锁把整个切换过程串起来。 */
 let _traceLiveBusy = false;
+/* subscribeSSE 是异步的：等待期间用户可能切页。disposeTrace 会递增 epoch，
+   迟到的订阅在恢复后立即退订，避免切页后残留后台 SSE。 */
+let _traceLiveEpoch = 0;
 
 /* 模块名 → 展示名（与后端 TraceModuleResult.module 的取值一一对应；
    新增模块时两边同步改） */
@@ -386,6 +389,7 @@ async function toggleTraceLive(el) {
       return;
     }
     el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：连接中…';
+    const epoch = ++_traceLiveEpoch;
     const bridge = getBridge();
     if (bridge && typeof bridge.subscribeSSE === "function") {
       try {
@@ -393,10 +397,16 @@ async function toggleTraceLive(el) {
           onMessage: (msg) => _onLiveTrace(msg?.parsed),
           onError: () => { _sseSubId = null; _startPolling(); },
         });
+        if (epoch !== _traceLiveEpoch) {
+          try { bridge?.unsubscribeSSE?.(_sseSubId); } catch (_) { /* 已断开 */ }
+          _sseSubId = null;
+          return;
+        }
         el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：开';
         return;
       } catch (_) { _sseSubId = null; /* 落到轮询 */ }
     }
+    if (epoch !== _traceLiveEpoch) return;
     _startPolling();
     el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：轮询';
   } finally {
@@ -427,6 +437,7 @@ async function _stopLive() {
 /* 离开诊断页时释放 SSE 订阅与 15s 轮询，并把「实时」按钮复位。
    SPA 切页不会卸载 DOM，不主动释放会让后台订阅/轮询一直跑。 */
 function disposeTrace() {
+  _traceLiveEpoch += 1;
   _stopLive();
   const btn = $("#traceLiveBtn");
   if (btn) {

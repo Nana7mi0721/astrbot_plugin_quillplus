@@ -13,6 +13,7 @@ import base64
 import copy
 import json
 import os
+import posixpath
 import re
 import tempfile
 import time
@@ -505,9 +506,16 @@ class QuillPersonaManager:
         name = info.filename
         if not name or name.endswith("/"):
             return False
-        # Windows / POSIX 两种分隔符都要归一，且不允许跳出根目录。
-        norm = os.path.normpath(name.replace("\\", "/"))
-        if os.path.isabs(name) or norm.startswith("..") or "/../" in "/" + norm + "/":
+        if "\x00" in name:
+            return False
+        text = name.replace("\\", "/")
+        # 盘符（C:/...）、UNC / 绝对路径一律拒绝；Linux 上 os.path.isabs
+        # 不认识 "C:\\a"，必须显式匹配盘符。
+        if re.match(r"^[A-Za-z]:", text) or text.startswith("/") or text.startswith("//"):
+            return False
+        # POSIX 归一化（与运行平台无关），禁止跳出根目录。
+        norm = posixpath.normpath(text)
+        if norm == ".." or norm.startswith("../") or "/../" in "/" + norm + "/":
             return False
         # 符号链接：external_attr 高 16 位是 Unix mode，S_IFLNK = 0xA000。
         if (info.external_attr >> 16) & 0xF000 == 0xA000:
@@ -552,16 +560,22 @@ class QuillPersonaManager:
             for info in infos:
                 if info.is_dir():
                     continue
-                norm = info.filename.replace("\\", "/").lstrip("./")
+                norm = posixpath.normpath(info.filename.replace("\\", "/"))
                 if norm.lower() == "card.json":
                     target = info
                     break
             if target is None:
                 raise ValueError("CHARX 缺少根目录 card.json")
             try:
-                raw = archive.read(target)
+                # 流式限读：info.file_size 来自压缩包声明，不可信；多读 1 字节
+                # 用于判断是否超限，避免伪造头部导致 OOM。
+                limit = QuillPersonaManager._CHARX_MAX_FILE_BYTES
+                with archive.open(target) as fh:
+                    raw = fh.read(limit + 1)
             except (RuntimeError, zipfile.BadZipFile) as exc:
                 raise ValueError("CHARX 的 card.json 无法读取") from exc
+            if len(raw) > limit:
+                raise ValueError("CHARX 的 card.json 超过单文件大小上限")
             try:
                 parsed = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -582,9 +596,12 @@ class QuillPersonaManager:
                 "需要安装 Pillow 库才能解析图片中的角色卡数据: pip install Pillow"
             )
 
-        # 统一上下文管理器释放文件句柄，并限制解码像素上限（防解压炸弹式大图）。
-        Image.MAX_IMAGE_PIXELS = 64_000_000
+        # 统一上下文管理器释放文件句柄，并按实际尺寸拒绝超大图。
+        # 不使用 Image.MAX_IMAGE_PIXELS 全局变量：它是进程级状态，修改会
+        # 污染同进程其他模块，且并发下不稳定。
         with Image.open(BytesIO(image_data)) as _img:
+            if int(_img.width) * int(_img.height) > 64_000_000:
+                raise ValueError("图片像素超过安全上限（64MP）")
             _info = dict(_img.info or {})
             try:
                 _exif = _img.getexif()
@@ -893,22 +910,45 @@ class QuillPersonaManager:
                 "需要安装 Pillow 库才能导出图片格式角色卡: pip install Pillow"
             )
 
-        img = Image.open(BytesIO(image_data))
         json_str = json.dumps(payload, ensure_ascii=False)
         card_b64 = base64.b64encode(json_str.encode('utf-8')).decode('ascii')
 
         output = BytesIO()
-        if img.mode in ('RGBA', 'LA', 'P'):
-            img = img.convert('RGBA')
-        else:
-            img = img.convert('RGB')
+        with Image.open(BytesIO(image_data)) as src:
+            if int(src.width) * int(src.height) > 64_000_000:
+                raise ValueError("图片像素超过安全上限（64MP）")
+            img = src.convert('RGBA' if src.mode in ('RGBA', 'LA', 'P') else 'RGB')
         info = PngInfo()
-        info.add_text("chara", card_b64)
         if payload.get("spec") == "chara_card_v3":
+            # V3 载体的规范形态：ccv3 放完整 V3，chara 放 V2 兼容副本，
+            # 供只认 chara 的旧工具读取。
+            compat = QuillPersonaManager._v2_compat_payload(payload)
+            compat_b64 = base64.b64encode(
+                json.dumps(compat, ensure_ascii=False).encode("utf-8")
+            ).decode("ascii")
+            info.add_text("chara", compat_b64)
             info.add_text("ccv3", card_b64)
+        else:
+            info.add_text("chara", card_b64)
         img.save(output, format="PNG", pnginfo=info)
 
         return output.getvalue()
+
+    @staticmethod
+    def _v2_compat_payload(payload: dict) -> dict:
+        """把 V3 载荷裁成 V2 兼容副本（chara 键用），不修改原对象。"""
+        compat = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+        compat["spec"] = "chara_card_v2"
+        compat["spec_version"] = "2.0"
+        data = compat.get("data")
+        if isinstance(data, dict):
+            for key in (
+                "nickname", "group_only_greetings", "assets",
+                "creator_notes_multilingual", "source",
+                "creation_date", "modification_date",
+            ):
+                data.pop(key, None)
+        return compat
 
     @staticmethod
     def _embed_v2_in_image(image_data: bytes, v2_data: dict) -> bytes:

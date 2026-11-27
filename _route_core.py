@@ -1186,6 +1186,7 @@ async def handle_trace_simulate(plugin, text=None, persona_id=None,
 
     # 匹配文本：面板粘贴的多轮文本即 context；API 侧可选拼最近日志
     matching_text = text
+    recent_texts: list[str] = []
     if include_recent_context and umo:
         retriever = getattr(plugin, "rag_retriever", None)
         if retriever and retriever.memory_store:
@@ -1193,6 +1194,10 @@ async def handle_trace_simulate(plugin, text=None, persona_id=None,
                 mem_sid = plugin._get_memory_session_id(str(umo), persona_id or "")
                 logs = await retriever.memory_store.get_recent_chat_logs(mem_sid, limit=8)
                 if logs:
+                    recent_texts = [
+                        str(lg.get("content", "")) for lg in logs
+                        if isinstance(lg, dict) and str(lg.get("content", "")).strip()
+                    ]
                     ctx = "\n".join(
                         f"{lg.get('role', '?')}: {str(lg.get('content', ''))[:200]}"
                         for lg in logs if isinstance(lg, dict)
@@ -1273,6 +1278,10 @@ async def handle_trace_simulate(plugin, text=None, persona_id=None,
                 persona_id=persona_id or "",
                 # dry_run 默认 True：模拟只读当前轮，不推进轮次/粘性/冷却。
                 simulate=bool(dry_run),
+                # P2：真实链路的递归匹配使用 recent_messages + 当前输入，
+                # 模拟此前只传拼好的文本，导致 sticky/递归窗口与主链不一致。
+                recent_messages=recent_texts,
+                current_input=text,
             )
             wb_constants = await asyncio.to_thread(
                 wb_manager.get_constant_entries,

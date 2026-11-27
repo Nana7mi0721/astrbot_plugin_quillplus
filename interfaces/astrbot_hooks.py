@@ -676,10 +676,24 @@ async def handle_llm_response(
 
     # 状态栏处理
     target_id = plugin._get_target_id(event)
+    _platform = plugin._resolve_platform_name(event)
+    # M6 P1-11：普通回复路径也要走与工具消息同源的方言判定。此前只有
+    # send_message_to_user 路径剥 Markdown，纯文本平台直出时仍会看到
+    # `**` / 反引号等标记。
+    try:
+        _dialect, _ = _response_mod.resolve_dialect(
+            _platform,
+            overrides=getattr(plugin, "status_bar_dialect_overrides", None),
+            plain_platforms=getattr(plugin, "status_bar_plain_platforms", None),
+        )
+        if _response_mod.should_strip_markdown(_dialect) and resp.completion_text:
+            resp.completion_text = _response_mod.strip_markdown(resp.completion_text)
+    except Exception as e:
+        logger.debug(f"[Quill] 普通回复方言清洗跳过（{type(e).__name__}）")
 
     # 会话级最终开关（与请求侧同一个解析函数，保证前后一致）
     _sb_effective = await plugin._effective_status_bar_enabled(target_id)
-    _bar_tpl = plugin._status_bar_template_for(plugin._resolve_platform_name(event))
+    _bar_tpl = plugin._status_bar_template_for(_platform)
 
     if _sb_effective:
 
@@ -1479,6 +1493,8 @@ async def handle_llm_request(
         plugin.wr_manager, _wb_for_request, extra_info,
         stats=inject_stats,
     )
+    # M6 P1-7：卡内 system_prompt 单独携带，绝不混进 stable 协议层。
+    _card_system_prompt = str(inject_stats.get("_card_system_prompt") or "")
     _bsp_ms = int((time.perf_counter() - _t_bsp0) * 1000)
 
     # M5.3：`@@depth` / `@@role` 装饰器——按「倒数第 N 条消息」把条目正文
@@ -1494,7 +1510,8 @@ async def handle_llm_request(
             _role = str(_di.get("role", "system") or "system").strip().lower()
             if _role not in ("system", "user", "assistant"):
                 _role = "system"
-            _depth = max(0, int(_di.get("depth", 4) or 4))
+            _raw_depth = _di.get("depth")
+            _depth = 4 if _raw_depth is None else max(0, int(_raw_depth))
             _idx = max(0, len(req.contexts) - _depth)
             _text = str(_di.get("content", "") or "")
             if not _text:
@@ -1511,6 +1528,19 @@ async def handle_llm_request(
     if _wr_funnel_snap.get("fallback_pool"):
         _wr_items.append({"source_ref": "fallback_pool",
                           "filtered_reason": "fallback_pool(命中0，保底注入)"})
+    # M6 P1-5：把生效/无效的写作预设映射进 WR 模块行，避免「设了预设但
+    # 面板毫无反馈」。未知 id 只记诊断原因，不静默回退。
+    _wr_preset_info = inject_stats.get("_wr_preset") or {}
+    if _wr_preset_info.get("preset_id"):
+        _wr_items.append({
+            "source_ref": "preset:" + str(_wr_preset_info.get("preset_id")),
+            "score_or_kw": str(_wr_preset_info.get("name") or ""),
+        })
+    elif _wr_preset_info.get("reason"):
+        _wr_items.append({
+            "source_ref": "preset",
+            "filtered_reason": "preset_" + str(_wr_preset_info.get("reason")),
+        })
     _trace_note(plugin, target_id, lambda t: (
         t.module_results.append(_trace_mod.TraceModuleResult(
             module="worldbook",
@@ -1623,7 +1653,8 @@ async def handle_llm_request(
     if _budget > 0 and not plugin.props.cache_enabled:
         _assembled = plugin.props.prompt_builder.inject_prompt(
             req.system_prompt or "", stable_prompt, dynamic_prompt,
-            injection_position=plugin.config.worldbook_injection_pos
+            injection_position=plugin.config.worldbook_injection_pos,
+            card_prompt=_card_system_prompt,
         )
         _overflow = len(_assembled) - _budget
         if _overflow > 0:
@@ -1697,7 +1728,8 @@ async def handle_llm_request(
     if not plugin.props.cache_enabled:
         req.system_prompt = plugin.props.prompt_builder.inject_prompt(
             req.system_prompt or "", stable_prompt, dynamic_prompt,
-            injection_position=plugin.config.worldbook_injection_pos
+            injection_position=plugin.config.worldbook_injection_pos,
+            card_prompt=_card_system_prompt,
         )
 
     tail = ""
@@ -1728,6 +1760,9 @@ async def handle_llm_request(
     # 翻到 stable 之前，段序同步翻转。
     def _fill_final_prompt_state(trace):
         stable_ord = list(inject_stats.get("_sections_stable") or [])
+        if _card_system_prompt:
+            # 非缓存路径没有独立 preview 行；把受限层按真实段序补进诊断。
+            stable_ord.append("system_prompt")
         dyn_ord = list(inject_stats.get("_sections_dynamic") or [])
         if _rag_appended:
             dyn_ord.append("rag_dynamic")
@@ -1841,7 +1876,8 @@ async def handle_llm_request(
                 capability = {"supported": False, "reason": "capability_error", "error_class": type(exc).__name__}
         cache_result = apply_layout(
             req, original_system=_orig_sys_prompt, stable=stable_prompt, blocks=blocks,
-            reminder=tail, budget=_budget, temporary=bool(capability.get("supported")), directive=directive)
+            reminder=tail, budget=_budget, temporary=bool(capability.get("supported")),
+            directive=directive, card_system=_card_system_prompt)
         inject_stats['_temporary_capability'] = capability
         if "rag_memories" in cache_result["dropped"]:
             inject_stats["mem"] = 0
