@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from ...core.logbridge import logger  # noqa: F401  # 方法体 logger 引用经 logbridge 桥接
 from . import decision_client as _dec_mod
+from .dialect import build_template, resolve_dialect
 from .parsers import _LOVE_DATA_RE, _round_options_match, apply_template
 
 
@@ -81,17 +82,39 @@ class StatusbarRenderMixin:
             logger.debug("[Quill] get_platform_name() 获取失败", exc_info=True)
         return ""
 
-    def _status_bar_template_for(self, platform: str) -> str:
-        """按平台返回该用的状态栏模板。
+    def _status_bar_template_for(
+        self,
+        platform: str,
+        confirmed: str | None = None,
+        overrides=None,
+        plain_platforms=None,
+    ) -> str:
+        """按平台方言返回该用的状态栏模板（M4.3）。
 
-        纯文本平台走 status_bar_format_plain，其余（含未知平台）走
-        status_bar_format。未知平台保持原行为是刻意的：它可能是支持
-        Markdown 的新适配器，贸然改成纯文本反而破坏渲染。
+        旧的 ``plain_platforms`` 二元表只是四级判定里的一级「入口覆盖」；
+        其余交给 dialect 能力档案。返回的 DialectTemplate 会带着方言一起
+        流进 apply_template，让正文转义与模板选型消费同一份判定结果。
+
+        confirmed：适配器本轮明确告知的出站模式（如 QQ 官方 msg_type=2）。
+        当前链路还拿不到稳定信号，先留参数给后续接入；传 None 时按档案预设。
+        overrides / plain_platforms：只给 /statusbar/preview 的只读试算用；
+        缺省（None）时读插件配置，生产调用点因此保持一致行为。
         """
-        plain = [p for p in (getattr(self, "status_bar_plain_platforms", None) or []) if p]
-        if platform and plain and platform in plain:
-            return self.status_bar_format_plain
-        return self.status_bar_format_template
+        if overrides is None:
+            overrides = getattr(self, "status_bar_dialect_overrides", None)
+        if plain_platforms is None:
+            plain_platforms = getattr(self, "status_bar_plain_platforms", None)
+        dialect, _source = resolve_dialect(
+            platform,
+            overrides=overrides,
+            plain_platforms=plain_platforms,
+            confirmed=confirmed,
+        )
+        return build_template(
+            dialect,
+            self.status_bar_format_template,
+            self.status_bar_format_plain,
+        )
 
     def _format_love_data(self, content: str, fallback: dict | None = None) -> tuple:
         """Parse [LOVE_DATA] line, return (updates_dict, formatted_text, raw_line) or (None, None, None).
@@ -125,7 +148,8 @@ class StatusbarRenderMixin:
         bar_template：与 _handle_status_bar 同源的模板参数——兜底栏也要按平台
         分治，否则 QQ 上正常轮次是纯文本、兜底轮次却冒出 ``` 围栏。
         """
-        template = bar_template or self.status_bar_format_template
+        # 空模板是合法配置（只输出正文），不能用 or 吞掉。
+        template = self.status_bar_format_template if bar_template is None else bar_template
         vars = await self.state_manager.get_session_vars(target_id)
         parts = []
         for field_name in self.love_fields:

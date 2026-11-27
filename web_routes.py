@@ -25,6 +25,8 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("worldbook", "max_token_limit"), ("worldbook", "match_sensitivity"),
     ("worldbook", "injection_position"), ("worldbook", "show_trigger_log"),
     ("worldbook", "always_activate"), ("worldbook", "card_embed_worldbook"),
+    ("worldbook", "recursion_enabled"), ("worldbook", "recursion_max_steps"),
+    ("worldbook", "recursion_max_tokens"),
     # writing_resource
     ("writing_resource", "enabled"), ("writing_resource", "max_entries"),
     ("writing_resource", "fallback_top_count"), ("writing_resource", "category_dedup_limit"),
@@ -37,6 +39,7 @@ _ALLOWED_CONFIG_KEYS: set = {
     ("status_bar", "llm_extract"), ("status_bar", "llm_provider_id"),
     ("status_bar", "default_placeholder"), ("status_bar", "show_delta"),
     ("status_bar", "format_template_plain"), ("status_bar", "plain_platforms"),
+    ("status_bar", "dialect_overrides"),
     # status_bar / Decision 决策模式（结构化判定：推荐选择度 + 分支路由）
     ("status_bar", "decision_enabled"), ("status_bar", "decision_base_url"),
     ("status_bar", "decision_api_key"), ("status_bar", "decision_model"),
@@ -92,6 +95,7 @@ from ._backup_util import (
 from ._paths import backup_sources, resolve_archive_dest
 from .quill.core.errors import QuillError, StorageError
 from .quill.core.storage_stats import note_storage_error
+from .quill.services import card_export
 
 from ._route_core import (
     error_text,
@@ -107,6 +111,8 @@ from ._route_core import (
     handle_wr_categories,
     handle_wr_batch_delete,
     handle_wr_batch_toggle,
+    handle_wr_presets,
+    handle_wr_set_preset,
     handle_wb_list,
     handle_wb_get,
     handle_wb_create,
@@ -215,7 +221,7 @@ _MUTATING_ROUTES: frozenset = frozenset({
     "rag_upload", "rag_delete", "rag_groups",
     "memory_import", "memory_prune", "memory_delete", "memory_pin",
     "wr_create", "wr_update", "wr_delete", "wr_toggle", "wr_import",
-    "wr_batch_delete", "wr_batch_toggle",
+    "wr_batch_delete", "wr_batch_toggle", "wr_set_preset",
     "wb_create", "wb_delete", "wb_entry_create", "wb_entry_update",
     "wb_entry_delete", "wb_import_st", "wb_import_json", "wb_reload",
     "persona_create", "persona_update", "persona_delete", "upload_avatar",
@@ -229,10 +235,20 @@ _MUTATING_ROUTES: frozenset = frozenset({
     "groups_list", "groups_preview", "groups_save", "groups_archive", "groups_recent", "groups_actors",
     "usage_stats", "usage_clear",  # 全会话元数据也需要管理身份。
     "wr_lint", "wr_repair", "rag_reindex",
+    # SEC-P1-1（2026-11-08 审查报告）：全量数据出口类 GET 读路由与写操作同级设防。
+    # 这些端点读走的数据与 backup_restore 所保护的数据完全对等（整根数据目录、
+    # 跨会话记忆、任意会话聊天日志、含 core_prompts 的完整角色卡），而守卫对
+    # 「GET 且不在名单」的 handler 完全跳过管理校验——一枚 plugin 作用域 API Key
+    # （框架从不校验密码）即可无密码把全群数据一次外带。沿用 task_list 的做法，
+    # 按名字点名登记（守卫按 handler.__name__ 判定，见 _api_handler）。
+    "backup_export", "backup_export_base64",
+    "memory_export", "memory_list_all", "memory_get",
+    "chat_log_list", "chat_log_export",
+    "persona_export", "persona_export_base64",
 })
 
 # 新增写入口默认要求管理身份；只有这些既有 POST 查询明确按只读处理。
-_READ_ONLY_POST_ROUTES = frozenset({'wr_get','wr_test','wb_get','rag_search','memory_vector_search','trace_simulate'})
+_READ_ONLY_POST_ROUTES = frozenset({'wr_get','wr_test','wb_get','rag_search','memory_vector_search','trace_simulate','statusbar_preview'})
 
 #: H2 修复：AstrBot 用该前缀把「API Key 调用」与「Dashboard 登录会话」区分开
 #: （框架 `astrbot.core.workspace.API_KEY_USERNAME_PREFIX`，由
@@ -428,6 +444,8 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/wr/repair", self.wr_repair, ["POST"], "确认停用流程素材")
         _r(f"/{PLUGIN_NAME}/wr/batch_delete", self.wr_batch_delete,["POST"],   "批量删除写作素材库条目")
         _r(f"/{PLUGIN_NAME}/wr/batch_toggle", self.wr_batch_toggle,["POST"],   "批量启用/禁用写作素材库条目")
+        _r(f"/{PLUGIN_NAME}/wr/presets",      self.wr_presets,     ["GET"],    "列出写作预设")
+        _r(f"/{PLUGIN_NAME}/wr/set_preset",   self.wr_set_preset,  ["POST"],   "切换写作预设")
 
         # ── WB 世界书 (13 个：含 reload) ──
         _r(f"/{PLUGIN_NAME}/wb/list",         self.wb_list,        ["GET"],    "列出世界书")
@@ -455,8 +473,9 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/upload_avatar_base64",  self.upload_avatar,  ["POST"],   "上传头像(Base64)")
         _r(f"/{PLUGIN_NAME}/persona/import",        self.persona_import, ["POST"],   "导入V2角色卡(文件)")
         _r(f"/{PLUGIN_NAME}/persona/import_base64", self.persona_import, ["POST"],   "导入V2角色卡(Base64)")
-        _r(f"/{PLUGIN_NAME}/persona/export",        self.persona_export, ["GET"],    "导出V2角色卡")
-        _r(f"/{PLUGIN_NAME}/persona/export_base64",     self.persona_export_base64, ["POST"], "导出V2角色卡(Base64)")
+        _r(f"/{PLUGIN_NAME}/persona/export",        self.persona_export, ["GET"],    "导出角色卡")
+        _r(f"/{PLUGIN_NAME}/persona/export_base64",     self.persona_export_base64, ["POST"], "导出角色卡(Base64)")
+        _r(f"/{PLUGIN_NAME}/persona/export_preview",    self.persona_export_preview, ["POST"], "导出预览（含世界书与警告）")
         _r(f"/{PLUGIN_NAME}/persona/import_text",        self.persona_import_text, ["POST"], "文本导入角色卡")
         # M3.1：base64 变体与正身共用同一 handler（同上）
         _r(f"/{PLUGIN_NAME}/persona/import_text_base64", self.persona_import_text, ["POST"], "文本导入角色卡(Base64)")
@@ -538,6 +557,8 @@ class QuillRoutes:
         _r(f"/{PLUGIN_NAME}/worldbook/lint",   self.worldbook_lint, ["GET"],    "世界书/角色卡静态体检")
         # 决策模型连通性测试：真发一次判定调用（零写入），面板「测试」按钮用
         _r(f"/{PLUGIN_NAME}/decision/probe",   self.decision_probe, ["POST"],   "决策模型连通性测试")
+        # M4.3 状态栏方言体检：只读预览，不写配置/不碰会话；面板与 E2E 共用
+        _r(f"/{PLUGIN_NAME}/statusbar/preview", self.statusbar_preview, ["POST"], "状态栏方言预览(只读)")
 
         # ── Panel 主题 / 界面状态：已随配置项一并移除 ──
         # 主题改由 AstrBot 面板注入 <html data-theme>（前端 app.js 读它），
@@ -846,6 +867,11 @@ class QuillRoutes:
         if (group, key) not in _ALLOWED_CONFIG_KEYS:
             return error_response(f"不支持的配置项: {group}.{key}", status_code=400)
 
+        # SEC-P1-2：面板对已保存密钥只拿到哨兵 "__saved__"，原样回传表示
+        # 「未修改」——跳过写盘，绝不能把哨兵字面量当成新密钥存下去。
+        if (group, key) == ("status_bar", "decision_api_key") and str(value or "") == "__saved__":
+            return json_response({"status": "ok", "message": f"已保存 {group}.{key}（密钥未修改）"})
+
         from .quill.services.usage import validate_usage_setting
         message = validate_usage_setting(group, key, value)
         if message:
@@ -899,6 +925,9 @@ class QuillRoutes:
                 return error_response(
                     f"重复的配置项: {group}.{key}", status_code=400
                 )
+            # SEC-P1-2：哨兵 "__saved__" 表示「未修改」，从本批剔除而不是写盘。
+            if pair == ("status_bar", "decision_api_key") and str(item.get("value") or "") == "__saved__":
+                continue
             seen.add(pair)
 
         plugin = self.plugin
@@ -927,6 +956,15 @@ class QuillRoutes:
             }
             if allowed:
                 safe[group] = allowed
+        # SEC-P1-2（2026-11-08 审查报告）：decision_api_key 是明文凭据，本端点是
+        # GET、plugin 作用域 Key 可读——密钥本体经它原样下发等于 Q1 的同源闸在
+        # 出口处失效。改为哨兵下发：已设置返回 "__saved__"（前端只当「已保存」
+        # 展示，不再回传真实值），未设置返回空串。保存侧见 config_save /
+        # config_save_batch 对哨兵的跳过分支。
+        sb = safe.get("status_bar")
+        if isinstance(sb, dict):
+            key_val = str(sb.get("decision_api_key") or "")
+            sb["decision_api_key"] = "__saved__" if key_val.strip() else ""
         return json_response(safe)
 
     # ── 流式模式批量控制 ───────────────────────────────────────
@@ -1175,7 +1213,10 @@ class QuillRoutes:
         if memory_store is None:
             return error_response("记忆暂不可用，请检查存储状态", status_code=503)
         session_id = request.query.get("session_id")
-        return json_response(await handle_memory_list(memory_store, session_id))
+        # FUNC-P1-6：会话路径补分页参数（解析口径与 memory_list_all 一致）
+        page = max(1, request.query.get("page", 1, type=int) or 1)
+        per_page = min(max(1, request.query.get("per_page", 50, type=int) or 50), 200)
+        return json_response(await handle_memory_list(memory_store, session_id, page=page, per_page=per_page))
 
     @_api_handler
     async def memory_list_all(self):
@@ -1416,6 +1457,7 @@ class QuillRoutes:
             umo=data.get("umo", ""),
             session_vars=data.get("session_vars"),
             include_recent_context=bool(data.get("include_recent_context", False)),
+            dry_run=bool(data.get("dry_run", True)),
         )
         if result.get("status") == "error":
             return error_response(result.get("message", "模拟失败"), status_code=400)
@@ -1426,6 +1468,59 @@ class QuillRoutes:
         """世界书/角色卡静态体检（纯本地分析，零模型调用）。"""
         from ._route_core import handle_worldbook_lint
         return json_response(await handle_worldbook_lint(self.plugin))
+
+    @_api_handler
+    async def statusbar_preview(self):
+        """状态栏方言预览（POST，只读：不写配置、不碰会话状态）。
+
+        入参 {platform, text?, overrides?, plain_platforms?, confirmed?}。
+        overrides / plain_platforms 缺省时回落插件当前配置，带上则按本次
+        入参判定（E2E 与面板自检因此不必改实例配置）。返回判定来源、
+        能力档案、实际模板与渲染结果，供诊断「为什么这个平台是这个样式」。
+        """
+        from .quill.services.response import strip_markdown
+        from .quill.services.statusbar.dialect import describe, parse_dialect_overrides
+        from .quill.services.statusbar.parsers import apply_template
+
+        data = await _json_body()
+        plugin = self.plugin
+        platform = str(data.get("platform", "") or "")
+        text = str(data.get("text", "") or "")
+
+        overrides = data.get("overrides")
+        if overrides is None:
+            overrides = getattr(plugin, "status_bar_dialect_overrides", None)
+        else:
+            overrides = parse_dialect_overrides(overrides)
+
+        plain = data.get("plain_platforms")
+        if plain is None:
+            plain = getattr(plugin, "status_bar_plain_platforms", None)
+        elif isinstance(plain, str):
+            plain = [p.strip() for p in plain.replace("|", ",").split(",") if p.strip()]
+
+        info = describe(
+            platform,
+            overrides=overrides,
+            plain_platforms=plain,
+            confirmed=data.get("confirmed"),
+        )
+        # 刻意走生产同一个选型函数（而不是在这里另拼一份），保证预览与
+        # 真实发送路径不会出现「预览是 A、线上是 B」的漂移。
+        template = plugin._status_bar_template_for(
+            platform,
+            confirmed=data.get("confirmed"),
+            overrides=overrides,
+            plain_platforms=plain,
+        )
+        rendered = apply_template(template, text)
+        tool_text = strip_markdown(text) if info["dialect"] == "plain" else text
+        return json_response({
+            **info,
+            "template": str(template),
+            "rendered": rendered,
+            "tool_text": tool_text,
+        })
 
     @_api_handler
     async def decision_probe(self):
@@ -1625,6 +1720,17 @@ class QuillRoutes:
         enabled = bool(data.get("enabled", True))
         return json_response(await handle_wr_batch_toggle(self.wr_manager, entry_ids, enabled))
 
+    @_api_handler
+    async def wr_presets(self):
+        return json_response(await handle_wr_presets(self.wr_manager))
+
+    @_api_handler
+    async def wr_set_preset(self):
+        data = await _json_body()
+        return json_response(
+            await handle_wr_set_preset(self.wr_manager, data.get("preset_id", ""))
+        )
+
     # ── WB ────────────────────────────────────────────────────
 
     @_api_handler
@@ -1793,6 +1899,18 @@ class QuillRoutes:
             avatar_path = p.get("avatar_path", "")
             p["has_avatar"] = bool(avatar_path and avatar_path.startswith("quill_avatars/"))
             p.pop("avatar_url", None)  # 不内联 Base64，前端按需懒加载
+            # M4.1：card_source 是导入时的保真快照（未知字段原值，单卡上限 128KB），
+            # 只服务于导出与核对，列表页一处都用不上——留在响应里能把 /persona/list
+            # 撑成几 MB。换成轻量摘要；完整快照仍随卡落盘，导出与 E2E 直接读文件。
+            card_source = p.pop("card_source", None)
+            if isinstance(card_source, dict) and card_source:
+                p["card_origin"] = {
+                    "format": card_source.get("format", ""),
+                    "format_label": card_source.get("format_label", ""),
+                    "schema_version": card_source.get("schema_version", ""),
+                    "confidence": card_source.get("confidence", 0),
+                    "imported_at": card_source.get("imported_at", ""),
+                }
         return json_response(personas)
 
     @_api_handler
@@ -1919,11 +2037,14 @@ class QuillRoutes:
         if filename.endswith('.card.png'):
             ext = '.png'
         elif ext not in CARD_IMPORT_EXTS:
-            return error_response("不支持的文件格式（支持 PNG/JPG/WebP/JSON）", status_code=400)
+            return error_response("不支持的文件格式（支持 PNG/APNG/JPG/WebP/JSON/CHARX）", status_code=400)
 
         try:
             is_image = ext in CARD_IMAGE_EXTS
             persona_data = await asyncio.to_thread(self.persona_manager.parse_v2_card, payload.data, is_image)
+            # M4.1：导入报告只回传给面板（解释"识别成什么格式、哪些字段被映射/保留/
+            # 不支持"），不随卡落库；落库的是 card_source 保真快照。
+            import_report = persona_data.pop("_import_report", None)
 
             # Issue #1：内嵌世界书（character_book）自动落盘并绑定（配置可关）
             wb_info = await self.persona_manager.attach_embedded_worldbook(
@@ -1943,6 +2064,8 @@ class QuillRoutes:
             result = await self.persona_manager.create_persona(persona_data)
             if wb_info:
                 result["embedded_worldbook"] = wb_info
+            if import_report:
+                result["import_report"] = import_report
             return json_response(result)
 
         except ImportError as e:
@@ -1952,9 +2075,108 @@ class QuillRoutes:
         except Exception as e:
             return error_response(error_text("导入失败", e), status_code=500)
 
+    async def _collect_export_books(self, selection):
+        """把面板的世界书选择解析成 [{name, entries}]。
+
+        selection 的两种形态：["书名"] 或 [{"name": "书名", "entry_ids": ["e1"]}]。
+        entry_ids 省略 = 整本书；给了但一条都没匹配上不会静默导出空书——由
+        build_character_book 在 warnings 里说明，用户能在预览里看到。
+        """
+        if not selection:
+            return []
+        if not isinstance(selection, list):
+            raise ValueError("books 必须是数组")
+        if len(selection) > 40:
+            raise ValueError("一次最多导出 40 本世界书")
+        if not self.wb_manager:
+            raise ValueError("世界书管理器未加载，无法导出世界书")
+        books = []
+        for item in selection:
+            if isinstance(item, str):
+                name, entry_ids = item.strip(), None
+            elif isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                entry_ids = item.get("entry_ids")
+            else:
+                raise ValueError("books 的元素必须是书名或 {name, entry_ids}")
+            if not name:
+                raise ValueError("books 里有空书名")
+            if entry_ids is not None and not isinstance(entry_ids, list):
+                raise ValueError(f"世界书「{name}」的 entry_ids 必须是数组")
+            wb = await asyncio.to_thread(self.wb_manager.get_worldbook, name)
+            if not wb:
+                raise ValueError(f"世界书「{name}」不存在")
+            entries = wb.get("entries") or []
+            if entry_ids is not None:
+                wanted = {str(x) for x in entry_ids}
+                entries = [e for e in entries if str(e.get("id")) in wanted]
+            books.append({"name": wb.get("name") or name, "entries": entries})
+        return books
+
+    async def _build_export(self, persona, version: str, container: str,
+                            include_id: bool, selection):
+        """预览与下载共用：同一份负载、同一套 warnings。"""
+        books = await self._collect_export_books(selection)
+        avatar_data = None
+        avatar_path = persona.get("avatar_path", "")
+        if avatar_path and avatar_path.startswith("quill_avatars/"):
+            avatar_data = await self.persona_manager.read_avatar(os.path.basename(avatar_path))
+        result = await asyncio.to_thread(
+            self.persona_manager.export_card,
+            persona, version, books, include_id, avatar_data, container,
+        )
+        return result, books
+
+    @_api_handler
+    async def persona_export_preview(self):
+        """导出预览：只计算负载与警告，不产生下载。"""
+        if not self.persona_manager:
+            return error_response("角色卡管理器未加载", status_code=500)
+        data = await _json_body()
+        persona_id = (data.get("id") or "").strip()
+        if not persona_id:
+            return error_response("缺少角色 ID", status_code=400)
+        persona = await self.persona_manager.get_persona(persona_id)
+        if not persona:
+            return error_response("角色卡不存在", status_code=404)
+
+        version = str(data.get("version") or "v2").lower()
+        container = str(data.get("container") or "auto").lower()
+        include_id = data.get("include_id", True) is not False
+        try:
+            result, books = await self._build_export(
+                persona, version, container, include_id, data.get("books"),
+            )
+            payload = result["payload"]
+            book = (payload.get("data") or {}).get("character_book") or {}
+            payload_text = card_export.dump(payload)
+            warnings = list(result.get("warnings") or [])
+            if result.get("media_type") == "image/png":
+                warnings.append("PNG 卡会按当前头像重新编码，原图里其他元数据不会保留")
+            conflicts = card_export.conflicts(persona, await self.persona_manager.load_all())
+            return json_response({
+                "version": version,
+                "container": "png" if result.get("media_type") == "image/png" else "json",
+                "filename": result["filename"],
+                "bytes": len(payload_text.encode("utf-8")),
+                "warnings": warnings,
+                "conflicts": conflicts,
+                "character_book": {
+                    "books": [b.get("name") for b in books],
+                    "entries": len(book.get("entries") or []),
+                },
+                "payload": payload,
+            })
+        except ImportError as e:
+            return error_response(str(e), status_code=501)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
+        except Exception as e:
+            return error_response(error_text("导出预览失败", e), status_code=500)
+
     @_api_handler
     async def persona_export(self):
-        """导出 V2 角色卡。"""
+        """导出角色卡（V2/V3，JSON / PNG，可选世界书）。"""
         if not self.persona_manager:
             return error_response("角色卡管理器未加载", status_code=500)
 
@@ -1966,35 +2188,30 @@ class QuillRoutes:
         if not persona:
             return error_response("角色卡不存在", status_code=404)
 
+        version = (request.query.get("version") or "v2").lower()
+        container = (request.query.get("container") or "auto").lower()
+        include_id = (request.query.get("include_id") or "true").lower() not in ("0", "false", "no")
+        selection = request.query.get("books")
+        if selection:
+            import json as _json
+            try:
+                selection = _json.loads(selection)
+            except Exception:
+                return error_response("books 参数不是合法 JSON", status_code=400)
+
         try:
-            # 尝试读取头像
-            avatar_data = None
-            avatar_path = persona.get("avatar_path", "")
-            if avatar_path and avatar_path.startswith("quill_avatars/"):
-                avatar_filename = os.path.basename(avatar_path)
-                avatar_data = await self.persona_manager.read_avatar(avatar_filename)
-
-            # 导出为 V2（PIL 图片编码为同步 CPU 操作，放线程池避免阻塞事件循环）
-            export_data = await asyncio.to_thread(
-                self.persona_manager.export_v2_card, persona, avatar_data
+            result, _ = await self._build_export(
+                persona, version, container, include_id, selection,
             )
-
-            # 返回文件下载（P3-5 修复：file_response 仅支持路径，bytes 需用 Response + 下载头）
-            if avatar_data:
-                return Response(
-                    export_data,
-                    media_type="image/png",
-                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{_urlquote(persona['name'])}_v2.png"}
-                )
-            else:
-                return Response(
-                    export_data,
-                    media_type="application/json",
-                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{_urlquote(persona['name'])}_v2.json"}
-                )
-
+            return Response(
+                result["data"],
+                media_type=result["media_type"],
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{_urlquote(result['filename'])}"},
+            )
         except ImportError as e:
             return error_response(str(e), status_code=501)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
         except Exception as e:
             return error_response(error_text("导出失败", e), status_code=500)
 
@@ -2027,6 +2244,8 @@ class QuillRoutes:
             persona_data = await asyncio.to_thread(
                 self.persona_manager.parse_clipboard_text, text
             )
+            # M4.1：与文件导入同一口径，报告只回传面板。
+            import_report = persona_data.pop("_import_report", None)
             # Issue #1：V2/V3 JSON 文本同样可能携带内嵌世界书
             wb_info = await self.persona_manager.attach_embedded_worldbook(
                 persona_data, self.wb_manager,
@@ -2035,6 +2254,8 @@ class QuillRoutes:
             result = await self.persona_manager.create_persona(persona_data)
             if wb_info:
                 result["embedded_worldbook"] = wb_info
+            if import_report:
+                result["import_report"] = import_report
             return json_response(result)
         except ValueError as e:
             return error_response(str(e), status_code=400)
@@ -2159,7 +2380,7 @@ class QuillRoutes:
 
     @_api_handler
     async def persona_export_base64(self):
-        """导出 V2 角色卡（Base64 编码，突破沙盒下载限制）。"""
+        """导出角色卡（Base64 编码，突破沙盒下载限制）。"""
         if not self.persona_manager:
             return error_response("角色卡管理器未加载", status_code=500)
         data = await _json_body()
@@ -2169,20 +2390,25 @@ class QuillRoutes:
         persona = await self.persona_manager.get_persona(persona_id)
         if not persona:
             return error_response("角色卡不存在", status_code=404)
+        version = str(data.get("version") or "v2").lower()
+        container = str(data.get("container") or "auto").lower()
+        include_id = data.get("include_id", True) is not False
         try:
-            import os
             import base64
-            avatar_data = None
-            avatar_path = persona.get("avatar_path", "")
-            if avatar_path and avatar_path.startswith("quill_avatars/"):
-                avatar_filename = os.path.basename(avatar_path)
-                avatar_data = await self.persona_manager.read_avatar(avatar_filename)
-            export_data = await asyncio.to_thread(
-                self.persona_manager.export_v2_card, persona, avatar_data
+            result, _ = await self._build_export(
+                persona, version, container, include_id, data.get("books"),
             )
-            filename = f"{persona['name']}_v2.png" if avatar_data else f"{persona['name']}_v2.json"
-            b64_str = base64.b64encode(export_data).decode('ascii')
-            return json_response({"filename": filename, "b64_data": b64_str})
+            b64_str = base64.b64encode(result["data"]).decode('ascii')
+            return json_response({
+                "filename": result["filename"],
+                "b64_data": b64_str,
+                "media_type": result["media_type"],
+                "warnings": result.get("warnings") or [],
+            })
+        except ImportError as e:
+            return error_response(str(e), status_code=501)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
         except Exception as e:
             return error_response(error_text("导出失败", e), status_code=500)
 
@@ -2314,6 +2540,15 @@ class QuillRoutes:
         b64 = (data.get("b64_data") or "").strip()
         if not b64:
             return error_response("缺少 b64_data 字段", status_code=400)
+        # P1-21：先在 base64 字符串层面预检体积——b64decode 会把整段放大成
+        # 字节再进 _do_restore_bytes 的上限判断，恶意的超大字符串会先撑爆内存。
+        # base64 长度约为原始字节的 4/3，留出换行/填充余量。
+        max_b64_chars = (_MAX_RESTORE_BYTES // 3 + 1) * 4 + 16
+        if len(b64) > max_b64_chars:
+            return error_response(
+                f"备份文件过大（最大 {_MAX_RESTORE_BYTES // (1024 * 1024)}MB）",
+                status_code=413,
+            )
         try:
             raw = base64.b64decode(b64)
         except Exception:
@@ -2354,6 +2589,9 @@ class QuillRoutes:
                     raise ValueError(f"备份文件损坏: {bad_file}")
                 for info in zf.infolist():
                     if info.is_dir():
+                        continue
+                    # P1-21：符号链接条目一律跳过（external_attr 高 16 位是 Unix mode）。
+                    if (info.external_attr >> 16) & 0xF000 == 0xA000:
                         continue
                     # 归档条目名 -> 数据根下的绝对落点（同时过滤路径穿越与非法前缀）
                     dest = resolve_archive_dest(paths, plugin_root, info.filename)
@@ -2398,6 +2636,10 @@ class QuillRoutes:
             with zipfile.ZipFile(io.BytesIO(raw), 'r') as zf:
                 for info in zf.infolist():
                     if info.is_dir():
+                        continue
+                    # P1-21：符号链接条目一律跳过，绝不写出数据根。
+                    if (info.external_attr >> 16) & 0xF000 == 0xA000:
+                        skipped_count += 1
                         continue
                     dest = resolve_archive_dest(paths, plugin_root, info.filename)
                     # 非数据条目（例如归档里混入 .py）一律跳过，绝不写插件代码

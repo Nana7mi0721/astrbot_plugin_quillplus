@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """M3 事件身份适配：在第一处请求入口固定，之后不读新的当前角色。"""
 
+from dataclasses import replace
+
 from ..quill.services.scope import PhysicalOrigin, TurnContext
 
 
@@ -21,9 +23,15 @@ def event_turn(event) -> TurnContext | None:
     return value if isinstance(value, TurnContext) else None
 
 
-async def freeze_turn(plugin, event, *, recover=True) -> TurnContext:
+async def freeze_turn(plugin, event, *, recover=True, refresh=False) -> TurnContext:
+    """固定本轮身份；``refresh=True`` 用于共享排队后重新读取权威角色。
+
+    参数事件在排队期间可能被别的入口换卡（共享会话组只允许一个真实轮），
+    此时调用方必须在 acquire 之后重冻结。turn_id 保持不变，避免同一轮被
+    规则时钟/日志侧当成两轮；persona_id 与 scope_revision 取最新值。
+    """
     existing = event_turn(event)
-    if existing is not None:
+    if existing is not None and not refresh:
         return existing
     origin = physical_origin(event)
     provisional = plugin.scope_resolver.resolve(origin)
@@ -38,7 +46,14 @@ async def freeze_turn(plugin, event, *, recover=True) -> TurnContext:
         event.stop_event()
         raise
     persona_id = await plugin.state_manager.get_selected_persona_id(origin.umo)
-    turn = plugin.scope_resolver.resolve(origin, persona_id)
+    turn = plugin.scope_resolver.resolve(
+        origin, persona_id,
+        turn_id=existing.turn_id if existing is not None else None,
+    )
+    if existing is not None and turn.persona_id == existing.persona_id \
+            and turn.scope_id == existing.scope_id \
+            and turn.scope_revision == existing.scope_revision:
+        turn = replace(existing)
     member=plugin.scope_resolver.memberships.get(origin.umo)
     if member and member['origin_key']==origin.key:
         event.set_extra('_quill_member_epoch',member['epoch'])

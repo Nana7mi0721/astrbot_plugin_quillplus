@@ -149,6 +149,17 @@ async def handle_wr_create(wr_manager, data: dict):
     if "keywords" not in data:
         data["keywords"] = []
 
+    # FUNC-P1-5：创建弹窗的「启用」开关此前被本 handler 静默丢弃（add_entry
+    # 的 INSERT 也不含 enabled，落库走表默认 1）——用户取消勾选后条目仍是
+    # 启用态并参与匹配注入，与操作相反；撤销路径（writing.js 复用 /wr/create
+    # 恢复停用条目）同理会把停用条目重置成启用。这里透传并做布尔归一，
+    # 口径与 wr_list 的 is_constant 一致：字符串 "false"/"0" 等视为停用。
+    enabled_raw = data.get("enabled", True)
+    if isinstance(enabled_raw, str):
+        enabled = enabled_raw.strip().lower() not in ("false", "0", "off", "no", "")
+    else:
+        enabled = bool(enabled_raw)
+
     try:
         success = await wr_manager.add_entry(
             category=data["category"],
@@ -161,6 +172,7 @@ async def handle_wr_create(wr_manager, data: dict):
             secondary_keywords=data.get("secondary_keywords"),
             priority=data.get("priority", 5),
             is_constant=bool(data.get("is_constant", False)),
+            enabled=enabled,
         )
     except StorageError as e:
         # M3.2 D4：底层存储失败上抛后在路由层降级——信封形状不变
@@ -286,6 +298,9 @@ async def handle_wr_import(wr_manager, entries: list):
                 secondary_keywords=entry.get("secondary_keywords"),
                 priority=entry.get("priority", 5),
                 is_constant=entry.get("is_constant", False),
+                # FUNC-P1-5：导入路径同步透传 enabled，与撤销/备份回灌保持一致
+                # （旧导出包没有这个键时回落 True，行为不变）。
+                enabled=entry.get("enabled", True),
             )
         except Exception as e:
             logger.warning("[WR] 导入条目 %s 失败: %s", entry.get("entry_id"), e, exc_info=True)
@@ -312,6 +327,29 @@ async def handle_wr_test(wr_manager, text=None):
         for r in results
     ]
     return ok({"results": safe})
+
+
+async def handle_wr_presets(wr_manager):
+    """M5.2：列出内置写作预设与当前全局选择（只读）。"""
+    if wr_manager is None or not hasattr(wr_manager, "presets"):
+        return err("写作素材库未加载")
+    store = wr_manager.presets
+    if getattr(store, "load_error", ""):
+        logger.warning("[WR] 预设文件读取失败: %s", store.load_error)
+    return ok(store.payload())
+
+
+async def handle_wr_set_preset(wr_manager, preset_id):
+    """M5.2：显式切换全局写作预设；空串 = 关闭。"""
+    if wr_manager is None or not hasattr(wr_manager, "set_global_preset"):
+        return err("写作素材库未加载")
+    try:
+        payload = await wr_manager.set_global_preset(str(preset_id or ""))
+    except ValueError as exc:
+        return err(str(exc))
+    except Exception as exc:
+        return err(error_text("切换写作预设失败", exc))
+    return ok(payload)
 
 
 async def handle_wr_categories(wr_manager):
@@ -762,16 +800,30 @@ async def handle_rag_config(embedding_provider, reranker):
         return err(error_text("获取配置失败", e))
 
 
-async def handle_memory_list(memory_store, session_id=None):
+async def handle_memory_list(memory_store, session_id=None, page=1, per_page=50):
     """列出记忆（可按 session_id 过滤）。
 
-    当有 session_id 时返回该 session 的记忆；
+    当有 session_id 时返回该 session 的记忆。
     无 session_id 时返回全部记忆（跨 session，按时间倒序）。
+
+    FUNC-P1-6：会话分支此前无分页且固定 limit=50，返回体也不带 total ——
+    记忆数超过 50 的会话在浏览页只显示最新 50 条，页脚还用截断后的数量
+    冒充「共 N 条」，排查记忆丢失时会被误导。现在与 list_all 同一契约：
+    支持 page/per_page，返回真实 total 与 total_pages。
     """
     try:
         if session_id:
-            memories = await memory_store.list_memories(session_id)
-            return ok({"session_id": session_id, "memories": memories})
+            per_page = min(max(1, per_page), 200)
+            page = max(1, page)
+            offset = (page - 1) * per_page
+            total = await memory_store.count_session_memories(session_id)
+            memories = await memory_store.list_memories(session_id, limit=per_page, offset=offset)
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            return ok({
+                "session_id": session_id, "memories": memories,
+                "total": total, "page": page, "per_page": per_page,
+                "total_pages": total_pages,
+            })
         # 无 session_id：返回全部记忆（倒序），供记忆浏览表格用
         memories = await memory_store.list_all_memories(200)
         return ok({"memories": memories, "sessions": []})
@@ -1090,7 +1142,8 @@ def _persona_ext(persona_data) -> dict:
 
 async def handle_trace_simulate(plugin, text=None, persona_id=None,
                                 target_id_hash=None, rag=False, umo=None,
-                                session_vars=None, include_recent_context=False):
+                                session_vars=None, include_recent_context=False,
+                                dry_run=True):
     """M1b 模块 4：模拟检索沙盒（只读，零写入 TraceStore/state/chat_logs）。
 
     入参 ``{text, persona_id?, target_id_hash?, rag?, umo?, session_vars?,
@@ -1215,6 +1268,11 @@ async def handle_trace_simulate(plugin, text=None, persona_id=None,
                 # M1b-Fix P1-b：只读沙盒不覆写真实会话的触发日志
                 # （/quill test wb 读的就是 _last_trigger_log）。
                 write_trigger_log=False,
+                # M5.1：模拟只读当前轮，不推进轮次/粘性/冷却。
+                scope_id=(plugin.state_manager.role_scope(str(umo)) if umo else ""),
+                persona_id=persona_id or "",
+                # dry_run 默认 True：模拟只读当前轮，不推进轮次/粘性/冷却。
+                simulate=bool(dry_run),
             )
             wb_constants = await asyncio.to_thread(
                 wb_manager.get_constant_entries,

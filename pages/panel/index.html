@@ -207,6 +207,9 @@
                   <svg class="icon icon--sm" aria-hidden="true"><use href="#i-plus"/></svg>新建条目
                 </button>
                 <button type="button" class="btn btn--gray" data-action="wr-lint">素材体检</button>
+                <button type="button" class="btn btn--gray" data-action="wr-presets">
+                  <svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>风格预设
+                </button>
                 <button type="button" class="btn btn--gray" data-action="wr-test">
                   <svg class="icon icon--sm" aria-hidden="true"><use href="#i-flask"/></svg>匹配测试
                 </button>
@@ -324,7 +327,7 @@
               </button>
               <label class="btn btn--gray file-btn">
                 <svg class="icon icon--sm" aria-hidden="true"><use href="#i-upload"/></svg>导入 V2/V3
-                <input type="file" accept=".png,.jpg,.jpeg,.webp,.json" data-file="persona-import" aria-label="导入角色卡">
+                <input type="file" accept=".png,.apng,.jpg,.jpeg,.webp,.json,.charx" data-file="persona-import" aria-label="导入角色卡">
               </label>
               <button type="button" class="btn btn--gray" data-action="persona-import-text">文本导入</button>
               <button type="button" class="btn btn--gray" data-action="persona-import-astrbot">
@@ -889,6 +892,25 @@
                       <label class="switch"><input type="checkbox" id="c-wb-card-embed"><span class="switch-track"></span></label>
                     </div>
                   </div>
+                  <div class="cfg-row">
+                    <div class="cfg-row-text">
+                      <div class="cfg-row-title">世界书递归触发</div>
+                      <div class="cfg-row-desc">已注入条目的正文可继续匹配其他条目；受步数、Token 与 visited 防环约束，默认关闭。</div>
+                    </div>
+                    <div class="cfg-row-control">
+                      <label class="switch"><input type="checkbox" id="c-wb-recursion"><span class="switch-track"></span></label>
+                    </div>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-wb-recursion-steps">递归最大步数</label>
+                    <div class="unit-wrap"><input class="field" type="number" min="1" max="10" id="c-wb-recursion-steps" value="3"><span class="unit">层</span></div>
+                    <span class="hint">仅在递归触发开启时生效，按父条目到子条目的路径深度计算。</span>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-wb-recursion-tokens">递归 Token 估算上限</label>
+                    <div class="unit-wrap"><input class="field" type="number" min="100" id="c-wb-recursion-tokens" value="2000"><span class="unit">token</span></div>
+                    <span class="hint">递归带出的条目总量上限；达到后停止并记录 recursion_limit。</span>
+                  </div>
                 </div></div>
               </div>
 
@@ -1024,7 +1046,12 @@
                   <div class="cfg-field">
                     <label class="cfg-field-label" for="c-sb-plain-plat">按纯文本渲染的平台</label>
                     <input class="field field--wide" type="text" id="c-sb-plain-plat" spellcheck="false" placeholder="留空使用内置默认">
-                    <span class="hint">AstrBot 适配器名，用 <code>|</code> 分隔。留空默认包含 aiocqhttp、qq_official、wecom、dingtalk 等；未知平台一律走 Markdown 模板。</span>
+                    <span class="hint">AstrBot 适配器名，用 <code>|</code> 分隔。留空由内置能力档案判定（QQ/微信等自动纯文本，Telegram/Slack/KOOK 用各自方言）；未收录的平台按纯文本保守处理。</span>
+                  </div>
+                  <div class="cfg-field">
+                    <label class="cfg-field-label" for="c-sb-dialect">平台方言覆盖</label>
+                    <input class="field field--wide" type="text" id="c-sb-dialect" spellcheck="false" placeholder="如 telegram=telegram|mybot=plain">
+                    <span class="hint">按 <code>平台=方言</code> 覆盖状态栏模板与工具消息清洗，多条用 <code>|</code> 分隔，<code>*</code> 可作通配。方言可选 plain、markdown、telegram、slack、kmarkdown；本项优先于上面的纯文本名单。</span>
                   </div>
                 </div>
               </div>
@@ -1453,6 +1480,71 @@
     <div class="modal-foot">
       <button type="button" class="btn btn--gray" data-action="astrbot-close">取消</button>
       <button type="button" class="btn btn--filled" id="abImportBtn" data-action="astrbot-import">导入</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 导出角色卡 ══ -->
+<!-- 遮罩动作同样做 target 守卫（见 app.js 的 export-scrim）：不守卫时点弹窗里的
+     版本下拉、世界书复选框都会冒泡到遮罩，把弹窗关掉。 -->
+<div class="scrim" id="exportScrim" data-action="export-scrim">
+  <div class="modal export-modal" role="dialog" aria-modal="true" aria-labelledby="expTitle">
+    <div class="modal-head">
+      <h2 id="expTitle">导出角色卡</h2>
+      <button type="button" class="icon-btn" data-action="export-close" aria-label="关闭">
+        <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="row-wrap" style="gap:var(--sp-3);align-items:flex-start">
+        <div class="form-group" style="margin:0;flex:1 1 150px">
+          <label for="expVersion">规格版本</label>
+          <select class="field field--wide" id="expVersion">
+            <option value="v2">CCv2 · 兼容最广</option>
+            <option value="v3">CCv3 · 含 V3 元数据</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin:0;flex:1 1 150px">
+          <label for="expContainer">载体</label>
+          <select class="field field--wide" id="expContainer">
+            <option value="auto">自动（有头像则 PNG）</option>
+            <option value="json">JSON 文件</option>
+            <option value="png">PNG 角色卡</option>
+          </select>
+        </div>
+        <label class="check" style="margin:26px 0 0;white-space:nowrap">
+          <input type="checkbox" id="expKeepId" checked>
+          <span>保留身份键</span>
+        </label>
+      </div>
+      <p class="row-desc" style="margin-top:var(--sp-2)">保留身份键时，导入方会用同一个 ID 覆盖原卡；取消勾选则每次导入都是新卡。世界书会写进 <code>character_book</code>，并保留来源书与条目的映射，方便再导入时还原。</p>
+
+      <div class="form-group" style="margin-bottom:0">
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:var(--sp-2)">
+          <label style="margin:0">附带世界书</label>
+          <div class="row-wrap fs-12">
+            <button type="button" class="btn btn--sm btn--gray" data-action="export-books-all">全选</button>
+            <button type="button" class="btn btn--sm btn--gray" data-action="export-books-none">清空</button>
+          </div>
+        </div>
+        <label class="search" style="width:100%;margin-bottom:var(--sp-2)">
+          <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+          <input type="search" id="expBookSearch" placeholder="搜索世界书或条目…" aria-label="搜索世界书">
+          <button type="button" class="search-clear" data-action="clear-search" data-target="expBookSearch" aria-label="清除搜索">
+            <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+          </button>
+        </label>
+        <div class="exp-books" id="expBooks"></div>
+        <p class="hint" id="expBooksHint">不勾选则只导出角色卡本身。整本勾选按全部条目导出，展开后可只挑部分条目。</p>
+      </div>
+
+      <div class="note" id="expSummary" style="margin-top:var(--sp-3)">正在计算…</div>
+      <div class="note note--warn" id="expWarnings" hidden style="margin-top:var(--sp-2)"></div>
+      <div class="note note--danger" id="expConflicts" hidden style="margin-top:var(--sp-2)"></div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn--gray" data-action="export-close">取消</button>
+      <button type="button" class="btn btn--filled" id="expGo" data-action="export-go">导出</button>
     </div>
   </div>
 </div>

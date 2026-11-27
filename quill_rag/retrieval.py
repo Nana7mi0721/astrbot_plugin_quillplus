@@ -147,7 +147,7 @@ class QuillRetriever:
             index_status=await self.vector_store.get_stats()
             if not index_status['total_chunks']:
                 return []
-            if not index_status['faiss_vectors'] or index_status.get('dim_mismatch'):
+            if not index_status['faiss_vectors']:
                 return _rag_failed('文档索引待重建，本次未调用查询嵌入模型')
             query_emb = await self.embedding.embed([query])
             if not query_emb:

@@ -68,11 +68,11 @@ BINARY_EXTS = frozenset(
 #: V2 角色卡导入接受的扩展名 = 原 multipart 侧 {png,jpg,jpeg,json} ∪
 #: base64 侧 {png,jpg,jpeg,webp,json}（BASELINE §8.1 决策：统一取并集，
 #: 两通道接受同一集合，兼容面最宽；M3.1 起两通道本就是同一 handler）。
-CARD_IMPORT_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".json"})
+CARD_IMPORT_EXTS = frozenset({".png", ".apng", ".jpg", ".jpeg", ".webp", ".json", ".charx"})
 
 #: :data:`CARD_IMPORT_EXTS` 中按图片处理的子集（parse_v2_card 图像分支 +
 #: 存头像）。
-CARD_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+CARD_IMAGE_EXTS = frozenset({".png", ".apng", ".jpg", ".jpeg", ".webp"})
 
 
 class UploadError(ValueError):

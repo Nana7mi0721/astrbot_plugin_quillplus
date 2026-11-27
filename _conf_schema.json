@@ -141,6 +141,24 @@
         "description": "角色卡导入自动转换内嵌世界书",
         "default": true,
         "hint": "导入 V2/V3 角色卡时，自动把卡内 character_book（内嵌世界书）转换为羽笔世界书并绑定到新角色（wb_mode=custom）。关闭后仅导入文本字段，内嵌世界书被忽略。"
+      },
+      "recursion_enabled": {
+        "type": "bool",
+        "description": "世界书递归触发",
+        "default": false,
+        "hint": "开启后，已注入条目的正文可继续匹配其他允许递归的条目（受步数、Token 与 visited 防环约束）。默认关闭，避免上下文被连锁设定撑爆。"
+      },
+      "recursion_max_steps": {
+        "type": "int",
+        "description": "递归最大步数",
+        "default": 3,
+        "hint": "仅在递归触发开启时生效。1-10 层；按父条目到子条目的路径深度计算。"
+      },
+      "recursion_max_tokens": {
+        "type": "int",
+        "description": "递归 Token 估算上限",
+        "default": 2000,
+        "hint": "递归带出的条目总量上限（按 CJK 约 1 token/字粗估）。达到后停止继续递归并记录 recursion_limit。"
       }
     }
   },
@@ -264,7 +282,13 @@
         "type": "text",
         "description": "按纯文本渲染的平台（管道分隔）",
         "default": "",
-        "hint": "填 AstrBot 的适配器名，多个用 | 分隔，如 aiocqhttp|qq_official。留空使用内置默认：aiocqhttp、qq_official、qq_official_webhook、wecom、wecom_ai_bot、weixin_oc、weixin_official_account、dingtalk、line。未知平台一律走 Markdown 模板（不破坏原生渲染）。"
+        "hint": "填 AstrBot 的适配器名，多个用 | 分隔，如 aiocqhttp|qq_official。留空时由内置能力档案判定：aiocqhttp、QQ 官方、微信、钉钉、LINE 等按纯文本，Telegram、Slack、KOOK 等按各自方言；未收录的平台按纯文本保守处理，可用下面的方言覆盖手动指定。"
+      },
+      "dialect_overrides": {
+        "type": "text",
+        "description": "平台方言覆盖（platform=dialect）",
+        "default": "",
+        "hint": "按 platform=dialect 覆盖状态栏模板与工具消息清洗，多条用 | 分隔，如 telegram=telegram|webchat=markdown|mybot=plain。可用方言：plain、markdown、telegram、slack、kmarkdown；* 作通配。本项优先于上面的纯文本平台名单与内置能力档案，留空则按内置档案判定。"
       },
       "decision_enabled": {
         "type": "bool",

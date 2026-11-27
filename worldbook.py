@@ -54,8 +54,18 @@ except ModuleNotFoundError:  # 直接运行本文件做自测：先把 AstrBot �
 # 与 logger 的引导无关，两种运行模式都可直接导入）
 try:
     from .quill.services import condition as _condition_mod
+    from .quill.services import decorators as _decorators_mod
+    from .quill.services import regex_safety as _regex_mod
 except ImportError:  # `python worldbook.py` 自测：无父包
     from quill.services import condition as _condition_mod
+    from quill.services import decorators as _decorators_mod
+    from quill.services import regex_safety as _regex_mod
+
+# M5.1：规则状态与匹配逻辑分离。状态模块只依赖标准库，便于单文件自测。
+try:
+    from .quill.services.worldbook_rules import WorldbookRuleStore
+except ImportError:  # `python worldbook.py` 自测：无父包
+    from quill.services.worldbook_rules import WorldbookRuleStore
 
 # ── Name validation ──────────────────────────────────────────────────────────
 
@@ -99,13 +109,21 @@ class WorldbookManager:
     #: 宽松档里「多词关键词」的切分符（中英混排时都可能出现）
     _KEY_SEG_SPLIT_RE = re.compile(r'[\s,，、/|;；:：·\-—]+')
 
-    def __init__(self, worldbooks_dir: str):
+    def __init__(self, worldbooks_dir: str, rules_path: Optional[str] = None):
         self.worldbooks_dir: str = worldbooks_dir
         os.makedirs(worldbooks_dir, exist_ok=True)
         self.worldbooks: Dict[str, dict] = {}
         # 最近一次注入的触发日志（show_trigger_log 开启时使用）
         self._last_trigger_log: List[dict] = []
         self._lock = threading.Lock()
+        # M5.1：定时效应状态落插件数据目录；测试/旧调用不传则纯内存，
+        # 新字段缺省时仍按旧行为不启用定时规则。
+        self.rules = WorldbookRuleStore(rules_path)
+        # M5.1：递归扫描的默认关闭；由 main.save_plugin_configs 按配置热更新。
+        # 这里保留普通属性而不是直接读 config，保证 quill/ 纯服务层零宿主依赖。
+        self.recursion_enabled = False
+        self.recursion_max_steps = 3
+        self.recursion_max_tokens = 2000
         self._load_all()
 
     # ── persistence ──────────────────────────────────────────────────────
@@ -329,8 +347,263 @@ class WorldbookManager:
                                 "reason": f"condition_unmet({_detail})",
                             })
                         continue
-                entries.append(entry)
+                # M5.3：常驻条目同样支持 `@@depth` / `@@role` 深度注入；
+                # 面板上直接选「深度位」（inject_position=3）也走同一分支。
+                item = dict(entry)
+                deco = _decorators_mod.parse(item.get("content", ""))
+                if deco.is_depth_injection:
+                    item["content"] = deco.body
+                depth_position = self._normalize_inject_position(item)
+                if deco.is_depth_injection or depth_position == 3:
+                    item["_rule_inject_position"] = 3
+                    item["_rule_depth"] = (
+                        max(0, int(deco.depth)) if deco.is_depth_injection
+                        else self._entry_nonneg_alias(item, "depth", default=4, cap=9999)
+                    )
+                    item["_rule_role"] = (
+                        deco.role if deco.role in ("system", "user", "assistant")
+                        else str(item.get("role") or "system")
+                    )
+                entries.append(item)
         return entries
+
+    # ── M5.1 rule helpers ────────────────────────────────────────────────
+
+    @staticmethod
+    def _entry_nonneg(entry: dict, key: str, cap: int = 9999) -> int:
+        try:
+            value = int(entry.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(cap, value))
+
+    @staticmethod
+    def _entry_alias(entry: dict, *keys, default=None):
+        for key in keys:
+            if key in entry and entry.get(key) is not None:
+                return entry.get(key)
+        return default
+
+    @classmethod
+    def _entry_nonneg_alias(cls, entry: dict, *keys, default: int = 0,
+                            cap: int = 9999) -> int:
+        value = cls._entry_alias(entry, *keys, default=default)
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0, min(cap, number))
+
+    @classmethod
+    def _entry_bool_alias(cls, entry: dict, *keys, default: bool = False) -> bool:
+        value = cls._entry_alias(entry, *keys, default=default)
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() not in (
+                "", "0", "false", "no", "off", "none", "null"
+            )
+        return bool(value)
+
+    @staticmethod
+    def _entry_rule_id(wb_name: str, entry: dict) -> str:
+        return f"{wb_name}:{entry.get('id', '')}"
+
+    @staticmethod
+    def _normalize_selective_logic(entry: dict, selective: bool,
+                                   has_secondary: bool) -> str:
+        raw = str(
+            entry.get("selective_logic")
+            or entry.get("selectiveLogic")
+            or entry.get("key_mode")
+            or ""
+        ).strip().upper().replace("-", "_")
+        legacy = {
+            "ANY": "LEGACY_ANY",
+            "ALL": "AND_ALL",
+            "PRIMARY_AND_SECONDARY": "AND_ANY",
+            "PRIMARY_OR_SECONDARY": "LEGACY_OR",
+            "SECONDARY_ONLY": "LEGACY_SECONDARY",
+        }
+        mode = legacy.get(raw, raw)
+        if mode not in ("AND_ANY", "AND_ALL", "NOT_ANY", "NOT_ALL",
+                        "LEGACY_ANY", "LEGACY_OR", "LEGACY_SECONDARY"):
+            mode = "AND_ANY"
+        if not selective or not has_secondary:
+            return "LEGACY_ANY"
+        return mode
+
+    @staticmethod
+    def _normalize_inject_position(entry: dict) -> int:
+        raw = entry.get("inject_position", entry.get("position", 2))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            text = str(raw or "").strip().lower()
+            if text in ("before_char", "after_char", "constant"):
+                return 1
+            return 2
+        return value if value in (1, 2, 3) else 2
+
+    @staticmethod
+    def _estimate_rule_tokens(text: str) -> int:
+        # 与 PromptBuilder 的量级口径一致（CJK 约 1 token/字，ASCII 约 0.25）。
+        return max(1, (len(text or "") + 1) // 2)
+
+    def _match_keys(self, entry: dict, text: str, sensitivity: float,
+                    loose_mode: bool) -> tuple:
+        """按条目选择性规则返回 (ok, matched_count, matched_keys, required, error)。
+
+        兼容两套字段：M5 规范字段（secondary_keys / selective /
+        selective_logic）与 v5.3.5 过渡字段（keys_secondary / key_mode）。
+        ``selective=False`` 时完全忽略次关键词，保持旧世界书行为。
+        """
+        low = (text or "").lower()
+        primary = self._coerce_str_list(
+            self._entry_alias(entry, "keys", "key", default=[])
+        )
+        secondary = self._coerce_str_list(
+            self._entry_alias(entry, "secondary_keys", "keys_secondary",
+                              "keysecondary", default=[])
+        )
+        selective = self._entry_bool_alias(entry, "selective", default=False)
+        legacy_mode = str(entry.get("key_mode") or "").strip().lower()
+        if legacy_mode in ("primary_and_secondary", "primary_or_secondary",
+                           "secondary_only", "all"):
+            selective = True
+        mode = self._normalize_selective_logic(entry, selective, bool(secondary))
+        use_regex = self._entry_bool_alias(entry, "use_regex", default=False)
+        regex_error = ""
+
+        def _hits(keys: List[str], apply_loose: bool = True) -> List[str]:
+            hit: List[str] = []
+            for key in keys:
+                if use_regex:
+                    ok, reason = _regex_mod.search(key, text)
+                    if reason:
+                        regex_error = reason
+                        continue
+                    if ok:
+                        hit.append(key)
+                    continue
+                if key.lower() in low:
+                    hit.append(key)
+                    continue
+                if apply_loose:
+                    for seg in self._key_segments(key):
+                        if seg in low:
+                            hit.append(key)
+                            break
+            return hit
+
+        primary_hits = _hits(primary)
+        secondary_hits = _hits(secondary)
+        need = self._min_match_required(sensitivity, len(primary))
+        # 宽松档标题命中：标题是作者写的主题词，仅补主关键词的缺口。
+        if (not use_regex and loose_mode and primary
+                and len(primary_hits) < need):
+            title = entry.get("title", "")
+            if (isinstance(title, str) and len(title.strip()) >= 2
+                    and title.strip().lower() in low):
+                primary_hits.append(title.strip())
+        p_ok = bool(primary) and len(primary_hits) >= need
+        s_any = bool(secondary_hits)
+        s_all = bool(secondary) and len(secondary_hits) == len(secondary)
+
+        if mode == "AND_ALL":
+            ok = p_ok and s_all
+            required = need + len(secondary)
+        elif mode == "NOT_ANY":
+            ok = p_ok and not s_any
+            required = need
+        elif mode == "NOT_ALL":
+            ok = p_ok and not s_all
+            required = need
+        elif mode == "LEGACY_OR":
+            ok = p_ok or s_any
+            required = need if primary else 1
+        elif mode == "LEGACY_SECONDARY":
+            ok = s_any
+            required = 1
+        elif mode == "LEGACY_ANY":
+            ok = p_ok or (not primary and s_any)
+            required = need if primary else (1 if secondary else 0)
+        else:  # AND_ANY
+            ok = p_ok and s_any
+            required = need + 1
+
+        matched_keys = primary_hits + [
+            k for k in secondary_hits if k not in primary_hits
+        ]
+        return ok, len(matched_keys), matched_keys, required, regex_error
+
+    def _rule_gate(self, wb_name: str, entry: dict, round_no: int,
+                   scope_id: str, persona_id: str, simulate: bool = False):
+        """定时效应闸门：返回 (state, rule_id, block_reason)。
+
+        只读；推进只发生在 confirm_rule_injection。没有 scope/persona 或
+        没有轮次时返回 (None, rule_id, None)，新字段保持旧行为。
+        """
+        rule_id = self._entry_rule_id(wb_name, entry)
+        if not (scope_id or persona_id) or round_no <= 0:
+            return None, rule_id, None
+        # simulate 只读：不能为了看结果给条目补 first_seen 并落盘。
+        state = self.rules.entry_state(scope_id, persona_id, rule_id, round_no,
+                                       create=not simulate)
+        if state is None:
+            return None, rule_id, None
+        delay = self._entry_nonneg_alias(
+            entry, "delay", "delay_rounds", default=0, cap=999
+        )
+        if delay and round_no < delay:
+            return state, rule_id, f"delay({delay - round_no}轮)"
+        # 粘性期内必须放行：cooldown_until 是从「粘性结束」起算的（见
+        # mark_injected），若先判冷却，粘性轮会被自己的冷却整段挡掉，
+        # 表现为「粘性从未生效、冷却却已消耗」。
+        sticky_until = int(state.get("sticky_until", 0) or 0)
+        if round_no > 0 and round_no <= sticky_until:
+            return state, rule_id, None
+        cooldown = int(state.get("cooldown_until", 0) or 0)
+        if cooldown >= round_no:
+            return state, rule_id, f"cooldown({cooldown - round_no + 1}轮)"
+        return state, rule_id, None
+
+    def confirm_rule_injection(self, entries: List[dict]) -> int:
+        """条目实际进入 prompt 后提交粘性/冷却；模拟与预算丢弃不调用。"""
+        committed = 0
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            scope_id = str(entry.get("_rule_scope") or "")
+            persona_id = str(entry.get("_rule_persona") or "")
+            rule_id = str(entry.get("_rule_id") or "")
+            if not (scope_id or persona_id) or not rule_id:
+                continue
+            self.rules.mark_injected(
+                scope_id, persona_id, rule_id,
+                int(entry.get("_rule_round", 0) or 0),
+                int(entry.get("_rule_sticky_rounds", 0) or 0),
+                int(entry.get("_rule_cooldown_rounds", 0) or 0),
+                carry=(entry.get("_rule_reason") == "sticky"),
+            )
+            committed += 1
+        return committed
+
+    def rule_status(self, scope_id: str, persona_id: str,
+                    worldbook: Optional[str] = None) -> dict:
+        """给面板/诊断返回当前轮次与各规则剩余轮数（只读）。"""
+        data = self.rules.snapshot(scope_id or "", persona_id or "")
+        if worldbook:
+            prefix = f"{worldbook}:"
+            data["rules"] = {
+                key: value for key, value in data.get("rules", {}).items()
+                if key.startswith(prefix)
+            }
+        return data
 
     def match_entries(self, user_input: str,
                       bound_worldbooks: Optional[List[str]] = None,
@@ -338,7 +611,17 @@ class WorldbookManager:
                       sensitivity: float = 0.7,
                       session_vars: Optional[dict] = None,
                       funnel: Optional[dict] = None,
-                      write_trigger_log: bool = True) -> List[dict]:
+                      write_trigger_log: bool = True,
+                      scope_id: str = "",
+                      persona_id: str = "",
+                      turn_token: str = "",
+                      simulate: bool = False,
+                      recent_messages: Optional[List[str]] = None,
+                      current_input: str = "",
+                      recursion_enabled: Optional[bool] = None,
+                      recursion_max_steps: Optional[int] = None,
+                      recursion_max_tokens: Optional[int] = None,
+                      trigger_log_out: Optional[list] = None) -> List[dict]:
         """Return keyword-matched entries (substring, case-insensitive).
 
         Entries already marked ``is_constant`` are skipped — those come from
@@ -374,7 +657,6 @@ class WorldbookManager:
                 不再顶掉真实会话的触发日志）
         """
         entries: List[dict] = []
-        msg_lower = user_input.lower()
         seen_ids: set = set()
         trigger_log: List[dict] = []
         _candidates = 0
@@ -394,74 +676,186 @@ class WorldbookManager:
             sens = 1.0
         loose_mode = sens > self._SENS_LOOSE_MIN
 
+        # M5.1：逻辑轮次绑定 scope::persona，不按入口次数。simulate 只读当前
+        # 轮；真实链路用 turn_token 幂等推进，避免同一轮被多入口重复计数。
+        _scope_id = str(scope_id or "")
+        _persona_id = str(persona_id or "")
+        round_no = 0
+        if _scope_id or _persona_id:
+            if simulate:
+                round_no = self.rules.current_round(_scope_id, _persona_id)
+            elif turn_token:
+                round_no = self.rules.begin_turn(_scope_id, _persona_id, str(turn_token))
+            else:
+                round_no = self.rules.current_round(_scope_id, _persona_id)
+        recent_texts = [str(m) for m in (recent_messages or []) if str(m).strip()]
+        rec_enabled = (
+            self.recursion_enabled if recursion_enabled is None
+            else bool(recursion_enabled)
+        )
+        rec_steps = max(0, min(10, int(
+            self.recursion_max_steps if recursion_max_steps is None
+            else recursion_max_steps
+        )))
+        rec_tokens = max(0, int(
+            self.recursion_max_tokens if recursion_max_tokens is None
+            else recursion_max_tokens
+        ))
+
+        def _drop(entry: dict, wb_name: str, reason: str) -> None:
+            _filtered.append({
+                "worldbook": wb_name,
+                "title": entry.get("title", ""),
+                "reason": reason,
+            })
+
+        def _clear_sticky(entry: dict, wb_name: str) -> None:
+            if simulate:
+                return
+            rule_id = self._entry_rule_id(wb_name, entry)
+            try:
+                if self.rules.entry_state(
+                        _scope_id, _persona_id, rule_id, round_no, create=False):
+                    self.rules.clear_sticky(_scope_id, _persona_id, rule_id)
+            except Exception:
+                logger.debug("[WorldbookManager] 清理粘性失败", exc_info=True)
+
+        def _enrich(result_entry: dict, entry: dict, wb_name: str,
+                    rule_id: str, matched_count: int, matched_keys: list,
+                    reason: str, depth_override=None) -> dict:
+            # M5.3：`@@depth` / `@@role` 装饰器决定「按消息深度注入」。从正文
+            # 里剥离控制行，避免它们被拼进 system prompt；未知 @@ 指令原样保留。
+            deco = _decorators_mod.parse(result_entry.get("content", ""))
+            if deco.is_depth_injection:
+                depth_override = deco.depth
+                result_entry["content"] = deco.body
+            inject_position = self._normalize_inject_position(entry)
+            if depth_override is not None:
+                inject_position = 3
+                depth = max(0, int(depth_override))
+            else:
+                depth = self._entry_nonneg_alias(
+                    entry, "depth", default=4, cap=9999
+                )
+            role = str(deco.role or entry.get("role") or "system").strip().lower()
+            if role not in ("system", "user", "assistant"):
+                role = "system"
+            result_entry["_match_score"] = matched_count
+            result_entry["_matched_keys"] = matched_keys
+            result_entry["_source_worldbook"] = wb_name
+            result_entry["_rule_id"] = rule_id
+            result_entry["_rule_scope"] = _scope_id
+            result_entry["_rule_persona"] = _persona_id
+            result_entry["_rule_round"] = round_no
+            result_entry["_rule_sticky_rounds"] = self._entry_nonneg_alias(
+                entry, "sticky", "sticky_rounds", default=0, cap=999
+            )
+            result_entry["_rule_cooldown_rounds"] = self._entry_nonneg_alias(
+                entry, "cooldown", "cooldown_rounds", default=0, cap=999
+            )
+            result_entry["_rule_delay_rounds"] = self._entry_nonneg_alias(
+                entry, "delay", "delay_rounds", default=0, cap=999
+            )
+            result_entry["_rule_group"] = str(entry.get("group") or "")
+            result_entry["_rule_group_max"] = self._entry_nonneg_alias(
+                entry, "group_max", default=1, cap=999
+            )
+            result_entry["_rule_group_weight"] = self._entry_nonneg_alias(
+                entry, "group_weight", default=100, cap=9999
+            )
+            result_entry["_rule_priority"] = self._entry_nonneg_alias(
+                entry, "priority", "order", default=100, cap=9999
+            )
+            result_entry["_rule_recursive"] = self._entry_bool_alias(
+                entry, "recursive", default=False
+            )
+            result_entry["_rule_exclude_recursion"] = self._entry_bool_alias(
+                entry, "exclude_recursion", default=False
+            )
+            result_entry["_rule_prevent_recursion"] = self._entry_bool_alias(
+                entry, "prevent_recursion", default=False
+            )
+            result_entry["_rule_reason"] = reason
+            result_entry["_rule_inject_position"] = inject_position
+            result_entry["_rule_depth"] = depth
+            result_entry["_rule_role"] = role
+            result_entry["_rule_regex"] = self._entry_bool_alias(
+                entry, "use_regex", default=False
+            )
+            return result_entry
+
         for wb in active_wbs:
             wb_name = wb.get('name', '')
             for entry in wb.get('entries', []):
-                if not entry.get('enabled', True):
+                rule_id = self._entry_rule_id(wb_name, entry)
+                enabled = self._entry_bool_alias(entry, "enabled", default=True)
+                if not enabled:
+                    _clear_sticky(entry, wb_name)
                     continue
                 if entry.get('is_constant', False):
                     continue
-                keys = entry.get('keys', [])
-                if not isinstance(keys, (list, tuple)):
-                    keys = [keys]
-                str_keys = [k for k in keys if isinstance(k, str) and k.strip()]
-                # 灵敏度门控：最低匹配关键词数（在「有几个可用关键词」之后才能算）
-                min_match_required = self._min_match_required(sens, len(str_keys))
-                if min_match_required <= 0:
+                primary_keys = self._coerce_str_list(
+                    self._entry_alias(entry, "keys", "key", default=[])
+                )
+                secondary_keys = self._coerce_str_list(
+                    self._entry_alias(entry, "secondary_keys", "keys_secondary",
+                                      "keysecondary", default=[])
+                )
+                if not primary_keys and not secondary_keys:
                     continue
                 _candidates += 1
-                matched_count = 0
-                matched_keys: List[str] = []
-                for key in str_keys:
-                    # 容错：导入的世界书可能含有非字符串 key（数字、null 等），跳过
-                    if key.lower() in msg_lower:
-                        matched_count += 1
-                        matched_keys.append(key)
-                    elif loose_mode:
-                        # 宽松档：多词关键词的任一片段独立命中即可
-                        for seg in self._key_segments(key):
-                            if seg in msg_lower:
-                                matched_count += 1
-                                matched_keys.append(key)
-                                break
-                # 宽松档再补一路「标题命中」：条目标题本身是作者写的主题词，
-                # 用户真的聊到该主题时标题往往先于关键词出现在文本里。
-                if loose_mode and matched_count < min_match_required:
-                    title = entry.get('title', '')
-                    if isinstance(title, str) and len(title.strip()) >= 2 and title.strip().lower() in msg_lower:
-                        matched_count += 1
-                        matched_keys.append(title.strip())
-                if matched_count < min_match_required:
+
+                state, rule_id, block_reason = self._rule_gate(
+                    wb_name, entry, round_no, _scope_id, _persona_id, simulate)
+                if block_reason:
+                    _drop(entry, wb_name, block_reason)
+                    continue
+                sticky_until = int((state or {}).get('sticky_until', 0) or 0)
+                sticky_active = bool(state and round_no > 0 and round_no <= sticky_until)
+
+                # 扫描窗口：0/缺省维持旧行为（调用方传入的 context_text，
+                # 即最近 4 条）；>0 时改为「本轮原文 + 最近 N 条」。
+                scan_window = self._entry_nonneg_alias(
+                    entry, "scan_depth", "scan_window", default=0, cap=999
+                )
+                match_text = user_input
+                if scan_window and recent_texts:
+                    match_text = (current_input or user_input) + "\n" + "\n".join(
+                        recent_texts[-scan_window:])
+
+                (matched_ok, matched_count, matched_keys,
+                 min_match_required, regex_error) = self._match_keys(
+                    entry, match_text, sens, loose_mode
+                )
+                if regex_error:
+                    _drop(entry, wb_name, regex_error)
+                    continue
+                if not matched_ok and not sticky_active:
                     # M1b 漏斗：近失（碰到了关键词但不够门槛）——此前静默丢弃，
                     # 面板只能看到「没命中」不知道差多少。零命中不算近失。
                     if matched_count > 0:
-                        _filtered.append({
-                            "worldbook": wb_name,
-                            "title": entry.get('title', ''),
-                            "reason": f"sensitivity_unmet(命中{matched_count}/需{min_match_required})",
-                        })
+                        _drop(
+                            entry, wb_name,
+                            f"sensitivity_unmet(命中{matched_count}/需{min_match_required})",
+                        )
                     continue
-                # M1b 模块 6：条件解锁——关键词过了还要条件成立
+                # M1b 模块 6：条件解锁——关键词过了还要条件成立；粘性也不绕条件。
                 cond = entry.get('condition')
                 if cond:
                     cond_ok, cond_detail = _condition_mod.evaluate(str(cond), session_vars)
                     if not cond_ok:
-                        _filtered.append({
-                            "worldbook": wb_name,
-                            "title": entry.get('title', ''),
-                            "reason": f"condition_unmet({cond_detail})",
-                        })
+                        _clear_sticky(entry, wb_name)
+                        _drop(entry, wb_name, f"condition_unmet({cond_detail})")
                         continue
                 entry_id = entry.get('id', '')
                 dup_key = f"{wb_name}:{entry_id}"
                 if dup_key not in seen_ids:
                     seen_ids.add(dup_key)
-                    result_entry = entry.copy()
-                    result_entry['_match_score'] = matched_count
-                    result_entry['_matched_keys'] = matched_keys
-                    # M1b 漏斗：截帽近失要报「哪本书」，沿用 _match_score 的
-                    # 下划线私键先例（不污染作者可见字段）
-                    result_entry['_source_worldbook'] = wb_name
+                    reason = "sticky" if not matched_ok else "keyword"
+                    result_entry = _enrich(
+                        entry.copy(), entry, wb_name, rule_id,
+                        matched_count, matched_keys, reason,
+                    )
                     entries.append(result_entry)
                     trigger_log.append({
                         "worldbook": wb_name,
@@ -469,9 +863,133 @@ class WorldbookManager:
                         "title": entry.get('title', ''),
                         "matched_keys": matched_keys,
                         "score": matched_count,
+                        "sticky": reason == "sticky",
                     })
 
-        entries.sort(key=lambda x: x.get('_match_score', 0), reverse=True)
+        # M5.1 有界递归：默认关闭；仅把被选条目的正文当作额外匹配文本，
+        # 受 max_steps / max_tokens / visited 三重约束，路径写进 _recursion_path。
+        if entries and rec_enabled and rec_steps > 0 and rec_tokens > 0:
+            seen_ids = {f"{e.get('_source_worldbook', '')}:{e.get('id', '')}" for e in entries}
+            queue = [
+                (e, 1) for e in entries
+                if not e.get('_rule_prevent_recursion')
+            ]
+            visited: set = set()
+            scan_budget = 64
+            token_budget = rec_tokens
+            while queue and scan_budget > 0 and token_budget > 0:
+                parent, depth = queue.pop(0)
+                if depth > rec_steps:
+                    continue
+                content = str(parent.get('content') or '')[:4000]
+                if not content:
+                    continue
+                for wb in active_wbs:
+                    wb_name = wb.get('name', '')
+                    for entry in wb.get('entries', []):
+                        if scan_budget <= 0:
+                            break
+                        if not entry.get('enabled', True) or entry.get('is_constant', False):
+                            continue
+                        if self._entry_bool_alias(
+                                entry, "exclude_recursion", default=False):
+                            continue
+                        rule_id = self._entry_rule_id(wb_name, entry)
+                        if rule_id in seen_ids or rule_id in visited:
+                            continue
+                        if not (self._coerce_str_list(entry.get('keys', []))
+                                or self._coerce_str_list(entry.get('keys_secondary', []))):
+                            continue
+                        visited.add(rule_id)
+                        scan_budget -= 1
+                        state, rule_id, block_reason = self._rule_gate(
+                            wb_name, entry, round_no, _scope_id, _persona_id, simulate)
+                        if block_reason:
+                            continue
+                        (matched_ok, matched_count, matched_keys,
+                         _need, regex_error) = self._match_keys(
+                            entry, content, sens, loose_mode
+                        )
+                        if regex_error:
+                            _drop(entry, wb_name, regex_error)
+                            continue
+                        if not matched_ok:
+                            continue
+                        cond = entry.get('condition')
+                        if cond:
+                            cond_ok, _cond_detail = _condition_mod.evaluate(str(cond), session_vars)
+                            if not cond_ok:
+                                continue
+                        tokens = self._estimate_rule_tokens(
+                            str(entry.get('content') or '')
+                        )
+                        if tokens > token_budget:
+                            _drop(entry, wb_name, "recursion_limit(tokens)")
+                            token_budget = 0
+                            break
+                        token_budget -= tokens
+                        result_entry = _enrich(
+                            entry.copy(), entry, wb_name, rule_id,
+                            matched_count, matched_keys, "recursion",
+                        )
+                        result_entry['_recursion_path'] = list(parent.get('_recursion_path') or [parent.get('_rule_id', '')]) + [rule_id]
+                        entries.append(result_entry)
+                        seen_ids.add(rule_id)
+                        trigger_log.append({
+                            "worldbook": wb_name,
+                            "entry_id": entry.get('id', ''),
+                            "title": entry.get('title', ''),
+                            "matched_keys": matched_keys,
+                            "score": matched_count,
+                            "recursion": True,
+                        })
+                        if (not self._entry_bool_alias(
+                                entry, "prevent_recursion", default=False)
+                                and depth < rec_steps):
+                            queue.append((result_entry, depth + 1))
+                    if scan_budget <= 0:
+                        break
+
+        # M5.1 互斥组：组内按 (activation_score, priority, group_weight,
+        # rule_id) 确定性排序取前 group_max 个；默认 group_max=1。
+        grouped: dict = {}
+        ungrouped: List[dict] = []
+        for item in entries:
+            group = str(item.get('_rule_group') or '')
+            if group:
+                grouped.setdefault(group, []).append(item)
+            else:
+                ungrouped.append(item)
+        selected: List[dict] = []
+        for group, items in grouped.items():
+            limit = max([
+                self._entry_nonneg(item, '_rule_group_max', 999) for item in items
+            ] + [1])
+            items.sort(key=lambda x: (
+                -int(x.get('_match_score', 0) or 0),
+                -int(x.get('_rule_priority', 0) or 0),
+                -int(x.get('_rule_group_weight', 0) or 0),
+                str(x.get('_rule_id', '')),
+            ))
+            winner = items[0].get('_rule_id', '') if items else ''
+            if limit > 0:
+                for dropped in items[limit:]:
+                    _filtered.append({
+                        "worldbook": dropped.get('_source_worldbook', ''),
+                        "title": dropped.get('title', ''),
+                        "reason": f"group_lost({group}; winner={winner})",
+                    })
+                items = items[:limit]
+            selected.extend(items)
+        entries = selected + ungrouped
+
+        # 稳定排序：score 降序、priority 降序、group_weight 降序、rule_id 升序。
+        entries.sort(key=lambda x: (
+            -int(x.get('_match_score', 0) or 0),
+            -int(x.get('_rule_priority', 0) or 0),
+            -int(x.get('_rule_group_weight', 0) or 0),
+            str(x.get('_rule_id', '')),
+        ))
         _matched = len(entries)
         if top_k > 0 and len(entries) > top_k:
             # M1b 漏斗：截帽掉的命中条目同样进 filtered（它们「命中了但没挤进
@@ -484,16 +1002,27 @@ class WorldbookManager:
                 })
             entries = entries[:top_k]
 
+        # M5.1：触发日志只留最终入选条目。组互斥/截帽掉的条目已进 filtered，
+        # 再写进日志会让 /quill 与 trace 都显示「命中了却没注入」。
+        if trigger_log:
+            _kept = {(e.get('_source_worldbook', ''), str(e.get('id', '')))
+                     for e in entries}
+            trigger_log = [t for t in trigger_log
+                           if (t.get('worldbook', ''), str(t.get('entry_id', ''))) in _kept]
+
         # 更新触发日志（show_trigger_log 开启时可供查询，加锁保护）。
         # P1-b：只读调用方（simulate）传 write_trigger_log=False——不顶掉
         # 真实会话刚写的触发日志（/quill test wb 读的就是它）。
         if write_trigger_log:
             with self._lock:
                 self._last_trigger_log = trigger_log
+        if trigger_log_out is not None:
+            trigger_log_out.extend(trigger_log)
         if funnel is not None:
             funnel["candidates"] = _candidates
             funnel["matched"] = _matched
             funnel["filtered"] = _filtered
+            funnel["trigger_log"] = trigger_log
         return entries
 
     # ── CRUD ─────────────────────────────────────────────────────────────
@@ -631,7 +1160,7 @@ class WorldbookManager:
 
     @staticmethod
     def _safe_inject_position(raw, default: int = 1) -> int:
-        """归一注入位置为 1（常驻位置）或 2（按需位置）。
+        """归一注入位置为 1（常驻）/ 2（按需）/ 3（深度）。
 
         H4：旧写法 `1 if e.get('position', 2) <= 1 else 2` 直接把 JSON 值和
         整数比大小。ST 导出里有 `"position": "0"` 这类字符串取值（也有
@@ -639,12 +1168,80 @@ class WorldbookManager:
         **整本**世界书跟着导入失败。这里统一走数值归一，认不出来就退回默认值。
         """
         try:
-            return 1 if int(raw) <= 1 else 2
+            value = int(raw)
+            return value if value in (1, 2, 3) else default
         except (TypeError, ValueError):
             # 枚举名形态：ST 的 before_char/after_char 都是常驻位
             if isinstance(raw, str) and raw.strip().lower() in ("before_char", "after_char"):
-                return 1
+                return default
             return default
+
+    @staticmethod
+    def _safe_bool(value, default: bool = False) -> bool:
+        """字符串 ``"false"`` / ``"0"`` / ``"off"`` 必须判 False。"""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() not in (
+                "", "0", "false", "no", "off", "none", "null"
+            )
+        return bool(value)
+
+    @classmethod
+    def _rule_fields(cls, e: dict) -> dict:
+        """M5.1 可选规则的统一落库形态；缺省值严格等价旧行为。"""
+        secondary = cls._coerce_str_list(
+            e.get("secondary_keys", e.get("keysecondary", []))
+        )
+        selective = cls._safe_bool(e.get("selective"), bool(secondary))
+        logic = str(
+            e.get("selective_logic") or e.get("selectiveLogic")
+            or e.get("key_mode") or "AND_ANY"
+        ).strip().upper().replace("-", "_")
+        legacy = {
+            "ANY": "AND_ANY",
+            "ALL": "AND_ALL",
+            "PRIMARY_AND_SECONDARY": "AND_ANY",
+            "PRIMARY_OR_SECONDARY": "AND_ANY",
+            "SECONDARY_ONLY": "AND_ANY",
+        }
+        logic = legacy.get(logic, logic)
+        if logic not in ("AND_ANY", "AND_ALL", "NOT_ANY", "NOT_ALL"):
+            logic = "AND_ANY"
+        position = cls._safe_inject_position(
+            e.get("inject_position", e.get("position", 2)), default=2
+        )
+        role = str(e.get("role") or "system").strip().lower()
+        if role not in ("system", "user", "assistant"):
+            role = "system"
+        return {
+            "secondary_keys": secondary,
+            "selective": selective,
+            "selective_logic": logic,
+            "sticky": cls._entry_nonneg_alias(e, "sticky", "sticky_rounds", default=0, cap=999),
+            "cooldown": cls._entry_nonneg_alias(e, "cooldown", "cooldown_rounds", default=0, cap=999),
+            "delay": cls._entry_nonneg_alias(e, "delay", "delay_rounds", default=0, cap=999),
+            "group": str(e.get("group") or "")[:100],
+            "group_max": cls._entry_nonneg_alias(e, "group_max", default=1, cap=999),
+            "group_weight": cls._entry_nonneg_alias(e, "group_weight", default=100, cap=9999),
+            "priority": cls._entry_nonneg_alias(e, "priority", "order", default=100, cap=9999),
+            "scan_depth": (
+                None if e.get("scan_depth") is None
+                else cls._entry_nonneg_alias(e, "scan_depth", "scan_window", default=0, cap=999)
+            ),
+            "exclude_recursion": cls._safe_bool(e.get("exclude_recursion"), False),
+            "prevent_recursion": cls._safe_bool(
+                e.get("prevent_recursion"), cls._safe_bool(e.get("recursive"), False)
+            ),
+            "use_regex": cls._safe_bool(e.get("use_regex"), False),
+            "inject_position": position,
+            "depth": cls._entry_nonneg_alias(e, "depth", default=4, cap=9999),
+            "role": role,
+        }
 
     def _map_quill_entry(self, e: dict, index: int) -> dict:
         """Quill 原生条目 → 内部条目。字段缺省或类型异常都不抛，按兜底值走。"""
@@ -655,11 +1252,12 @@ class WorldbookManager:
             "id": str(e.get('id') or f"entry_{index}")[:50],
             "title": str(e.get('title', '') or ''),
             "content": str(e.get('content', '') or ''),
-            "is_constant": bool(e.get('is_constant', False)),
+            "is_constant": self._safe_bool(e.get('is_constant'), False),
             "inject_position": self._safe_inject_position(e.get('inject_position', 1)),
             "keys": self._coerce_str_list(e.get('keys', [])),
-            "enabled": bool(e.get('enabled', True)),
+            "enabled": self._safe_bool(e.get('enabled'), True),
         }
+        mapped.update(self._rule_fields(e))
         # P1-d：condition 只在有值时落键（空串等价于无条件，与存量条目
         # 的键形态保持一致）。
         cond = str(e.get('condition', '') or '').strip()
@@ -677,7 +1275,9 @@ class WorldbookManager:
         废掉整本世界书**。现在统一先归一类型再取值。
         """
         keys_raw = self._coerce_str_list(e.get('key') or e.get('keys', []))
-        keys_raw.extend(self._coerce_str_list(e.get('keysecondary') or []))
+        secondary_raw = self._coerce_str_list(
+            e.get('keysecondary') or e.get('secondary_keys') or []
+        )
 
         # comment/uid 都可能是数字；title 与 id 都以字符串形态落库
         comment = e.get('comment', '')
@@ -693,11 +1293,12 @@ class WorldbookManager:
             "id": entry_id,
             "title": title,
             "content": str(e.get('content', '') or ''),
-            "is_constant": bool(e.get('constant', False)),
+            "is_constant": self._safe_bool(e.get('constant'), False),
             "inject_position": self._safe_inject_position(e.get('position', 2), default=2),
             "keys": keys_raw,
-            "enabled": not bool(e.get('disable', False)),
+            "enabled": not self._safe_bool(e.get('disable'), False),
         }
+        mapped.update(self._rule_fields({**e, "secondary_keys": secondary_raw}))
         # P1-d：ST 导出（handle_wb_export_st）会把 condition 写进条目，
         # 本插件导出的 ST 卡 re-import 时条件不丢；原生 ST 无此字段，
         # 缺省即无条件，不受影响。
@@ -793,6 +1394,19 @@ class WorldbookManager:
             if not entries:
                 return False
 
+            # P2-14：重复 entry_id 会让匹配阶段按 wb:id 去重时静默丢条目。
+            # 导入/导出往返（尤其 ST 的 comment 当 id）必须保序追加 #k。
+            seen_ids: set = set()
+            for entry in entries:
+                eid = str(entry.get("id") or "")
+                if eid in seen_ids:
+                    k = 2
+                    while f"{eid}#{k}" in seen_ids:
+                        k += 1
+                    eid = f"{eid}#{k}"
+                    entry["id"] = eid
+                seen_ids.add(eid)
+
             # description：优先取 JSON 中的 description，否则根据格式自动生成
             description = data.get('description', '') or ("Imported from ST Lorebook" if not is_quill_native else "Imported worldbook")
 
@@ -803,8 +1417,8 @@ class WorldbookManager:
                 "entries": entries,
             }
             path = os.path.join(self.worldbooks_dir, worldbook_name + ".json")
-            _save_json_atomic(path, wb)
             with self._lock:
+                _save_json_atomic(path, wb)
                 self.worldbooks[worldbook_name] = wb
             return True
         except (OSError, json.JSONDecodeError) as exc:
@@ -841,11 +1455,14 @@ class WorldbookManager:
         # 现在按「任一为禁用即禁用」（OR）：两个字段都只在表达「这条要不要注入」，
         # 冲突时保守取禁用。`enabled is None` 视为未表态，不参与判定。
         if "enabled" in st and st["enabled"] is not None:
-            st["disable"] = bool(st.get("disable")) or (not bool(st["enabled"]))
+            st["disable"] = (
+                self._safe_bool(st.get("disable"))
+                or (not self._safe_bool(st["enabled"], True))
+            )
         else:
             # 只有 disable（原生 ST 形态）时统一成 bool：`"false"` 这类字符串脏值
             # 走 `not bool(...)` 会被当成 True，这里一次性收干净。
-            st["disable"] = bool(st.get("disable"))
+            st["disable"] = self._safe_bool(st.get("disable"))
         ext = st.get("extensions")
         if isinstance(ext, dict) and "position" in ext and "position" not in st:
             st["position"] = ext.get("position")
@@ -915,8 +1532,8 @@ class WorldbookManager:
             logger.warning(
                 "[WorldbookManager] 内嵌世界书《%s》已存在，本次导入将覆盖原内容"
                 "（不同角色卡同名时，先导入卡的绑定会被连带改写）", wb_name)
-        _save_json_atomic(path, wb)
         with self._lock:
+            _save_json_atomic(path, wb)
             self.worldbooks[wb_name] = wb
         info = {"name": wb_name, "entries": len(entries)}
         if replaced:

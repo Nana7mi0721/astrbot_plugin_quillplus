@@ -158,9 +158,12 @@ class StateManager:
                 exc, os.path.basename(target),
             )
         except OSError as move_err:
+            # P1-9：隔离失败必须立刻锁只读。否则 5 秒后的 autoflush 会用
+            # 空内存态覆盖原文件，损坏档连人工抢救的机会都没有。
+            self._read_only_reason = "corrupt_quarantine_failed"
             logger.error(
                 f"[Quill State] 加载失败: {exc} | 且无法隔离原文件（{move_err}），"
-                f"为防覆盖已跳过本次加载"
+                f"为防覆盖已跳过本次加载（只读模式）"
             )
 
     def _evict_if_needed(self) -> None:
@@ -324,9 +327,21 @@ class StateManager:
 
     async def get_state(self, user_id: str) -> UserState:
         async with self._lock:
-            physical = self._get_or_create(user_id)
+            # P2-11：只读降级时读取不应制造「不可写」异常；用临时默认态
+            # 返回快照，不写回 _states。
+            physical = self._states.get(user_id)
+            if physical is None:
+                if self._read_only_reason:
+                    physical = UserState(user_id=user_id)
+                else:
+                    physical = self._get_or_create(user_id)
             scope=self.role_scope(user_id)
-            state = self._get_or_create(scope)
+            state = self._states.get(scope)
+            if state is None:
+                if self._read_only_reason:
+                    state = UserState(user_id=scope)
+                else:
+                    state = self._get_or_create(scope)
             pid = self._effective_persona(scope,state)
             return replace(copy.deepcopy(physical), persona_id=pid, **copy.deepcopy(self._bucket(state,pid)))
 
@@ -342,6 +357,12 @@ class StateManager:
 
     async def persist_all(self) -> None:
         """Force persist all in-memory states to disk (call on shutdown)."""
+        if self._read_only_reason:
+            logger.warning(
+                "[Quill State] 只读降级（%s），跳过落盘以避免覆盖原文件",
+                self._read_only_reason,
+            )
+            return
         await self._persist()
 
     # ── 会话状态清理（管理端点专用） ────────────────────────────────

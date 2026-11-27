@@ -16,12 +16,20 @@ import os
 import re
 import tempfile
 import time
+import zipfile
 from collections import defaultdict
 from io import BytesIO
 from typing import Any, Optional
 from uuid import uuid4
 
 from astrbot.api import logger
+
+# M4.1：格式识别与字段保真层（纯逻辑，无 astrbot 依赖）。persona_manager 只保留
+# 「图片/文本 → JSON 入口」，识别与映射统一委托 card_io，加新格式不用碰落盘逻辑。
+try:  # 生产路径按包加载，与 main.py / _route_core.py 的 .quill 相对导入保持一致
+    from .quill.services import card_io, card_export
+except ImportError:  # 直接 python persona_manager.py 自测时没有包上下文
+    from quill.services import card_io, card_export
 
 
 class QuillPersonaManager:
@@ -317,21 +325,37 @@ class QuillPersonaManager:
                 "name": name,
                 "avatar_path": self._normalize_avatar_path(data.get("avatar_path")),
                 "summary": (data.get("summary") or "").strip(),
+                # FUNC-P1-1：.get(k, {}) 的默认值只在键缺失时生效，外部/手改的卡
+                # 文件可能是 "core_prompts": null —— 二段 .get 直接 AttributeError。
+                # 统一 (x.get(k) or {}) 兜底：null 与缺失同样回落默认。
                 "core_prompts": {
-                    "personality": (data.get("core_prompts", {}).get("personality") or "").strip(),
-                    "scenario": (data.get("core_prompts", {}).get("scenario") or "").strip(),
-                    "examples_of_dialogue": (data.get("core_prompts", {}).get("examples_of_dialogue") or "").strip(),
-                    "first_message": (data.get("core_prompts", {}).get("first_message") or "").strip(),
+                    "personality": ((data.get("core_prompts") or {}).get("personality") or "").strip(),
+                    "scenario": ((data.get("core_prompts") or {}).get("scenario") or "").strip(),
+                    "examples_of_dialogue": ((data.get("core_prompts") or {}).get("examples_of_dialogue") or "").strip(),
+                    "first_message": ((data.get("core_prompts") or {}).get("first_message") or "").strip(),
                 },
+                # M5.3：系统提示与后置指令独立保存，不再硬拼进 personality。
+                "system_prompt": (data.get("system_prompt") or "").strip(),
+                "post_history_instructions": (
+                    data.get("post_history_instructions") or ""
+                ).strip(),
                 "quill_extensions": {
-                    "wb_mode": self._normalize_mode(data.get("quill_extensions", {}).get("wb_mode", "disabled")),
-                    "bound_worldbooks": data.get("quill_extensions", {}).get("bound_worldbooks", []),
-                    "rag_mode": self._normalize_mode(data.get("quill_extensions", {}).get("rag_mode", "disabled")),
-                    "bound_rag_docs": data.get("quill_extensions", {}).get("bound_rag_docs", []),
-                    "wr_mode": self._normalize_mode(data.get("quill_extensions", {}).get("wr_mode", "disabled")),
-                    "bound_writing_resource": data.get("quill_extensions", {}).get("bound_writing_resource", []),
+                    "wb_mode": self._normalize_mode((data.get("quill_extensions") or {}).get("wb_mode", "disabled")),
+                    "bound_worldbooks": (data.get("quill_extensions") or {}).get("bound_worldbooks", []),
+                    "rag_mode": self._normalize_mode((data.get("quill_extensions") or {}).get("rag_mode", "disabled")),
+                    "bound_rag_docs": (data.get("quill_extensions") or {}).get("bound_rag_docs", []),
+                    "wr_mode": self._normalize_mode((data.get("quill_extensions") or {}).get("wr_mode", "disabled")),
+                    "bound_writing_resource": (data.get("quill_extensions") or {}).get("bound_writing_resource", []),
+                    "wr_preset_id": str(
+                        (data.get("quill_extensions") or {}).get("wr_preset_id") or ""
+                    ).strip(),
                 },
             }
+            # M4.1：导入保真快照（未映射的原始字段 / 未识别 extensions）随卡落库。
+            # 只有导入路径会带该键；手建卡没有，不写空对象（避免每张卡多一段噪音）。
+            card_source = data.get("card_source")
+            if isinstance(card_source, dict) and card_source:
+                persona["card_source"] = card_source
             path = self._persona_path(persona_id)
             await self._write_file(path, persona)
             # 缓存存 deepcopy，返回 deepcopy
@@ -371,6 +395,10 @@ class QuillPersonaManager:
                     if field in data["core_prompts"]:
                         cp[field] = (data["core_prompts"][field] or "").strip()
 
+            for field in ("system_prompt", "post_history_instructions"):
+                if field in data:
+                    existing[field] = (data[field] or "").strip()
+
             if "quill_extensions" in data and isinstance(data["quill_extensions"], dict):
                 qe = existing.setdefault("quill_extensions", {})
                 for field in ("wb_mode", "rag_mode", "wr_mode"):
@@ -385,6 +413,15 @@ class QuillPersonaManager:
                 for field in ("bound_worldbooks", "bound_rag_docs", "bound_writing_resource"):
                     if field in data["quill_extensions"]:
                         qe[field] = data["quill_extensions"][field] or []
+                if "wr_preset_id" in data["quill_extensions"]:
+                    qe["wr_preset_id"] = str(
+                        data["quill_extensions"]["wr_preset_id"] or ""
+                    ).strip()
+
+            # M4.1：重新导入同一张卡时可整块替换保真快照；不传则原样保留。
+            # 编辑设定（core_prompts）不触碰 card_source —— 「编辑只覆写对应位置」。
+            if isinstance(data.get("card_source"), dict):
+                existing["card_source"] = data["card_source"]
 
             path = self._persona_path(persona_id)
             await self._write_file(path, existing)
@@ -423,10 +460,10 @@ class QuillPersonaManager:
                 await asyncio.to_thread(os.remove, path)
                 self._cache.pop(persona_id, None)
                 logger.info(f"[QuillPersona] 已删除角色卡: {persona_id}")
-        # S3-3: 清理 _locks 中的孤儿锁，防止 defaultdict 无限增长。
-        # 必须等锁释放后再 pop——持锁时 pop，并发调用者会拿到另一把新锁，
-        # 同一 id 的两个操作就不再互斥。
-        self._locks.pop(persona_id, None)
+        # P2-14：撤销 S3-3 的孤儿锁 pop。pop 后等待中的调用者仍持旧锁引用，
+        # 新来者经 defaultdict 拿到新锁，同一 id 的两个操作失去互斥——极端
+        # 时序下旧 update 会把已删的卡重新写回（无头像的「复活卡」，正是 B9
+        # 想防的问题）。锁数量等于历史卡数，量级可接受，保留锁即是修复。
         return True
 
     async def get_persona_count(self) -> int:
@@ -437,131 +474,101 @@ class QuillPersonaManager:
 
     @staticmethod
     def parse_v2_card(raw_data: bytes, is_image: bool = False) -> dict:
-        """
-        解析 V2 角色卡数据，返回 Quill 格式的角色数据。
-        支持 PNG/JPG 图片（含元数据）和纯 JSON。
+        """解析角色卡数据（PNG/JPG 内嵌元数据或纯 JSON）→ Quill 角色数据。
+
+        M4.1：格式识别、严格 spec 校验、字段映射与「映射 / 保留 / 不支持」报告
+        全部委托 quill/services/card_io.py，本方法只保留「图片 → JSON」这段加载。
+        返回 dict 额外带 card_source（保真快照，随卡落库）与 _import_report
+        （导入报告，由路由 pop 出来回传面板，不落库）。
         """
         if is_image:
             v2_json = QuillPersonaManager._extract_v2_from_image(raw_data)
+        elif raw_data[:4] == b"PK\x03\x04":
+            # CHARX（ZIP 容器）：根目录 card.json + embeded:// 本地资产。
+            v2_json = QuillPersonaManager._extract_from_charx(raw_data)
         else:
+            # 非图：M4.1 起不再用 json.loads 之外的宽松入口；错误由 card_io 统一
+            # 归一成中文格式错误（值错误一律冒到路由的 400）。
             v2_json = json.loads(raw_data.decode('utf-8'))
+        via = "image" if is_image else ("charx" if raw_data[:4] == b"PK\x03\x04" else "json")
+        return card_io.parse_json_card(v2_json, via=via)
 
-        # L13 修复：JSON 根不是对象时原先直接 `v2_json.get(...)` → 抛
-        # `AttributeError: 'list' object has no attribute 'get'`，经面板冒出去
-        # 是一句英文 Python 错误串。这里提前归一成明确的中文格式错误，
-        # 与下方已有的 `raise ValueError("不是有效的 V2 角色卡格式")` 同一口径。
-        if not isinstance(v2_json, dict):
-            raise ValueError("不是有效的 V2 角色卡格式：JSON 根必须是对象")
+    #: CHARX 解压安全上限（防 Zip Bomb / 路径穿越 / 符号链接）。
+    _CHARX_MAX_ENTRIES = 1024
+    _CHARX_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+    _CHARX_MAX_FILE_BYTES = 32 * 1024 * 1024
+    _CHARX_MAX_RATIO = 1000
 
-        # 验证 V2 格式（标准格式 + 扁平化格式 + 最小字段集）
-        # Issue #1：V3 卡（spec: chara_card_v3）与 V2 同构（嵌套 data），一并放行。
-        has_spec = v2_json.get("spec") in ("chara_card_v2", "chara_card_v3")
-        has_data = "data" in v2_json
-        has_v2_standard_fields = any(k in v2_json for k in ("first_mes", "mes_example", "metadata"))
-        has_v2_flat_fields = any(k in v2_json for k in ("name", "description", "personality"))
-        if not (has_spec or has_data or has_v2_standard_fields or has_v2_flat_fields):
-            raise ValueError("不是有效的 V2 角色卡格式")
+    @staticmethod
+    def _charx_member_is_safe(info: zipfile.ZipInfo) -> bool:
+        """拒绝路径穿越、绝对路径与符号链接条目。"""
+        name = info.filename
+        if not name or name.endswith("/"):
+            return False
+        # Windows / POSIX 两种分隔符都要归一，且不允许跳出根目录。
+        norm = os.path.normpath(name.replace("\\", "/"))
+        if os.path.isabs(name) or norm.startswith("..") or "/../" in "/" + norm + "/":
+            return False
+        # 符号链接：external_attr 高 16 位是 Unix mode，S_IFLNK = 0xA000。
+        if (info.external_attr >> 16) & 0xF000 == 0xA000:
+            return False
+        return True
 
-        data = v2_json.get("data", v2_json)
-        # L13：`data` 允许是扁平化写法里的任意值，仍需是对象才能取键。
-        if not isinstance(data, dict):
-            raise ValueError("不是有效的 V2 角色卡格式：data 字段必须是对象")
+    @staticmethod
+    def _extract_from_charx(raw_data: bytes) -> dict:
+        """从 CHARX（ZIP）容器提取根目录 card.json。
 
-        # V2 → Quill 字段映射
-        # L13 修复：name 为数字/列表时 `(data.get("name") or "未命名角色").strip()`
-        # 会抛 `int.strip()`/`list.strip()` 的 AttributeError（英文错误串直接
-        # 冒到面板）。这里统一先转字符串再 strip，并只在结果非空时采用。
-        _raw_name = data.get("name")
-        name = (str(_raw_name).strip() if _raw_name is not None else "") or "未命名角色"
-        description = data.get("description", "")
-        personality = data.get("personality", "")
-        # Q4-3：留一份改造前的 personality 快照——下面的 _sp/_ph 合并会往里塞
-        # 【系统提示】/【后置指令】块，那段文字不适合当角色卡简介。
-        _raw_personality = personality
-        scenario = data.get("scenario", "")
-        first_mes = data.get("first_mes", "")
-        mes_example = data.get("mes_example", "")
+        ``embeded://``（规范拼写为单 d）本地资产只在卡内引用层面保留，
+        远程 http/https 一律不下载；Risu/第三方脚本字段原样保留但不执行。
+        """
+        try:
+            archive = zipfile.ZipFile(BytesIO(raw_data))
+        except zipfile.BadZipFile as exc:
+            raise ValueError("CHARX 文件不是合法的 ZIP 容器") from exc
+        with archive:
+            infos = archive.infolist()
+            if len(infos) > QuillPersonaManager._CHARX_MAX_ENTRIES:
+                raise ValueError(
+                    f"CHARX 条目数超过上限（{QuillPersonaManager._CHARX_MAX_ENTRIES}）"
+                )
+            total_uncompressed = 0
+            total_compressed = 0
+            for info in infos:
+                if info.is_dir():
+                    continue
+                if not QuillPersonaManager._charx_member_is_safe(info):
+                    raise ValueError(f"CHARX 含不安全的条目名：{info.filename!r}")
+                if info.file_size > QuillPersonaManager._CHARX_MAX_FILE_BYTES:
+                    raise ValueError(f"CHARX 单文件过大：{info.filename!r}")
+                total_uncompressed += max(0, info.file_size)
+                total_compressed += max(1, info.compress_size)
+            if total_uncompressed > QuillPersonaManager._CHARX_MAX_TOTAL_BYTES:
+                raise ValueError("CHARX 解压总量超过上限（64MB），疑似 Zip Bomb")
+            if total_compressed > 0 and total_uncompressed / total_compressed > QuillPersonaManager._CHARX_MAX_RATIO:
+                raise ValueError("CHARX 压缩比异常（疑似 Zip Bomb），已拒绝解析")
 
-        # 智能映射：description 是 V2 的「设定主体」，personality 是「性格摘要」。
-        # M9：**不再截断 description**。旧实现 `personality = description[:2000]`
-        # 把 2000 字之后的内容永久丢弃（SillyTavern 角色卡普遍远超 2000 字），
-        # 而导出时又用 `summary + "\n\n" + personality` 拼回 description，
-        # 使前 500 字重复出现（实测 1800 字 → 2302 字）。
-        if description and not personality:
-            personality = description
-        elif description and personality and description != personality:
-            # 两个字段都写了：旧实现只把 personality 当人设、description 仅留
-            # 前 500 字进 summary —— 角色设定主体整段不会进提示词。这里把
-            # description 作为主体、personality 追加在后，两者都不丢；
-            # 若 personality 已被包含在 description 里则不重复拼接。
-            if personality.strip() not in description:
-                personality = f"{description}\n\n{personality}"
-
-        # 清理 mes_example 中的 V2 格式标记
-        if mes_example:
-            mes_example = QuillPersonaManager._clean_v2_mes_example(mes_example)
-
-        # Issue #1：V3 规范字段此前没有导入路径，而类脑生态的卡常把
-        # system_prompt / post_history_instructions 当主要设定载体，丢弃即
-        # 「导入后设定全丢」。原字段注入位在对话两端，轻量导入带标注并入
-        # personality；alternate_greetings 是开场白变体（不是对话示例），
-        # 带标注并入 examples_of_dialogue 保数据，LLM 按标注理解语义。
-        _sp = str(data.get("system_prompt") or "").strip()
-        _ph = str(data.get("post_history_instructions") or "").strip()
-        if _sp:
-            personality = f"{personality}\n\n【系统提示】\n{_sp}".strip()
-        if _ph:
-            personality = f"{personality}\n\n【后置指令】\n{_ph}".strip()
-        _alt = [str(x).strip() for x in (data.get("alternate_greetings") or []) if str(x).strip()]
-        if _alt:
-            _alt_txt = "\n\n".join(_alt)
-            mes_example = (f"{mes_example}\n\n【备选开场白】\n{_alt_txt}" if mes_example
-                           else f"【备选开场白】\n{_alt_txt}")
-
-        # M0-T1 收口：本插件导出的卡把身份与绑定放在
-        # data.extensions.quillplus——优先读回（id 保住 = 记忆会话键/
-        # 绑定不断链）。原生 ST 卡没有该块，走既有缺省路径（id 由
-        # create_persona 生成）。
-        qp: dict = {}
-        ext_block = data.get("extensions")
-        if isinstance(ext_block, dict) and isinstance(ext_block.get("quillplus"), dict):
-            qp = ext_block["quillplus"] or {}
-
-        # Q4-3 修复：description 是 V2 的简介主来源，但 V3 卡常把设定整段塞进
-        # character_book / system_prompt，description 留空——旧写法 summary 恒为空
-        # 串，面板角色卡列表就只剩一个名字。按 description → creator_notes →
-        # personality（改造前快照）依次回退，取到第一段非空文本为止，都空才留空。
-        # 顺带统一 str()：`description` 脏成列表时旧代码的切片结果不是字符串，
-        # 到 create_persona 的 `.strip()` 会抛 AttributeError。
-        _sum_src = str(description or "").strip()
-        if not _sum_src:
-            _sum_src = str(data.get("creator_notes") or "").strip()
-        if not _sum_src:
-            _sum_src = str(_raw_personality or "").strip()
-
-        out = {
-            "name": name,
-            "summary": _sum_src[:500],
-            "core_prompts": {
-                "personality": personality,
-                "scenario": scenario,
-                "first_message": first_mes,
-                "examples_of_dialogue": mes_example,
-            }
-        }
-        _qp_id = str(qp.get("id", "") or "").strip()
-        if _qp_id:
-            out["id"] = _qp_id
-        _qp_ext = qp.get("quill_extensions")
-        if isinstance(_qp_ext, dict) and _qp_ext:
-            out["quill_extensions"] = _qp_ext
-        # Issue #1：内嵌世界书原样透传给调用方（面板导入 / /char import），由
-        # attach_embedded_worldbook 落盘并写回绑定。create_persona 按固定键白名单
-        # 落库，未接线的调用路径会静默丢弃该键——保持「不认识不落库」。
-        _book = data.get("character_book")
-        if isinstance(_book, dict) and _book.get("entries"):
-            out["_character_book"] = _book
-        return out
+            # 根目录 card.json 优先（大小写不敏感）。
+            target = None
+            for info in infos:
+                if info.is_dir():
+                    continue
+                norm = info.filename.replace("\\", "/").lstrip("./")
+                if norm.lower() == "card.json":
+                    target = info
+                    break
+            if target is None:
+                raise ValueError("CHARX 缺少根目录 card.json")
+            try:
+                raw = archive.read(target)
+            except (RuntimeError, zipfile.BadZipFile) as exc:
+                raise ValueError("CHARX 的 card.json 无法读取") from exc
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("CHARX 的 card.json 不是合法 UTF-8 JSON") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError("CHARX 的 card.json 根必须是对象 {...}")
+            return parsed
 
     @staticmethod
     def _extract_v2_from_image(image_data: bytes) -> dict:
@@ -575,14 +582,21 @@ class QuillPersonaManager:
                 "需要安装 Pillow 库才能解析图片中的角色卡数据: pip install Pillow"
             )
 
-        img = Image.open(BytesIO(image_data))
+        # 统一上下文管理器释放文件句柄，并限制解码像素上限（防解压炸弹式大图）。
+        Image.MAX_IMAGE_PIXELS = 64_000_000
+        with Image.open(BytesIO(image_data)) as _img:
+            _info = dict(_img.info or {})
+            try:
+                _exif = _img.getexif()
+            except Exception:
+                _exif = None
 
         # 1. 检查 img.info（标准 tEXt 块）— 多 key 兼容
         # Issue #1：V3 PNG 把完整卡 JSON 放在 ccv3 键（chara 里是 V2 兼容副本，
         # 缺 V3 专属字段），优先取 ccv3。
         for key in ('ccv3', 'chara', 'TavernAI', 'sillytavern', 'SillyTavern',
                     'character', 'comment', 'description', 'title', 'data'):
-            val = img.info.get(key, '')
+            val = _info.get(key, '')
             if not val:
                 continue
             # L14 修复：原先写 `val.encode('ascii')`——tEXt 块里含中文时直接抛
@@ -608,7 +622,7 @@ class QuillPersonaManager:
 
         # 2. 检查 EXIF tag 37510 (UserComment) 和 270 (ImageDescription)
         try:
-            exif = img.getexif()
+            exif = _exif
             if exif:
                 for tag in (37510, 270):
                     val = exif.get(tag)
@@ -701,78 +715,19 @@ class QuillPersonaManager:
 
     @staticmethod
     def _clean_v2_mes_example(text: str) -> str:
-        """清理 V2 对话示例中的格式标记。"""
-        # 移除 <START> 分隔符
-        text = re.sub(r'\n?\s*<START>\s*\n?', '\n---\n', text, flags=re.IGNORECASE)
-        # 保留 {{user}} 和 {{char}} 占位符
-        return text.strip()
+        """清理对话示例中的 <START> 标记（委托 card_io：正则口径只保留一份）。"""
+        return card_io.clean_mes_example(text)
 
     def parse_clipboard_text(self, text: str) -> dict:
-        """解析剪贴板文本（V2 JSON 或纯文本/W++ 格式）→ Quill 角色数据。"""
-        text = text.strip()
+        """解析剪贴板文本（JSON / W++ 标签文本 / 纯文本）→ Quill 角色数据。
 
-        # 1. 尝试解析为 V2 JSON
-        try:
-            data = json.loads(text)
-            # L13：JSON 根可能是数组/数字/字符串，`data.get` 会直接抛
-            # AttributeError 并穿透 except 元组（只捕 JSONDecodeError/ValueError/
-            # UnicodeDecodeError）→ 面板收到英文错误串。先判类型。
-            if not isinstance(data, dict):
-                raise ValueError("剪贴板 JSON 根不是对象")
-            # Issue #1：V3 卡剪贴板导入与文件导入同口径放行
-            #
-            # Q4-2 修复：此前只认 spec 字段，而 parse_v2_card 的准入口径宽得多
-            # （无 spec 但有 data / 扁平字段 / 标准字段的卡都收）。同一张卡
-            # 存成文件能导、粘到剪贴板却掉进纯文本正则分支——正则只认
-            # `Name = ...` 这种形态，JSON 粘进去的结果是一张「未命名角色」，
-            # 设定整段丢失且没有任何报错。这里与 parse_v2_card 的判据对齐：
-            # 任一特征命中即当 V2/V3 卡解析。
-            if (
-                data.get("spec") in ("chara_card_v2", "chara_card_v3")
-                or isinstance(data.get("data"), dict)
-                or any(k in data for k in (
-                    "first_mes", "mes_example", "character_book",
-                    "personality", "description", "creator_notes", "name",
-                ))
-            ):
-                return self.parse_v2_card(text.encode('utf-8'), is_image=False)
-        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
-            logger.debug("[QuillPersona] 剪贴板文本非 V2 JSON，降级为纯文本解析", exc_info=True)
-
-        # 2. 纯文本（W++ / Raw Text）解析
-        def extract_block(label_regex: str, source_text: str) -> str:
-            """提取标签后的内容直到下一个标签或文本结束"""
-            pattern = rf'{label_regex}\s*[=:]?\s*\n?(.*?)(?=\n\s*[A-Z][a-zA-Z_]+\s*[=:]|\Z)'
-            match = re.search(pattern, source_text, re.DOTALL | re.IGNORECASE)
-            val = match.group(1) if match else ""
-            return (val or "").strip()
-
-        # 2.1 提取角色名（安全判空）
-        name_match = re.search(r'Name\s*=\s*["\']?([^"\'\n]+)["\']?', text, re.IGNORECASE)
-        name_val = name_match.group(1) if name_match else ""
-        name = (name_val or "").strip() or "未命名角色 (需手动修改)"
-
-        # 2.2 提取各区块
-        personality = extract_block(r'Personality', text)
-        scenario = extract_block(r'Scenario', text)
-        first_message = extract_block(r'First\s*Message|First_mes|FirstMes', text)
-        examples = extract_block(r'Example\s*Dialogs|Example_Dialog|mes_example|Examples', text)
-        description = extract_block(r'Description|Summary', text)
-
-        # 2.3 智能合并 description → personality（M9：不截断，理由同 parse_v2_card）
-        if not personality and description:
-            personality = description
-
-        return {
-            "name": name,
-            "summary": description[:500] if description else "",
-            "core_prompts": {
-                "personality": personality,
-                "scenario": scenario,
-                "first_message": first_message,
-                "examples_of_dialogue": examples,
-            }
-        }
+        M4.1：本方法只做入口委托，识别与字段映射在 card_io.parse_text_card。
+        保留既有口径（FUNC-P1-3）：文本是 JSON 但卡格式不合法时，CardFormatError
+        必须原样上抛（路由转 400），不许降级成标签分支产出一张空卡；只有根本
+        不是 JSON 的普通文本才走标签 / 纯文本解析，且纯文本回退带
+        confidence=0.25 与明确警告。
+        """
+        return card_io.parse_text_card(text)
 
     async def attach_embedded_worldbook(self, persona_data: dict, wb_manager,
                                         enabled: bool = True) -> Optional[dict]:
@@ -839,8 +794,8 @@ class QuillPersonaManager:
         # 那张卡了（且原文件已被覆盖，不可恢复）。现在 description 与 personality
         # 保持同一份全量文本，summary 仅作为列表用的短摘要留在 Quill 侧，
         # 不再参与 V2 往返。
-        cp = persona.get("core_prompts", {})
-        personality = cp.get("personality", "")
+        cp = persona.get("core_prompts") or {}
+        personality = cp.get("personality") or ""
         summary = persona.get("summary", "")
         if personality and summary:
             if personality.startswith(summary):
@@ -859,9 +814,9 @@ class QuillPersonaManager:
                 "name": persona.get("name", ""),
                 "description": description,
                 "personality": personality,
-                "scenario": persona.get("core_prompts", {}).get("scenario", ""),
-                "first_mes": persona.get("core_prompts", {}).get("first_message", ""),
-                "mes_example": persona.get("core_prompts", {}).get("examples_of_dialogue", ""),
+                "scenario": (persona.get("core_prompts") or {}).get("scenario") or "",
+                "first_mes": (persona.get("core_prompts") or {}).get("first_message") or "",
+                "mes_example": (persona.get("core_prompts") or {}).get("examples_of_dialogue") or "",
                 "creator": "Quill Plugin",
                 "version": "1.0",
                 "tags": [],
@@ -893,9 +848,43 @@ class QuillPersonaManager:
         # 无头像，返回纯 JSON
         return json.dumps(v2_data, ensure_ascii=False, indent=2).encode('utf-8')
 
+    def export_card(self, persona: dict, version: str = "v2", books: list = None,
+                    include_id: bool = True, avatar_data: bytes = None,
+                    container: str = "auto") -> dict:
+        """导出 V2 / V3 角色卡（M4.2）。返回 {data, filename, warnings, payload}。
+
+        真正的字段组装在 quill/services/card_export.py（纯函数），这里只负责
+        「要不要包进 PNG」以及文件名。container:
+          - json：永远给 JSON，哪怕有头像
+          - png：必须有头像，否则报错（不静默降级成 JSON，用户选的是 PNG）
+          - auto：有头像给 PNG，没有给 JSON
+        """
+        container = (container or "auto").lower()
+        if container not in ("auto", "json", "png"):
+            raise ValueError("载体只支持 auto / json / png")
+        if container == "png" and not avatar_data:
+            raise ValueError("该角色卡没有头像，无法导出 PNG；请改选 JSON")
+        payload, warnings = card_export.build_card(persona, version, books, include_id)
+        use_png = bool(avatar_data) and container != "json"
+        if use_png:
+            data = self._embed_card_in_image(avatar_data, payload)
+        else:
+            data = card_export.dump(payload).encode("utf-8")
+        return {
+            "data": data,
+            "filename": card_export.filename(persona, version, "png" if use_png else "json"),
+            "warnings": warnings,
+            "payload": payload,
+            "media_type": "image/png" if use_png else "application/json",
+        }
+
     @staticmethod
-    def _embed_v2_in_image(image_data: bytes, v2_data: dict) -> bytes:
-        """将 V2 JSON 嵌入到 PNG 图片的 tEXt 元数据中。"""
+    def _embed_card_in_image(image_data: bytes, payload: dict) -> bytes:
+        """把卡负载嵌入 PNG 的 tEXt 元数据。
+
+        V3 卡同时写 chara 与 ccv3 两个键：SillyTavern 导出 V3 时就是这么写的，
+        只写 ccv3 的卡在只认 chara 的旧工具里会「有图无卡」。
+        """
         try:
             from PIL import Image
             from PIL.PngImagePlugin import PngInfo
@@ -905,19 +894,23 @@ class QuillPersonaManager:
             )
 
         img = Image.open(BytesIO(image_data))
+        json_str = json.dumps(payload, ensure_ascii=False)
+        card_b64 = base64.b64encode(json_str.encode('utf-8')).decode('ascii')
 
-        # 编码为 Base64
-        json_str = json.dumps(v2_data, ensure_ascii=False)
-        chara_b64 = base64.b64encode(json_str.encode('utf-8')).decode('ascii')
-
-        # 保存为 PNG，嵌入 tEXt
         output = BytesIO()
         if img.mode in ('RGBA', 'LA', 'P'):
             img = img.convert('RGBA')
         else:
             img = img.convert('RGB')
         info = PngInfo()
-        info.add_text("chara", chara_b64)
+        info.add_text("chara", card_b64)
+        if payload.get("spec") == "chara_card_v3":
+            info.add_text("ccv3", card_b64)
         img.save(output, format="PNG", pnginfo=info)
 
         return output.getvalue()
+
+    @staticmethod
+    def _embed_v2_in_image(image_data: bytes, v2_data: dict) -> bytes:
+        """兼容旧调用点：V2 负载等价于 _embed_card_in_image。"""
+        return QuillPersonaManager._embed_card_in_image(image_data, v2_data)

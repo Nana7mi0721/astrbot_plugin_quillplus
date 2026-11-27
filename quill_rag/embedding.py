@@ -23,6 +23,7 @@ class QuillEmbeddingProvider:
         self.enable_local = enable_local
         self._local_model = None  # 懒加载
         self._dim = None
+        self._api_dim = None
 
     async def embed(self, texts: list[str], session_id=None) -> list[list[float]]:
         """将文本列表转为向量列表。"""
@@ -42,9 +43,18 @@ class QuillEmbeddingProvider:
                         result = await provider.get_embeddings(texts)
                     if result:
                         self._dim = len(result[0])
+                        self._api_dim = self._dim
                         return result
             except Exception as e:
                 logger.warning(f"[Quill RAG] API embedding 失败: {e}")
+                # P1-14：API provider 曾成功过就不许静默回落本地异维模型。
+                # 否则一次抖动会产出 512 维向量，把已按 API 维度建立的索引
+                # 打成永久 dim_mismatch；下一次 API 恢复也救不回来。
+                if self._api_dim:
+                    raise ValueError(
+                        "API embedding 暂时失败，已保留原索引维度等待重试"
+                        f"（{self._api_dim} 维）"
+                    ) from e
 
         # 2. fallback 本地模型
         if self.enable_local:

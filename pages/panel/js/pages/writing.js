@@ -7,7 +7,7 @@ import { createTagInput } from "../components/taginput.js";
 import { updateBadge } from "../pages/config.js";
 import { $, $$, catTone, downloadJSON, esc, withBusy } from "../utils.js";
 
-export { repairWRSelected, openWRLint, WR_FALLBACK_GAP, WR_FALLBACK_ROW_H, WR_MIN_CARD_W, WR_MIN_PER_PAGE, WR_PAGER_BLOCK, _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, renderWRGrid, renderWRPager, saveWREntry, toggleWREntry, updateWRBatchBar, updateWRStats, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState };
+export { repairWRSelected, openWRLint, openWRPresetModal, saveWRPreset, WR_FALLBACK_GAP, WR_FALLBACK_ROW_H, WR_MIN_CARD_W, WR_MIN_PER_PAGE, WR_PAGER_BLOCK, _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, renderWRGrid, renderWRPager, saveWREntry, toggleWREntry, updateWRBatchBar, updateWRStats, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState };
 
 const wrState = { entries: [], total: 0, page: 1, perPage: 9 };
 const _wrSelected = new Set();
@@ -398,6 +398,76 @@ async function importWR(input) {
     } catch (e) { showErrorDetail("导入失败", e.message); }
     finally { input.value = ""; }
   });
+}
+
+/* ── M5.2 写作风格预设切换器 ────────────────────────────────────────
+   预设只做「资源绑定 + 互斥维度选择」，不推断文风、不调用模型。这里展示
+   每个维度的候选素材，用户显式选择全局预设；角色卡可在角色编辑页覆盖。 */
+let wrPresetData = null;
+
+async function openWRPresetModal() {
+  S._modalMode = "wr-preset";
+  S._modalState = { type: "wr-preset" };
+  $("#modalTitle").textContent = "写作风格预设";
+  $("#modalBody").textContent = "正在读取预设…";
+  const saveBtn = $("#modalSaveBtn");
+  if (saveBtn) { saveBtn.hidden = false; saveBtn.disabled = false; saveBtn.textContent = "应用预设"; }
+  openModal();
+  try {
+    wrPresetData = await api("/wr/presets");
+    renderWRPresetBody();
+  } catch (e) {
+    $("#modalBody").textContent = "读取失败：" + e.message;
+  }
+}
+
+function renderWRPresetBody() {
+  const data = wrPresetData || {};
+  const current = data.global_preset || "";
+  const presets = data.presets || [];
+  const dims = data.dimensions || [];
+  const dimLabel = Object.fromEntries(dims.map(d => [d.id, d.label]));
+  const row = (id, name, desc, choices) => {
+    const pick = choices
+      ? `<div class="fs-12 t3" style="margin-top:2px">${Object.entries(choices).map(([dim, eid]) => `${esc(dimLabel[dim] || dim)}：${esc(eid)}`).join(" · ")}</div>`
+      : "";
+    return `<label class="check" style="align-items:flex-start;gap:var(--sp-2);padding:var(--sp-2) 0;border-bottom:1px solid var(--border)">
+      <input type="radio" name="wr-preset-choice" value="${esc(id)}" ${current === id ? "checked" : ""} style="margin-top:3px">
+      <span style="display:block">
+        <span style="font-weight:600">${esc(name)}</span>
+        <div class="fs-12 t3">${esc(desc || "")}</div>
+        ${pick}
+      </span>
+    </label>`;
+  };
+  const loadErr = data.load_error
+    ? `<div class="note note--warn">预设文件读取失败：${esc(data.load_error)}（当前按未启用处理）</div>`
+    : "";
+  $("#modalBody").innerHTML = `
+    <p class="hint">同一维度只注入一条素材，避免相反文风指令同时出现。启用后，同维度其余素材不再参与常驻与关键词匹配。此选择全局生效；角色卡可在「角色卡 → 高级扩展」单独覆盖。</p>
+    ${loadErr}
+    <div style="max-height:52vh;overflow:auto">
+      ${row("", "关闭预设（仅按关键词匹配素材）", "不固定任何文风维度", null)}
+      ${presets.map(p => row(p.id, p.name, p.description, p.choices)).join("")}
+    </div>`;
+}
+
+async function saveWRPreset() {
+  const picked = document.querySelector('input[name="wr-preset-choice"]:checked');
+  const presetId = picked ? picked.value : "";
+  const saveBtn = $("#modalSaveBtn");
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    const res = await apiPost("/wr/set_preset", { preset_id: presetId });
+    wrPresetData = res || wrPresetData;
+    showToast(presetId ? "已启用预设" : "已关闭写作预设", "success");
+    closeModal();
+    loadWR();
+  } catch (e) {
+    showToast(e.message);
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
 }
 
 function openWRTestModal() {

@@ -22,6 +22,10 @@ wb_manager methods are synchronous.
 import asyncio
 import random
 import hashlib
+try:
+    from .quill.services.writing_presets import option_entry_ids as _preset_option_ids
+except ImportError:
+    from quill.services.writing_presets import option_entry_ids as _preset_option_ids
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
@@ -116,9 +120,12 @@ class PromptBuilder:
             # 字段表与剧情选项必须拿进来：契约文本由它们生成（见 build_status_contract）。
             # 此前这两个值只在插件实例上，本类只能把字段顺序写死在示例里，
             # 导致用户改了字段名/顺序后，示例与实际契约不一致。
-            self.love_fields: list = list(
-                getattr(config, 'status_bar_fields', None) or _DEFAULT_FIELDS
-            )
+            # P2-05：过滤空串/纯空白字段名——旧版 config 会把字段表补齐到 6 个
+            # （空串凑数），空名会渲染出孤立的「：」行并把空键注入 system prompt。
+            self.love_fields: list = [
+                f for f in (getattr(config, 'status_bar_fields', None) or _DEFAULT_FIELDS)
+                if f and str(f).strip()
+            ]
             self.status_bar_plot_paths: list = list(
                 getattr(config, 'status_bar_plot_paths', None) or list(_DEFAULT_PLOT_PATHS)
             )
@@ -209,19 +216,40 @@ class PromptBuilder:
         # 注意只停止注入、不清空 session_vars：重新打开时旧状态还在，是连续性体验。
         session_vars = (extra_info or {}).get("session_vars") or {}
         if session_vars and self.status_bar_enabled:
-            state_lines = [f"{k}={v}" for k, v in session_vars.items()]
-            (dynamic_sections if self.cache_enabled else stable_sections).append(PromptSection(
-                name="session_state",
-                content="## 当前状态\n" + " | ".join(state_lines),
-                priority=0,
-            ))
+            # P2-05/FUNC-P1-4：跳过空键与含 JSON 特征的脏键——旧版本曾把空串
+            # 字段名与 L1 误解析出的 JSON 碎片（如 ``{"好感度"``）落进
+            # session_vars，历史会话里可能仍残留；注入前不拦就会随 system
+            # prompt 跨轮回显。全部被滤掉时整段不注入（不输出空标题）。
+            state_lines = [
+                f"{k}={v}" for k, v in session_vars.items()
+                if isinstance(k, str) and k.strip()
+                and "{" not in k and "}" not in k
+            ]
+            if state_lines:
+                (dynamic_sections if self.cache_enabled else stable_sections).append(PromptSection(
+                    name="session_state",
+                    content="## 当前状态\n" + " | ".join(state_lines),
+                    priority=0,
+                ))
 
         # --- Persona card injection (stable, priority=0) ---
         persona_data = extra_info.get("persona_data")
         if persona_data:
             parts = []
             p_name = persona_data.get("name", persona_data.get("id", ""))
-            cp = persona_data.get("core_prompts", {})
+            cp = persona_data.get("core_prompts") or {}
+            # M5.3：system_prompt 是受限系统层，不并入人格正文。支持
+            # {{original}} 占位符（在 inject_prompt 里展开为宿主原文）。
+            system_prompt = (
+                persona_data.get("system_prompt")
+                or cp.get("system_prompt") or ""
+            ).strip()
+            if system_prompt:
+                stable_sections.append(PromptSection(
+                    name="system_prompt",
+                    content="## [系统提示]\n" + system_prompt,
+                    priority=0,
+                ))
             personality = (cp.get("personality") or "").strip()
             scenario = (cp.get("scenario") or "").strip()
             examples = (cp.get("examples_of_dialogue") or "").strip()
@@ -269,6 +297,23 @@ class PromptBuilder:
                         + "\n\n".join(layer2_parts),
                 priority=10,
             ))
+
+        # M5.3：PHI 是近期对话尾部的独立低权段，不能混进人格/系统提示。
+        if persona_data:
+            post_history = (
+                persona_data.get("post_history_instructions")
+                or (persona_data.get("core_prompts") or {}).get(
+                    "post_history_instructions"
+                ) or ""
+            ).strip()
+            if post_history:
+                (dynamic_sections if self.cache_enabled else stable_sections).append(
+                    PromptSection(
+                        name="post_history_instructions",
+                        content="## [后置指令]\n" + post_history,
+                        priority=1,
+                    )
+                )
 
         # --- Layer 3: safety wrapper (stable content but after dynamic) ---
         (stable_sections if self.cache_enabled else dynamic_sections).append(PromptSection(
@@ -352,6 +397,12 @@ class PromptBuilder:
         original_prompt = original_prompt or ""
         dynamic_prompt = dynamic_prompt or ""
 
+        # M5.3：system_prompt 的 {{original}} 占位符语义——把宿主原文嵌入
+        # 受限系统层，同时不再在下方重复拼接 original_prompt。
+        if "{{original}}" in stable_prompt:
+            stable_prompt = stable_prompt.replace("{{original}}", original_prompt)
+            original_prompt = ""
+
         if injection_position == "user_prefix":
             # 动态内容最前（高服从度模式）
             parts = [p for p in [dynamic_prompt, stable_prompt, original_prompt] if p]
@@ -399,11 +450,38 @@ class PromptBuilder:
         # === 提取角色卡扩展配置（三态模式）===
         ext = {}
         if extra_info.get("persona_data"):
-            ext = extra_info["persona_data"].get("quill_extensions", {})
+            ext = extra_info["persona_data"].get("quill_extensions") or {}
         wr_mode = ext.get("wr_mode", "disabled")
         wb_mode = ext.get("wb_mode", "disabled")
         bound_wrs = ext.get("bound_writing_resource", []) if wr_mode == "custom" else None
         bound_worldbooks = ext.get("bound_worldbooks", []) if wb_mode == "custom" else None
+
+        # M5.2：先解析显式预设，再让常量池/关键词/兜底三路都走同一过滤。
+        # 未选择或未知预设时不改变旧行为；未知 id 只写诊断，不静默回退。
+        preset = None
+        preset_diag: Dict[str, Any] = {}
+        preset_choice = str(ext.get("wr_preset_id") or "")
+        resolve_preset = getattr(wr_manager, "resolve_writing_preset", None)
+        if wr_manager is not None and wr_mode != "disabled" and callable(resolve_preset):
+            try:
+                preset, preset_diag = resolve_preset(preset_choice)
+            except Exception as exc:
+                preset_diag = {"reason": "preset_error", "error": type(exc).__name__}
+        _preset_ids = set()
+        _preset_options = _preset_option_ids()
+        if preset:
+            _preset_ids = set((preset.get("choices") or {}).values())
+
+        def _preset_keep(entry: dict) -> bool:
+            if not preset:
+                return True
+            eid = str(entry.get("entry_id") or entry.get("id") or "")
+            if eid in _preset_options:
+                return eid in _preset_ids
+            return True
+
+        def _preset_entry_id(entry: dict) -> str:
+            return str(entry.get("entry_id") or entry.get("id") or "")
 
         # === Layer 1: constants + random pool (skip on consecutive turns) ===
         skip_constants = extra_info.get("skip_constants", False)
@@ -413,6 +491,7 @@ class PromptBuilder:
                 # 过滤被绑定的分类（is not None 确保空列表也能正确过滤）
                 if bound_wrs is not None:
                     constant_entries = [e for e in constant_entries if e.get("category") in bound_wrs]
+                constant_entries = [e for e in constant_entries if _preset_keep(e)]
                 pools: Dict[str, List[str]] = {
                     "random_sensory": [],
                     "random_fluid": [],
@@ -482,6 +561,17 @@ class PromptBuilder:
                 for _c_idx, entry in enumerate(wb_constants):
                     content = entry.get("content", "")
                     if content:
+                        # M5.3：深度位条目改为按消息深度插入历史，不并入 system prompt。
+                        if int(entry.get("_rule_inject_position", 0) or 0) == 3:
+                            if stats is not None:
+                                stats.setdefault("_depth_injections", []).append({
+                                    "depth": int(entry.get("_rule_depth", 4) or 4),
+                                    "role": str(entry.get("_rule_role", "system") or "system"),
+                                    "content": content,
+                                    "source": entry.get("_source_worldbook", ""),
+                                })
+                            wb_constant_hits += 1
+                            continue
                         # 与 Layer 2 同一判据：预算用尽即停，不再注入后续条目
                         token_count = self._estimate_tokens(content)
                         if wb_max_token > 0 and wb_accumulated_tokens + token_count > wb_max_token:
@@ -521,6 +611,9 @@ class PromptBuilder:
                 matched = await wr_manager.match(matching_text, top_k=fetch_count,
                                                  funnel=_wr_funnel)
 
+                if preset:
+                    matched = [e for e in matched if _preset_keep(e)]
+
                 # 过滤被绑定的分类（is not None 确保空列表也能正确过滤）
                 if bound_wrs is not None:
                     for e in matched:
@@ -554,6 +647,8 @@ class PromptBuilder:
                         # 过滤被绑定的分类（is not None 确保空列表也能正确过滤）
                         if bound_wrs is not None:
                             top_entries = [e for e in top_entries if e.get("category") in bound_wrs]
+                        if preset:
+                            top_entries = [e for e in top_entries if _preset_keep(e)]
                         for entry in top_entries:
                             eid = entry.get("entry_id", "")
                             if eid not in seen_ids:
@@ -569,6 +664,30 @@ class PromptBuilder:
             except Exception as exc:
                 logger.warning("[PromptBuilder] WR keyword match failed: %s", exc)
 
+        # M5.2：显式预设的每个维度都必须有一条固定素材；缺失时加载并补进
+        # 常驻层，保证「第一人称 / 第三人称」不会因关键词抖动同时/交替出现。
+        if preset and wr_manager is not None and wr_mode != "disabled":
+            for dimension in preset.get("dimension_options") or {}:
+                eid = (preset.get("choices") or {}).get(dimension)
+                if not eid or eid in seen_ids:
+                    continue
+                try:
+                    entry = await wr_manager.get_entry(eid)
+                except Exception as exc:
+                    logger.warning(
+                        "[PromptBuilder] 预设素材 %s 读取失败: %s", eid, exc
+                    )
+                    continue
+                if not entry or entry.get("enabled") is False:
+                    continue
+                if bound_wrs is not None and entry.get("category") not in bound_wrs:
+                    continue
+                content = entry.get("content", "")
+                if content:
+                    seen_ids.add(eid)
+                    layer1_parts.append("\u3010\u7d20\u6750\u3011\n" + content)
+                    wr_constant_hits += 1
+
         if matching_text and wb_manager and wb_mode != "disabled":
             try:
                 wb_top_k = extra_info.get("wb_max_entries", 4)
@@ -579,12 +698,32 @@ class PromptBuilder:
                     top_k=wb_top_k, sensitivity=sensitivity,
                     session_vars=extra_info.get("session_vars") or None,
                     funnel=_wb_funnel,
+                    scope_id=extra_info.get("scope_id", "") or "",
+                    persona_id=extra_info.get("persona_id", "") or "",
+                    turn_token=extra_info.get("turn_token", "") or "",
+                    recent_messages=extra_info.get("recent_messages") or None,
+                    current_input=extra_info.get("user_input", "") or "",
                 )
                 # Token 注入上限（配置注入）——沿用 Layer 1 的累加器，
                 # 常驻条目已消费的部分在此继续扣减（M12 修复）。
+                # M5.1：只有真正拼进 prompt 的条目才推进粘性/冷却；预算丢弃不算。
+                _wb_rule_committed: List[dict] = []
                 for _m_idx, entry in enumerate(wb_matched):
                     content = entry.get("content", "")
                     if content:
+                        # M5.3：深度位条目改为按消息深度插入历史，不并入 system prompt；
+                        # 它仍算「实际注入」，推进粘性/冷却。
+                        if int(entry.get("_rule_inject_position", 0) or 0) == 3:
+                            if stats is not None:
+                                stats.setdefault("_depth_injections", []).append({
+                                    "depth": int(entry.get("_rule_depth", 4) or 4),
+                                    "role": str(entry.get("_rule_role", "system") or "system"),
+                                    "content": content,
+                                    "source": entry.get("_source_worldbook", ""),
+                                })
+                            wb_match_hits += 1
+                            _wb_rule_committed.append(entry)
+                            continue
                         # Token 估算：CJK ≈ 1 token/字，ASCII ≈ 0.25 token/字
                         token_count = self._estimate_tokens(content)
                         if wb_max_token > 0 and wb_accumulated_tokens + token_count > wb_max_token:
@@ -603,6 +742,41 @@ class PromptBuilder:
                             "\u3010\u4e16\u754c\u89c2\u3011\n" + content
                         )
                         wb_match_hits += 1
+                        _wb_rule_committed.append(entry)
+                if _wb_rule_committed and hasattr(wb_manager, "confirm_rule_injection"):
+                    await asyncio.to_thread(
+                        wb_manager.confirm_rule_injection, _wb_rule_committed)
+                # M5.1：trace 只展示真正拼进 prompt 的条目。触发日志里仍有
+                # 组/截帽前的候选（含递归带出），直接拿来当 items 会出现
+                # 「items 7 条、hits 6 条」的口径分裂。这里冻结实际注入集。
+                _wb_injected_items = []
+                for e in _wb_rule_committed:
+                    item = {
+                        "worldbook": e.get("_source_worldbook", ""),
+                        "title": e.get("title", ""),
+                        "matched_keys": list(e.get("_matched_keys") or []),
+                        "rule_reason": e.get("_rule_reason", "keyword"),
+                        "rule_id": e.get("_rule_id", ""),
+                    }
+                    # 面板要能回答「为什么这条还在/还要等几轮」：注入后冻结
+                    # 剩余轮数（0 表示本轮结束后不再顺延/不再锁）。
+                    try:
+                        rule_state = wb_manager.rules.status(
+                            str(e.get("_rule_scope") or ""),
+                            str(e.get("_rule_persona") or ""),
+                            str(e.get("_rule_id") or ""),
+                            int(e.get("_rule_round", 0) or 0),
+                        )
+                        current = int(e.get("_rule_round", 0) or 0)
+                        item["sticky_remaining"] = max(
+                            0, int(rule_state.get("sticky_until", 0) or 0) - current)
+                        item["cooldown_remaining"] = max(
+                            0, int(rule_state.get("cooldown_until", 0) or 0) - current)
+                    except Exception:
+                        pass
+                    _wb_injected_items.append(item)
+                if stats is not None:
+                    stats["_wb_injected_items"] = _wb_injected_items
             except Exception as exc:
                 logger.warning("[PromptBuilder] WB keyword match failed: %s", exc)
 
@@ -624,6 +798,13 @@ class PromptBuilder:
             # 注入报告只读上面的计数键不受影响）。
             stats["_funnel_wb"] = _wb_funnel
             stats["_funnel_wr"] = _wr_funnel
+            stats["_wr_preset"] = {
+                **(preset_diag or {}),
+                **({"preset_id": preset.get("id"),
+                    "name": preset.get("name"),
+                    "choices": dict(preset.get("choices") or {})}
+                   if preset else {}),
+            }
 
         return layer1_parts, layer2_parts, layer1_random_parts
 

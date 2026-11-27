@@ -362,6 +362,11 @@ class FaissVectorStore:
                     f"Embedding dimension mismatch inside batch at chunk {i}: "
                     f"got {len(emb)}, first={first_dim}"
                 )
+            arr = np.asarray(emb, dtype=np.float32)
+            if not np.isfinite(arr).all():
+                raise ValueError(f"Embedding contains NaN/Inf at chunk {i}")
+            if float(np.linalg.norm(arr)) <= 0:
+                raise ValueError(f"Embedding is a zero vector at chunk {i}")
 
         if self.dim <= 0:
             # 索引尚未建立：维度由**首批真实向量**决定（不再信启动期推断值）。
@@ -512,6 +517,10 @@ class FaissVectorStore:
         try:
             # S1-4: L2 归一化 query
             query = np.array([query_embedding], dtype=np.float32)
+            if not np.isfinite(query).all():
+                raise StorageError("查询向量包含 NaN/Inf", detail="document_query_non_finite")
+            if float(np.linalg.norm(query)) <= 0:
+                raise StorageError("查询向量为零向量", detail="document_query_zero_vector")
             if query.shape[1] != self.dim:
                 self._dim_mismatch = True
                 logger.warning(
@@ -523,6 +532,9 @@ class FaissVectorStore:
             qnorm = np.linalg.norm(query)
             if qnorm > 0:
                 query = query / qnorm
+            # 查询维度与索引一致：此前可能因 embedding 瞬时抖动置位，随后
+            # API 恢复时在这里主动清除，不让一次故障永久短路文档检索。
+            self._dim_mismatch = False
 
             # 多召回一些以补偿幽灵向量。如果有文档过滤限制，大幅放大召回池以防被过滤空。
             recall_k = min(top_k * 3, self._index.ntotal)

@@ -177,3 +177,46 @@
 }
 .ab-item.is-selected .ab-item-check { opacity: 1; }
 .ab-empty { padding: 14px var(--sp-2); font-size: 12px; color: var(--label-3); text-align: center; }
+
+/* ── 导出角色卡（M4.2）────────────────────────────────────────────────
+   世界书选择器是「书 + 条目」两层，整本勾选时可以展开只挑几条，所以用
+   固定最大高度 + 内部滚动，避免几十本书把弹窗撑到屏幕外。 */
+.export-modal {
+  height: auto;
+  max-height: min(calc(100vh - 80px), 780px);
+}
+.export-modal .modal-body { min-height: 0; }
+.exp-books {
+  max-height: min(38vh, 320px);
+  overflow-y: auto;
+  padding: var(--sp-1) var(--sp-2);
+  border: .5px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: var(--bg-primary);
+}
+.exp-book { padding: var(--sp-1) 0; }
+.exp-book + .exp-book { border-top: .5px solid var(--separator); }
+.exp-book-head {
+  display: flex;
+  width: 100%;
+  min-height: var(--h-row);
+  font-weight: 500;
+}
+/* 警告/冲突是逐条 <div>：.note 默认横向 flex，会并排挤成两列 */
+.export-modal #expWarnings,
+.export-modal #expConflicts { flex-direction: column; gap: 2px; }
+.exp-book-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.exp-entries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) 0 var(--sp-2) calc(20px + var(--sp-2));
+}
+.exp-entries .check { max-width: 100%; }
+.exp-entries .nowrap { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -677,11 +677,17 @@ async def _char_import(plugin, event: AstrMessageEvent, json_text: str):
         # Issue #1：带 spec / 嵌套 data 的 V2/V3 卡统一走 parse_v2_card——此前
         # 原始 dict 直接进 create_persona，固定键白名单丢掉整个 data 嵌套层，
         # 导入近乎空卡。Quill 自导出格式（core_prompts 在顶层）保持原路径。
-        if isinstance(data.get("spec"), str) or isinstance(data.get("data"), dict):
-            raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
-            card = await asyncio.to_thread(plugin.persona_manager.parse_v2_card, raw, False)
-        else:
+        # M4.1：Quill 自导出（core_prompts 在顶层）保持原路径；其余一律交解析层。
+        # 此前只有「带 spec / 嵌套 data」才解析，Tavern V1 扁平 JSON 直接进
+        # create_persona，被固定键白名单吃掉 description/personality/scenario/
+        # first_mes/mes_example，导入近乎空卡。
+        if isinstance(data.get("core_prompts"), dict):
             card = data
+        else:
+            card = await asyncio.to_thread(plugin.persona_manager.parse_clipboard_text, json_str)
+        # M4.1：导入报告只用于本次回复说明，不落库（落库的是 card_source）。
+        report = card.pop("_import_report", None) if isinstance(card, dict) else None
+        card["name"] = (card.get("name") or data.get("name") or "").strip() or "导入的角色"
         wb_info = await plugin.persona_manager.attach_embedded_worldbook(
             card, plugin.wb_manager,
             enabled=getattr(plugin.config, "worldbook_card_embed_import", True),
@@ -691,6 +697,25 @@ async def _char_import(plugin, event: AstrMessageEvent, json_text: str):
         lines = [f"角色卡导入成功！名称: {name}"]
         if wb_info:
             lines.append(f"已自动生成内嵌世界书《{wb_info['name']}》（{wb_info['entries']} 条）并绑定。")
+        # M4.1：把「识别成什么、哪些东西没吃进来」告诉用户——静默丢弃字段是
+        # 导入最招人恨的地方，低置信（如纯文本回退）必须提示核对。
+        if isinstance(report, dict):
+            try:
+                confidence = float(report.get("confidence") or 0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            label = report.get("format_label") or report.get("detected_format") or "未知格式"
+            detail = [f"识别为 {label}（置信 {int(round(confidence * 100))}%）"]
+            preserved = report.get("preserved_fields") or []
+            unsupported = report.get("unsupported_features") or []
+            if preserved:
+                detail.append(f"保留 {len(preserved)} 项原始字段")
+            if unsupported:
+                detail.append(f"{len(unsupported)} 项暂不支持")
+            line = "，".join(detail)
+            if confidence < 0.6:
+                line += "；低置信导入，请核对内容"
+            lines.append(line + "。")
         lines.append(f"使用 /char {name} 切换到新角色。")
         event.set_result(MessageEventResult().message("\n".join(lines)))
     except Exception as e:
@@ -1017,15 +1042,23 @@ async def _test_wb(plugin, event: AstrMessageEvent, text: str):
         svars = {}
         if hasattr(plugin.state_manager, "get_session_vars"):
             svars = await plugin.state_manager.get_session_vars(target_id) or {}
+        # P1-7：测试是只读沙盒，不能覆写真实会话的全局触发日志，也不能
+        # 推进规则的粘性/冷却；本轮命中明细用独立出参取回。
+        trigger_log: list = []
         results = plugin.wb_manager.match_entries(
-            text, bound_worldbooks=bound_worldbooks, top_k=5, session_vars=svars
+            text, bound_worldbooks=bound_worldbooks, top_k=5, session_vars=svars,
+            scope_id=(plugin.state_manager.role_scope(target_id)
+                      if hasattr(plugin.state_manager, "role_scope") else target_id),
+            persona_id=persona_id or "",
+            simulate=True,
+            write_trigger_log=False,
+            trigger_log_out=trigger_log,
         )
         if not results:
             event.set_result(MessageEventResult().message(
                 f"WB 未匹配到任何条目\n输入: {text[:80]}"
             ))
             return
-        trigger_log = plugin.wb_manager.get_trigger_log()
         lines = [f"[WB 测试] 匹配到 {len(results)} 条:"]
         for log in trigger_log[:5]:
             title = log.get("title", "?")
@@ -1399,7 +1432,11 @@ async def memory_dispatch(plugin, event: AstrMessageEvent, arg1: str, arg2: str)
             try:
                 result = await asyncio.shield(record.task)
             except asyncio.CancelledError:
-                if asyncio.current_task().cancelling():
+                # P2-01：cancelling() 是 3.11 API，3.10 上 AttributeError 会被外层
+                # except Exception 兜成「学习失败」。跨版本判据：shield 内层任务
+                # 确因取消结束（cancelled()=True）才吞掉并保留已提交结果；否则是
+                # 当前任务自身被取消，必须上抛。
+                if not record.task.cancelled():
                     raise
                 event.set_result(MessageEventResult().message("总结任务已取消，已提交的结果保留。"))
                 return
@@ -1988,7 +2025,9 @@ async def quill_compact(plugin, event):
     from .interfaces.scopes import freeze_turn
     await plugin.shared_scopes.acquire(event)
     try:
-        turn = await freeze_turn(plugin, event)
+        # P1-6：共享排队后重新固定归属——acquire 期间别的入口可能换卡，
+        # 不能沿用排队前的 persona_id/scope_revision。
+        turn = await freeze_turn(plugin, event, refresh=True)
         if plugin.scope_resolver.scope_for(turn.origin_umo) != turn.scope_id:
             raise ValueError('会话归属已改变，请重试')
         with plugin._usage.bind(await plugin._usage.identity_for(event, turn.persona_id)):

@@ -29,6 +29,7 @@ from __future__ import annotations
 import re
 
 from ..core.logbridge import logger  # noqa: F401  # 方法体 logger 引用经 logbridge 桥接
+from .statusbar.dialect import resolve_dialect, should_strip_markdown
 
 _MD_PATTERNS = [
     # Inline code (most specific first)
@@ -66,16 +67,29 @@ def strip_markdown(text: str) -> str:
     return text
 
 
-def strip_markdown_in_plain_messages(messages, platform: str) -> int:
-    """对 tool_args 消息列表的 plain 段逐条剥离 Markdown（仅 telegram/tg）。
+def strip_markdown_in_plain_messages(
+    messages, platform: str, overrides=None, plain_platforms=None
+) -> int:
+    """对 tool_args 消息列表的 plain 段逐条剥离 Markdown（M4.3 方言判定）。
 
-    （自 H2 函数体逐字搬移；``messages`` 为已解析的消息列表——实际可能
-    是任何类型，非 list 时静默跳过。返回被改写的 plain 段数量。）
+    原实现只认 telegram/tg（当时认为 Telegram 没设 parse_mode）；现在出站
+    能力由 dialect 档案统一判定：只有 plain 方言需要剥离，Markdown 方言
+    交给客户端渲染。这样状态栏模板与工具消息不会各行其是。
+
+    （``messages`` 为已解析的消息列表——实际可能是任何类型，非 list 时
+    静默跳过。返回被改写的 plain 段数量。）
     """
-    needs_strip = platform in ("telegram", "tg")
-    if not needs_strip:
+    dialect, _source = resolve_dialect(
+        platform,
+        overrides=overrides,
+        plain_platforms=plain_platforms,
+    )
+    if not should_strip_markdown(dialect):
         return 0
-    logger.info(f"[Quill] >>> send_message_to_user 调用 (platform={platform or '?'}), 清理 Markdown...")
+    logger.info(
+        f"[Quill] >>> send_message_to_user 调用 (platform={platform or '?'}, "
+        f"dialect={dialect}), 清理 Markdown..."
+    )
     modified = 0
     for msg in messages if isinstance(messages, list) else []:
         if isinstance(msg, dict) and msg.get("type") == "plain" and "text" in msg:

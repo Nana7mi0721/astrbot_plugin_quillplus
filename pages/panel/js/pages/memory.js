@@ -79,10 +79,12 @@ async function loadMemoryBrowser() {
   const search = ($("#memFilter")?.value || "").trim();
   tbody.innerHTML = '<tr><td colspan="4" class="t3" style="text-align:center">加载中…</td></tr>';
   try {
+    // FUNC-P1-6：会话/搜索路径此前无分页参数，后端只回最新 50 条且不带
+    // total，页脚把截断数冒充总数。现在与 list_all 同一契约带上分页。
     const url = sessionId
-      ? "/memory/list?session_id=" + encodeURIComponent(sessionId)
+      ? `/memory/list?session_id=${encodeURIComponent(sessionId)}&page=${S._memPage}&per_page=${MEM_PER_PAGE}`
       : search
-        ? "/memory/list?session_id=" + encodeURIComponent(search)
+        ? `/memory/list?session_id=${encodeURIComponent(search)}&page=${S._memPage}&per_page=${MEM_PER_PAGE}`
         : `/memory/list_all?page=${S._memPage}&per_page=${MEM_PER_PAGE}`;
     const resp = await api(url);
     const data = resp.data || resp;

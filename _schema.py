@@ -26,10 +26,11 @@ else:  # 保留 kb.py 原有的顶层脚本加载方式。
     from quill.core.errors import StorageError
 
 
-SCHEMA_TARGETS = {"memory":2,"writing":1,"documents":1}
+SCHEMA_TARGETS = {"memory":3,"writing":1,"documents":1}
 # 这是迁移审计元数据；实际幂等 DDL 由各 store 在一个事务内执行，提交前统一验结构。
 MIGRATIONS = {kind:{0:{"to":1,"name":"legacy_to_baseline_v1"}} for kind in SCHEMA_TARGETS}
 MIGRATIONS["memory"][1] = {"to":2,"name":"shared_scopes_and_transcript"}
+MIGRATIONS["memory"][2] = {"to":3,"name":"worldbook_rule_effects"}
 REQUIRED_TABLES = {
     "memory": {"memories": {"id", "session_id", "summary", "vector", "dim"},
                "chat_logs": {"id", "session_id", "role", "content"}},
@@ -44,6 +45,12 @@ REQUIRED_TABLES['memory'].update({
     'qp_turns':{'seq','scope_id','persona_id','turn_id','role','content','status','revision'},
     'qp_inbox':{'origin_key','message_id','content_hash','turn_id','status','attempts'},
     'qp_actors':{'actor_id','platform_id','sender_id','canonical_id'},
+    # M5.1：世界书定时效应按 (scope_id, persona_id, rule_id) 持久化；
+    # wb_rule_scopes 保存同一逻辑会话的规则时钟，避免多入口双计轮次。
+    'wb_rule_effects':{'scope_id','persona_id','rule_id','first_seen_turn',
+                       'sticky_until_turn','cooldown_until_turn',
+                       'last_triggered_turn','last_injected_turn','updated_at'},
+    'wb_rule_scopes':{'scope_id','persona_id','rule_turn','last_turn','updated_at'},
 })
 
 

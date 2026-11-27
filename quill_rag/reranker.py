@@ -6,6 +6,11 @@ from __future__ import annotations
 
 from astrbot.api import logger
 
+try:
+    from .retrieval import RagResult
+except ImportError:  # 直接运行本文件时无父包
+    from quill_rag.retrieval import RagResult
+
 
 class QuillReranker:
     """封装 AstrBot Rerank Provider。
@@ -53,7 +58,12 @@ class QuillReranker:
                     return await self._rerank_with_llm(query, candidates, top_k, llm_provider)
             except Exception as e:
                 logger.warning(f"[Quill RAG] LLM fallback provider 获取失败: {e}")
-        return sorted(candidates, key=lambda x: x.get('score', 0), reverse=True)[:top_k]
+        # P1-18：provider 与 LLM 都失败时，降级结果必须带失败标记，
+        # 否则 rag_ok() 会把「重排故障」当成成功。
+        return RagResult(
+            sorted(candidates, key=lambda x: x.get('score', 0), reverse=True)[:top_k],
+            ok=False, error="rerank_failed",
+        )
 
     async def _rerank_with_provider(self, query, candidates, top_k, provider) -> list[dict]:
         """调用 provider 的 rerank 方法。
@@ -75,7 +85,7 @@ class QuillReranker:
                 rerank_resp = await rerank_resp
 
             if not rerank_resp:
-                return candidates[:top_k]
+                raise RuntimeError("rerank provider returned empty response")
 
             # 解析 RerankResult 列表
             scored = {}
@@ -100,9 +110,10 @@ class QuillReranker:
                 c['rerank_score'] = scored.get(idx, 0.0)
                 scored_candidates.append(c)
             return sorted(scored_candidates, key=lambda x: x.get('rerank_score', 0), reverse=True)[:top_k]
-        except Exception as e:
-            logger.warning(f"[Quill RAG] Rerank 调用失败: {e}")
-        return candidates[:top_k]
+        except Exception:
+            # 交给 rerank() 统一触发 LLM fallback；这里再吞一次会让 fallback
+            # 永远不可达（P1-18）。
+            raise
 
     async def _rerank_with_llm(self, query: str, candidates: list[dict], top_k: int, provider) -> list[dict]:
         """使用 LLM 对候选列表打分（fallback 方案）。
@@ -154,7 +165,10 @@ class QuillReranker:
                 return sorted(scored_candidates, key=lambda x: x.get('llm_score', 0), reverse=True)[:top_k]
         except Exception as e:
             logger.warning(f"[Quill RAG] LLM 降级重排失败: {e}")
-        return sorted(candidates, key=lambda x: x.get('score', 0), reverse=True)[:top_k]
+        return RagResult(
+            sorted(candidates, key=lambda x: x.get('score', 0), reverse=True)[:top_k],
+            ok=False, error="rerank_llm_failed",
+        )
 
     def get_status(self) -> dict:
         """返回 reranker 状态。"""

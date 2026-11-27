@@ -74,9 +74,20 @@ class ScopeStore:
         if not isinstance(name,str) or not 1 <= len(name.strip()) <= 80 or not isinstance(persona_id,str) or len(persona_id)>200:
             raise ValueError('会话组名称或角色 ID 无效')
         async def write(conn):
-            old=await (await conn.execute("SELECT revision FROM qp_scopes WHERE scope_id=? AND active=1",(scope_id,))).fetchone()
+            # P1-19：已归档组不能靠 active=1 查询“隐身”后按 revision=1
+            # 复活；必须先看到归档状态并拒绝修改。
+            row=await (await conn.execute(
+                "SELECT revision,active FROM qp_scopes WHERE scope_id=?",
+                (scope_id,),
+            )).fetchone()
+            if row and not row[1]:
+                raise ValueError("会话组已归档，不能继续修改")
+            old = row
             if expected_revision is not None and (not old or old[0]!=expected_revision):
                 raise ValueError("会话组已变更，请刷新后重试")
+            members = list(dict.fromkeys(
+                str(key) for key in (members or []) if str(key)
+            ))
             for key in members:
                 row=await (await conn.execute("SELECT scope_id FROM qp_members WHERE origin_key=?",(key,))).fetchone()
                 if row and row[0]!=scope_id:
@@ -90,8 +101,9 @@ class ScopeStore:
             for key in members:
                 await conn.execute("INSERT INTO qp_members(origin_key,scope_id,epoch) VALUES(?,?,?)",(key,scope_id,existing.get(key,uuid4().hex)))
             # 只在首次建组、显式预览确认后复制指定来源；原记录永远保留。
+            # 幂等：重复保存/重放不会再次复制历史。
             target=memory_session_key(scope_id,persona_id)
-            for source in history_sources:
+            for source in (history_sources if not old else ()):
                 await conn.execute("""INSERT OR IGNORE INTO memories
                     (session_id,summary,chat_summary,vector,dim,record_id,source_ref,created_at,
                      trust_level,process_status,is_core,strength,useful_count,useful_score,is_active)
@@ -102,9 +114,9 @@ class ScopeStore:
                 for log_id,role,content,rid,created in logs:
                     ref="history:"+source+":"+rid
                     turn_id=scope_id+":"+rid
-                    await conn.execute("""INSERT INTO qp_turns(scope_id,persona_id,turn_id,role,content,source_ref,status,revision,created_at)
+                    await conn.execute("""INSERT OR IGNORE INTO qp_turns(scope_id,persona_id,turn_id,role,content,source_ref,status,revision,created_at)
                         VALUES(?,?,?,?,?,?,'completed',?,?)""",(scope_id,persona_id,turn_id,role,content,ref,revision,created))
-                    await conn.execute("""INSERT INTO chat_logs(session_id,role,content,record_id,origin_ref,turn_id,process_status,timestamp)
+                    await conn.execute("""INSERT OR IGNORE INTO chat_logs(session_id,role,content,record_id,origin_ref,turn_id,process_status,timestamp)
                         VALUES(?,?,?,?,?,?,'imported',?)""",(target,role,content,scope_id+":"+rid,source,turn_id,created))
             return revision
         return await self.memory._exec_tx(write)
@@ -115,7 +127,7 @@ class ScopeStore:
             if cur.rowcount!=1:
                 raise ValueError("会话组已变更，请刷新后重试")
             await conn.execute("DELETE FROM qp_members WHERE scope_id=?",(scope_id,))
-        await self.memory._exec_tx(write)
+        return await self.memory._exec_tx(write)
 
     async def source_preview(self, sessions):
         result=[]

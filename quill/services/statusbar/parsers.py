@@ -32,6 +32,7 @@ import re
 from ...core.logbridge import logger  # noqa: F401  # 方法体 logger 引用经 logbridge 桥接
 from ..trace import hash_target_id
 from . import decision_client as _dec_mod
+from .dialect import escape_content
 from .tokens import LOVE_DATA_TAG, STATUS_END_TAG, STATUS_TAG, PLOT_PATH_PATTERN
 
 
@@ -70,7 +71,14 @@ def apply_template(template: str, content: str) -> str:
     不含 ``{content}`` 的文本（比如只想留一条分隔线）时，状态栏内容被**静默丢弃**：
     面板看着正常，栏里永远没有值，也没有任何日志。占位符缺失属于配置错误，
     这里降级为「把内容补在模板之后 + 一条可检索的 warning」，而不是丢数据。
+
+    M4.3：模板若是 DialectTemplate，先按方言转义正文再套模板。为什么转义
+    放在这里而不是各个渲染器：六级降级链与兜底栏最终都会汇到本函数，只有
+    这一处能保证「同一份状态数据在所有输出路径上按同一方言转义」。
     """
+    dialect = getattr(template, "dialect", None)
+    if dialect:
+        content = escape_content(dialect, content)
     if "{content}" in template:
         return template.replace("{content}", content)
     logger.warning(
@@ -84,8 +92,24 @@ def apply_template(template: str, content: str) -> str:
 # ── 解析侧正则 ────────────────────────────────────────────────────
 # 协议标记经 tokens.py 收敛：re.escape(标记) 与原转义字面量逐字节一致。
 _STATUS_RE = re.compile(re.escape(STATUS_TAG) + r'([\s\S]*?)' + re.escape(STATUS_END_TAG))
-_LOVE_DATA_RE = re.compile(re.escape(LOVE_DATA_TAG) + r'\s*(.+)')
-_STATUS_BLOCK_RE = re.compile(r'\*\*状态栏\*\*[\s\S]*?```([\s\S]*?)```')
+# P2-04：旧写法 `\s*(.+)` 的 `\s` 含换行——`[LOVE_DATA]` 独占一行时 `\s*` 会越过
+# 换行把下一行整行当第一个字段值（实测渲染出「好感度：好感度：85」的脏值入库）。
+# 与 strip.py H3-2 同口径：标记后只允许不跨行的水平空白（[^\S\n]）。
+_LOVE_DATA_RE = re.compile(re.escape(LOVE_DATA_TAG) + r'[^\S\n]*(.+)')
+# FUNC-P1-4：旧写法两处跨度均无上限且无行首锚定——正文里「提到**状态栏**协议，
+# 示例：```json {...}」这类讨论协议的段落也会命中 L1，把 JSON 示例拆成脏键
+# （{"好感度" 落进 session_vars 跨轮注入 prompt）。与 strip.py H3-1 对齐三重
+# 约束：① 标题必须行首；② 标题与围栏之间只允许空白与轻标点 ≤60 字符；③ 内容
+# 跨度 ≤4000、闭围栏必须行首。捕获组仍挂在围栏内容上（_sb_l1_code_block 依赖
+# group(1) 做原位替换）；解析侧与剥离侧约束对称——L1 能解析的块，关闭状态栏
+# 时 H3-1 必然也能整段擦除。
+_STATUS_BLOCK_RE = re.compile(
+    r'(?m)^[ \t]*\*\*状态栏\*\*'
+    r'[\s:：\-—*_]{0,60}?'
+    r'```[^\n]*(?:\r?\n)?'
+    r'([\s\S]{0,4000}?)'
+    r'(?:\r?\n)[ \t]*```[ \t]*(?:\r?\n|$)'
+)
 # F5（M3.0b）：字符组加入全角 ＞＜——输出侧（H2/H6）已把箭头归一为全角，
 # 模型模仿已归一的历史时会写出全角标记，解析侧必须同样能认。ASCII 语义
 # 不变（渲染模板 render.py/parsers.py:487 仍产 ASCII）。
@@ -161,6 +185,17 @@ def _normalize_status_value(value: str) -> str:
     if not value:
         return value
     return _DELTA_MARK_RE.sub("", value).strip()
+
+
+def _valid_status_key(key: str) -> bool:
+    """FUNC-P1-4：状态字段名合法性——非空、长度 ≤30、不含 JSON/引用特征字符。
+
+    L1 代码块解析与落库过滤共用同一判据：脏键（JSON 示例被 split(':') 拆出的
+    ``{"好感度"`` 之类）一旦写进 session_vars，会被 prompt_builder 原样注入
+    system prompt 并跨轮累积。字段名是配置生成的短标签，30 字上限与 L4 的
+    值上限同一量级，对合法配置绰绰有余。
+    """
+    return bool(key) and len(key) <= 30 and not any(c in key for c in '{}"')
 
 
 def _extract_numeric(value: str) -> float | None:
@@ -314,6 +349,12 @@ class StatusbarParsersMixin:
         for m in field_pattern.finditer(text):
             key = m.group(1).strip()
             val = m.group(2).strip()
+            # P2-06：值上限 60 字——DOTALL 让值可跨行吞整段叙事（实测捕获 72 字），
+            # 超长值会把健康字段挤出 session_vars 的 64KB 淘汰序，也把叙事当状态
+            # 入库。与 L4 的 30 字同一设计理由（状态值是短文本），L5 匹配更宽松
+            # 所以放得更宽一档；超限整条放弃（截断会把半句话当状态值）。
+            if len(val) > 60:
+                continue
             matched_field = None
             for lf in love_fields:
                 if lf in key or key in lf:
@@ -343,7 +384,9 @@ class StatusbarParsersMixin:
         updates = {}
         new_text = text
         handled = False
-        bar_template = bar_template or self.status_bar_format_template
+        # 空模板是合法配置（用户只想留正文），不能用 or 吞掉。
+        if bar_template is None:
+            bar_template = self.status_bar_format_template
         prev_vars = await self.state_manager.get_session_vars(target_id)
 
         def _mk_changed(ups: dict) -> dict:
@@ -443,10 +486,18 @@ class StatusbarParsersMixin:
         # 落库前统一归一化：模型可能照抄上一轮的标注，不清洗就会随
         # update_session_vars 存进状态并注入提示词，逐轮累积。
         if updates and handled:
+            # FUNC-P1-4/P2-06：落库是脏数据的最后一道闸——键过 _valid_status_key
+            # 判据（拦 JSON 碎片键/空键），值限 200 字兜住 L2/L3 这类无上限入口，
+            # 防长叙事挤爆 session_vars 的 64KB 预算（正常值经各级上限后远小于此）。
             persist_updates = {
                 k: _normalize_status_value(v)
                 for k, v in updates.items()
-                if not k.startswith("_") and isinstance(v, str)
+                if (
+                    _valid_status_key(k)
+                    and not k.startswith("_")
+                    and isinstance(v, str)
+                    and len(v) <= 200
+                )
             }
             updates.update(persist_updates)
             await self._persist_status_vars(persist_updates, target_id)
@@ -724,6 +775,11 @@ class StatusbarParsersMixin:
 
     def _parse_status_block(self, block_content: str) -> dict:
         """Parse **状态栏** code block content into key-value dict."""
+        # FUNC-P1-4：块内容含花括号即 JSON 示例/代码——正文讨论协议时贴的示例
+        # 块不是状态栏，逐行 split 会拆出 ``{"好感度"`` 这类脏键。整块放弃，
+        # 让降级链继续往下走（宁可漏检也不把 JSON 拆成假状态）。
+        if "{" in block_content or "}" in block_content:
+            return {}
         updates = {}
         for line in block_content.split("\n"):
             line = line.strip()
@@ -738,11 +794,17 @@ class StatusbarParsersMixin:
                 continue
             if "：" in line:
                 k, v = line.split("：", 1)
-                updates[k.strip()] = v.strip()
             elif ":" in line:
                 k, v = line.split(":", 1)
-                updates[k.strip()] = v.strip()
             elif "=" in line:
                 k, v = line.split("=", 1)
-                updates[k.strip()] = v.strip()
+            else:
+                continue
+            # FUNC-P1-4：键名过 _valid_status_key 判据（非空/≤30 字/无 JSON
+            # 特征字符）——旧代码对 k 无任何校验，示例行会被拆成脏键直落
+            # session_vars 并跨轮注入提示词。
+            k = k.strip()
+            if not _valid_status_key(k):
+                continue
+            updates[k] = v.strip()
         return updates

@@ -31,6 +31,9 @@ extra_info 时已有的会话变量快照（状态栏解析产物 + 工具写入
 from __future__ import annotations
 
 import re
+import math
+
+from .statusbar.parsers import _extract_numeric
 
 # 长符在前：split(">=") 优先于 split(">")，否则 "a>=1" 会被拆成 "a" > "=1"
 _OPERATORS = (">=", "<=", "==", "!=", ">", "<")
@@ -51,8 +54,9 @@ def parse_condition(condition: str):
     if not isinstance(condition, str):
         return None
     for op in _OPERATORS:
-        if op in condition:
-            left, _, right = condition.partition(op)
+        index = _find_operator(condition, op)
+        if index >= 0:
+            left, right = condition[:index], condition[index + len(op):]
             var, value = left.strip(), right.strip()
             if var and value and _single_operator(condition, op):
                 return var, op, value
@@ -63,15 +67,54 @@ def parse_condition(condition: str):
     return None
 
 
+def _find_operator(text: str, op: str) -> int:
+    """找比较符，跳过引号字面量内的字符（P2-19）。"""
+    quote = ""
+    escaped = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if text.startswith(op, i):
+            return i
+        i += 1
+    return -1
+
+
 def _single_operator(text: str, op: str) -> bool:
     """确认整串里只出现这一个比较符（``a>=1`` 合法，``a>=1<b`` 不合法）。"""
-    rest = text.replace(op, "", 1)
-    return not any(other in rest for other in _OPERATORS)
+    first = _find_operator(text, op)
+    rest = text[:first] + "\0" * len(op) + text[first + len(op):]
+    for other in _OPERATORS:
+        if _find_operator(rest, other) >= 0:
+            return False
+    return True
 
 
 def _as_number(value):
+    if isinstance(value, bool) or value is None:
+        return None
     try:
-        return float(value)
+        number = _extract_numeric(str(value))
+        if number is None:
+            number = float(value)
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 

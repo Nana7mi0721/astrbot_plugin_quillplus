@@ -87,6 +87,21 @@ class QuillConfigProperties:
         """
         return self._plugin.config.worldbook_card_embed_import
 
+    @property
+    def worldbook_recursion_enabled(self) -> bool:
+        """世界书有界递归总开关（config.worldbook.recursion_enabled）。"""
+        return self._plugin.config.worldbook_recursion_enabled
+
+    @property
+    def worldbook_recursion_max_steps(self) -> int:
+        """递归最大步数（config.worldbook.recursion_max_steps）。"""
+        return self._plugin.config.worldbook_recursion_max_steps
+
+    @property
+    def worldbook_recursion_max_tokens(self) -> int:
+        """递归 Token 估算上限（config.worldbook.recursion_max_tokens）。"""
+        return self._plugin.config.worldbook_recursion_max_tokens
+
     # M2：保持配置五落点，读取时现取该代 config。
     @property
     def usage_enabled(self) -> bool:
@@ -187,6 +202,15 @@ class QuillConfigProperties:
     def status_bar_plain_platforms(self) -> list:
         """按纯文本模板渲染的平台适配器名列表（config.status_bar.plain_platforms）。"""
         return self._plugin.config.status_bar_plain_platforms
+
+    @property
+    def status_bar_dialect_overrides(self) -> dict:
+        """平台方言覆盖（config.status_bar.dialect_overrides，M4.3）。
+
+        形如 {``telegram``: ``telegram``}；渲染侧用它压过旧纯文本名单与
+        内置能力档案，让未知适配器也能手动选方言。
+        """
+        return self._plugin.config.status_bar_dialect_overrides
 
     @property
     def love_fields(self) -> list:

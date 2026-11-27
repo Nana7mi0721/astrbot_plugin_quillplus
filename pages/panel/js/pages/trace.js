@@ -8,10 +8,14 @@ import { $, esc, fmtTime, withBusy } from "../utils.js";
 
 export {
   loadTracePage, onTraceSessionChange, refreshTrace, toggleTraceTurn,
-  runSimulate, runLint, toggleTraceLive, copyPreviewText,
+  runSimulate, runLint, toggleTraceLive, copyPreviewText, disposeTrace,
 };
 
 const TRACE_LIMIT = 20;
+
+/* SSE/轮询订阅的重入锁：快速连点「实时」按钮时，等待 subscribeSSE 期间
+   再次进入会创建第二条订阅、泄漏第一条。用同步锁把整个切换过程串起来。 */
+let _traceLiveBusy = false;
 
 /* 模块名 → 展示名（与后端 TraceModuleResult.module 的取值一一对应；
    新增模块时两边同步改） */
@@ -320,6 +324,7 @@ async function runSimulate(el) {
         text,
         persona_id: $("#simPersona")?.value || "",
         session_vars: svars || null,
+        dry_run: true,
       });
       box.hidden = false;
       box.innerHTML = _turnCard((data && data.data) || data, { simulate: true });
@@ -372,25 +377,31 @@ async function runLint(el) {
    「开着看一眼」，轮询延迟可接受。 */
 
 async function toggleTraceLive(el) {
-  if (_sseSubId || _pollTimer) {
-    await _stopLive();
-    el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：关';
-    return;
-  }
-  el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：连接中…';
-  const bridge = getBridge();
-  if (bridge && typeof bridge.subscribeSSE === "function") {
-    try {
-      _sseSubId = await bridge.subscribeSSE("trace/events", {
-        onMessage: (msg) => _onLiveTrace(msg?.parsed),
-        onError: () => { _sseSubId = null; _startPolling(); },
-      });
-      el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：开';
+  if (_traceLiveBusy) return;
+  _traceLiveBusy = true;
+  try {
+    if (_sseSubId || _pollTimer) {
+      await _stopLive();
+      el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：关';
       return;
-    } catch (_) { _sseSubId = null; /* 落到轮询 */ }
+    }
+    el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：连接中…';
+    const bridge = getBridge();
+    if (bridge && typeof bridge.subscribeSSE === "function") {
+      try {
+        _sseSubId = await bridge.subscribeSSE("trace/events", {
+          onMessage: (msg) => _onLiveTrace(msg?.parsed),
+          onError: () => { _sseSubId = null; _startPolling(); },
+        });
+        el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：开';
+        return;
+      } catch (_) { _sseSubId = null; /* 落到轮询 */ }
+    }
+    _startPolling();
+    el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：轮询';
+  } finally {
+    _traceLiveBusy = false;
   }
-  _startPolling();
-  el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：轮询';
 }
 
 function _startPolling() {
@@ -410,6 +421,16 @@ async function _stopLive() {
   if (_pollTimer) {
     clearInterval(_pollTimer);
     _pollTimer = null;
+  }
+}
+
+/* 离开诊断页时释放 SSE 订阅与 15s 轮询，并把「实时」按钮复位。
+   SPA 切页不会卸载 DOM，不主动释放会让后台订阅/轮询一直跑。 */
+function disposeTrace() {
+  _stopLive();
+  const btn = $("#traceLiveBtn");
+  if (btn) {
+    btn.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：关';
   }
 }
 

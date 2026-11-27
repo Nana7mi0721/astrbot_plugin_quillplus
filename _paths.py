@@ -349,4 +349,13 @@ def resolve_archive_dest(paths: dict, plugin_dir: str, arcname: str) -> str | No
     root_norm = os.path.normpath(root)
     if dest != root_norm and not dest.startswith(root_norm + os.sep):
         return None
+    # P1-21：normpath 只做字符串归一，挡不住「数据根下某个目录是符号链接」把
+    # 写入重定向到根外。realpath 解析后再校验一次边界。
+    try:
+        dest_real = os.path.realpath(dest)
+        root_real = os.path.realpath(root_norm)
+    except OSError:
+        return None
+    if dest_real != root_real and not dest_real.startswith(root_real + os.sep):
+        return None
     return dest

@@ -179,6 +179,27 @@ class MemoryStore:
                     status TEXT NOT NULL, phase TEXT NOT NULL, payload TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+                # M5.1：世界书规则时钟与定时效应。worldbook/WorldbookRuleStore
+                # 也直接读写这两张表；由记忆库统一建表，保证 Schema 版本检查
+                # 在空库/旧库升级时都能看到完整结构。
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS wb_rule_scopes (
+                    scope_id TEXT NOT NULL, persona_id TEXT NOT NULL,
+                    rule_turn INTEGER NOT NULL DEFAULT 0,
+                    last_turn TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(scope_id, persona_id))""")
+                await self._conn.execute("""CREATE TABLE IF NOT EXISTS wb_rule_effects (
+                    scope_id TEXT NOT NULL, persona_id TEXT NOT NULL, rule_id TEXT NOT NULL,
+                    first_seen_turn INTEGER NOT NULL DEFAULT 0,
+                    sticky_until_turn INTEGER NOT NULL DEFAULT 0,
+                    cooldown_until_turn INTEGER NOT NULL DEFAULT 0,
+                    last_triggered_turn INTEGER NOT NULL DEFAULT 0,
+                    last_injected_turn INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(scope_id, persona_id, rule_id))""")
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_wb_rule_effects_scope "
+                    "ON wb_rule_effects(scope_id, persona_id)")
                 row = await (await self._conn.execute("SELECT sql FROM sqlite_master WHERE name='memories_fts'")).fetchone()
                 if row and row[0] and "trigram" not in row[0].lower():
                     for trigger in ("memories_ai", "memories_ad", "memories_au"):
@@ -448,9 +469,13 @@ class MemoryStore:
 
 
     async def _get_cached_vectors(self, session_id: str):
-        if session_id in self._cache:
-            self._cache.move_to_end(session_id)
-            return self._cache[session_id]
+        # P1-15：读库与编码会释放锁；期间 clear_session/delete_memory 可能
+        # 已推进世代。先记世代，写回缓存前再校验，避免旧矩阵回填成幽灵记忆。
+        async with self._lock:
+            if session_id in self._cache:
+                self._cache.move_to_end(session_id)
+                return self._cache[session_id]
+            generation = self._generation
         
         # Load all active memories for session
         rows = await self._exec_fetchall(
@@ -507,9 +532,12 @@ class MemoryStore:
             # P1-4: 维度不匹配时（如 Embedding 提供商切换后旧向量残留），跳过该会话
             logger.warning("[Quill Memory] 向量维度不匹配，跳过会话 %s: %s", session_id, e)
             return None, None
-        self._cache[session_id] = (valid_rows, matrix)
-        if len(self._cache) > getattr(self, '_MAX_CACHE', 50):
-            self._cache.popitem(last=False)
+        async with self._lock:
+            if generation != self._generation:
+                return None, None
+            self._cache[session_id] = (valid_rows, matrix)
+            if len(self._cache) > getattr(self, '_MAX_CACHE', 50):
+                self._cache.popitem(last=False)
             
         return valid_rows, matrix
 
@@ -930,15 +958,18 @@ class MemoryStore:
             logger.warning("[Quill Memory] get_chat_logs_after 失败（%s）", type(e).__name__)
             raise StorageError("读取增量日志失败，水位未推进",detail=type(e).__name__) from e
 
-    async def list_memories(self, session_id: str, limit: int = 50) -> list[dict]:
-        """列出某 session 的所有记忆。"""
+    async def list_memories(self, session_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
+        """列出某 session 的记忆（FUNC-P1-6：增加 offset 分页参数）。
+
+        默认参数不变（limit=50, offset=0），既有调用方无需改动。
+        """
         if not session_id:
             return []
         try:
             rows = await self._exec_fetchall(
                 "SELECT id, summary, chat_summary, timestamp, strength, useful_count, useful_score, is_active, is_core FROM memories "
-                "WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?",
-                (session_id, limit)
+                "WHERE session_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (session_id, limit, max(0, offset))
             )
             return [
                 {
@@ -1009,17 +1040,36 @@ class MemoryStore:
         if not target_id:
             return 0
         try:
-            # LIKE 通配符转义（M3.3 自查）：target_id 含 %/_ 时，
-            # 未转义的 'target::%' 前缀匹配会误删其他会话的记忆。
-            cursor = await self._exec_write(
-                "DELETE FROM memories WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'",
-                (target_id, escape_like(memory_session_prefix(target_id)) + "%"),
-            )
-            # 按 target_id 前缀失效所有 persona 维度的会话缓存
             prefix = memory_session_prefix(target_id)
-            for key in [k for k in self._cache if k == target_id or k.startswith(prefix)]:
-                await self._invalidate_cache(key)
-            return cursor.rowcount
+            pattern = escape_like(prefix) + "%"
+
+            async def delete(connection):
+                rows = await (await connection.execute(
+                    "SELECT DISTINCT session_id FROM memories "
+                    "WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'",
+                    (target_id, pattern),
+                )).fetchall()
+                # P1-16：与 clear_session 同口径推进世代并复位 qp_turns，
+                # 在途总结不能把旧记忆写回新会话。
+                for (sid,) in rows:
+                    await connection.execute(
+                        "INSERT INTO session_generations(session_id,generation) "
+                        "VALUES(?,1) ON CONFLICT(session_id) DO UPDATE SET "
+                        "generation=generation+1", (sid,),
+                    )
+                    await connection.execute(
+                        "UPDATE qp_turns SET status='reset' WHERE scope_id=?",
+                        (target_id,),
+                    )
+                cursor = await connection.execute(
+                    "DELETE FROM memories WHERE session_id = ? "
+                    "OR session_id LIKE ? ESCAPE '\\'",
+                    (target_id, pattern),
+                )
+                return cursor.rowcount
+
+            count = await self._exec_tx(delete)
+            return count
         except Exception as e:
             note_storage_error("delete", e)
             raise StorageError(
@@ -1203,12 +1253,32 @@ class MemoryStore:
         if not target_id:
             return 0
         try:
-            # LIKE 通配符转义（M3.3 自查），理由同 delete_all_session_memories。
-            cursor = await self._exec_write(
-                "DELETE FROM chat_logs WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'",
-                (target_id, escape_like(memory_session_prefix(target_id)) + "%"),
-            )
-            return cursor.rowcount
+            pattern = escape_like(memory_session_prefix(target_id)) + "%"
+
+            async def delete(connection):
+                rows = await (await connection.execute(
+                    "SELECT DISTINCT session_id FROM chat_logs "
+                    "WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'",
+                    (target_id, pattern),
+                )).fetchall()
+                for (sid,) in rows:
+                    await connection.execute(
+                        "INSERT INTO session_generations(session_id,generation) "
+                        "VALUES(?,1) ON CONFLICT(session_id) DO UPDATE SET "
+                        "generation=generation+1", (sid,),
+                    )
+                await connection.execute(
+                    "UPDATE qp_turns SET status='reset' WHERE scope_id=?",
+                    (target_id,),
+                )
+                cursor = await connection.execute(
+                    "DELETE FROM chat_logs WHERE session_id = ? "
+                    "OR session_id LIKE ? ESCAPE '\\'",
+                    (target_id, pattern),
+                )
+                return cursor.rowcount
+
+            return await self._exec_tx(delete)
         except Exception as e:
             note_storage_error("delete", e)
             raise StorageError(

@@ -171,6 +171,19 @@ function renderWBInner(name, entries, shown) {
 
 function renderWBEntry(wbName, e) {
   const keys = e.keys || [];
+  const ruleTags = [];
+  if (e.group) ruleTags.push("组:" + e.group + (Number(e.group_max) > 1 ? "/" + e.group_max : ""));
+  const prio = Number(e.priority ?? e.order);
+  if (prio && prio !== 100) ruleTags.push("优先级:" + prio);
+  const sticky = Number(e.sticky ?? e.sticky_rounds);
+  if (sticky > 0) ruleTags.push("粘性:" + sticky + "轮");
+  const cooldown = Number(e.cooldown ?? e.cooldown_rounds);
+  if (cooldown > 0) ruleTags.push("冷却:" + cooldown + "轮");
+  const delay = Number(e.delay ?? e.delay_rounds);
+  if (delay > 0) ruleTags.push("延迟:" + delay + "轮");
+  if (e.prevent_recursion || e.recursive) ruleTags.push("递归");
+  if (e.use_regex) ruleTags.push("正则");
+  if (Number(e.inject_position) === 3) ruleTags.push("深度:" + (Number(e.depth) || 4));
   return `<article class="wb-entry" data-wb="${esc(wbName)}" data-eid="${esc(e.id || "")}">
     <div class="wb-entry-head">
       <div class="grow">
@@ -191,6 +204,7 @@ function renderWBEntry(wbName, e) {
       </div>
     </div>
     ${keys.length ? `<div class="wb-entry-keys">${keys.map(k => `<span class="tag">${esc(k)}</span>`).join("")}</div>` : ""}
+    ${ruleTags.length ? `<div class="wb-entry-keys">${ruleTags.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
     ${e.content ? `<div class="wb-entry-content">${esc(String(e.content).slice(0, 240))}${String(e.content).length > 240 ? "…" : ""}</div>` : ""}
   </article>`;
 }
@@ -290,6 +304,28 @@ function openWBEntryModal(wbName, entryId) {
   const entry = entryId ? (wb.entries || []).find(e => e.id === entryId) : null;
   const isNew = !entry;
   S._modalState = { type: "wb-entry", mode: isNew ? "create" : "edit", wbName };
+  // M5.1：读取时同时兼容规范字段（sticky/cooldown/...）与 v5.3.5 过渡字段
+  // （sticky_rounds/...），存量世界书无需迁移即可编辑。
+  const e = entry || {};
+  const legacyLogic = { primary_and_secondary: "AND_ANY", primary_or_secondary: "AND_ANY", all: "AND_ALL", secondary_only: "AND_ANY" };
+  const r = {
+    sticky: Number(e.sticky ?? e.sticky_rounds) || 0,
+    cooldown: Number(e.cooldown ?? e.cooldown_rounds) || 0,
+    delay: Number(e.delay ?? e.delay_rounds) || 0,
+    group: e.group || "",
+    groupMax: Number(e.group_max) > 0 ? Number(e.group_max) : 1,
+    groupWeight: Number(e.group_weight) || 100,
+    priority: Number(e.priority ?? e.order) || 100,
+    scanDepth: e.scan_depth != null ? Number(e.scan_depth) : 0,
+    excludeRecursion: !!e.exclude_recursion,
+    preventRecursion: !!(e.prevent_recursion ?? e.recursive),
+    useRegex: !!e.use_regex,
+    injectPosition: [1, 2, 3].includes(Number(e.inject_position)) ? Number(e.inject_position) : 2,
+    depth: Number(e.depth) || 4,
+    role: ["system", "user", "assistant"].includes(e.role) ? e.role : "system",
+    selectiveLogic: e.selective_logic || legacyLogic[e.key_mode] || "AND_ANY",
+    secondary: e.secondary_keys || e.keys_secondary || [],
+  };
   $("#modalTitle").textContent = `${isNew ? "新建" : "编辑"}条目 · ${wbName}`;
   $("#modalBody").innerHTML = `
     <div class="form-group">
@@ -301,8 +337,22 @@ function openWBEntryModal(wbName, entryId) {
       <input class="field field--wide" type="text" id="weId" value="${esc(entry?.id || "")}" ${isNew ? "" : "readonly"} placeholder="唯一标识">
     </div>
     <div class="form-group">
-      <label>触发关键词</label>
+      <label>触发关键词（主）</label>
       <div id="weTagHost"></div>
+    </div>
+    <div class="form-group">
+      <label>次关键词（可选，配合下方组合方式）</label>
+      <div id="weSecondTagHost"></div>
+    </div>
+    <div class="form-group">
+      <label for="weKeyMode">主次关键词组合方式</label>
+      <select class="field field--wide" id="weKeyMode">
+        <option value="AND_ANY">主命中 + 次任一（AND_ANY）</option>
+        <option value="AND_ALL">主命中 + 次全部（AND_ALL）</option>
+        <option value="NOT_ANY">主命中 + 次全不命中（NOT_ANY）</option>
+        <option value="NOT_ALL">主命中 + 次不全命中（NOT_ALL）</option>
+      </select>
+      <span class="hint">次关键词为空时不参与匹配，退化为仅主关键词。</span>
     </div>
     <div class="form-group">
       <label for="weContent">内容</label>
@@ -312,13 +362,84 @@ function openWBEntryModal(wbName, entryId) {
       <label for="weCond">解锁条件（可选）</label>
       <input class="field field--wide" type="text" id="weCond" value="${esc(entry?.condition || "")}" placeholder="如：好感度>=70 或 剧情阶段 in 约会,婚礼（留空 = 无条件）">
     </div>
+    <details class="form-group" ${(r.sticky || r.cooldown || r.delay || r.group || r.preventRecursion || r.useRegex || r.injectPosition === 3) ? "open" : ""}>
+      <summary class="fs-12 t3">规则编排（可选：定时效应 / 互斥组 / 递归 / 正则 / 注入位置）</summary>
+      <div class="row-wrap">
+        <div class="form-group grow">
+          <label for="weGroup">互斥组</label>
+          <input class="field field--wide" type="text" id="weGroup" value="${esc(r.group)}" placeholder="同组只注入 group_max 条，留空 = 不分组">
+        </div>
+        <div class="form-group">
+          <label for="weGroupMax">组内上限</label>
+          <input class="field" type="number" min="1" max="999" id="weGroupMax" value="${r.groupMax}">
+        </div>
+        <div class="form-group">
+          <label for="weGroupWeight">组内权重</label>
+          <input class="field" type="number" min="0" max="9999" id="weGroupWeight" value="${r.groupWeight}">
+        </div>
+        <div class="form-group">
+          <label for="wePriority">优先级</label>
+          <input class="field" type="number" min="0" max="9999" id="wePriority" value="${r.priority}">
+        </div>
+      </div>
+      <div class="row-wrap">
+        <div class="form-group grow">
+          <label for="weSticky">粘性轮数</label>
+          <input class="field" type="number" min="0" max="999" id="weSticky" value="${r.sticky}">
+        </div>
+        <div class="form-group grow">
+          <label for="weCooldown">冷却轮数</label>
+          <input class="field" type="number" min="0" max="999" id="weCooldown" value="${r.cooldown}">
+        </div>
+        <div class="form-group grow">
+          <label for="weDelay">延迟轮数</label>
+          <input class="field" type="number" min="0" max="999" id="weDelay" value="${r.delay}">
+        </div>
+        <div class="form-group grow">
+          <label for="weScan">扫描最近消息条数</label>
+          <input class="field" type="number" min="0" max="999" id="weScan" value="${r.scanDepth}" placeholder="0 = 全文">
+        </div>
+      </div>
+      <div class="row-wrap">
+        <label class="check"><input type="checkbox" id="weExcludeRecursion" ${r.excludeRecursion ? "checked" : ""}><span>不被其他条目递归触发</span></label>
+        <label class="check"><input type="checkbox" id="wePreventRecursion" ${r.preventRecursion ? "checked" : ""}><span>本条目不递归触发其他条目</span></label>
+        <label class="check"><input type="checkbox" id="weRegex" ${r.useRegex ? "checked" : ""}><span>关键词按安全正则匹配</span></label>
+      </div>
+      <div class="row-wrap">
+        <div class="form-group">
+          <label for="weInjectPos">注入位置</label>
+          <select class="field" id="weInjectPos">
+            <option value="1" ${r.injectPosition === 1 ? "selected" : ""}>常驻位</option>
+            <option value="2" ${r.injectPosition === 2 ? "selected" : ""}>按需位</option>
+            <option value="3" ${r.injectPosition === 3 ? "selected" : ""}>深度位（按消息深度插入）</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="weDepth">深度（倒数第几条）</label>
+          <input class="field" type="number" min="0" max="9999" id="weDepth" value="${r.depth}">
+        </div>
+        <div class="form-group">
+          <label for="weRole">深度注入角色</label>
+          <select class="field" id="weRole">
+            <option value="system" ${r.role === "system" ? "selected" : ""}>system</option>
+            <option value="user" ${r.role === "user" ? "selected" : ""}>user</option>
+            <option value="assistant" ${r.role === "assistant" ? "selected" : ""}>assistant</option>
+          </select>
+        </div>
+      </div>
+    </details>
     <div class="row-wrap">
       <label class="check"><input type="checkbox" id="weConst" ${entry?.is_constant ? "checked" : ""}><span>常驻</span></label>
       <label class="check"><input type="checkbox" id="weEnabled" ${(entry ? entry.enabled : true) !== false ? "checked" : ""}><span>启用</span></label>
     </div>`;
   openModal();
   autoSizeModalTextareas($("#modalBody"));
-  setTimeout(() => { S._wbEntryTagInput = createTagInput("weTagHost", entry?.keys || []); }, 40);
+  setTimeout(() => {
+    S._wbEntryTagInput = createTagInput("weTagHost", entry?.keys || []);
+    S._wbEntrySecondaryInput = createTagInput("weSecondTagHost", r.secondary || []);
+    const keyModeSel = $("#weKeyMode");
+    if (keyModeSel) keyModeSel.value = r.selectiveLogic;
+  }, 40);
 }
 
 async function saveWBEntry() {
@@ -328,13 +449,39 @@ async function saveWBEntry() {
   const title = $("#weTitle")?.value.trim() || "";
   const id = $("#weId")?.value.trim() || Math.random().toString(36).slice(2, 10);
   const keys = S._wbEntryTagInput ? S._wbEntryTagInput.getTags() : [];
+  const secondary_keys = S._wbEntrySecondaryInput ? S._wbEntrySecondaryInput.getTags() : [];
   const content = $("#weContent")?.value || "";
   const is_constant = !!$("#weConst")?.checked;
   const enabled = $("#weEnabled")?.checked !== false;
   // M1b-Fix P1-d：条件字段恒随表单提交（空串 = 清除条件，后端
   // update_entry_in_worldbook 对空串 pop 键——不留删不掉的旧条件）。
   const condition = $("#weCond")?.value.trim() || "";
-  const entry = { id, title, keys, content, is_constant, enabled, condition };
+  // M5.1：规则字段恒提交；0 / 空串 = 关闭，后端按缺省等价旧行为。
+  const num = (sel, def = 0) => {
+    const raw = parseInt($(sel)?.value, 10);
+    return Number.isFinite(raw) ? Math.max(0, raw) : def;
+  };
+  const selective_logic = $("#weKeyMode")?.value || "AND_ANY";
+  const group = $("#weGroup")?.value.trim() || "";
+  const group_max = Math.max(1, num("#weGroupMax", 1));
+  const group_weight = num("#weGroupWeight", 100);
+  const priority = num("#wePriority", 100);
+  const sticky = num("#weSticky", 0);
+  const cooldown = num("#weCooldown", 0);
+  const delay = num("#weDelay", 0);
+  const scan_depth = num("#weScan", 0);
+  const exclude_recursion = !!$("#weExcludeRecursion")?.checked;
+  const prevent_recursion = !!$("#wePreventRecursion")?.checked;
+  const use_regex = !!$("#weRegex")?.checked;
+  const inject_position = parseInt($("#weInjectPos")?.value, 10) || 2;
+  const depth = num("#weDepth", 4);
+  const role = $("#weRole")?.value || "system";
+  const entry = {
+    id, title, keys, secondary_keys, selective: secondary_keys.length > 0,
+    selective_logic, content, is_constant, enabled, condition,
+    group, group_max, group_weight, priority, sticky, cooldown, delay, scan_depth,
+    exclude_recursion, prevent_recursion, use_regex, inject_position, depth, role,
+  };
   try {
     if (st.mode === "create") await apiPost("/wb/entry/create", { name, entry });
     else await apiPost("/wb/entry/update", { name, entry_id: id, entry });

@@ -428,6 +428,9 @@ async function processRAGFiles(fileList) {
   // 上传目标分组：选「未分组」就是独立文档（照样能绑定到角色卡）
   const group = $("#ragUploadTarget")?.value || "";
   const where = group ? ` → 「${group}」` : "";
+  // P1-20：分组名是用户可控文本；textContent 路径用原文，innerHTML 路径
+  // 必须走 esc()，否则「<img onerror=...>」这类分组名会在上传状态栏执行。
+  const whereHtml = group ? ` → 「${esc(group)}」` : "";
   let ok = 0, fail = 0, chunks = 0, groupFail = 0;
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
@@ -444,7 +447,7 @@ async function processRAGFiles(fileList) {
     }
   }
   if (fail === 0 && groupFail === 0) {
-    status.innerHTML = `<span style="color:var(--green-text)">✓ 已处理 ${ok} 个文件${where}，生成 ${chunks} 个分块</span>`;
+    status.innerHTML = `<span style="color:var(--green-text)">✓ 已处理 ${ok} 个文件${whereHtml}，生成 ${chunks} 个分块</span>`;
   } else if (fail === 0) {
     status.innerHTML = `<span style="color:var(--orange-text)">已上传 ${ok} 个文件，但有 ${groupFail} 个未能归入分组（分组可能已被删除），它们现在是「未分组」文档</span>`;
   } else {

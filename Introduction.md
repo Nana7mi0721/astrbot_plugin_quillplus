@@ -218,7 +218,8 @@ v5.3.4 及更早版本在这里读写 `state.stream_mode`。v5.3.5 起旗标已�
 | `default_placeholder` | `未设置` | 字段缺位时的占位文案 |
 | `show_delta` | `true` | 与上一轮比较并标注变化（↑↓） |
 | `format_template_plain` | 见代码 | 纯文本平台（如 QQ）的渲染模板 |
-| `plain_platforms` | `""` | 强制走纯文本模板的平台列表，留空用内置默认 |
+| `plain_platforms` | `""` | 强制走纯文本模板的平台列表（旧兼容项），留空由内置能力档案判定 |
+| `dialect_overrides` | `""` | 平台方言覆盖，格式 `platform=dialect`，多条用 `|` 分隔；方言可选 plain / markdown / telegram / slack / kmarkdown，`*` 作通配 |
 | `decision_enabled` | `false` | 决策模式开关（剧情走向推荐选择度 + 分支路由） |
 | `decision_base_url` | `https://openrouter.ai/api/v1` | 决策模型 API 地址（支持 OpenRouter / TypeSafe / OpenAI / Hal-X / 云知声及一切 System One·OpenAI Decisions 兼容端点） |
 | `decision_api_key` | `""` | 决策模型 API 密钥（Hal-X 可留空；Baseten 的 Api-Key 鉴权自动适配） |
@@ -380,3 +381,46 @@ target_id（会话维度：群+用户）
 17. **会话组：共享剧情但不串台（v5.3.5）**：多个入口（群/私聊/WebChat）绑到同一组后共享一段剧情，但每条历史都带来源标注——`〔来自：入口｜说话人：谁（本入口/别处）〕` 与 `〔发往：入口（本入口/别处）〕`。当前请求额外注入「你此刻在 X 回复 Y」，并明确「带（别处）的是别的入口里发生的事，不要认领那边的场景与道具」。标注与临时声明都经临时通道下发（不进宿主历史、不落库），回复里若出现标注由剥离器擦掉。**能否稳定区分入口取决于所选模型**，弱模型仍可能把另一入口的道具带进来。
 
 18. **上下文压缩先存原文（v5.3.5）**：超过估算上限时把旧历史压成摘要，但**先**把被替换的原文写成检查点（单份 ≤2MB、份数与总量有上限，写前用临时文件验证可写），压缩失败只告警、保留当前历史，绝不因压缩丢掉可回滚原文；含工具调用或媒体的历史不压缩（暂不支持）。估算按字节折算、对中文偏保守，因此上限是「估算值」不是模型真实 token 窗口。
+
+---
+
+## 七、安全防御体系与数据保护模型
+
+### 1. 写类指令权限门控
+所有对持久化状态具有修改能力的子命令（切卡、绑定、解绑、重载、增删记忆、剧情重置、开关写入等），统一在 `commands.py` 经 `_check_group_permission` 校验：
+- 私聊会话默认全量放行；
+- 群聊会话必须命中 `permissions.admin_users` 白名单；
+- 白名单未配置时对群聊写指令实施 fail-close 拦截，并回显发送者 ID 引导配置。
+
+### 2. Web API 敏感数据出口设防（SEC-P1-1）
+数据出口类 GET 路由与写操作处于同一安全等级。包括：
+- `/backup/export`、`/backup/export_base64`（全量配置与数据库 Zip 包）
+- `/memory/export`、`/memory/list_all`、`/memory/get`（跨会话全量长期记忆）
+- `/chatlog/list`、`/chatlog/export`（任意会话的聊天原始记录）
+- `/persona/export`、`/persona/export_base64`（包含完整人设与核心设定的角色卡）
+
+上述路由一律列入 `_MUTATING_ROUTES` 校验名单，必须具备 AstrBot 管理员凭证方可拉取，防止仅持有 plugin 作用域 API Key 的客户端越权外带全群敏感历史。
+
+### 3. 第三方凭据脱敏与防覆盖（SEC-P1-2）
+- `GET /config/all` 在下发 `status_bar.decision_api_key` 时，若已配置密钥则下发哨兵掩码 `"__saved__"`，未配置下发空串，杜绝明文密钥在出口网络中暴露。
+- `POST /config/save` 与 `POST /config/save_batch` 在接收到 `"__saved__"` 哨兵时自动跳过写盘，防止已保存的真实密钥被占位符破坏覆盖。
+
+### 4. 角色卡空值安全防线（FUNC-P1-1）
+针对手改或外部平台导出的角色卡 JSON，其 `core_prompts` 或 `quill_extensions` 键在但取值为 JSON `null` 的边界情况，装配链路与管理层一律采用 `(data.get("xxx") or {})` 结构兜底，杜绝 `AttributeError` 阻断整轮提示词装配并引发静默降级。
+
+### 5. 文件与数据库操作原子性
+- 关键状态与配置文件写入遵循标准四步序列：创建同目录临时文件（`*.tmp`）→ 写入内容（`flush`）→ 强制内核落盘（`os.fsync`）→ 原子重命名替换（`os.replace`）。
+- 数据库结构迁移前自动生成独立副本快照并调用 `PRAGMA integrity_check` 验证可恢复性；校验逻辑使用 `closing(sqlite3.connect(...))` 显式释放文件锁，避免 Windows 环境下的文件锁定冲突。
+
+---
+
+## 八、技术文档体系与开发规范导引
+
+本仓库采用清晰的分层文档体系，根据查阅角色与开发需求按需索骥：
+
+- 🚨 **代理开发硬性禁令**：[`AGENT.md`](./AGENT.md)（根目录，强制约束所有 AI 编码代理：严禁私自改动版本号、严禁非授权 Git 提交、纯端到端 E2E 验收准则、分层与落点红线）。
+- 🗺️ **文档全景地图**：[`docs/README.md`](./docs/README.md)（本地文档总索引：现行规划、实施工单、审查报告、测试验收记录与历史归档）。
+- 🧭 **演进路线与唯一主规划**：[`docs/QuillPlus_开发规划_5.3.4及以后.md`](./docs/QuillPlus_开发规划_5.3.4及以后.md)（里程碑路线、技术红线 10 条、开发规范 R1–R5、Backlog 与决策台账）。
+- 📝 **开发者实现细节备忘**：[`docs/CHANGELOG_DETAIL.md`](./docs/CHANGELOG_DETAIL.md)（记录文件/类/函数级变更、修复编号、根因分析与验证过程）。
+- 📊 **状态栏设计与契约**：[`docs/STATUS_BAR.md`](./docs/STATUS_BAR.md)（状态栏 L1–L6 分级注册表、格式契约与平台模板适配细节）。
+

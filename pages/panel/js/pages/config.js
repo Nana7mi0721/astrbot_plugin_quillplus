@@ -1,6 +1,7 @@
 import { loadTasks } from "./tasks.js";
 import { loadGroups } from "./groups.js";
 import { loadUsage, disposeUsage } from "./usage.js";
+import { disposeTrace } from "./trace.js";
 /* pages/config.js — 由 index.html 拆分生成（可读性优先，逻辑与拆分前逐行一致） */
 import { S } from "../state.js";
 import { api, apiPost } from "../api.js";
@@ -43,6 +44,9 @@ const CFG_FIELDS = [
   ["worldbook", "always_activate", "#c-wb-always", "bool"],
   ["worldbook", "card_embed_worldbook", "#c-wb-card-embed", "bool"],
   ["worldbook", "show_trigger_log", "#c-wb-show-log", "bool"],
+  ["worldbook", "recursion_enabled", "#c-wb-recursion", "bool"],
+  ["worldbook", "recursion_max_steps", "#c-wb-recursion-steps", "int"],
+  ["worldbook", "recursion_max_tokens", "#c-wb-recursion-tokens", "int"],
   ["writing_resource", "enabled", "#c-wr-enabled", "bool"],
   ["writing_resource", "max_entries", "#c-wr-max", "int"],
   ["writing_resource", "fallback_top_count", "#c-wr-fallback", "int"],
@@ -59,6 +63,7 @@ const CFG_FIELDS = [
   // 不能被 placeholder 类型的「空 → 未设置」替换掉。
   ["status_bar", "format_template_plain", "#c-sb-tpl-plain", "str"],
   ["status_bar", "plain_platforms", "#c-sb-plain-plat", "str"],
+  ["status_bar", "dialect_overrides", "#c-sb-dialect", "str"],
   ["status_bar", "plot_paths", "#c-sb-plots", "str"],
   ["status_bar", "llm_extract", "#c-sb-llm-extract", "bool"],
   ["status_bar", "llm_provider_id", "#c-sb-llm", "str"],
@@ -99,6 +104,9 @@ const CFG_DEFAULTS = {
   "worldbook.enabled": true, "worldbook.max_token_limit": 4000, "worldbook.max_dynamic_entries": 4,
   "worldbook.injection_position": "user_prefix", "worldbook.match_sensitivity": 0.7,
   "worldbook.card_embed_worldbook": true,
+  "worldbook.recursion_enabled": false,
+  "worldbook.recursion_max_steps": 3,
+  "worldbook.recursion_max_tokens": 2000,
   "writing_resource.enabled": true, "writing_resource.max_entries": 4,
   "writing_resource.fallback_top_count": 2, "writing_resource.category_dedup_limit": 3,
   "performance.min_output_length": 400, "performance.max_output_length": 0,
@@ -107,6 +115,7 @@ const CFG_DEFAULTS = {
   "status_bar.format_template": "**状态栏**\n```\n{content}\n```",
   "status_bar.format_template_plain": "───── 状态栏 ─────\n{content}\n────────────────",
   "status_bar.plain_platforms": "",
+  "status_bar.dialect_overrides": "",
   "status_bar.plot_paths": "继续当前话题|转换场景|结束互动",
   "status_bar.default_placeholder": "未设置",
   "status_bar.show_delta": true,
@@ -155,6 +164,14 @@ function applySettings(providers, cfg) {
     if (kind === "bool") el.checked = !!v;
     else if (kind === "placeholder") el.value = (v === undefined || v === null || v === "") ? "未设置" : v;
     else el.value = v === undefined || v === null ? "" : v;
+    // SEC-P1-2：后端对已保存的判定密钥只下发哨兵 "__saved__"（不再回传明文）。
+    // 展示为掩码点串；保存侧见 saveAllChanges——点串原样回传哨兵=「未修改」。
+    if (group === "status_bar" && key === "decision_api_key" && v === "__saved__") {
+      el.value = "········";
+      el.dataset.savedKey = "1";
+    } else if (group === "status_bar" && key === "decision_api_key") {
+      delete el.dataset.savedKey;
+    }
   });
 
   syncCachePosition();
@@ -250,9 +267,27 @@ async function saveAllChanges(btn) {
       CFG_FIELDS.forEach(([group, key, sel, kind]) => {
         const el = $(sel);
         if (!el) return;
+        // SEC-P1-2：判定密钥展示的是掩码点串（真实值不下发）。点串未动 = 未修改，
+        // 传哨兵 "__saved__" 让后端跳过写盘；清空 = 主动清除；输入新串 = 新密钥。
+        if (group === "status_bar" && key === "decision_api_key") {
+          const raw = el.value;
+          if (raw === "········") { add(group, key, "__saved__"); return; }
+          add(group, key, raw);
+          return;
+        }
+        // FUNC-P1-7：旧写法 `parseInt(...) || 默认 || 0` 把合法 0 当假值吞掉
+        // （rag.chunk_overlap=0、worldbook.match_sensitivity=0 保存后静默变回默认值，
+        //  toast 还报「已保存」）。改为 Number.isFinite 判定：解析出有限数就用它
+        // （0 是合法值），只有空串/非数字才回落默认。
         if (kind === "bool") add(group, key, el.checked);
-        else if (kind === "int") add(group, key, parseInt(el.value, 10) || CFG_DEFAULTS[`${group}.${key}`] || 0);
-        else if (kind === "float") add(group, key, parseFloat(el.value) || CFG_DEFAULTS[`${group}.${key}`] || 0);
+        else if (kind === "int") {
+          const parsed = parseInt(el.value, 10);
+          add(group, key, Number.isFinite(parsed) ? parsed : (CFG_DEFAULTS[`${group}.${key}`] ?? 0));
+        }
+        else if (kind === "float") {
+          const parsedF = parseFloat(el.value);
+          add(group, key, Number.isFinite(parsedF) ? parsedF : (CFG_DEFAULTS[`${group}.${key}`] ?? 0));
+        }
         else if (kind === "placeholder") add(group, key, (el.value || "").trim() || "未设置");
         else add(group, key, el.value);
       });
@@ -302,9 +337,13 @@ async function probeDecisionModel(el) {
     if (box) box.innerHTML = '<span class="fs-12 t3">正在连接…</span>';
     let r = null;
     try {
+      // SEC-P1-2：密钥框展示的是掩码点串（真实值不下发）。探针若原样上传，
+      // 点串会被后端当成真实密钥发出去必然 401。点串视为「未输入」传空串，
+      // 走后端同源回落规则用已保存的那把；用户真正改密钥时输入的是明文。
+      const rawKey = read("#c-sb-decision-key");
       r = await apiPost("/decision/probe", {
         base_url: read("#c-sb-decision-url"),
-        api_key: read("#c-sb-decision-key"),
+        api_key: rawKey === "········" ? "" : rawKey,
         model: read("#c-sb-decision-model"),
         api_format: read("#c-sb-decision-format"),
       });
@@ -432,6 +471,7 @@ function filterConfig(query) {
 
 function switchTab(tab) {
   if (tab !== "usage") disposeUsage();
+  if (tab !== "trace") disposeTrace();
   // 仅当「离开」配置页且存在未保存修改时才拦截。
   // 面板 iframe 未授予 allow-modals，原生 confirm 恒返回 false 会把用户
   // 永久锁在配置页，因此这里用自绘对话框；用户确认后清除脏标记再跳转。

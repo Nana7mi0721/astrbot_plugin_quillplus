@@ -11,19 +11,16 @@ from __future__ import annotations
 
 import re
 
+from .quill.services.statusbar.dialect import parse_dialect_overrides
+
 
 # 状态栏默认字段（当 config 解析失败时的硬编码回退）
 _DEFAULT_LOVE_FIELDS = ["好感度", "关系阶段", "心情", "位置", "穿着", "当前想法"]
 
-# 不渲染 Markdown 的平台（按 AstrBot 适配器注册名匹配）。
-# 这些平台上 `**状态栏**` 与 ``` 围栏会原样显示，故改用纯文本模板。
-# 依据：框架里 aiocqhttp 直接发字符串；QQ 官方 API 虽有 markdown 段类型，
-# 但个人/群机器人实际多按纯文本呈现。用户可用 plain_platforms 覆盖。
-_DEFAULT_PLAIN_PLATFORMS = [
-    "aiocqhttp", "qq_official", "qq_official_webhook",
-    "wecom", "wecom_ai_bot", "weixin_oc", "weixin_official_account",
-    "dingtalk", "line",
-]
+# 纯文本平台的内置默认不再维护第二份名单：M4.3 起由
+# quill/services/statusbar/dialect.py 的 PROFILES 统一持有。plain_platforms
+# 只表示用户显式覆盖；留空时按能力档案判定（aiocqhttp/QQ 官方/微信等仍是
+# plain），这样 confirmed 出站模式才能压过「预设」而不是被默认名单挡住。
 
 
 def _get_nested(raw: dict, group: str, default=None):
@@ -109,6 +106,16 @@ class QuillConfig:
         self.worldbook_always_activate: bool = _safe_bool(wb.get("always_activate"))
         # Issue #1：角色卡导入自动转换内嵌世界书（character_book）并绑定
         self.worldbook_card_embed_import: bool = _safe_bool(wb.get("card_embed_worldbook"), True)
+        # M5.1：有界递归默认关闭；步数/Token 只约束递归带出的条目。
+        self.worldbook_recursion_enabled: bool = _safe_bool(
+            wb.get("recursion_enabled"), False
+        )
+        self.worldbook_recursion_max_steps: int = min(
+            10, max(1, _safe_int(wb.get("recursion_max_steps", 3), 3))
+        )
+        self.worldbook_recursion_max_tokens: int = min(
+            100000, max(100, _safe_int(wb.get("recursion_max_tokens", 2000), 2000))
+        )
 
         # ── writing_resource ──
         wr = _get_nested(self._raw, "writing_resource", {}) or {}
@@ -141,12 +148,18 @@ class QuillConfig:
         # 哪些平台算「纯文本」。按适配器注册名匹配（aiocqhttp / qq_official ...），
         # 用户可覆盖以适配自建网关。
         _plain_raw = sb.get("plain_platforms", "") or ""
+        # 空值 = 没有用户覆盖，交给 PROFILES；不要在这里补默认名单，
+        # 否则 resolve_dialect 会把「预设」误判成「入口覆盖」，压掉 confirmed。
+        self.status_bar_plain_platforms: list[str] = []
         if isinstance(_plain_raw, str) and _plain_raw.strip():
-            self.status_bar_plain_platforms: list[str] = [
+            self.status_bar_plain_platforms = [
                 p.strip().lower() for p in re.split(r"[|,]", _plain_raw) if p.strip()
             ]
-        else:
-            self.status_bar_plain_platforms = list(_DEFAULT_PLAIN_PLATFORMS)
+        # M4.3 平台方言覆盖：platform=dialect，优先于 plain_platforms 与能力档案。
+        # 存成 dict 而不是原串，渲染热路径每轮都要查，避免反复 split。
+        self.status_bar_dialect_overrides: dict = parse_dialect_overrides(
+            sb.get("dialect_overrides", "")
+        )
         # 解析剧情走向选项
         plot_raw = sb.get("plot_paths", "") or ""
         if isinstance(plot_raw, str) and plot_raw.strip():
@@ -159,9 +172,10 @@ class QuillConfig:
             self.status_bar_fields: list[str] = [f.strip() for f in fields_raw.split("|") if f.strip()]
         else:
             self.status_bar_fields = list(_DEFAULT_LOVE_FIELDS)
-        # 确保至少 6 个字段（不足补空字符串）
-        while len(self.status_bar_fields) < 6:
-            self.status_bar_fields.append("")
+        # P2-05：旧逻辑「不足 6 个补空字符串」已删除——空串字段名会流进解析/
+        # 渲染/持久化全链路（实测渲染出孤立的「：」行、'' 空键入库并注入提示词）。
+        # 消费点全部按列表实际长度循环，没有「必须 6 个」的位置依赖；字段少是
+        # 合法配置，不用空串凑数。
         # 方案C: LLM 智能提取开关（默认关闭，高成本兜底）
         self.status_bar_llm_extract: bool = _safe_bool(sb.get("llm_extract"))
         # P0-2: 状态栏 LLM 提取独立 provider（留空回退到 RAG 摘要 LLM）

@@ -441,7 +441,17 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         # --- Worldbook ---
         wb_dir = self.paths["worldbooks_dir"]
         try:
-            self.wb_manager = WorldbookManager(wb_dir)
+            # M5.1：规则时钟与记忆库同库；WorldbookRuleStore 惰性建表，
+            # 不会抢在 MemoryStore 的 schema 校验前把空库写成未知结构。
+            self.wb_manager = WorldbookManager(
+                wb_dir,
+                rules_path=os.path.join(
+                    self.paths["knowledge_dir"], "quill_memory.db"
+                ),
+            )
+            self.wb_manager.recursion_enabled = self.config.worldbook_recursion_enabled
+            self.wb_manager.recursion_max_steps = self.config.worldbook_recursion_max_steps
+            self.wb_manager.recursion_max_tokens = self.config.worldbook_recursion_max_tokens
             wb_names = self.wb_manager.list_worldbooks()
             logger.info(f"[Quill] 世界书已加载: {len(wb_names)} 个 - {wb_names}")
         except Exception as e:
@@ -487,7 +497,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
     # 属性查找失败**时触发：实例字典里已有的同名属性照常生效（与 v5.2.5
     # 的可写实例属性行为完全一致），默认路径实时读 props，不留第二真源。
     # 运行期自身代码没有任何对这些名字的赋值点
-    # （现由 docs/probe_config_effects.py 的真机键效应探测 +
+    # （现由 docs/probes/probe_config_effects.py 的真机键效应探测 +
     # .build/harness/quilltest/run.py --api 的 api_config_write_roundtrip 看守）。
     _MIXIN_CONFIG_ATTRS = frozenset({
         "love_fields",
@@ -495,6 +505,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         "status_bar_format_template",
         "status_bar_format_plain",
         "status_bar_plain_platforms",
+        "status_bar_dialect_overrides",
         "status_bar_plot_paths",
         "status_bar_decision_enabled",
         "status_bar_decision_confidence_floor",
@@ -612,7 +623,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                         try:
                             await asyncio.shield(record.task)
                         except asyncio.CancelledError:
-                            if asyncio.current_task().cancelling():
+                            # P2-01：cancelling() 是 3.11 API（3.10 上 AttributeError 会把
+                            # 取消信号吞进 except Exception，守护循环杀不掉）。改用跨版本
+                            # 判据：shield 的内层任务确因取消结束（cancelled()）才会把
+                            # CancelledError 抛到这里，吞掉；否则是当前任务自身被取消，上抛。
+                            if not record.task.cancelled():
                                 raise
                         except Exception as exc:
                             logger.warning("[Quill Reflection] 闲时反思失败（%s），保留水位与日志",type(exc).__name__)
@@ -1293,6 +1308,10 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             # 赋值、except 里引用——若 try 早期（如 QuillConfig 构造）失败，
             # 回滚分支自身会 NameError 并掩盖原始异常。这里一并修正。
             _retriever_prev = None
+            _reranker_prev = None
+            _summarizer_prev = None
+            _kb_prev = None
+            _wr_prev = None
             try:
                 for group, key, value in normalized:
                     if (
@@ -1327,11 +1346,45 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     # `config._raw`（rag_dense_top_k 走这条路）也是新的
                     self.rag_retriever.config = self.config
 
+                # M5.1 / P1-2：构造期快照的普通属性必须逐项同步，否则面板
+                # 保存成功但部分组件仍按旧值运行。
+                wb_mgr = getattr(self, "wb_manager", None)
+                if wb_mgr is not None:
+                    wb_mgr.recursion_enabled = self.config.worldbook_recursion_enabled
+                    wb_mgr.recursion_max_steps = self.config.worldbook_recursion_max_steps
+                    wb_mgr.recursion_max_tokens = self.config.worldbook_recursion_max_tokens
+
+                if getattr(self, "rag_reranker", None) is not None:
+                    _reranker_prev = (
+                        self.rag_reranker.rerank_provider_id,
+                        self.rag_reranker.fallback_llm_id,
+                    )
+                    self.rag_reranker.rerank_provider_id = self.config.rag_rerank_provider_id
+                    self.rag_reranker.fallback_llm_id = self.config.rag_llm_provider_id
+
+                if getattr(self, "rag_summarizer", None) is not None:
+                    _summarizer_prev = getattr(
+                        self.rag_summarizer, "provider_id", ""
+                    )
+                    self.rag_summarizer.provider_id = self.config.rag_llm_provider_id
+
+                if getattr(self, "rag_embedding", None) is not None:
+                    self.rag_embedding.enable_local = (
+                        self.config.rag_enable_local_embedding
+                    )
+
+                if getattr(self, "wr_manager", None) is not None:
+                    _wr_prev = getattr(
+                        self.wr_manager, "category_dedup_limit", None
+                    )
+                    self.wr_manager.category_dedup_limit = self.config.wr_dedup_limit
+
                 # KB 源的 enabled/top_k 也是构造期快照，随面板保存实时同步
                 #（available 是属性，读 self.context.kb_manager + enabled，
                 # 所以关掉开关下一轮检索立即失效，无需重建）。
                 kb_src = getattr(self, "rag_kb_source", None)
                 if kb_src is not None:
+                    _kb_prev = (kb_src.enabled, kb_src.top_k)
                     kb_src.enabled = self.config.rag_astrbot_kb_enabled
                     kb_src.top_k = self.config.rag_top_k
 
@@ -1345,7 +1398,12 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     raise RuntimeError("AstrBot 配置对象不支持持久化")
 
                 changed_keys = {(group, key) for group, key, _ in normalized}
-                if ("rag", "embedding_provider_id") in changed_keys:
+                if changed_keys.intersection({
+                    ("rag", "embedding_provider_id"),
+                    ("rag", "enable_local_embedding"),
+                    ("rag", "rerank_provider_id"),
+                    ("rag", "llm_provider_id"),
+                }):
                     # 走 _spawn_rag_reinit 而非直接 _spawn：连续保存会各起一个
                     # 重建，并发执行时后一个可能在前一个 close 到一半时开始
                     # 初始化。这里做去重 + 串行化（内部已处理「无事件循环」）。
@@ -1374,6 +1432,17 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     self.rag_retriever.top_k = _retriever_prev[0]
                     self.rag_retriever.enable_memory = _retriever_prev[1]
                     self.rag_retriever.config = _retriever_prev[2]
+                if _reranker_prev is not None and getattr(self, "rag_reranker", None):
+                    self.rag_reranker.rerank_provider_id = _reranker_prev[0]
+                    self.rag_reranker.fallback_llm_id = _reranker_prev[1]
+                if _summarizer_prev is not None and getattr(self, "rag_summarizer", None):
+                    self.rag_summarizer.provider_id = _summarizer_prev
+                if _wr_prev is not None and getattr(self, "wr_manager", None):
+                    self.wr_manager.category_dedup_limit = _wr_prev
+                if _kb_prev is not None:
+                    kb_src = getattr(self, "rag_kb_source", None)
+                    if kb_src is not None:
+                        kb_src.enabled, kb_src.top_k = _kb_prev
                 raise
         except Exception as e:
             logger.warning("[Quill] 配置批量保存失败: %s", e, exc_info=True)
@@ -1755,8 +1824,16 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             result = {}
             for f in self.props.love_fields:
                 val = data.get(f)
-                if val and isinstance(val, str) and val.strip():
-                    result[f] = val.strip()
+                # P2-07：量化字段（好感度等）LLM 常直接返回 int/float——旧代码
+                # isinstance(val, str) 会把整级提取判死走兜底栏。数值统一 str()
+                # 收编；bool 显式排除（isinstance(True, int) 为真，但 true/false
+                # 不是状态值）；0 是合法取值（好感度归零），不能用真值判断漏掉。
+                if val is None or isinstance(val, bool):
+                    continue
+                if isinstance(val, (str, int, float)):
+                    text_val = str(val).strip()
+                    if text_val:
+                        result[f] = text_val
             return result if result else None
         except asyncio.TimeoutError:
             logger.debug("[Quill] LLM 状态栏提取超时（3s），放弃")
@@ -1944,7 +2021,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             if persona_data:
                 # .get 的默认值只在键缺失时生效；键在但值为 null 时返回 None，
                 # .strip() 会抛 AttributeError 把整个请求打成降级路径。
-                fm = (persona_data.get("core_prompts", {}).get("first_message") or "").strip()
+                fm = ((persona_data.get("core_prompts") or {}).get("first_message") or "").strip()
                 if fm:
                     state = await self.state_manager.get_state(target_id)
                     if not state.first_message_injected:
@@ -1989,9 +2066,25 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         wr_activated = False
         if not (activated or has_bracket) and self.wr_manager:
             try:
-                ext = persona_data.get("quill_extensions", {}) if persona_data else {}
+                ext = (persona_data.get("quill_extensions") or {}) if persona_data else {}
                 wr_mode = ext.get("wr_mode", "disabled")
                 bound_wrs = ext.get("bound_writing_resource", []) if wr_mode == "custom" else None
+                preset = None
+                preset_ids: set = set()
+                option_ids: set = set()
+                if wr_mode != "disabled":
+                    try:
+                        from .quill.services.writing_presets import option_entry_ids
+                        option_ids = option_entry_ids()
+                        preset, _ = self.wr_manager.resolve_writing_preset(
+                            str(ext.get("wr_preset_id") or "")
+                        )
+                        if preset:
+                            preset_ids = set((preset.get("choices") or {}).values())
+                    except Exception as exc:
+                        logger.warning(
+                            "[Quill] 写作预设解析失败（按无预设处理）: %s", exc
+                        )
 
                 logger.info(f"[Quill] 写作素材库模式: {wr_mode}，绑定分类: {bound_wrs if bound_wrs is not None else 'Auto (全局匹配)'}")
 
@@ -2001,6 +2094,12 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
 
                     if bound_wrs is not None:
                         matched = [m for m in matched if m.get("category") in bound_wrs]
+                    if preset:
+                        matched = [
+                            m for m in matched
+                            if (str(m.get("entry_id") or m.get("id") or "") not in option_ids
+                                or str(m.get("entry_id") or m.get("id") or "") in preset_ids)
+                        ]
 
                     wr_activated = len(matched) > 0
                     if wr_activated:
@@ -2072,7 +2171,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             from .quill_rag.doc_groups import is_group_source, parse_group_source
 
             doc_results: list = []   # 合并后的注入列表（本地在前，内置库在后）
-            ext = persona_data.get("quill_extensions", {}) if persona_data else {}
+            ext = (persona_data.get("quill_extensions") or {}) if persona_data else {}
             rag_mode = ext.get("rag_mode", "disabled")
 
             logger.info(f"[Quill RAG] 模式: {rag_mode}，绑定文档: {ext.get('bound_rag_docs', []) if rag_mode == 'custom' else 'Auto (全库)'}")

@@ -8,13 +8,16 @@ import { syncSidebarBadges, updateBadge } from "../pages/config.js";
 import { _wbFilterQuery } from "../pages/worldbook.js";
 import { $, $$, b64ToBlob, downloadBlob, esc, fileToB64, withBusy } from "../utils.js";
 
-export { MODE_LABEL, MODE_TONE, _personaRenderToken, applyWBEntryFilter, closeAstrbotImportModal, closeImportTextModal, deletePersona, exportPersona, filterCheckboxes, filterWBEntries, filteredPersonas, importFromAstrbot, importPersona, importPersonaFromText, loadAstrbotPersonas, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openImportTextModal, openPersonaModal, reapplyWBEntryFilter, renderAstrbotPersonas, renderExtBlock, renderRagExtBlock, selectAstrbotPersona, setAstrbotStatus, syncRagGroup, toggleExtBig, toggleExtGroup, renderPersonaPage, savePersona, setWBTip, switchPersonaView, syncExtList, updatePersonaStats, wbEntryHit };
+export { MODE_LABEL, MODE_TONE, _personaRenderToken, applyWBEntryFilter, closeAstrbotImportModal, closeExportModal, closeImportTextModal, deletePersona, filterCheckboxes, filterWBEntries, filteredPersonas, importFromAstrbot, importPersona, importPersonaFromText, loadAstrbotPersonas, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openExportModal, openImportTextModal, openPersonaModal, reapplyWBEntryFilter, renderAstrbotPersonas, renderExtBlock, renderRagExtBlock, runExport, selectAstrbotPersona, setAllExportBooks, setAstrbotStatus, syncRagGroup, toggleExtBig, toggleExtGroup, renderPersonaPage, savePersona, setWBTip, switchPersonaView, syncExtList, updatePersonaStats, wbEntryHit };
 
 
 
 
 
 let _personaRenderToken = 0;
+// 角色卡编辑弹窗纪元：快速连点不同卡的编辑按钮时，只有最后一次打开的
+// 异步结果可以写入表单，避免旧请求把新卡的表单/保存目标串写。
+let _personaModalEpoch = 0;
 
 
 
@@ -477,6 +480,7 @@ function reapplyWBEntryFilter(name) {
 }
 
 async function openPersonaModal(personaId) {
+  const epoch = ++_personaModalEpoch;
   S._personaMode = personaId ? "edit" : "create";
   S._personaEditing = null;
   S._originalAvatarDataUrl = null;
@@ -492,19 +496,25 @@ async function openPersonaModal(personaId) {
   if (personaId) {
     try {
       const all = await api("/persona/list");
+      if (epoch !== _personaModalEpoch) return;
       data = (all || []).find(p => p.id === personaId) || data;
       S._personaEditing = { ...data };
     } catch (e) { showToast(e.message); return; }
   }
 
-  // 扩展绑定所需的候选列表，任一失败都不阻塞表单渲染
-  const info = await api("/info").catch(() => ({}));
+  // 扩展绑定所需的候选列表并发拉取，任一失败都不阻塞表单渲染。
+  const [info, ragData, cats, presetData] = await Promise.all([
+    api("/info").catch(() => ({})),
+    api("/rag/documents").catch(() => ({ documents: [], groups: [], astrbot_kbs: [] })),
+    api("/wr/categories").catch(() => ({ categories: [] })),
+    api("/wr/presets").catch(() => ({ presets: [], global_preset: "" })),
+  ]);
+  // 快速切换编辑目标：旧请求的回包不得覆盖新卡的表单。
+  if (epoch !== _personaModalEpoch) return;
   const allWbs = info.available_worldbooks || [];
-  const ragData = await api("/rag/documents").catch(() => ({ documents: [], groups: [], astrbot_kbs: [] }));
   const ragDocs = ragData.documents || [];
   const ragGroups = ragData.groups || [];
   const astrbotKbs = ragData.astrbot_kbs || [];
-  const cats = await api("/wr/categories").catch(() => ({ categories: [] }));
 
   const ext = data.quill_extensions || {};
   const cp = data.core_prompts || {};
@@ -572,6 +582,15 @@ async function openPersonaModal(personaId) {
         <label for="pf-first">开场白</label>
         <textarea class="field field--wide" id="pf-first" rows="4" placeholder="切换该角色后自动注入对话历史的第一条">${esc(cp.first_message || "")}</textarea>
       </div>
+      <div class="form-group">
+        <label for="pf-sysprompt">系统提示（受限系统层）</label>
+        <textarea class="field field--wide" id="pf-sysprompt" rows="5" placeholder="V3 卡的 system_prompt；可用 {{original}} 占位符嵌入宿主原文">${esc(data.system_prompt || "")}</textarea>
+        <span class="hint">独立于人格正文，位于受限系统层；不会覆盖或绕过宿主安全与格式契约。</span>
+      </div>
+      <div class="form-group">
+        <label for="pf-phi">历史后置指令（Post-History）</label>
+        <textarea class="field field--wide" id="pf-phi" rows="4" placeholder="V3 卡的 post_history_instructions；置于近期对话尾部、系统提醒之前的独立低权段">${esc(data.post_history_instructions || "")}</textarea>
+      </div>
     </div>
 
     <div class="ptab" id="ptab-ext" role="tabpanel" aria-labelledby="ptabbtn-ext">
@@ -585,6 +604,15 @@ async function openPersonaModal(personaId) {
       ${renderExtBlock("wr", "写作素材库", "搜索分类…", cats.categories || [], boundWr,
         modeSelect("pf-wr-mode", wrMode, [["auto", "全局匹配"], ["custom", "隔离模式"], ["disabled", "完全禁用"]]),
         "全局匹配＝匹配所有素材；隔离模式＝仅匹配勾选分类；完全禁用＝不检索素材。", "暂无可用的素材分类")}
+      <div class="form-group">
+        <label for="pf-wr-preset">写作风格预设（覆盖全局）</label>
+        <select class="field field--wide" id="pf-wr-preset">
+          <option value="inherit" ${!ext.wr_preset_id ? "selected" : ""}>跟随全局（${esc(presetData.global_preset || "未启用")}）</option>
+          <option value="__off__" ${ext.wr_preset_id === "__off__" ? "selected" : ""}>关闭预设</option>
+          ${(presetData.presets || []).map(p => `<option value="${esc(p.id)}" ${ext.wr_preset_id === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+        </select>
+        <span class="hint">预设按互斥维度固定注入素材，避免相反文风指令同时出现。</span>
+      </div>
     </div>`;
 
   $("#modalBody").querySelectorAll("[data-ptab]").forEach(btn => {
@@ -663,6 +691,8 @@ async function savePersona() {
     name,
     avatar_path: $("#pf-avatar")?.value.trim() || "",
     summary: $("#pf-summary")?.value.trim() || "",
+    system_prompt: $("#pf-sysprompt")?.value.trim() || "",
+    post_history_instructions: $("#pf-phi")?.value.trim() || "",
     core_prompts: {
       personality: $("#pf-personality")?.value.trim() || "",
       scenario: $("#pf-scenario")?.value.trim() || "",
@@ -676,6 +706,7 @@ async function savePersona() {
       bound_rag_docs: boundRagDocs,
       wr_mode: $("#pf-wr-mode")?.value || "disabled",
       bound_writing_resource: checked("cb-wr-bind"),
+      wr_preset_id: $("#pf-wr-preset")?.value || "inherit",
     },
   };
   try {
@@ -710,26 +741,89 @@ function deletePersona(personaId, btn) {
  */
 function toastImportDone(res) {
   const wb = res && res.embedded_worldbook;
+  const report = res && res.import_report;
+  // 格式标签：同一个 .json 可能是 CCv2 / CCv3 / V1 / W++ / 纯文本回退，
+  // 回执上写清"被识别成了什么"，用户才有可能发现识别错了。
+  const tag = report && (report.format_label || report.detected_format) ? ` · ${report.format_label || report.detected_format}` : "";
   if (wb && wb.name) {
     const n = typeof wb.entries === "number" ? wb.entries : 0;
     const tail = wb.replaced_existing ? "，已覆盖同名旧书" : "";
     showToast(
-      `角色卡「${res.name}」导入成功（已绑定内嵌世界书「${wb.name}」${n} 条${tail}）`,
+      `角色卡「${res.name}」导入成功${tag}（已绑定内嵌世界书「${wb.name}」${n} 条${tail}）`,
       "success",
     );
   } else {
-    showToast(`角色卡「${res.name}」导入成功`, "success");
+    showToast(`角色卡「${res.name}」导入成功${tag}`, "success");
   }
+  showImportReport(res);
   // 不 await：回执已经弹出来了，徽章晚 100ms 刷新用户看不出来，但把导入按钮
   // 多按住的几十毫秒是实打实的。
   syncSidebarBadges().catch(() => {});
+}
+
+/** 报告里有没有值得打断用户的内容。
+ *
+ * 干净的 CCv2 卡（全字段映射、置信 100%）每次导入都弹窗就成了噪音；只有
+ * 不支持的特性、警告、低置信回退（纯文本/W++）才需要用户当下核对。
+ */
+function importReportNoteworthy(report) {
+  if (!report) return false;
+  const unsupported = Array.isArray(report.unsupported_features) ? report.unsupported_features : [];
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  const confidence = Number(report.confidence);
+  return Boolean(unsupported.length || warnings.length || !(confidence >= 0.6));
+}
+
+/** 导入报告：识别成什么格式、保留了什么、什么不生效。
+ *
+ * "不支持"与"保留"是两件事：preserved 的原值已存进角色卡的 card_source
+ * 快照（可回写），unsupported 是 Quill 没有对应行为、导入后不会生效的字段
+ * ——不写清楚，用户会以为昵称/资源清单已经在运行。
+ */
+function showImportReport(res) {
+  const report = res && res.import_report;
+  if (!importReportNoteworthy(report)) return;
+  const mapped = report.mapped_fields && typeof report.mapped_fields === "object" ? Object.keys(report.mapped_fields) : [];
+  const preserved = Array.isArray(report.preserved_fields) ? report.preserved_fields : [];
+  const unsupported = Array.isArray(report.unsupported_features) ? report.unsupported_features : [];
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  const pct = Math.round((Number(report.confidence) || 0) * 100);
+  const summarize = (arr, cap) => arr.slice(0, cap).join("、") + (arr.length > cap ? ` 等 ${arr.length} 项` : "");
+  const parts = [];
+  const spec = report.schema_version ? ` · 规格版本 ${esc(String(report.schema_version))}` : "";
+  parts.push(`<div class="note">置信度 ${pct}%${spec} · 已映射 ${mapped.length} 项字段</div>`);
+  if (preserved.length) {
+    parts.push(`<div class="group-title">保留的原始字段（已存入本卡快照）</div>`);
+    parts.push(`<div class="note">${esc(summarize(preserved, 12))}</div>`);
+  }
+  if (unsupported.length) {
+    parts.push(`<div class="group-title">暂不支持（原文已保留，但导入后不生效）</div>`);
+    for (const item of unsupported) {
+      parts.push(`<div class="note note--warn">${esc(String((item && item.field) || ""))}：${esc(String((item && item.reason) || ""))}</div>`);
+    }
+  }
+  if (warnings.length) {
+    parts.push(`<div class="group-title">提示</div>`);
+    for (const w of warnings) parts.push(`<div class="note note--warn">${esc(String(w))}</div>`);
+  }
+  $("#alertTitle").textContent = `导入报告 · ${report.format_label || report.detected_format || "未知格式"}`;
+  $("#alertMsg").textContent = `已导入角色卡「${res.name}」`;
+  $("#alertBody").innerHTML =
+    `<div style="max-height:46vh;overflow:auto;display:flex;flex-direction:column;gap:var(--sp-2)">${parts.join("")}</div>`;
+  const okBtn = $("#alertOk");
+  okBtn.disabled = false;
+  okBtn.className = "btn btn--filled";
+  okBtn.textContent = "知道了";
+  okBtn.onclick = () => closeScrim($("#alertScrim"));
+  $("#alertCancel").hidden = true;
+  openScrim($("#alertScrim"));
 }
 
 async function importPersona(input) {
   const file = input.files && input.files[0];
   if (!file) return;
   const ext = (file.name.split(".").pop() || "").toLowerCase();
-  if (!["png", "jpg", "jpeg", "webp", "json"].includes(ext)) { showToast("仅支持 PNG / JPG / WebP / JSON", "warning"); return; }
+  if (!["png", "apng", "jpg", "jpeg", "webp", "json", "charx"].includes(ext)) { showToast("仅支持 PNG / APNG / JPG / WebP / JSON / CHARX", "warning"); return; }
   if (file.size > 5 * 1024 * 1024) { showToast("文件过大（上限 5MB）", "warning"); return; }
   const btn = input.closest(".file-btn");
   await withBusy(btn, "导入中…", async () => {
@@ -743,14 +837,223 @@ async function importPersona(input) {
   });
 }
 
-async function exportPersona(personaId) {
+/* ── 导出角色卡（M4.2）───────────────────────────────────────────────
+   导出参数互相牵连：版本决定 spec 与 V3 专属字段，载体决定 PNG 能否嵌卡
+   （没头像只能 JSON），世界书选择决定 character_book 的体积。所以每次改动
+   都先打 /persona/export_preview 看真实字节数 / 警告 / 重名冲突，再点导出下载，
+   避免「下完才发现带了三本鸿篇世界书」这种返工。 */
+let _exportState = null;
+const EXPORT_LABEL = { v2: "CCv2", v3: "CCv3" };
+
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return `${v} B`;
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
+  return `${(v / 1024 / 1024).toFixed(2)} MB`;
+}
+
+async function openExportModal(personaId) {
+  const p = S._personas.find(x => x.id === personaId);
+  if (!p) { showToast("角色卡不存在"); return; }
+  const hasAvatar = !!p.avatar_path;
+  const state = { persona: p, books: [], selected: new Map(), last: null, timer: 0 };
+  _exportState = state;
+
+  $("#expVersion").value = "v2";
+  $("#expContainer").value = hasAvatar ? "auto" : "json";
+  $("#expKeepId").checked = true;
+  $("#expBookSearch").value = "";
+  $("#expBooks").innerHTML = '<div class="hint">正在读取世界书…</div>';
+  $("#expBooksHint").hidden = false;
+  $("#expWarnings").hidden = true;
+  $("#expConflicts").hidden = true;
+  $("#expSummary").hidden = false;
+  $("#expSummary").textContent = "正在计算…";
+  openScrim($("#exportScrim"));
+
+  // 事件只挂一次：直接覆盖属性，重复打开不会累积监听器
+  $("#expVersion").onchange = () => scheduleExportPreview();
+  $("#expContainer").onchange = () => scheduleExportPreview();
+  $("#expKeepId").onchange = () => scheduleExportPreview();
+  $("#expBookSearch").oninput = () => renderExportBooks();
+  $("#expBooks").onchange = onExportBookChange;
+
   try {
-    const p = S._personas.find(x => x.id === personaId);
-    const fallback = p ? (p.avatar_path ? `${p.name}_v2.png` : `${p.name}_v2.json`) : `${personaId}_v2.json`;
-    const res = await api("/persona/export_base64", { method: "POST", body: JSON.stringify({ id: personaId }) });
-    downloadBlob(b64ToBlob(res.b64_data), res.filename || fallback);
-    showToast("已导出角色卡", "success");
-  } catch (e) { showToast("导出失败：" + e.message); }
+    const res = await api("/wb/list");
+    if (_exportState !== state) return;
+    state.books = (res && res.worldbooks) || [];
+    // 默认勾选角色卡自己绑定的世界书：用户来导出多半就是为了把它们带走
+    const bound = new Set((p.quill_extensions || {}).bound_worldbooks || []);
+    for (const wb of state.books) if (bound.has(wb.name)) state.selected.set(wb.name, null);
+  } catch (e) {
+    if (_exportState !== state) return;
+    $("#expBooks").innerHTML = `<div class="hint">世界书列表加载失败：${esc(e.message)}</div>`;
+  }
+  renderExportBooks();
+  refreshExportPreview();
+}
+
+function closeExportModal() {
+  if (_exportState) { clearTimeout(_exportState.timer); _exportState = null; }
+  closeScrim($("#exportScrim"));
+}
+
+function onExportBookChange(e) {
+  const state = _exportState;
+  const t = e.target;
+  if (!state || !t) return;
+  const bookName = t.dataset.expBook;
+  if (bookName) {
+    if (t.checked) state.selected.set(bookName, null);
+    else state.selected.delete(bookName);
+  // 判存在不能用 t.dataset.expEntry：属性没有值时 dataset 是空字符串，
+  // 「整本勾选」后的条目复选框会因此点不动（E2E 抓到的真实回归）。
+  } else if (t.hasAttribute("data-exp-entry")) {
+    const name = t.dataset.book;
+    const wb = state.books.find(b => b.name === name);
+    if (!wb) return;
+    const ids = (wb.entries || []).map(x => String(x.id));
+    const cur = state.selected.get(name);
+    let set;
+    if (cur instanceof Set) set = new Set(cur);
+    // 从「整本」或「未选」两种边界状态出发时，先铺成对侧的全集再增删：
+    // 整本勾选后取消一条 = 其余条目，而不是把整本书一起取消。
+    else if (t.checked) set = new Set();
+    else set = new Set(ids);
+    if (t.checked) set.add(String(t.value)); else set.delete(String(t.value));
+    if (!set.size) state.selected.delete(name);
+    else if (set.size >= ids.length) state.selected.set(name, null);
+    else state.selected.set(name, set);
+  } else return;
+  renderExportBooks();
+  scheduleExportPreview();
+}
+
+function renderExportBooks() {
+  const state = _exportState;
+  const host = $("#expBooks");
+  if (!state || !host) return;
+  if (!state.books.length) {
+    host.innerHTML = '<div class="hint">还没有世界书。角色卡会以「无世界书」导出。</div>';
+    return;
+  }
+  const q = ($("#expBookSearch").value || "").trim().toLowerCase();
+  const html = [];
+  for (const wb of state.books) {
+    const entries = wb.entries || [];
+    // 只搜标题：正文可能有几万字，逐键扫描会把搜索框拖成卡顿源
+    const hits = q ? entries.filter(e => (e.title || "").toLowerCase().includes(q)) : entries;
+    if (q && !(wb.name || "").toLowerCase().includes(q) && !hits.length) continue;
+    const sel = state.selected.get(wb.name);
+    const all = sel === null;
+    const partial = sel instanceof Set && sel.size > 0;
+    const expanded = all || partial || !!q;
+    const rows = hits.map(e => {
+      const checked = all || (sel instanceof Set && sel.has(String(e.id)));
+      return `<label class="check"><input type="checkbox" data-exp-entry data-book="${esc(wb.name)}" value="${esc(e.id)}"${checked ? " checked" : ""}><span class="nowrap">${esc(e.title || "（无标题）")}</span></label>`;
+    }).join("");
+    html.push(`<div class="exp-book" data-book="${esc(wb.name)}">
+      <label class="check exp-book-head">
+        <input type="checkbox" data-exp-book="${esc(wb.name)}"${all ? " checked" : ""}${partial ? ' data-indeterminate="1"' : ""}>
+        <span class="exp-book-name">${esc(wb.name)}</span>
+        <span class="t3 fs-12">${entries.length} 条</span>
+      </label>
+      <div class="exp-entries"${expanded ? "" : " hidden"}>${rows || '<span class="hint">（无匹配条目）</span>'}</div>
+    </div>`);
+  }
+  host.innerHTML = html.join("") || '<div class="hint">没有匹配的世界书或条目。</div>';
+  for (const cb of $$("[data-indeterminate]", host)) cb.indeterminate = true;
+  const total = state.selected.size;
+  $("#expBooksHint").textContent = total
+    ? `已选 ${total} 本世界书；展开后可只挑部分条目。`
+    : "不勾选则只导出角色卡本身。整本勾选按全部条目导出，展开后可只挑部分条目。";
+}
+
+function exportBookPayload() {
+  const out = [];
+  for (const [name, sel] of _exportState.selected) {
+    if (sel === null) out.push(name);
+    else if (sel && sel.size) out.push({ name, entry_ids: [...sel] });
+  }
+  return out;
+}
+
+function exportRequestBody() {
+  return {
+    id: _exportState.persona.id,
+    version: $("#expVersion").value,
+    container: $("#expContainer").value,
+    include_id: $("#expKeepId").checked,
+    books: exportBookPayload(),
+  };
+}
+
+function scheduleExportPreview() {
+  if (!_exportState) return;
+  clearTimeout(_exportState.timer);
+  _exportState.timer = setTimeout(refreshExportPreview, 220);
+}
+
+async function refreshExportPreview() {
+  const state = _exportState;
+  if (!state) return;
+  const summary = $("#expSummary");
+  summary.hidden = false;
+  summary.textContent = "正在计算…";
+  try {
+    const res = await apiPost("/persona/export_preview", exportRequestBody());
+    if (_exportState !== state) return;
+    state.last = res;
+    const book = res.character_book || {};
+    const parts = [
+      `<b>${EXPORT_LABEL[res.version] || esc(res.version)}</b>`,
+      res.container === "png" ? "PNG 角色卡" : "JSON 文件",
+      fmtBytes(res.bytes),
+    ];
+    parts.push(book.entries ? `世界书 ${book.books.length} 本 / ${book.entries} 条` : "不带世界书");
+    summary.innerHTML = `将导出 ${parts.join(" · ")}<br><span class="t3">文件名：${esc(res.filename)}</span>`;
+
+    const warns = res.warnings || [];
+    const wbox = $("#expWarnings");
+    wbox.hidden = !warns.length;
+    wbox.innerHTML = warns.map(w => `<div>· ${esc(w)}</div>`).join("");
+
+    const conflicts = res.conflicts || [];
+    const cbox = $("#expConflicts");
+    cbox.hidden = !conflicts.length;
+    cbox.innerHTML = conflicts.map(c => `<div>· ${c.type === "same_id"
+      ? `同身份键的「${esc(c.name)}」已存在，导入会覆盖原卡`
+      : `已有同名角色卡「${esc(c.name)}」，导入后可能重名`}</div>`).join("");
+  } catch (e) {
+    if (_exportState !== state) return;
+    state.last = null;
+    summary.textContent = "预览失败：" + e.message;
+    $("#expWarnings").hidden = true;
+    $("#expConflicts").hidden = true;
+  }
+}
+
+function setAllExportBooks(all) {
+  const state = _exportState;
+  if (!state) return;
+  state.selected.clear();
+  if (all) for (const wb of state.books) state.selected.set(wb.name, null);
+  renderExportBooks();
+  scheduleExportPreview();
+}
+
+async function runExport(btn) {
+  if (!_exportState) return;
+  const body = exportRequestBody();
+  await withBusy(btn, "导出中…", async () => {
+    try {
+      const res = await apiPost("/persona/export_base64", body);
+      downloadBlob(b64ToBlob(res.b64_data, res.media_type), res.filename);
+      const n = (res.warnings || []).length;
+      showToast(n ? `已导出 ${res.filename}（${n} 条提示）` : `已导出 ${res.filename}`, "success");
+      closeExportModal();
+    } catch (e) { showErrorDetail("导出失败", e.message); }
+  });
 }
 
 function openImportTextModal() {

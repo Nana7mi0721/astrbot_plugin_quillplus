@@ -36,6 +36,8 @@ H1 与 H5 都**没有**钩子级顶层 try（gate 间异常会上抛框架）。
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .prompt_cache import apply_layout, split_rag, temporary_capability
 from .scopes import event_turn
 from ..quill.services.prompt_cache import CacheBlock, stable_seed
@@ -213,7 +215,7 @@ async def handle_decorating_result(plugin, event: AstrMessageEvent) -> None:
     模型在**不调用工具**的那一轮直接输出的文本，会先于任何工具钩子被推送，
     插件根本没机会处理它。
 
-    实测（`docs/probe_no_leak.py`）：一轮里模型被纠正后连发了 18 次
+    实测（`docs/probes/probe_no_leak.py`）：一轮里模型被纠正后连发了 18 次
     `send_message_to_user`，其中 17 次都被正常处理，唯独夹在中间那次
     「直接输出一行裸 `[LOVE_DATA]`」的迭代绕过了全部钩子，直达用户。
 
@@ -524,8 +526,14 @@ async def handle_using_llm_tool(
             # 宁漏勿误：判定自身失败只放行原路径，不吞掉 H2 其余处理
             logger.debug(f"[Quill] F4 守卫异常，放行原路径: {e}", exc_info=True)
 
-    # 仅对特定平台执行 Markdown 清理（未知平台不剥离，避免破坏原生 Markdown 渲染）
-    _response_mod.strip_markdown_in_plain_messages(messages, platform)
+    # M4.3：按平台方言决定是否清理；plain 剥、Markdown 方言保留。
+    # 与状态栏模板共用同一份能力档案，避免「栏按 Markdown 渲染、工具消息被剥」。
+    _response_mod.strip_markdown_in_plain_messages(
+        messages,
+        platform,
+        overrides=getattr(plugin, "status_bar_dialect_overrides", None),
+        plain_platforms=getattr(plugin, "status_bar_plain_platforms", None),
+    )
 
     # 状态栏处理（全平台执行）
     # 本轮最终开关 = 会话级覆盖 > 面板全局（见 _effective_status_bar_enabled）
@@ -1293,6 +1301,16 @@ async def handle_llm_request(
 
     persona_id, persona_data = await plugin._inject_persona_and_first_message(req, event, target_id)
 
+    # P1-4：步 4 绑定/换卡后 persona_id 才是权威值。步 2 生成的
+    # mem_session_id 必须同步刷新，否则步 5/6 的日志与核心记忆仍写旧角色
+    # 的会话键，而末尾缓存又按新角色计算——同一轮被拆成两个身份。
+    if persona_id and persona_id != _req_persona_id:
+        _req_persona_id = persona_id
+        mem_session_id = plugin._get_memory_session_id(target_id, persona_id)
+        if turn is not None:
+            turn = replace(turn, persona_id=persona_id)
+            event.set_extra("_quill_turn_context", turn)
+
     # M1a trace：步 4 返回的 persona_id/name 权威于 begin 时的 state 快照
     # （首次绑卡/换卡轮两者可能不同），覆盖回填。
     if persona_id or persona_data:
@@ -1404,10 +1422,17 @@ async def handle_llm_request(
         except Exception:
             logger.debug("[Quill] 调试 WR 匹配失败", exc_info=True)
 
+    _recent_msgs_for_rules = event.get_extra('_quill_recent_msgs') or []
     extra_info = {
         "user_input": user_input,
         "context_text": context_text,
-        "persona_id": persona_id,
+        "persona_id": turn.persona_id if turn else persona_id,
+        "scope_id": turn.scope_id if turn else "",
+        "turn_token": turn.turn_id if turn else "",
+        "recent_messages": [
+            str(item.get("content", "")) for item in _recent_msgs_for_rules
+            if isinstance(item, dict) and item.get("content")
+        ],
         "persona_data": persona_data,
         "user_id": target_id,
         "wr_max_entries": plugin.props.wr_max_entries,
@@ -1455,6 +1480,26 @@ async def handle_llm_request(
         stats=inject_stats,
     )
     _bsp_ms = int((time.perf_counter() - _t_bsp0) * 1000)
+
+    # M5.3：`@@depth` / `@@role` 装饰器——按「倒数第 N 条消息」把条目正文
+    # 作为独立消息插入对话历史（而不是并入 system prompt）。深度从最新消息
+    # 往回数；越界时夹到首尾。多条目按深度由深到浅插入，避免下标漂移。
+    _depth_injections = inject_stats.get("_depth_injections") or []
+    if _depth_injections and isinstance(getattr(req, "contexts", None), list):
+        for _di in sorted(
+            (item for item in _depth_injections if isinstance(item, dict)),
+            key=lambda x: int(x.get("depth", 0) or 0),
+            reverse=True,
+        ):
+            _role = str(_di.get("role", "system") or "system").strip().lower()
+            if _role not in ("system", "user", "assistant"):
+                _role = "system"
+            _depth = max(0, int(_di.get("depth", 4) or 4))
+            _idx = max(0, len(req.contexts) - _depth)
+            _text = str(_di.get("content", "") or "")
+            if not _text:
+                continue
+            req.contexts.insert(_idx, {"role": _role, "content": "\u3010\u4e16\u754c\u89c2\u3011\n" + _text})
 
     # M1a trace：步 16 世界书 + WR 命中（计数经既有 stats 出参透传；
     # 世界书总开关关闭记 degraded="disabled"——那是配置态而非检索失败）。
@@ -1520,19 +1565,31 @@ async def handle_llm_request(
             _trigger_log = _wb_for_request.get_trigger_log() or []
         except Exception:
             _trigger_log = []
-    if _trigger_log:
+    # M5.1：优先用 prompt_builder 冻结的「实际拼进 prompt」集合。触发日志
+    # 是匹配期快照（组互斥/截帽前），拿它当 items 会与 hits 计数口径分裂。
+    _wb_injected_items = inject_stats.get("_wb_injected_items") or []
+    if _trigger_log or _wb_injected_items:
         # M1a trace：世界书命中条目名/匹配词（纯透传步 18 既有产出）。
         # M1b 模块 1：命中明细在前、漏斗近失条在后——_fill_wb_items 覆写
         # items 时保住步 16 已放进来的近失诊断。
-        _wb_log_snapshot = [dict(tg) for tg in _trigger_log[:10]]
+        _wb_log_snapshot = ([dict(tg) for tg in _wb_injected_items[:10]]
+                            or [dict(tg) for tg in _trigger_log[:10]])
         _wb_near_miss = _funnel_filtered_items(inject_stats.get("_funnel_wb"))
 
         def _fill_wb_items(trace, _log=_wb_log_snapshot, _near=_wb_near_miss):
             for m in trace.module_results:
                 if m.module == "worldbook":
+                    def _label(tg):
+                        bits = [",".join(tg.get("matched_keys", []))]
+                        if tg.get("sticky_remaining"):
+                            bits.append(f"粘性剩余{int(tg['sticky_remaining'])}轮")
+                        if tg.get("cooldown_remaining"):
+                            bits.append(f"冷却剩余{int(tg['cooldown_remaining'])}轮")
+                        return " · ".join(x for x in bits if x)
+
                     m.items = [
                         {"source_ref": f"{tg['worldbook']}/{tg['title']}",
-                         "score_or_kw": ",".join(tg.get("matched_keys", []))}
+                         "score_or_kw": _label(tg)}
                         for tg in _log
                     ] + _near
         _trace_note(plugin, target_id, _fill_wb_items)

@@ -12,12 +12,12 @@ import { closeModal } from "./components/modal.js";
 import { closeSelMenus, enhanceSelects } from "./components/select.js";
 import { discardChanges, filterConfig, initConfigNavObserver, loadGlobalSettings, loadHealth, markDirty, probeDecisionModel, saveAllChanges, scrollToSection, setStreamModeAll, switchTab, syncSidebarBadges } from "./pages/config.js";
 import { changeMemoryPage, deleteMemory, exportChatLogs, exportMemories, importMemories, loadChatLogs, loadMemoryBrowser, onMemorySessionChange, pruneMemories, summarizeMemory, showMemoryDetail, switchMemorySub, testMemoryVectorSearch, toggleMemoryPin } from "./pages/memory.js";
-import { closeAstrbotImportModal, closeImportTextModal, deletePersona, exportPersona, filterCheckboxes, filterWBEntries, importFromAstrbot, importPersona, importPersonaFromText, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openImportTextModal, openPersonaModal, renderPersonaPage, savePersona, selectAstrbotPersona, switchPersonaView, syncExtList, syncRagGroup, toggleExtBig, toggleExtGroup } from "./pages/persona.js";
+import { closeAstrbotImportModal, closeExportModal, closeImportTextModal, deletePersona, filterCheckboxes, filterWBEntries, importFromAstrbot, importPersona, importPersonaFromText, loadPersonas, onRagGroupToggle, openAstrbotImportModal, openExportModal, openImportTextModal, openPersonaModal, renderPersonaPage, runExport, savePersona, selectAstrbotPersona, setAllExportBooks, switchPersonaView, syncExtList, syncRagGroup, toggleExtBig, toggleExtGroup } from "./pages/persona.js";
 import { reindexRAG, deleteRAGDocument, deleteRAGGroup, loadRAG, loadRAGModelInfo, moveRAGDocument, newRAGGroup, processRAGFiles, renameRAGGroup, setRAGKbEnabled, testRAGSearch, toggleRAGBig, toggleRAGGroup } from "./pages/rag.js";
 import { loadTracePage, onTraceSessionChange, refreshTrace, toggleTraceTurn,
          runSimulate, runLint, toggleTraceLive, copyPreviewText } from "./pages/trace.js";
 import { deleteWB, deleteWBEntry, exportWBSt, importWBSt, onWBSearchInput, openWBCreateModal, openWBEntryModal, reloadWB, saveWBCreate, saveWBEntry, setWBOnlyConst, toggleWB } from "./pages/worldbook.js";
-import { repairWRSelected, openWRLint, _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, saveWREntry, toggleWREntry, updateWRBatchBar, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState } from "./pages/writing.js";
+import { repairWRSelected, openWRLint, openWRPresetModal, saveWRPreset, _wrSelected, calcPerPage, deleteWREntry, exportWR, goWRPage, importWR, loadWR, loadWRCategories, openWRModal, openWRTestModal, saveWREntry, toggleWREntry, updateWRBatchBar, wrBatchClear, wrBatchDelete, wrBatchToggle, wrState } from "./pages/writing.js";
 import { $, debounce, withBusy } from "./utils.js";
 
 export { ACTIONS, bindEvents, debouncedMemLoad, debouncedWBFilter, debouncedWRLoad, quillInit, saveModal };
@@ -80,6 +80,7 @@ const ACTIONS = {
   "wr-delete": (el) => deleteWREntry(el.closest(".wr-card").dataset.eid, el),
   "wr-test": () => openWRTestModal(),
   "wr-lint": () => openWRLint(),
+  "wr-presets": () => openWRPresetModal(),
   "wr-repair-selected": () => repairWRSelected(),
   "wr-export": (el) => exportWR(el),
   "wr-batch-toggle": (el) => wrBatchToggle(el.dataset.value === "1"),
@@ -120,7 +121,13 @@ const ACTIONS = {
   // 角色卡
   "persona-new": () => openPersonaModal(null),
   "persona-edit": (el) => openPersonaModal(window.__pids[Number(el.dataset.idx)]),
-  "persona-export": (el) => exportPersona(window.__pids[Number(el.dataset.idx)]),
+  "persona-export": (el) => openExportModal(window.__pids[Number(el.dataset.idx)]),
+  "export-close": () => closeExportModal(),
+  // 背景关闭只在点中遮罩本体时生效，否则弹窗内任意点击都会冒泡误关
+  "export-scrim": (el, e) => { if (e.target === el) closeExportModal(); },
+  "export-go": (el) => runExport(el),
+  "export-books-all": () => setAllExportBooks(true),
+  "export-books-none": () => setAllExportBooks(false),
   "persona-delete": (el) => deletePersona(window.__pids[Number(el.dataset.idx)], el),
   "persona-refresh": (el) => withBusy(el, "", loadPersonas),
   "persona-view": (el) => switchPersonaView(el.dataset.value),
@@ -181,6 +188,7 @@ async function saveModal() {
   if (st && st.type === "persona") return savePersona();
   if (st && st.type === "wb-entry") return saveWBEntry();
   if (st && st.type === "wb-create") return saveWBCreate();
+  if (st && st.type === "wr-preset") return saveWRPreset();
   if (S._modalMode === "create" || S._modalMode === "edit") return saveWREntry();
   return;   // 无模态状态时不保存（原实现会误调 saveWREntry）
 }

@@ -25,11 +25,13 @@ try:
     from .quill.core.errors import StorageError
     from .quill.core.locks import ReentrantLock
     from .quill.core.storage_stats import note_storage_error
+    from .quill.services.writing_presets import WritingPresetStore
 except ImportError:  # 直接运行本文件
     from _fts_util import escape_trigram, escape_like
     from quill.core.errors import StorageError
     from quill.core.locks import ReentrantLock
     from quill.core.storage_stats import note_storage_error
+    from quill.services.writing_presets import WritingPresetStore
 
 try:
     from astrbot.api import logger
@@ -75,6 +77,9 @@ class WritingResourceManager:
         self._fts_error: Optional[str] = None
         self._count_write_errors = 0          # match_count 递增失败次数
         self._log_write_errors = 0            # match_logs 写入失败次数
+        # M5.2：预设选择与素材库同目录，只记住显式选择；内存库不落盘。
+        preset_path = "" if db_path == ":memory:" else os.path.join(os.path.dirname(db_path), "writing_presets.json")
+        self.presets = WritingPresetStore(preset_path)
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -415,6 +420,7 @@ class WritingResourceManager:
         self.schema_status["previous_version"]=self.schema_status["version"]
         self.schema_status["version"]=await finish_database(self._conn,kind="writing")
         await self._repair_known_seed()
+        await self.presets.initialize()
 
     async def _repair_known_seed(self):
         """P6：只纠正内容/关键词仍与已知出厂数据一致的行，先快照；用户编辑不覆写。"""
@@ -495,6 +501,13 @@ class WritingResourceManager:
         logger.info('[WR] 已备份并停用 %s 条用户确认的流程素材，正文和计数保留',len(expected))
         return {'updated':len(expected),'backup':backup.name}
 
+    async def set_global_preset(self, preset_id: str) -> Dict:
+        """面板显式切换全局预设；只写选择，不动素材正文。"""
+        return await self.presets.set_global(preset_id)
+
+    def resolve_writing_preset(self, persona_choice: str = ""):
+        return self.presets.resolve(persona_choice)
+
     async def close(self):
         if self._conn:
             await self._conn.close()
@@ -549,6 +562,7 @@ class WritingResourceManager:
         secondary_keywords: Optional[List[str]] = None,
         priority: int = 5,
         is_constant: bool = False,
+        enabled: bool = True,
     ) -> bool:
         """写入一条素材（D4：底层失败抛 :class:`StorageError`，类别 add）。
 
@@ -562,8 +576,9 @@ class WritingResourceManager:
                     """
                     INSERT INTO writing_resource
                     (category, entry_id, name, description, keywords,
-                     secondary_keywords, aliases, content, priority, is_constant)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     secondary_keywords, aliases, content, priority, is_constant,
+                     enabled)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         category,
@@ -576,6 +591,7 @@ class WritingResourceManager:
                         content,
                         priority,
                         1 if is_constant else 0,
+                        1 if enabled else 0,
                     ),
                 )
                 await self.conn.commit()
@@ -718,6 +734,15 @@ class WritingResourceManager:
     async def search(self, query: str, fields: Optional[List[str]] = None) -> List[Dict]:
         if fields is None:
             fields = ["name", "content", "keywords"]
+        # P1-11：fields 来自调用方，不能直接拼进 SQL。白名单与 update_entry
+        # 的可写列保持一致；未知列直接忽略，全部非法时返回空结果。
+        allowed_fields = {
+            "name", "content", "keywords", "description",
+            "aliases", "category", "entry_id",
+        }
+        fields = [field for field in fields if field in allowed_fields]
+        if not fields:
+            return []
         conditions = []
         params: list = []
         for field in fields:
@@ -756,6 +781,8 @@ class WritingResourceManager:
             "by_category": by_category,
             "total_matches": int(total_matches),
             "total_logs": total_logs,
+            "global_preset": self.presets.global_preset,
+            "preset_error": self.presets.load_error,
         }
 
     # ------------------------------------------------------------------

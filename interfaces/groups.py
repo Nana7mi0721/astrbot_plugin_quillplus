@@ -111,13 +111,27 @@ class SharedScopes:
                     task=asyncio.current_task()
                     event.set_extra("_quill_scope_lease",scope)
                     def finished(done, held=lock, ev=event):
-                        held.release()
-                        turn=event_turn(ev)
-                        if turn and ev.get_extra("_quill_shared_started") and not ev.get_extra("_quill_shared_finished"):
-                            async def interrupt():
-                                try: await ev.get_extra('_quill_group_store').finish(turn)
-                                except Exception: pass  # 重载后的旧连接不能补写，启动恢复会标记中断。
-                            self.plugin._spawn(interrupt())
+                        # P1-5：必须先让 finish(turn) 收尾再释放组锁。旧顺序在
+                        # 回调里立刻 release，随后才异步标记中断；排队者拿到锁
+                        # 读 recent() 时上一轮可能还处于 started 状态，上下文
+                        # 顺序错乱。finish 失败只记录，不阻塞释放（否则死锁）。
+                        async def _finish_then_release():
+                            try:
+                                turn = event_turn(ev)
+                                if (turn and ev.get_extra("_quill_shared_started")
+                                        and not ev.get_extra("_quill_shared_finished")):
+                                    store = ev.get_extra("_quill_group_store")
+                                    if store is not None:
+                                        await store.finish(turn)
+                            except Exception as exc:
+                                # 重载后的旧连接不能补写；启动恢复会标记中断。
+                                logger.warning(
+                                    "[Quill Scope] 共享轮收尾失败（%s），已释放组锁",
+                                    type(exc).__name__,
+                                )
+                            finally:
+                                held.release()
+                        self.plugin._spawn(_finish_then_release())
                     task.add_done_callback(finished)
                     return
             # 不持管理锁排队，管理员能查状态；被改组后重新解析目标。
