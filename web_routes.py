@@ -69,6 +69,7 @@ _ALLOWED_CONFIG_KEYS: set = {
 }
 
 import asyncio
+import hashlib
 import os
 import tempfile
 from functools import wraps
@@ -186,6 +187,12 @@ _MAX_RESTORE_BYTES = 512 * 1024 * 1024
 #: M6 修复：备份恢复的流式拷贝块大小。1MB 在「不整条进内存」与「系统调用次数」
 #: 之间取平衡；单独提出来是为了让上限检查的粒度与块大小解耦。
 _RESTORE_CHUNK_BYTES = 1024 * 1024
+
+#: P2-8 / P3-5：评估集总量与知识页标识的长度上限。session_id 被截断会
+#: 指向另一个会话，因此这些标识超限一律拒绝，而不是静默裁剪。
+_MAX_EVAL_CASES = 500
+_MAX_MEMORY_SESSION_ID = 512
+_MAX_KNOWLEDGE_TEMPLATE_KEY = 128
 
 
 class _BytesUpload:
@@ -1294,8 +1301,12 @@ class QuillRoutes:
             changed = await store.set_memory_status(memory_id, status)
         except ValueError as exc:
             return error_response(str(exc), status_code=400)
-        return json_response({"status": "ok", "changed": changed,
-                              "memory_id": memory_id, "memory_status": status})
+        if not changed:
+            # set_memory_status 的 False 只表示记忆不存在；此前仍回 200，
+            # 面板无法区分「已更新」与「点到了已删除的条目」。
+            return error_response("记忆不存在", status_code=404)
+        return json_response({"status": "ok", "data": {
+            "changed": True, "memory_id": memory_id, "memory_status": status}})
 
     @_api_handler
     async def memory_source_logs(self):
@@ -1330,6 +1341,8 @@ class QuillRoutes:
         session_id = str(request.query.get("session_id") or "").strip()
         if not session_id:
             return error_response("缺少 session_id", status_code=400)
+        if len(session_id) > _MAX_MEMORY_SESSION_ID:
+            return error_response("session_id 过长", status_code=400)
         pages = await store.get_knowledge_pages(session_id)
         return json_response({"status": "ok", "data": {
             "session_id": session_id, "pages": pages,
@@ -1345,6 +1358,10 @@ class QuillRoutes:
         template_key = str(data.get("template_key") or "").strip()
         if not session_id or not template_key:
             return error_response("需要 session_id 与 template_key", status_code=400)
+        if len(session_id) > _MAX_MEMORY_SESSION_ID:
+            return error_response("session_id 过长", status_code=400)
+        if len(template_key) > _MAX_KNOWLEDGE_TEMPLATE_KEY:
+            return error_response("template_key 过长", status_code=400)
         title = str(data.get("title") or template_key)[:120]
         pinned = str(data.get("pinned_section") or "")[:20000]
         page_id = await store.save_knowledge_pinned(
@@ -1361,6 +1378,10 @@ class QuillRoutes:
         template_key = str(data.get("template_key") or "").strip()
         if not session_id or not template_key:
             return error_response("需要 session_id 与 template_key", status_code=400)
+        if len(session_id) > _MAX_MEMORY_SESSION_ID:
+            return error_response("session_id 过长", status_code=400)
+        if len(template_key) > _MAX_KNOWLEDGE_TEMPLATE_KEY:
+            return error_response("template_key 过长", status_code=400)
         record, reused = self.plugin._start_knowledge_page_task(
             session_id, template_key,
             title=str(data.get("title") or "")[:120],
@@ -1378,8 +1399,12 @@ class QuillRoutes:
     async def eval_cases(self):
         from .quill.services import rag_eval
         root = self._eval_root()
-        return json_response({"status": "ok", "data": {
-            "cases": rag_eval.load_cases(root), "root": root}})
+        try:
+            cases = await rag_eval.load_cases(root)
+        except rag_eval.EvalRootError as exc:
+            return error_response(str(exc), status_code=503)
+        # 不回传 root：它只是服务端落盘位置，对面板无用且会泄露绝对路径。
+        return json_response({"status": "ok", "data": {"cases": cases}})
 
     @_api_handler
     async def eval_cases_save(self):
@@ -1388,16 +1413,18 @@ class QuillRoutes:
         cases = data.get("cases")
         if cases is None and data.get("case_id"):
             cases = [data]
-        if not isinstance(cases, list) or len(cases) > 500:
+        if not isinstance(cases, list) or len(cases) > _MAX_EVAL_CASES:
             return error_response("cases 必须是最多 500 条的数组", status_code=400)
         root = self._eval_root()
-        existing = {c["case_id"]: c for c in rag_eval.load_cases(root)}
-        for item in cases:
-            if isinstance(item, dict) and item.get("case_id"):
-                existing[str(item["case_id"])] = item
-        rag_eval.save_cases(root, list(existing.values()))
+        try:
+            saved = await rag_eval.upsert_cases(
+                root, cases, max_cases=_MAX_EVAL_CASES)
+        except rag_eval.EvalRootError as exc:
+            return error_response(str(exc), status_code=503)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
         return json_response({"status": "ok", "data": {
-            "count": len(existing)}})
+            "count": len(saved)}})
 
     @_api_handler
     async def eval_cases_delete(self):
@@ -1407,8 +1434,10 @@ class QuillRoutes:
         if not case_id:
             return error_response("缺少 case_id", status_code=400)
         root = self._eval_root()
-        cases = [c for c in rag_eval.load_cases(root) if c.get("case_id") != case_id]
-        rag_eval.save_cases(root, cases)
+        try:
+            cases = await rag_eval.delete_case(root, case_id)
+        except rag_eval.EvalRootError as exc:
+            return error_response(str(exc), status_code=503)
         return json_response({"status": "ok", "data": {"count": len(cases)}})
 
     @_api_handler
@@ -1416,7 +1445,10 @@ class QuillRoutes:
         from .quill.services import rag_eval
         data = await _json_body()
         root = self._eval_root()
-        all_cases = rag_eval.load_cases(root)
+        try:
+            all_cases = await rag_eval.load_cases(root)
+        except rag_eval.EvalRootError as exc:
+            return error_response(str(exc), status_code=503)
         selected = data.get("case_ids")
         if isinstance(selected, list) and selected:
             wanted = {str(item) for item in selected}
@@ -1425,6 +1457,14 @@ class QuillRoutes:
             return error_response("没有可运行的评估用例", status_code=400)
         keep = int(getattr(self.plugin.config, "rag_eval_max_snapshots", 5) or 5)
         include_llm = bool(data.get("include_llm_rerank"))
+        mode = "llm" if include_llm else "deterministic"
+        # P3-5：只按「用例数」去重会让两个不同集合（同为 N 条）错误复用
+        # 彼此的任务。摘要使用实际选中的 case_id 集合，顺序无关；singleton
+        # 前缀 + rag_eval 内部锁保证同集合同模式复用、文件写入不并发。
+        case_ids = sorted(str(case.get("case_id") or "") for case in all_cases)
+        digest = hashlib.sha256(
+            "\x00".join(case_ids).encode("utf-8")).hexdigest()[:16]
+        task_key = f"singleton:{digest}:{mode}"
 
         async def work(handle):
             await handle.checkpoint(0, total=len(all_cases), message="开始检索评估")
@@ -1443,7 +1483,7 @@ class QuillRoutes:
 
         record, reused = self.plugin._start_task(
             "rag_eval",
-            "all:" + str(len(all_cases)) + (":llm" if include_llm else ":deterministic"),
+            task_key,
             work,
             total=len(all_cases))
         return json_response({"task_id": record.task_id, "reused": reused,
@@ -1452,7 +1492,10 @@ class QuillRoutes:
     @_api_handler
     async def eval_snapshots(self):
         from .quill.services import rag_eval
-        snapshots = rag_eval.load_snapshots(self._eval_root())
+        try:
+            snapshots = await rag_eval.load_snapshots(self._eval_root())
+        except rag_eval.EvalRootError as exc:
+            return error_response(str(exc), status_code=503)
         return json_response({"status": "ok", "data": {
             "snapshots": [
                 {"created_at": s.get("created_at"),

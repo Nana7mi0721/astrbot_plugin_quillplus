@@ -16,6 +16,7 @@ let _kpEpoch = 0;
 let _evalEpoch = 0;
 let _snapEpoch = 0;
 let _memEpoch = 0;
+let _memModalEpoch = 0;
 
 function switchMemorySub(sub) {
   $$("[data-memsub]").forEach(b => {
@@ -145,8 +146,12 @@ async function loadMemoryBrowser() {
 }
 
 async function showMemorySource(id) {
+  const modalState = { type: "memory-source", id: String(id) };
+  S._modalState = modalState;
+  const epoch = ++_memModalEpoch;
   try {
     const resp = await api(`/memory/source_logs?id=${encodeURIComponent(id)}`);
+    if (epoch !== _memModalEpoch || S._modalState !== modalState) return;
     const data = resp.data || resp;
     const logs = data.logs || [];
     $("#modalTitle").textContent = `记忆来源日志 #${id}`;
@@ -155,7 +160,12 @@ async function showMemorySource(id) {
       : '<div class="fs-13 t3">该记忆没有可追溯的日志区间。</div>';
     $("#modalSaveBtn").hidden = true;
     openModal();
-  } catch (e) { showToast("读取来源失败：" + e.message); }
+  } catch (e) {
+    const current = S._modalState === modalState;
+    if (current) S._modalState = null;
+    if (epoch !== _memModalEpoch || !current) return;
+    showToast("读取来源失败：" + e.message);
+  }
 }
 
 async function archiveMemory(id) {
@@ -202,8 +212,12 @@ function onMemorySessionChange() {
 }
 
 async function showMemoryDetail(id) {
+  const modalState = { type: "memory-detail", id: String(id) };
+  S._modalState = modalState;
+  const epoch = ++_memModalEpoch;
   try {
     const resp = await api("/memory/get?id=" + id);
+    if (epoch !== _memModalEpoch || S._modalState !== modalState) return;
     const m = resp.data || resp;
     if (!m || resp.status === "error") { showToast(resp.message || "获取详情失败"); return; }
     $("#modalTitle").textContent = `记忆详情 #${m.id}`;
@@ -220,7 +234,12 @@ async function showMemoryDetail(id) {
       </div>`;
     $("#modalSaveBtn").hidden = true;
     openModal();
-  } catch (e) { showToast("获取详情失败：" + e.message); }
+  } catch (e) {
+    const current = S._modalState === modalState;
+    if (current) S._modalState = null;
+    if (epoch !== _memModalEpoch || !current) return;
+    showToast("获取详情失败：" + e.message);
+  }
 }
 
 async function deleteMemory(id) {

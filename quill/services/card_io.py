@@ -601,6 +601,7 @@ _YAML_MAX_BYTES = 256 * 1024
 _YAML_MAX_DEPTH = 12
 _YAML_MAX_NODES = 20000
 _YAML_KEY_RE = re.compile(r"(?m)^\s{0,8}(context|greeting|example_dialogue)\s*:")
+_CARD_SAFE_LOADER = None
 
 
 def _yaml_depth(value: Any, depth: int = 0) -> int:
@@ -620,32 +621,38 @@ def _yaml_loader(yaml):
     safe_load 展开时指数级放大。PyYAML 的 compose_node 是唯一能在构造前
     统一拦截 AliasEvent 的入口；同时在这里计节点数，比解析完再遍历更早
     止损。
+
+    P3-6：loader 类只创建一次并复用；每次解析仍由新实例持有独立深度/节点
+    计数，行为与原先「每次调用新建类」一致。
     """
-    class _CardSafeLoader(yaml.SafeLoader):
-        def __init__(self, stream):
-            super().__init__(stream)
-            self._quill_depth = 0
-            self._quill_nodes = 0
+    global _CARD_SAFE_LOADER
+    if _CARD_SAFE_LOADER is None:
+        class _CardSafeLoader(yaml.SafeLoader):
+            def __init__(self, stream):
+                super().__init__(stream)
+                self._quill_depth = 0
+                self._quill_nodes = 0
 
-        def compose_node(self, parent, index):
-            if self.check_event(yaml.AliasEvent):
-                raise CardFormatError("YAML 角色卡使用了别名/锚点，已拒绝解析")
-            self._quill_nodes += 1
-            if self._quill_nodes > _YAML_MAX_NODES:
-                raise CardFormatError(
-                    f"YAML 角色卡节点过多（上限 {_YAML_MAX_NODES}），已拒绝解析"
-                )
-            self._quill_depth += 1
-            try:
-                if self._quill_depth > _YAML_MAX_DEPTH:
+            def compose_node(self, parent, index):
+                if self.check_event(yaml.AliasEvent):
+                    raise CardFormatError("YAML 角色卡使用了别名/锚点，已拒绝解析")
+                self._quill_nodes += 1
+                if self._quill_nodes > _YAML_MAX_NODES:
                     raise CardFormatError(
-                        f"YAML 角色卡嵌套过深（上限 {_YAML_MAX_DEPTH} 层），已拒绝解析"
+                        f"YAML 角色卡节点过多（上限 {_YAML_MAX_NODES}），已拒绝解析"
                     )
-                return super().compose_node(parent, index)
-            finally:
-                self._quill_depth -= 1
+                self._quill_depth += 1
+                try:
+                    if self._quill_depth > _YAML_MAX_DEPTH:
+                        raise CardFormatError(
+                            f"YAML 角色卡嵌套过深（上限 {_YAML_MAX_DEPTH} 层），已拒绝解析"
+                        )
+                    return super().compose_node(parent, index)
+                finally:
+                    self._quill_depth -= 1
 
-    return _CardSafeLoader
+        _CARD_SAFE_LOADER = _CardSafeLoader
+    return _CARD_SAFE_LOADER
 
 
 def _try_yaml_card(raw: str) -> dict | None:

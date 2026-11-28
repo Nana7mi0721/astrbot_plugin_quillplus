@@ -169,12 +169,20 @@ function renderWBInner(name, entries, shown) {
     ${inner}${tip}`;
 }
 
+/* P2-10：null / 空串不能折算成 0；优先级、组权重、深度等非零默认值
+   必须按缺省处理，同时保留用户显式填写的 0。 */
+function _wbNum(value, fallback = null, min = 0) {
+  if (value === null || value === undefined || (typeof value === "string" && !value.trim())) return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(min, n) : fallback;
+}
+
 function renderWBEntry(wbName, e) {
   const keys = e.keys || [];
   const ruleTags = [];
   if (e.group) ruleTags.push("组:" + e.group + (Number(e.group_max) > 1 ? "/" + e.group_max : ""));
-  const prio = Number(e.priority ?? e.order);
-  if (prio && prio !== 100) ruleTags.push("优先级:" + prio);
+  const prio = _wbNum(e.priority) ?? _wbNum(e.order);
+  if (prio !== null && prio !== 100) ruleTags.push("优先级:" + prio);
   const sticky = Number(e.sticky ?? e.sticky_rounds);
   if (sticky > 0) ruleTags.push("粘性:" + sticky + "轮");
   const cooldown = Number(e.cooldown ?? e.cooldown_rounds);
@@ -186,8 +194,7 @@ function renderWBEntry(wbName, e) {
   else if (e.recursive) ruleTags.push("递归");
   if (e.use_regex) ruleTags.push("正则");
   if (Number(e.inject_position) === 3) {
-    const d = Number(e.depth);
-    ruleTags.push("深度:" + (Number.isFinite(d) ? d : 4));
+    ruleTags.push("深度:" + _wbNum(e.depth, 4));
   }
   return `<article class="wb-entry" data-wb="${esc(wbName)}" data-eid="${esc(e.id || "")}">
     <div class="wb-entry-head">
@@ -319,14 +326,14 @@ function openWBEntryModal(wbName, entryId) {
     delay: Number(e.delay ?? e.delay_rounds) || 0,
     group: e.group || "",
     groupMax: Number(e.group_max) > 0 ? Number(e.group_max) : 1,
-    groupWeight: Number.isFinite(Number(e.group_weight)) ? Math.max(0, Number(e.group_weight)) : 100,
-    priority: Number.isFinite(Number(e.priority ?? e.order)) ? Math.max(0, Number(e.priority ?? e.order)) : 100,
-    scanDepth: e.scan_depth != null ? Number(e.scan_depth) : 0,
+    groupWeight: _wbNum(e.group_weight, 100),
+    priority: _wbNum(e.priority) ?? _wbNum(e.order) ?? 100,
+    scanDepth: _wbNum(e.scan_depth, 0),
     excludeRecursion: !!e.exclude_recursion,
-    preventRecursion: !!(e.prevent_recursion ?? e.recursive),
+    preventRecursion: e.prevent_recursion !== undefined ? !!e.prevent_recursion : (e.recursive === false),
     useRegex: !!e.use_regex,
     injectPosition: [1, 2, 3].includes(Number(e.inject_position)) ? Number(e.inject_position) : 2,
-    depth: Number.isFinite(Number(e.depth)) ? Math.max(0, Number(e.depth)) : 4,
+    depth: _wbNum(e.depth, 4),
     role: ["system", "user", "assistant"].includes(e.role) ? e.role : "system",
     selectiveLogic: e.selective_logic || legacyLogic[e.key_mode] || "AND_ANY",
     secondary: e.secondary_keys || e.keys_secondary || [],

@@ -810,6 +810,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             try:
                 vector_store = FaissVectorStore(rag_db, rag_idx, embedding_provider=self.rag_embedding)
                 await vector_store.initialize()
+                if getattr(vector_store, "dim", 0):
+                    self.rag_embedding.anchor_api_dim(vector_store.dim)
                 self.rag_vector_store = vector_store
             except Exception as exc:
                 self._rag_storage_status['documents'] = getattr(vector_store, 'schema_status', {}) or {'available': False, 'error': type(exc).__name__}
@@ -1059,7 +1061,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         await self._close_rag_components()
         # M6 P1-1：规则状态连接常驻 quill_memory.db；恢复前必须显式关闭，
         # 否则 Windows 下覆盖数据库会文件锁死、Linux 下写进已删除 inode。
-        self._close_worldbook_rules()
+        self._freeze_worldbook_rules()
         if self.wr_manager:
             try:
                 await self.wr_manager.close()
@@ -1076,6 +1078,7 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
         旧的（已关闭）引用直到进程重启，面板与聊天路径都不可用。
         """
         autoflush_ready = False
+        reload_ok = False
         try:
             # 1) 重建 StateManager（从恢复后的 quill_state.json 重新加载）
             data_dir = self.paths["state_dir"]
@@ -1110,8 +1113,24 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 logger.warning(f"[Quill] 恢复后角色卡管理器重建失败: {e}")
             # 5) RAG 组件重建
             await self._init_rag()
+            # _init_rag 内部会把局部失败降级为告警；规则库与记忆库同库，
+            # 只有记忆存储和检索器都真正重建成功才允许解除冻结。
+            reload_ok = bool(
+                getattr(self, "rag_memory_store", None) is not None
+                and getattr(self, "rag_retriever", None) is not None
+            )
+            if not reload_ok:
+                logger.warning("[Quill] 备份恢复后 RAG 组件未完整重建")
         finally:
             # 6) 无条件刷新路由引用 + 恢复 autoflush（StateManager 建好才启动）
+            if reload_ok:
+                self._unfreeze_worldbook_rules()
+            else:
+                # 重建失败时恢复后的库可能不完整，规则库继续冻结，避免并发
+                # 请求把空表/半迁移状态当成可用数据写入；下次成功恢复或重启
+                # 插件再解除。
+                logger.warning(
+                    "[Quill] 备份恢复重建未完成，世界书规则保持冻结直到下次成功恢复或重启")
             self._refresh_routes_refs()
             if autoflush_ready:
                 self.state_manager.start_autoflush()
@@ -1126,6 +1145,25 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             rules.close()
         except Exception as e:
             logger.debug(f"[Quill] 世界书规则状态关闭失败（忽略）: {e}")
+
+    def _freeze_worldbook_rules(self) -> None:
+        """备份恢复期间冻结规则库：禁止并发请求惰性重连半覆盖数据库。"""
+        rules = getattr(self.wb_manager, "rules", None) if self.wb_manager else None
+        if rules is None or not hasattr(rules, "freeze"):
+            return
+        try:
+            rules.freeze()
+        except Exception as e:
+            logger.debug(f"[Quill] 世界书规则状态冻结失败（忽略）: {e}")
+
+    def _unfreeze_worldbook_rules(self) -> None:
+        rules = getattr(self.wb_manager, "rules", None) if self.wb_manager else None
+        if rules is None or not hasattr(rules, "unfreeze"):
+            return
+        try:
+            rules.unfreeze()
+        except Exception as e:
+            logger.debug(f"[Quill] 世界书规则状态解冻失败（忽略）: {e}")
 
     async def terminate(self) -> None:
         """生命周期终止：取消所有后台任务并关闭数据库连接，防止资源泄漏。"""
@@ -1382,6 +1420,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
             _summarizer_prev = None
             _kb_prev = None
             _wr_prev = None
+            _wb_prev = None
+            _embedding_prev = None
             try:
                 for group, key, value in normalized:
                     if (
@@ -1411,7 +1451,10 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                         self.rag_retriever.config,
                     )
                     self.rag_retriever.top_k = self.config.rag_top_k
-                    self.rag_retriever.enable_memory = self.config.rag_enable_memory
+                    self.rag_retriever.enable_memory = bool(
+                        self.config.rag_enable_memory
+                        and self.rag_memory_store is not None
+                    )
                     # 换掉 retriever 持有的 config 引用，保证它读到的
                     # `config._raw`（rag_dense_top_k 走这条路）也是新的
                     self.rag_retriever.config = self.config
@@ -1420,6 +1463,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 # 保存成功但部分组件仍按旧值运行。
                 wb_mgr = getattr(self, "wb_manager", None)
                 if wb_mgr is not None:
+                    _wb_prev = (
+                        getattr(wb_mgr, "recursion_enabled", False),
+                        getattr(wb_mgr, "recursion_max_steps", 0),
+                        getattr(wb_mgr, "recursion_max_tokens", 0),
+                    )
                     wb_mgr.recursion_enabled = self.config.worldbook_recursion_enabled
                     wb_mgr.recursion_max_steps = self.config.worldbook_recursion_max_steps
                     wb_mgr.recursion_max_tokens = self.config.worldbook_recursion_max_tokens
@@ -1439,6 +1487,8 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     self.rag_summarizer.provider_id = self.config.rag_llm_provider_id
 
                 if getattr(self, "rag_embedding", None) is not None:
+                    _embedding_prev = getattr(
+                        self.rag_embedding, "enable_local", True)
                     self.rag_embedding.enable_local = (
                         self.config.rag_enable_local_embedding
                     )
@@ -1513,6 +1563,15 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     kb_src = getattr(self, "rag_kb_source", None)
                     if kb_src is not None:
                         kb_src.enabled, kb_src.top_k = _kb_prev
+                if _wb_prev is not None:
+                    wb_mgr = getattr(self, "wb_manager", None)
+                    if wb_mgr is not None:
+                        (wb_mgr.recursion_enabled,
+                         wb_mgr.recursion_max_steps,
+                         wb_mgr.recursion_max_tokens) = _wb_prev
+                if _embedding_prev is not None and getattr(
+                        self, "rag_embedding", None) is not None:
+                    self.rag_embedding.enable_local = _embedding_prev
                 raise
         except Exception as e:
             logger.warning("[Quill] 配置批量保存失败: %s", e, exc_info=True)
@@ -2328,13 +2387,15 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                 # 「过时知识页独占结果」。
                 try:
                     store = getattr(self.rag_retriever, "memory_store", None)
-                    if store is not None:
+                    if (store is not None
+                            and getattr(self.rag_retriever, "enable_memory", False)):
                         knowledge_pages = await store.get_knowledge_pages(mem_session_id)
                         if any(
                             str(p.get("freshness_status") or "") in ("stale", "failed")
                             for p in knowledge_pages
                         ):
-                            evidence = await store.get_knowledge_evidence(mem_session_id, limit=5)
+                            evidence = await store.get_knowledge_evidence(
+                                mem_session_id, limit=5, exclude_core=True)
                             existing_ids = {
                                 str(value)
                                 for r in mem_results
@@ -2342,11 +2403,11 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                                 if value is not None
                             }
                             for item in evidence:
-                                rid = item.get("record_id") or item.get("source_end_id") or "?"
+                                rid = item.get("record_id") or item.get("id") or "?"
                                 if str(rid) in existing_ids:
                                     continue
                                 mem_results.append({
-                                    "id": item.get("source_end_id") or rid,
+                                    "id": item.get("id") or rid,
                                     "record_id": item.get("record_id"),
                                     "summary": item.get("summary") or "",
                                     "chat_summary": item.get("chat_summary") or "",
@@ -2375,7 +2436,17 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                     from .quill.services.knowledge_pages import format_for_prompt as _fmt_pages
                     _page_text = _fmt_pages(knowledge_pages)
                     if _page_text:
-                        rag_context = _page_text + ("\n\n" + rag_context if rag_context else "")
+                        stale_pages = any(
+                            str(p.get("freshness_status") or "") in ("stale", "failed")
+                            for p in knowledge_pages
+                        )
+                        if stale_pages and rag_context:
+                            # P2-6：stale 页必须让位给底层回落的 <memories>；
+                            # 若仍置顶，尾部预算会先挤掉最新证据，只剩旧摘要。
+                            rag_context = rag_context + "\n\n" + _page_text
+                        else:
+                            rag_context = _page_text + (
+                                "\n\n" + rag_context if rag_context else "")
                 except Exception as exc:
                     logger.debug("[Quill KnowledgePage] 知识页格式化失败（已跳过）: %s", exc)
             if rag_context:
@@ -2510,9 +2581,21 @@ class QuillPlugin(StatusbarParsersMixin, StatusbarRenderMixin, Star):
                         picked = body.strip(" *_#`")[:240]
                         if picked:
                             return f"{text} {picked}"
+            # P2-5：尾部扩展只允许使用叙事正文；状态栏与剧情选项是插件
+            # 渲染产物，跟着短回复进入 RAG 查询会污染下一轮召回。
+            clean_assistant = self._strip_status_artifacts(
+                assistant, self.props.love_fields)
+            try:
+                from .quill.services.statusbar.tokens import PLOT_PATH_PATTERN
+                clean_assistant = _re.sub(
+                    PLOT_PATH_PATTERN, "", clean_assistant,
+                    flags=_re.DOTALL | _re.IGNORECASE)
+            except Exception:
+                pass
+            clean_assistant = clean_assistant.strip()
             if len(text) > 12:
                 return text
-            tail = assistant[-120:]
+            tail = clean_assistant[-120:]
             if tail:
                 return f"{text}\n{tail}"
         except Exception as exc:

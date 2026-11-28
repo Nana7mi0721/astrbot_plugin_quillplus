@@ -134,6 +134,18 @@ def analyze(text: str, *, now=None) -> dict:
     return {"kind": "none", "entities": _entities(raw), "keywords": raw}
 
 
+def requires_older_window(analysis: dict, *, now=None) -> bool:
+    """现实时间查询是否越过常规 30 天活跃窗口。"""
+    if not isinstance(analysis, dict) or analysis.get("kind") != "real":
+        return False
+    if analysis.get("token") in ("上个月", "上月", "去年"):
+        return True
+    start = _parse_date(analysis.get("start_ts") or "")
+    if start is None:
+        return False
+    return start < _now(now) - timedelta(days=30)
+
+
 def extract_story_time(text: str) -> str:
     """从摘要/对话原文提取剧情时间表达式；没有线索时返回空串。"""
     raw = str(text or "")
@@ -204,18 +216,18 @@ def relevance(memory: dict, analysis: dict, now=None) -> float:
                 start = _as_aware(start, current)
                 end = _as_aware(end, current)
                 if start <= source < end:
-                    boost += 0.10
+                    boost += 0.004
                 else:
                     # 明确时间窗外的候选保留（可能是矛盾/前情），但降低排序。
-                    boost -= 0.03
+                    boost -= 0.002
     elif kind == "story":
         story_text = str(memory.get("story_time") or "")
         haystack = story_text + " " + str(memory.get("summary") or "")
         if analysis.get("story_expr") and analysis["story_expr"] in haystack:
-            boost += 0.08
+            boost += 0.003
         for token in analysis.get("story_tokens") or []:
             if token and token in haystack:
-                boost += 0.02
+                boost += 0.0008
     participants = []
     try:
         raw_participants = json.loads(memory.get("participants_json") or "[]")
@@ -230,13 +242,20 @@ def relevance(memory: dict, analysis: dict, now=None) -> float:
     )
     for term in analysis.get("entities") or []:
         if term and term in haystack:
-            boost += 0.025
-    return min(boost, 0.2)
+            boost += 0.001
+    # P2-4：RRF 单项上限约 1/61≈0.0164，两路融合通常 ~0.03；
+    # 时间/人物加权必须留在同一量纲，否则会完全淹没语义排序。
+    return max(-0.004, min(boost, 0.006))
 
 
-def rerank(results: list[dict], analysis: dict, top_k: int, *, now=None) -> list[dict]:
+def rerank(results: list[dict], analysis: dict, top_k: int, *, now=None,
+           funnel: dict | None = None) -> list[dict]:
     if not results or analysis.get("kind") == "none" and not analysis.get("entities"):
-        return results[:top_k]
+        kept = results[:top_k]
+        if funnel is not None:
+            funnel["candidates"] = max(int(funnel.get("candidates", 0) or 0), len(results))
+            funnel["matched"] = len(kept)
+        return kept
     ranked = []
     for row in results:
         item = dict(row)
@@ -248,4 +267,24 @@ def rerank(results: list[dict], analysis: dict, top_k: int, *, now=None) -> list
         -float(r.get("rrf_score", 0.0) or 0.0),
         str(r.get("id", "")),
     ))
-    return ranked[:max(1, int(top_k or 1))]
+    limit = max(1, int(top_k or 1))
+    kept = ranked[:limit]
+    if funnel is not None:
+        # P2-5：memory_store 写的是 RRF 截断前漏斗；这里按时间重排再次
+        # 截断后回填真实 matched 与近失，面板才能解释「检索有候选但没注入」。
+        funnel["candidates"] = max(int(funnel.get("candidates", 0) or 0), len(ranked))
+        funnel["matched"] = len(kept)
+        filtered = funnel.get("filtered")
+        if not isinstance(filtered, list):
+            filtered = []
+            funnel["filtered"] = filtered
+        for rank, row in enumerate(ranked[limit:], start=limit + 1):
+            filtered.append({
+                "reason": (
+                    "temporal_below_top_k("
+                    f"名次{rank}, temporal {float(row.get('temporal_score', 0.0) or 0.0):.4f})"
+                ),
+                "rank": rank,
+                **({"id": row["id"]} if row.get("id") is not None else {}),
+            })
+    return kept

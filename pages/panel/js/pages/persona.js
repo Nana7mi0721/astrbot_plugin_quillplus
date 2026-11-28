@@ -843,6 +843,8 @@ async function importPersona(input) {
    都先打 /persona/export_preview 看真实字节数 / 警告 / 重名冲突，再点导出下载，
    避免「下完才发现带了三本鸿篇世界书」这种返工。 */
 let _exportState = null;
+// P2-17：同一导出弹窗内快速改参数会并发预览，只允许最后发出的请求回填。
+let _exportPreviewEpoch = 0;
 const EXPORT_LABEL = { v2: "CCv2", v3: "CCv3" };
 
 function fmtBytes(n) {
@@ -997,12 +999,13 @@ function scheduleExportPreview() {
 async function refreshExportPreview() {
   const state = _exportState;
   if (!state) return;
+  const epoch = ++_exportPreviewEpoch;
   const summary = $("#expSummary");
   summary.hidden = false;
   summary.textContent = "正在计算…";
   try {
     const res = await apiPost("/persona/export_preview", exportRequestBody());
-    if (_exportState !== state) return;
+    if (_exportState !== state || epoch !== _exportPreviewEpoch) return;
     state.last = res;
     const book = res.character_book || {};
     const parts = [
@@ -1025,7 +1028,7 @@ async function refreshExportPreview() {
       ? `同身份键的「${esc(c.name)}」已存在，导入会覆盖原卡`
       : `已有同名角色卡「${esc(c.name)}」，导入后可能重名`}</div>`).join("");
   } catch (e) {
-    if (_exportState !== state) return;
+    if (_exportState !== state || epoch !== _exportPreviewEpoch) return;
     state.last = null;
     summary.textContent = "预览失败：" + e.message;
     $("#expWarnings").hidden = true;

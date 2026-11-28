@@ -25,6 +25,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
@@ -79,10 +80,13 @@ class WorldbookRuleStore:
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
         self._legacy: Dict[str, dict] = {}
+        # P1-2：备份恢复期间解压会覆盖 quill_memory.db。冻结后所有读写
+        # 直接降级为空操作，禁止任何并发请求惰性重连旧/半覆盖文件。
+        self._frozen = False
 
     # ── connection / schema ─────────────────────────────────────────────
     def _ensure_locked(self) -> sqlite3.Connection | None:
-        if not self.path:
+        if not self.path or self._frozen:
             return None
         if self._conn is not None:
             return self._conn
@@ -103,19 +107,36 @@ class WorldbookRuleStore:
         try:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA busy_timeout=5000")
-            for statement in _SCHEMA:
-                self._conn.execute(statement)
-            self._conn.commit()
+            with self._write_transaction_locked(self._conn):
+                for statement in _SCHEMA:
+                    self._conn.execute(statement)
+            if self._legacy:
+                # 迁移也放在同一保护块里：失败时关闭连接并保留内存 JSON，
+                # 下一次访问重新建库后重试，避免半迁移连接被惰性复用。
+                self._import_legacy_locked()
+                self._legacy = {}
         except BaseException:
             try:
                 self._conn.close()
             finally:
                 self._conn = None
             raise
-        if self._legacy:
-            self._import_legacy_locked()
-            self._legacy = {}
         return self._conn
+
+    @contextmanager
+    def _write_transaction_locked(self, conn: sqlite3.Connection):
+        """所有写路径共用的单事务：BEGIN IMMEDIATE / COMMIT / 异常 rollback。"""
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            except Exception:
+                # 回滚失败不能覆盖原始异常；连接最终由 close() 统一收口。
+                pass
+            raise
 
     def _read_legacy_locked(self) -> Dict[str, dict]:
         """旧版 JSON 状态迁移：读取后由 :meth:`_archive_legacy_locked` 改名保留。"""
@@ -123,11 +144,20 @@ class WorldbookRuleStore:
             if not self.path or not os.path.isfile(self.path):
                 return {}
             with open(self.path, "r", encoding="utf-8") as fh:
-                head = fh.read(1)
-                if head != "{":
-                    return {}
-                fh.seek(0)
-                raw = json.load(fh)
+                raw_text = fh.read()
+            # P2-12：旧文件可能带 UTF-8 BOM 或前导空白，必须先跳过这些
+            # 字节再判断 JSON 根；否则会把整份历史规则静默当成空数据。
+            start = 0
+            while start < len(raw_text):
+                char = raw_text[start]
+                if char == "\ufeff" or char.isspace():
+                    start += 1
+                    continue
+                break
+            payload = raw_text[start:]
+            if not payload.startswith("{"):
+                return {}
+            raw = json.loads(payload)
             return raw if isinstance(raw, dict) else {}
         except (OSError, ValueError, TypeError):
             return {}
@@ -141,8 +171,9 @@ class WorldbookRuleStore:
                     ch = fh.read(1)
                     if not ch:
                         return False
-                    if not ch.isspace():
-                        return ch == "{"
+                    if ch == "\ufeff" or ch.isspace():
+                        continue
+                    return ch == "{"
         except (OSError, UnicodeDecodeError):
             return False
 
@@ -169,61 +200,75 @@ class WorldbookRuleStore:
         scopes = self._legacy.get("scopes")
         if not isinstance(scopes, dict) or self._conn is None:
             return
-        for key, record in scopes.items():
-            if not isinstance(record, dict):
-                continue
-            scope_id, _, persona_id = str(key).partition("::")
-            now = _now()
-            self._conn.execute(
-                """INSERT INTO wb_rule_scopes
-                   (scope_id, persona_id, rule_turn, last_turn, updated_at)
-                   VALUES(?,?,?,?,?)
-                   ON CONFLICT(scope_id, persona_id) DO UPDATE SET
-                     rule_turn=MAX(rule_turn, excluded.rule_turn),
-                     last_turn=excluded.last_turn, updated_at=excluded.updated_at""",
-                (
-                    scope_id, persona_id, _as_int(record.get("round")),
-                    str(record.get("last_turn") or ""), now,
-                ),
-            )
-            rules = record.get("rules")
-            if not isinstance(rules, dict):
-                continue
-            for rule_id, state in rules.items():
-                if not isinstance(state, dict):
+        with self._write_transaction_locked(self._conn):
+            for key, record in scopes.items():
+                if not isinstance(record, dict):
                     continue
+                scope_id, _, persona_id = str(key).partition("::")
+                now = _now()
                 self._conn.execute(
-                    """INSERT INTO wb_rule_effects
-                       (scope_id, persona_id, rule_id, first_seen_turn,
-                        sticky_until_turn, cooldown_until_turn,
-                        last_triggered_turn, last_injected_turn, updated_at)
-                       VALUES(?,?,?,?,?,?,?,?,?)
-                       ON CONFLICT(scope_id, persona_id, rule_id) DO UPDATE SET
-                         first_seen_turn=MIN(first_seen_turn, excluded.first_seen_turn),
-                         sticky_until_turn=MAX(sticky_until_turn, excluded.sticky_until_turn),
-                         cooldown_until_turn=MAX(cooldown_until_turn, excluded.cooldown_until_turn),
-                         last_triggered_turn=MAX(last_triggered_turn, excluded.last_triggered_turn),
-                         last_injected_turn=MAX(last_injected_turn, excluded.last_injected_turn),
-                         updated_at=excluded.updated_at""",
+                    """INSERT INTO wb_rule_scopes
+                       (scope_id, persona_id, rule_turn, last_turn, updated_at)
+                       VALUES(?,?,?,?,?)
+                       ON CONFLICT(scope_id, persona_id) DO UPDATE SET
+                         rule_turn=MAX(rule_turn, excluded.rule_turn),
+                         last_turn=excluded.last_turn, updated_at=excluded.updated_at""",
                     (
-                        scope_id, persona_id, str(rule_id),
-                        _as_int(state.get("first_seen")),
-                        _as_int(state.get("sticky_until")),
-                        _as_int(state.get("cooldown_until")),
-                        _as_int(state.get("last_match")),
-                        _as_int(state.get("last_injected")),
-                        now,
+                        scope_id, persona_id, _as_int(record.get("round")),
+                        str(record.get("last_turn") or ""), now,
                     ),
                 )
-        self._conn.commit()
+                rules = record.get("rules")
+                if not isinstance(rules, dict):
+                    continue
+                for rule_id, state in rules.items():
+                    if not isinstance(state, dict):
+                        continue
+                    self._conn.execute(
+                        """INSERT INTO wb_rule_effects
+                           (scope_id, persona_id, rule_id, first_seen_turn,
+                            sticky_until_turn, cooldown_until_turn,
+                            last_triggered_turn, last_injected_turn, updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(scope_id, persona_id, rule_id) DO UPDATE SET
+                             first_seen_turn=MIN(first_seen_turn, excluded.first_seen_turn),
+                             sticky_until_turn=MAX(sticky_until_turn, excluded.sticky_until_turn),
+                             cooldown_until_turn=MAX(cooldown_until_turn, excluded.cooldown_until_turn),
+                             last_triggered_turn=MAX(last_triggered_turn, excluded.last_triggered_turn),
+                             last_injected_turn=MAX(last_injected_turn, excluded.last_injected_turn),
+                             updated_at=excluded.updated_at""",
+                        (
+                            scope_id, persona_id, str(rule_id),
+                            _as_int(state.get("first_seen")),
+                            _as_int(state.get("sticky_until")),
+                            _as_int(state.get("cooldown_until")),
+                            _as_int(state.get("last_match")),
+                            _as_int(state.get("last_injected")),
+                            now,
+                        ),
+                    )
+
+    def _close_locked(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            finally:
+                self._conn = None
 
     def close(self) -> None:
         with self._lock:
-            if self._conn is not None:
-                try:
-                    self._conn.close()
-                finally:
-                    self._conn = None
+            self._close_locked()
+
+    def freeze(self) -> None:
+        """进入备份恢复冻结期：先置标志再关闭连接，期间禁止任何惰性重连。"""
+        with self._lock:
+            self._frozen = True
+            self._close_locked()
+
+    def unfreeze(self) -> None:
+        """恢复完成后解除门控；下一次访问按需重新连接恢复后的数据库。"""
+        with self._lock:
+            self._frozen = False
 
     # ── helpers ─────────────────────────────────────────────────────────
     @staticmethod
@@ -238,6 +283,42 @@ class WorldbookRuleStore:
             "cooldown_until": int(row["cooldown_until_turn"] or 0),
             "last_injected": int(row["last_injected_turn"] or 0),
             "last_match": int(row["last_triggered_turn"] or 0),
+        }
+
+    def _entry_state_tx_locked(self, conn: sqlite3.Connection,
+                               scope_id: str, persona_id: str, rule_id: str,
+                               round_no: int, create: bool) -> Optional[dict]:
+        """在调用方已开启的写事务内读取/创建规则状态，不自行 commit。"""
+        row = conn.execute(
+            "SELECT * FROM wb_rule_effects "
+            "WHERE scope_id=? AND persona_id=? AND rule_id=?",
+            (scope_id, persona_id, str(rule_id)),
+        ).fetchone()
+        if row is not None:
+            return self._row_state(row)
+        if not create:
+            return None
+        current = max(0, int(round_no or 0))
+        now = _now()
+        conn.execute(
+            """INSERT INTO wb_rule_effects
+               (scope_id, persona_id, rule_id, first_seen_turn,
+                sticky_until_turn, cooldown_until_turn,
+                last_triggered_turn, last_injected_turn, updated_at)
+               VALUES(?,?,?,?,0,0,0,0,?)""",
+            (scope_id, persona_id, str(rule_id), current, now),
+        )
+        conn.execute(
+            """INSERT INTO wb_rule_scopes
+               (scope_id, persona_id, rule_turn, last_turn, updated_at)
+               VALUES(?,?,?,'',?)
+               ON CONFLICT(scope_id, persona_id) DO UPDATE SET
+                 updated_at=excluded.updated_at""",
+            (scope_id, persona_id, current, now),
+        )
+        return {
+            "first_seen": current, "sticky_until": 0,
+            "cooldown_until": 0, "last_injected": 0, "last_match": 0,
         }
 
     def _prune_locked(self, conn: sqlite3.Connection) -> None:
@@ -272,28 +353,28 @@ class WorldbookRuleStore:
                 return 0
             scope_id, persona_id = str(scope_id or ""), str(persona_id or "")
             token = str(turn_token or "")
-            row = conn.execute(
-                "SELECT rule_turn, last_turn FROM wb_rule_scopes "
-                "WHERE scope_id=? AND persona_id=?",
-                (scope_id, persona_id),
-            ).fetchone()
-            if row is not None and token and row["last_turn"] == token:
-                return int(row["rule_turn"] or 0)
-            current = int(row["rule_turn"] or 0) if row is not None else 0
-            current += 1
-            conn.execute(
-                """INSERT INTO wb_rule_scopes
-                   (scope_id, persona_id, rule_turn, last_turn, updated_at)
-                   VALUES(?,?,?,?,?)
-                   ON CONFLICT(scope_id, persona_id) DO UPDATE SET
-                     rule_turn=excluded.rule_turn,
-                     last_turn=excluded.last_turn,
-                     updated_at=excluded.updated_at""",
-                (scope_id, persona_id, current, token, _now()),
-            )
-            self._prune_locked(conn)
-            conn.commit()
-            return current
+            with self._write_transaction_locked(conn):
+                row = conn.execute(
+                    "SELECT rule_turn, last_turn FROM wb_rule_scopes "
+                    "WHERE scope_id=? AND persona_id=?",
+                    (scope_id, persona_id),
+                ).fetchone()
+                if row is not None and token and row["last_turn"] == token:
+                    return int(row["rule_turn"] or 0)
+                current = int(row["rule_turn"] or 0) if row is not None else 0
+                current += 1
+                conn.execute(
+                    """INSERT INTO wb_rule_scopes
+                       (scope_id, persona_id, rule_turn, last_turn, updated_at)
+                       VALUES(?,?,?,?,?)
+                       ON CONFLICT(scope_id, persona_id) DO UPDATE SET
+                         rule_turn=excluded.rule_turn,
+                         last_turn=excluded.last_turn,
+                         updated_at=excluded.updated_at""",
+                    (scope_id, persona_id, current, token, _now()),
+                )
+                self._prune_locked(conn)
+                return current
 
     def current_round(self, scope_id: str, persona_id: str) -> int:
         with self._lock:
@@ -324,45 +405,29 @@ class WorldbookRuleStore:
                 return self._row_state(row)
             if not create:
                 return None
-            current = max(0, int(round_no or 0))
-            now = _now()
-            conn.execute(
-                """INSERT INTO wb_rule_effects
-                   (scope_id, persona_id, rule_id, first_seen_turn,
-                    sticky_until_turn, cooldown_until_turn,
-                    last_triggered_turn, last_injected_turn, updated_at)
-                   VALUES(?,?,?,?,0,0,0,0,?)""",
-                (scope_id, persona_id, str(rule_id), current, now),
-            )
-            conn.execute(
-                """INSERT INTO wb_rule_scopes
-                   (scope_id, persona_id, rule_turn, last_turn, updated_at)
-                   VALUES(?,?,?,'',?)
-                   ON CONFLICT(scope_id, persona_id) DO UPDATE SET
-                     updated_at=excluded.updated_at""",
-                (scope_id, persona_id, current, now),
-            )
-            conn.commit()
-            return {
-                "first_seen": current, "sticky_until": 0,
-                "cooldown_until": 0, "last_injected": 0, "last_match": 0,
-            }
+            with self._write_transaction_locked(conn):
+                return self._entry_state_tx_locked(
+                    conn, scope_id, persona_id, str(rule_id), round_no, True
+                )
 
     def mark_matched(self, scope_id: str, persona_id: str, rule_id: str,
                      round_no: int) -> None:
         """记录最近一次关键词命中；只在真实匹配链调用，模拟不写。"""
         with self._lock:
-            self.entry_state(scope_id, persona_id, rule_id, round_no, create=True)
             conn = self._ensure_locked()
             if conn is None:
                 return
-            conn.execute(
-                "UPDATE wb_rule_effects SET last_triggered_turn=?, updated_at=? "
-                "WHERE scope_id=? AND persona_id=? AND rule_id=?",
-                (_as_int(round_no), _now(), str(scope_id or ""),
-                 str(persona_id or ""), str(rule_id)),
-            )
-            conn.commit()
+            scope_id, persona_id = str(scope_id or ""), str(persona_id or "")
+            with self._write_transaction_locked(conn):
+                self._entry_state_tx_locked(
+                    conn, scope_id, persona_id, str(rule_id), round_no, True
+                )
+                conn.execute(
+                    "UPDATE wb_rule_effects SET last_triggered_turn=?, updated_at=? "
+                    "WHERE scope_id=? AND persona_id=? AND rule_id=?",
+                    (_as_int(round_no), _now(), scope_id,
+                     persona_id, str(rule_id)),
+                )
 
     def mark_injected(self, scope_id: str, persona_id: str, rule_id: str,
                       round_no: int, sticky_rounds: int = 0,
@@ -374,43 +439,45 @@ class WorldbookRuleStore:
         永远不过期，剩余轮数也永远显示满额。
         """
         with self._lock:
-            state = self.entry_state(
-                scope_id, persona_id, rule_id, round_no, create=True
-            )
             conn = self._ensure_locked()
-            if conn is None or state is None:
+            if conn is None:
                 return
-            current = _as_int(round_no)
-            if int(state.get("last_injected", 0) or 0) == current:
-                return
-            sticky = _as_int(sticky_rounds)
-            cooldown = _as_int(cooldown_rounds)
-            sticky_until = int(state.get("sticky_until", 0) or 0)
-            cooldown_until = int(state.get("cooldown_until", 0) or 0)
-            if not carry:
-                sticky_until = current + sticky if sticky > 0 else 0
-                cooldown_from = sticky_until if sticky_until else current
-                cooldown_until = cooldown_from + cooldown if cooldown > 0 else 0
-            if carry:
-                # 粘性顺延不是「关键词命中」：只刷新 last_injected，保留原
-                # last_triggered（否则最近命中时间会被无命中轮次覆盖）。
-                conn.execute(
-                    """UPDATE wb_rule_effects SET
-                         last_injected_turn=?, updated_at=?
-                       WHERE scope_id=? AND persona_id=? AND rule_id=?""",
-                    (current, _now(), str(scope_id or ""),
-                     str(persona_id or ""), str(rule_id)),
+            scope_id, persona_id = str(scope_id or ""), str(persona_id or "")
+            with self._write_transaction_locked(conn):
+                state = self._entry_state_tx_locked(
+                    conn, scope_id, persona_id, str(rule_id), round_no, True
                 )
-            else:
-                conn.execute(
-                    """UPDATE wb_rule_effects SET
-                         sticky_until_turn=?, cooldown_until_turn=?,
-                         last_injected_turn=?, last_triggered_turn=?, updated_at=?
-                       WHERE scope_id=? AND persona_id=? AND rule_id=?""",
-                    (sticky_until, cooldown_until, current, current, _now(),
-                     str(scope_id or ""), str(persona_id or ""), str(rule_id)),
-                )
-            conn.commit()
+                if state is None:
+                    return
+                current = _as_int(round_no)
+                if int(state.get("last_injected", 0) or 0) == current:
+                    return
+                sticky = _as_int(sticky_rounds)
+                cooldown = _as_int(cooldown_rounds)
+                sticky_until = int(state.get("sticky_until", 0) or 0)
+                cooldown_until = int(state.get("cooldown_until", 0) or 0)
+                if not carry:
+                    sticky_until = current + sticky if sticky > 0 else 0
+                    cooldown_from = sticky_until if sticky_until else current
+                    cooldown_until = cooldown_from + cooldown if cooldown > 0 else 0
+                if carry:
+                    # 粘性顺延不是「关键词命中」：只刷新 last_injected，保留原
+                    # last_triggered（否则最近命中时间会被无命中轮次覆盖）。
+                    conn.execute(
+                        """UPDATE wb_rule_effects SET
+                             last_injected_turn=?, updated_at=?
+                           WHERE scope_id=? AND persona_id=? AND rule_id=?""",
+                        (current, _now(), scope_id, persona_id, str(rule_id)),
+                    )
+                else:
+                    conn.execute(
+                        """UPDATE wb_rule_effects SET
+                             sticky_until_turn=?, cooldown_until_turn=?,
+                             last_injected_turn=?, last_triggered_turn=?, updated_at=?
+                           WHERE scope_id=? AND persona_id=? AND rule_id=?""",
+                        (sticky_until, cooldown_until, current, current, _now(),
+                         scope_id, persona_id, str(rule_id)),
+                    )
 
     def clear_sticky(self, scope_id: str, persona_id: str, rule_id: str) -> None:
         """用户停用或条件不满足时中止粘性，避免恢复启用后继续泄漏。"""
@@ -418,12 +485,12 @@ class WorldbookRuleStore:
             conn = self._ensure_locked()
             if conn is None:
                 return
-            conn.execute(
-                "UPDATE wb_rule_effects SET sticky_until_turn=0, updated_at=? "
-                "WHERE scope_id=? AND persona_id=? AND rule_id=?",
-                (_now(), str(scope_id or ""), str(persona_id or ""), str(rule_id)),
-            )
-            conn.commit()
+            with self._write_transaction_locked(conn):
+                conn.execute(
+                    "UPDATE wb_rule_effects SET sticky_until_turn=0, updated_at=? "
+                    "WHERE scope_id=? AND persona_id=? AND rule_id=?",
+                    (_now(), str(scope_id or ""), str(persona_id or ""), str(rule_id)),
+                )
 
     def status(self, scope_id: str, persona_id: str, rule_id: str,
                round_no: int = 0) -> dict:

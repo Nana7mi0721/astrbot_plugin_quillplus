@@ -384,6 +384,7 @@ async function toggleTraceLive(el) {
   _traceLiveBusy = true;
   try {
     if (_sseSubId || _pollTimer) {
+      _traceLiveEpoch += 1;
       await _stopLive();
       el.innerHTML = '<svg class="icon icon--sm" aria-hidden="true"><use href="#i-sparkle"/></svg>实时：关';
       return;
@@ -394,8 +395,13 @@ async function toggleTraceLive(el) {
     if (bridge && typeof bridge.subscribeSSE === "function") {
       try {
         _sseSubId = await bridge.subscribeSSE("trace/events", {
-          onMessage: (msg) => _onLiveTrace(msg?.parsed),
-          onError: () => { _sseSubId = null; _startPolling(); },
+          // P3-4：回调可能晚于切页/退订，先核对 epoch，避免旧订阅重启轮询或回填列表。
+          onMessage: (msg) => { if (epoch !== _traceLiveEpoch) return; _onLiveTrace(msg?.parsed); },
+          onError: () => {
+            if (epoch !== _traceLiveEpoch) return;
+            _sseSubId = null;
+            _startPolling();
+          },
         });
         if (epoch !== _traceLiveEpoch) {
           try { bridge?.unsubscribeSSE?.(_sseSubId); } catch (_) { /* 已断开 */ }

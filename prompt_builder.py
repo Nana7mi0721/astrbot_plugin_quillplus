@@ -405,23 +405,19 @@ class PromptBuilder:
         dynamic_prompt = dynamic_prompt or ""
         card_prompt = card_prompt or ""
 
-        # M5.3 / M6 P1-7：{{original}} 是「显式引用宿主原文」的唯一语法。
-        # 三条文本（stable / card / dynamic）同源展开；一旦展开过就不能再把
-        # original_prompt 拼一遍，否则宿主文本重复且权限层级混乱。
-        used_original = False
+        # M5.3 / M6 P1-5：{{original}} 可以引用宿主原文，但**不能清空最外层
+        # 宿主硬约束**。即使角色卡/动态段包含占位符，original_prompt 仍要
+        # 作为权限锚点保留，避免卡内文本降权或替换宿主提示。
         for name in ("stable_prompt", "card_prompt", "dynamic_prompt"):
             value = locals()[name]
             if "{{original}}" in value:
                 value = value.replace("{{original}}", original_prompt)
-                used_original = True
                 if name == "stable_prompt":
                     stable_prompt = value
                 elif name == "card_prompt":
                     card_prompt = value
                 else:
                     dynamic_prompt = value
-        if used_original:
-            original_prompt = ""
 
         if injection_position == "user_prefix":
             # 动态内容最前（高服从度模式）
@@ -491,6 +487,19 @@ class PromptBuilder:
         _preset_options = _preset_option_ids()
         if preset:
             _preset_ids = set((preset.get("choices") or {}).values())
+        _pb_budget = (preset or {}).get("budget") or {}
+        try:
+            _pb_max_entries = int(_pb_budget.get("max_entries", 5))
+        except (TypeError, ValueError):
+            _pb_max_entries = 5
+        try:
+            _pb_max_chars = int(_pb_budget.get("max_chars", 2600))
+        except (TypeError, ValueError):
+            _pb_max_chars = 2600
+        # P2-15：常驻循环里已经注入的预设条目也要计入预设预算，否则
+        # 后续补齐阶段会从 0 重新计数，整体上限被突破。
+        _pb_used_entries = 0
+        _pb_used_chars = 0
 
         def _preset_keep(entry: dict) -> bool:
             if not preset:
@@ -533,6 +542,9 @@ class PromptBuilder:
                             "\u3010\u7d20\u6750\u3011\n" + content
                         )
                         wr_constant_hits += 1
+                        if preset and eid in _preset_ids:
+                            _pb_used_entries += 1
+                            _pb_used_chars += len(content)
                 # Random pool \u2192 separate list
                 # 预设已固定感官维度时，跳过随机感官池，避免两条相反的
                 # 感官指令同时进入常驻层。
@@ -629,6 +641,19 @@ class PromptBuilder:
 
         # === Layer 2: keyword matching (uses multi-turn context for richer matching) ===
         matching_text = extra_info.get("context_text") or user_input
+        # P1-8：首轮暖场只扩展世界书匹配语料，追加角色卡 scenario；WR 与
+        # current_input/ user_input 保持原文，不能把场景描述当作用户发言。
+        wb_matching_text = matching_text
+        if extra_info.get("first_warmup"):
+            persona_data = extra_info.get("persona_data") or {}
+            scenario = str(
+                (persona_data.get("core_prompts") or {}).get("scenario")
+                or ""
+            ).strip()
+            if scenario:
+                wb_matching_text = (
+                    f"{matching_text}\n{scenario}" if matching_text else scenario
+                )
         if matching_text and wr_manager and wr_mode != "disabled":
             try:
                 max_entries = extra_info.get("wr_max_entries", 5)
@@ -698,17 +723,6 @@ class PromptBuilder:
         if (not skip_constants) and preset and wr_manager is not None and wr_mode != "disabled":
             # M6 P1-5：预设自带 max_entries / max_chars 预算，按 DIMENSIONS
             # 顺序（choices 的插入序）落地上限，避免常驻层被预设撑爆。
-            _pb_budget = preset.get("budget") or {}
-            try:
-                _pb_max_entries = int(_pb_budget.get("max_entries", 5))
-            except (TypeError, ValueError):
-                _pb_max_entries = 5
-            try:
-                _pb_max_chars = int(_pb_budget.get("max_chars", 2600))
-            except (TypeError, ValueError):
-                _pb_max_chars = 2600
-            _pb_used_entries = 0
-            _pb_used_chars = 0
             for _dimension, eid in (preset.get("choices") or {}).items():
                 if not eid or eid in seen_ids:
                     continue
@@ -736,13 +750,13 @@ class PromptBuilder:
                     _pb_used_entries += 1
                     _pb_used_chars += len(content)
 
-        if matching_text and wb_manager and wb_mode != "disabled":
+        if wb_matching_text and wb_manager and wb_mode != "disabled":
             try:
                 wb_top_k = extra_info.get("wb_max_entries", 4)
                 sensitivity = extra_info.get("wb_sensitivity", 0.7)
                 wb_matched = await asyncio.to_thread(
                     wb_manager.match_entries,
-                    matching_text, bound_worldbooks=bound_worldbooks,
+                    wb_matching_text, bound_worldbooks=bound_worldbooks,
                     top_k=wb_top_k, sensitivity=sensitivity,
                     session_vars=extra_info.get("session_vars") or None,
                     funnel=_wb_funnel,
@@ -756,6 +770,8 @@ class PromptBuilder:
                 # 常驻条目已消费的部分在此继续扣减（M12 修复）。
                 # M5.1：只有真正拼进 prompt 的条目才推进粘性/冷却；预算丢弃不算。
                 _wb_rule_committed: List[dict] = []
+                _wb_layer2_committed: List[dict] = []
+                _wb_depth_committed: List[dict] = []
                 for _m_idx, entry in enumerate(wb_matched):
                     content = entry.get("content", "")
                     if content:
@@ -786,15 +802,29 @@ class PromptBuilder:
                                 })
                             wb_match_hits += 1
                             _wb_rule_committed.append(entry)
+                            _wb_depth_committed.append(entry)
                             continue
                         layer2_parts.append(
                             "\u3010\u4e16\u754c\u89c2\u3011\n" + content
                         )
                         wb_match_hits += 1
                         _wb_rule_committed.append(entry)
-                if _wb_rule_committed and hasattr(wb_manager, "confirm_rule_injection"):
+                        _wb_layer2_committed.append(entry)
+                if (stats is not None
+                        and hasattr(wb_manager, "confirm_rule_injection")):
+                    # P1-4：提交延后到 hooks 的最终 layout 之后；只有实际
+                    # 存活的 layer2 才允许推进粘性/冷却。深度注入不经过
+                    # layout，必须单独确认，否则只命中深度条目时永远不推进。
+                    if _wb_layer2_committed:
+                        stats["_wb_pending_layer2_commit"] = list(
+                            _wb_layer2_committed)
+                    if _wb_depth_committed:
+                        stats["_wb_pending_depth_commit"] = list(
+                            _wb_depth_committed)
+                elif _wb_layer2_committed and stats is None and hasattr(
+                        wb_manager, "confirm_rule_injection"):
                     await asyncio.to_thread(
-                        wb_manager.confirm_rule_injection, _wb_rule_committed)
+                        wb_manager.confirm_rule_injection, _wb_layer2_committed)
                 # M5.1：trace 只展示真正拼进 prompt 的条目。触发日志里仍有
                 # 组/截帽前的候选（含递归带出），直接拿来当 items 会出现
                 # 「items 7 条、hits 6 条」的口径分裂。这里冻结实际注入集。

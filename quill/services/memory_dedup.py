@@ -33,11 +33,19 @@ _NEG_PAIRS = (
 _PAST_WORDS = ("曾经", "以前", "过去", "当初", "那时", "昨天", "上次")
 _PRESENT_WORDS = ("现在", "目前", "如今", "当前", "今天", "这次")
 _PREDICATES = (
-    "喜欢", "讨厌", "信任", "不信任", "爱", "恨", "住在", "来自",
+    "不信任", "不喜欢", "讨厌", "喜欢", "信任", "爱", "恨", "住在", "来自",
     "属于", "加入", "离开", "答应", "拒绝", "认识", "见过",
 )
-_SUBJECT_RE = re.compile(
-    r"^([\u4e00-\u9fa5A-Za-z0-9_]{1,8}?)(?:" + "|".join(_PREDICATES) + ")"
+_TIME_LEAD = (
+    r"(?:(?:今天|昨天|前天|上周|上星期|上个月|上月|去年|曾经|以前|过去|"
+    r"当初|那时|当时|现在|目前|如今|当前|这次|最近)[，,\s]*)*"
+)
+_RELATION_RE = re.compile(
+    r"^" + _TIME_LEAD
+    + r"([\u4e00-\u9fa5A-Za-z0-9_]{1,12}?)"
+    + r"(?:很|也|还|都|一直|正在|已经)?"
+    + r"(" + "|".join(sorted(_PREDICATES, key=len, reverse=True)) + r")"
+    + r"([\u4e00-\u9fa5A-Za-z0-9_]{1,12})$"
 )
 
 
@@ -57,6 +65,17 @@ def cosine(a, b) -> float:
     return dot / (na * nb)
 
 
+def _extract_relation(text: str) -> dict | None:
+    match = _RELATION_RE.match(text)
+    if not match:
+        return None
+    return {
+        "subject": match.group(1),
+        "predicate": match.group(2),
+        "object": match.group(3),
+    }
+
+
 def contradiction_reason(left: str, right: str) -> str:
     """返回确定性矛盾类别；空串表示未发现矛盾（不是「相同」）。"""
     a, b = normalize_text(left), normalize_text(right)
@@ -64,10 +83,13 @@ def contradiction_reason(left: str, right: str) -> str:
         return ""
 
     for neg, pos in _NEG_PAIRS:
-        if (neg in a) != (neg in b):
-            # 只有一侧带否定词，且另一侧带对应的肯定词/同主题时才算反转。
-            if pos in a or pos in b:
-                return "negation"
+        a_neg, b_neg = neg in a, neg in b
+        # P2-1：pos 通常是 neg 的子串（例如「喜欢」在「不喜欢」中），
+        # 不能只看「任一侧含 pos」。必须严格一端否定、另一端肯定。
+        if a_neg and not b_neg and pos in b:
+            return "negation"
+        if b_neg and not a_neg and pos in a:
+            return "negation"
 
     a_past, b_past = any(w in a for w in _PAST_WORDS), any(w in b for w in _PAST_WORDS)
     a_now, b_now = any(w in a for w in _PRESENT_WORDS), any(w in b for w in _PRESENT_WORDS)
@@ -79,9 +101,23 @@ def contradiction_reason(left: str, right: str) -> str:
     if a_nums and b_nums and a_nums != b_nums:
         return "numeric"
 
-    ma, mb = _SUBJECT_RE.match(a), _SUBJECT_RE.match(b)
-    if ma and mb and ma.group(1) != mb.group(1):
-        return "subject"
+    # P1-12：提取 (subject, predicate, object)，支持前导时间/副词。
+    # 分别比较主语、客体、谓词，并识别主客体互换，避免只锚句首主语
+    # 导致「Alice喜欢Bob / Alice喜欢Carol」与时间前缀句全漏判。
+    ra, rb = _extract_relation(a), _extract_relation(b)
+    if ra and rb:
+        if (ra["subject"] == rb["subject"]
+                and ra["object"] == rb["object"]
+                and ra["predicate"] != rb["predicate"]):
+            return "predicate"
+        if (ra["subject"] == rb["object"]
+                and ra["object"] == rb["subject"]
+                and ra["predicate"] == rb["predicate"]):
+            return "relation_swap"
+        if ra["subject"] == rb["subject"] and ra["object"] != rb["object"]:
+            return "object"
+        if ra["object"] == rb["object"] and ra["subject"] != rb["subject"]:
+            return "subject"
     return ""
 
 
@@ -94,7 +130,12 @@ def classify(summary: str, candidates: list[dict],
     仍要写入并记录候选 record_id。
     """
     norm = normalize_text(summary)
-    threshold = max(0.0, min(float(threshold or DEFAULT_NEAR_DUPLICATE_THRESHOLD), 1.0))
+    threshold = (
+        DEFAULT_NEAR_DUPLICATE_THRESHOLD
+        if threshold is None
+        else float(threshold)
+    )
+    threshold = max(0.0, min(threshold, 1.0))
     best = None
     for row in candidates or []:
         if not isinstance(row, dict):

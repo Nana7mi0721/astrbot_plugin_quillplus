@@ -59,6 +59,25 @@ REQUIRED_TABLES['memory'].update({
     'session_warmup_flags':{'session_id','warmed_at'},
 })
 
+# P3-1：prepare_database 要允许 v3 旧库（memories 尚无 v4 列）进入迁移，
+# 所以 v4 新列不能塞进 REQUIRED_TABLES；finish_database 在迁移事务提交前
+# 再用这份目标列做最终校验。writing 不在此表内，继续保留原有 FTS 特殊逻辑。
+TARGET_COLUMNS = {
+    "memory": {
+        "memories": {
+            "chat_summary", "tags", "strength", "useful_count", "useful_score",
+            "is_active", "is_core", "record_id", "source_ref",
+            "source_start_id", "source_end_id", "trust_level", "process_status",
+            "created_at", "category", "status", "near_duplicate_of",
+            "near_duplicate_reason",
+            "event_time", "story_time", "effective_from", "effective_to",
+            "participants_json", "episode_ref", "status_updated_at",
+        },
+        "chat_logs": {"record_id", "origin_ref", "turn_id", "actor_id",
+                      "process_status"},
+    },
+}
+
 
 class SchemaCompatibilityError(StorageError):
     pass
@@ -192,7 +211,12 @@ async def finish_database(connection, *, kind):
     target=SCHEMA_TARGETS[kind]
     # 不仅凭版本登记盖章：同一迁移事务的最终结构必须满足当前读写协议。
     names = {r[0] for r in await (await connection.execute("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
-    expected = REQUIRED_TABLES[kind]
+    expected = {
+        table: set(columns)
+        for table, columns in REQUIRED_TABLES[kind].items()
+    }
+    for table, columns in TARGET_COLUMNS.get(kind, {}).items():
+        expected.setdefault(table, set()).update(columns)
     tables = set(expected) & names
     if not tables or (kind != "writing" and tables != set(expected)):
         raise SchemaCompatibilityError("迁移后的表结构不完整，已回滚", detail="schema_version_mismatch")

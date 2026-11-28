@@ -35,39 +35,55 @@ class QuillReranker:
             top_k: 返回结果数
 
         Returns:
-            重排后的 top_k 结果
+            重排后的 top_k 结果；provider 失败且未成功走 LLM fallback 时，
+            返回带 `_rag_ok=False`/`_rag_error` 的 RagResult（保留确定性排序）。
         """
         if not candidates:
             return []
         if len(candidates) <= top_k:
             return candidates
 
+        provider_configured = bool(self.rerank_provider_id)
+        provider_error = ""
+
         # 1. 尝试使用 rerank_provider
-        if self.rerank_provider_id and self.context:
-            try:
-                provider = self.context.get_provider_by_id(self.rerank_provider_id)
-                if provider and hasattr(provider, 'rerank'):
-                    return await self._rerank_with_provider(query, candidates, top_k, provider)
-            except Exception as e:
-                logger.warning(f"[Quill RAG] Rerank provider 失败: {e}")
+        if provider_configured:
+            if not self.context:
+                provider_error = "rerank_provider_unavailable"
+            else:
+                try:
+                    provider = self.context.get_provider_by_id(self.rerank_provider_id)
+                    if provider and hasattr(provider, 'rerank'):
+                        return await self._rerank_with_provider(query, candidates, top_k, provider)
+                    provider_error = "rerank_provider_unavailable"
+                except Exception as e:
+                    provider_error = "rerank_provider_failed"
+                    logger.warning(f"[Quill RAG] Rerank provider 失败: {e}")
 
         # 2. fallback: 尝试 LLM 评分，再按原始 score 排序
-        if allow_llm_fallback and self.fallback_llm_id and self.context:
-            try:
-                llm_provider = self.context.get_provider_by_id(self.fallback_llm_id)
-                if llm_provider:
-                    return await self._rerank_with_llm(query, candidates, top_k, llm_provider)
-            except Exception as e:
-                logger.warning(f"[Quill RAG] LLM fallback provider 获取失败: {e}")
-        if not allow_llm_fallback:
-            # M6.4：评估默认关闭付费 LLM 重排；这不是故障，保留确定性排序。
-            return sorted(candidates, key=lambda x: x.get('score', 0), reverse=True)[:top_k]
-        # P1-18：provider 与 LLM 都失败时，降级结果必须带失败标记，
-        # 否则 rag_ok() 会把「重排故障」当成成功。
-        return RagResult(
-            sorted(candidates, key=lambda x: x.get('score', 0), reverse=True)[:top_k],
-            ok=False, error="rerank_failed",
-        )
+        fallback_configured = bool(allow_llm_fallback and self.fallback_llm_id)
+        if fallback_configured:
+            if not self.context:
+                if not provider_error:
+                    provider_error = "rerank_fallback_unavailable"
+            else:
+                try:
+                    llm_provider = self.context.get_provider_by_id(self.fallback_llm_id)
+                    if llm_provider:
+                        return await self._rerank_with_llm(query, candidates, top_k, llm_provider)
+                    if not provider_error:
+                        provider_error = "rerank_fallback_unavailable"
+                except Exception as e:
+                    if not provider_error:
+                        provider_error = "rerank_fallback_failed"
+                    logger.warning(f"[Quill RAG] LLM fallback provider 获取失败: {e}")
+
+        ranked = sorted(candidates, key=lambda x: x.get('score', 0), reverse=True)[:top_k]
+        # P2-7：配置了 rerank provider 却调用失败时，即便 allow_llm_fallback=False
+        # 仍返回确定性排序，也必须保留失败标记；无 provider 的正常降级才是成功。
+        if provider_configured or fallback_configured:
+            return RagResult(ranked, ok=False, error=provider_error or "rerank_failed")
+        return ranked
 
     async def _rerank_with_provider(self, query, candidates, top_k, provider) -> list[dict]:
         """调用 provider 的 rerank 方法。

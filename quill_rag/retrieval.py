@@ -265,15 +265,19 @@ class QuillRetriever:
                 if getattr(self.config, "rag_temporal_recall_enabled", True)
                 else {"kind": "none", "entities": []}
             )
+            # P2-3：30 天活跃窗口只服务常规搜索；明确查询到更早时间窗
+            # 时必须放开，否则「上个月/去年」在向量路结构上永远召回不到。
+            include_older = temporal_query.requires_older_window(analysis)
             recall_k = max(self.top_k, int(self.top_k or 3) * 3) if (
                 analysis.get("kind") != "none" or analysis.get("entities")
             ) else self.top_k
             results = await self.memory_store.search(
                 session_id, query_emb[0], recall_k,
-                query_text=query, funnel=funnel,
+                query_text=query, funnel=funnel, include_older=include_older,
             )
             if results and (analysis.get("kind") != "none" or analysis.get("entities")):
-                results = temporal_query.rerank(results, analysis, self.top_k)
+                results = temporal_query.rerank(
+                    results, analysis, self.top_k, funnel=funnel)
             if results:
                 mem_ids = [r["id"] for r in results]
                 self._spawn(self.memory_store.mark_memories_used(mem_ids, 1.5))
@@ -337,18 +341,18 @@ class QuillRetriever:
         async with lock:
             progress = await self.memory_store.ensure_summary_progress(session_id,legacy_last_id)
             logs = await self.memory_store.get_chat_logs_after(session_id,progress["last_log_id"],limit=max(2,min(50,int(limit))))
+            if handle:
+                await handle.checkpoint(0,total=len(logs))
+            if len(logs)<2:
+                return {"processed": 0, "stored": False, "summary": "", "reason": "insufficient_logs"}
             # M6.1：向前两条只读前情，仅用于代词/指代消解；不进入 source 区间、
-            # 不重复提取为新记忆。
+            # 不重复提取为新记忆。日志不足时直接早退，避免无意义回表。
             prior_rows = await self.memory_store.get_chat_logs_before(
                 session_id, progress["last_log_id"], limit=2)
             prior_context = "\n".join(
                 f"{'用户' if row['role'] == 'user' else 'AI'}：{row['content']}"
                 for row in prior_rows
             )
-            if handle:
-                await handle.checkpoint(0,total=len(logs))
-            if len(logs)<2:
-                return {"processed": 0, "stored": False, "summary": "", "reason": "insufficient_logs"}
             if handle:
                 await handle.checkpoint(0,total=len(logs),message="正在总结未消费日志")
             result = await self._summarize_rows(
@@ -391,12 +395,18 @@ class QuillRetriever:
             if not vectors or not vectors[0]:
                 raise TaskFailure("向量化未成功，水位未推进","embedding_failed")
             vector=vectors[0]
-            existing=await self.memory_store.search(session_id,vector,top_k=5)
             # M6.1：禁止高余弦自动合并；只跳过规范化后完全同文的重复。
-            from ..quill.services.memory_dedup import classify
+            # P1-11：去重不能复用 Top-K 检索（衰减/关键词融合会漏掉旧记忆），
+            # 改用全量 active + 纯余弦的专用候选。
+            from ..quill.services.memory_dedup import classify, normalize_text
+            existing = await self.memory_store.find_dedup_candidates(
+                session_id, vector, normalize_text(summary), top_k=10)
+            threshold_raw = getattr(
+                self.config, "rag_memory_near_duplicate_threshold", 0.85)
+            threshold = 0.85 if threshold_raw is None else float(threshold_raw)
             decision = classify(
                 summary, existing,
-                threshold=float(getattr(self.config, "rag_memory_near_duplicate_threshold", 0.85) or 0.85),
+                threshold=threshold,
             )
             if decision["action"] == "skip":
                 vector=None
@@ -418,12 +428,15 @@ class QuillRetriever:
             session_id,progress['last_log_id'],max(row['id'] for row in logs),summary=summary,
             vector=vector,chat_summary=combined[:100],expected_generation=progress['generation'],
             outcome=disposition, near_duplicate_of=near_duplicate_of,
+            near_duplicate_reason=(decision.get("reason") if summary else None),
             story_time=story_time or None,
             event_time=temporal_query.event_time_from_log(logs[-1].get("timestamp")),
             participants=participants,
             episode_ref=f"chat_logs:{logs[0]['id']}-{logs[-1]['id']}",
             source_start_id=logs[0]['id'])
-        return {"processed":len(logs),"stored":bool(result['memory_record_id']),"summary":summary,
+        return {"processed":len(logs),
+                "stored":bool(result.get("applied") and result.get("memory_record_id")),
+                "summary":summary,
                 "reason":disposition,"through_id":max(row['id'] for row in logs)}
 
     async def summarize_contexts(self, session_id: str, contexts: list[dict]) -> str:

@@ -17,11 +17,13 @@ try:
     from ..quill.core.errors import StorageError
     from ..quill.core.locks import ReentrantLock
     from ..quill.core.storage_stats import note_storage_error
+    from ..quill.services.memory_dedup import normalize_text as _norm_for_dedup
 except ImportError:  # 直接运行本文件时无父包
     from _fts_util import escape_trigram, escape_like, short_tokens
     from quill.core.errors import StorageError
     from quill.core.locks import ReentrantLock
     from quill.core.storage_stats import note_storage_error
+    from quill.services.memory_dedup import normalize_text as _norm_for_dedup
 
 from astrbot.api import logger
 
@@ -157,7 +159,11 @@ class MemoryStore:
                                  "effective_from": "TEXT DEFAULT NULL",
                                  "effective_to": "TEXT DEFAULT NULL",
                                  "participants_json": "TEXT NOT NULL DEFAULT '[]'",
-                                 "episode_ref": "TEXT DEFAULT NULL"},
+                                 "episode_ref": "TEXT DEFAULT NULL",
+                                 "near_duplicate_reason": "TEXT DEFAULT NULL",
+                                 # M6 P2-2：物理清理从「状态改变时间」而非创建
+                                 # 时间起算 180 天，避免刚软失效的老记忆当轮被删。
+                                 "status_updated_at": "TEXT DEFAULT NULL"},
                     "chat_logs": {"record_id": "TEXT", "origin_ref": "TEXT", "turn_id": "TEXT",
                                   "actor_id": "TEXT", "process_status": "TEXT DEFAULT 'recorded'"},
                 }
@@ -169,6 +175,24 @@ class MemoryStore:
                     await self._conn.execute(f"UPDATE {table} SET record_id=lower(hex(randomblob(16))) WHERE record_id IS NULL")
                     await self._conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {table}_record_id ON {table}(record_id)")
                 await self._conn.execute("UPDATE memories SET created_at=timestamp WHERE created_at IS NULL")
+                # SQLite 的 ALTER TABLE 不能加 CURRENT_TIMESTAMP 默认值；存量
+                # active 行以创建时间为状态起点，已失效行从升级时刻重新给予
+                # 180 天恢复观察期，避免升级即清理。
+                await self._conn.execute(
+                    "UPDATE memories SET status_updated_at=COALESCE("
+                    "status_updated_at, CASE WHEN status IN ('archived','expired') "
+                    "THEN CURRENT_TIMESTAMP ELSE COALESCE(created_at,timestamp) END)")
+                await self._conn.execute(
+                    "CREATE TRIGGER IF NOT EXISTS trg_memories_status_updated_insert "
+                    "AFTER INSERT ON memories WHEN NEW.status_updated_at IS NULL "
+                    "BEGIN UPDATE memories SET status_updated_at=CURRENT_TIMESTAMP "
+                    "WHERE id=NEW.id; END")
+                await self._conn.execute(
+                    "CREATE TRIGGER IF NOT EXISTS trg_memories_status_updated_update "
+                    "AFTER UPDATE OF status ON memories "
+                    "WHEN OLD.status IS NOT NEW.status "
+                    "BEGIN UPDATE memories SET status_updated_at=CURRENT_TIMESTAMP "
+                    "WHERE id=NEW.id; END")
                 await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id)")
                 await self._conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(session_id,status)")
@@ -261,8 +285,8 @@ class MemoryStore:
                 raise
 
     async def _invalidate_cache(self, session_id: str):
-        if session_id in self._cache:
-            del self._cache[session_id]
+        for key in (session_id, (session_id, True), (session_id, False)):
+            self._cache.pop(key, None)
 
     async def get_summary_progress(self, session_id: str) -> dict:
         async with self._lock:
@@ -290,6 +314,7 @@ class MemoryStore:
                                    participants: list | None = None,
                                    episode_ref: str | None = None,
                                    near_duplicate_of: str | None = None,
+                                   near_duplicate_reason: str | None = None,
                                    source_start_id: int | None = None):
         if through_id <= after_id or after_id < 0:
             raise ValueError("总结日志范围无效")
@@ -300,22 +325,28 @@ class MemoryStore:
             ensure_ascii=False,
         )
         async def commit(connection):
+            # M6 P1-10：世代校验必须先于幂等批次早退，否则会话被 reset 后
+            # 携带旧 generation 的重试仍会补写水位，并可能跨代复用旧结果。
+            generation = await (await connection.execute(
+                "SELECT generation FROM session_generations WHERE session_id=?", (session_id,))).fetchone()
+            if (generation[0] if generation else 0) != expected_generation:
+                raise StorageError("会话已重置或清理，本次旧总结已取消")
             # M6.1：确定性 batch_id 让重试天然幂等。已存在的批次只补齐水位，
             # 绝不重复写记忆或重复计世代。
             existing_batch = await (await connection.execute(
                 "SELECT memory_record_id FROM summary_batches WHERE batch_id=?",
                 (batch_id,))).fetchone()
             if existing_batch is not None:
+                # 幂等分支必须能处理「批次已落库但水位事务中断」的残局；只做
+                # UPDATE 会在水位行缺失时静默丢水位，导致后续批次永久卡住。
                 await connection.execute(
-                    "UPDATE summary_watermarks SET last_log_id=MAX(last_log_id,?),"
-                    "updated_at=CURRENT_TIMESTAMP WHERE session_id=?",
-                    (through_id, session_id))
+                    "INSERT INTO summary_watermarks(session_id,last_log_id) VALUES(?,?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET "
+                    "last_log_id=MAX(last_log_id,excluded.last_log_id),"
+                    "updated_at=CURRENT_TIMESTAMP",
+                    (session_id, through_id))
                 return {"applied": False, "already_consumed": True,
                         "memory_record_id": existing_batch[0], "batch_id": batch_id}
-            generation = await (await connection.execute(
-                "SELECT generation FROM session_generations WHERE session_id=?", (session_id,))).fetchone()
-            if (generation[0] if generation else 0) != expected_generation:
-                raise StorageError("会话已重置或清理，本次旧总结已取消")
             row = await (await connection.execute(
                 "SELECT last_log_id FROM summary_watermarks WHERE session_id=?", (session_id,))).fetchone()
             current = row[0] if row else 0
@@ -330,13 +361,14 @@ class MemoryStore:
                     (session_id,summary,chat_summary,vector,dim,record_id,source_ref,
                      source_start_id,source_end_id,created_at,category,status,
                      event_time,story_time,effective_from,effective_to,
-                     participants_json,episode_ref,near_duplicate_of)
+                     participants_json,episode_ref,near_duplicate_of,
+                     near_duplicate_reason)
                     VALUES(?,?,?,?,?,?, 'chat_logs',?,?,CURRENT_TIMESTAMP,?, 'active',
-                     ?,?,?,?,?,?,?)""",
+                     ?,?,?,?,?,?,?,?)""",
                     (session_id,summary,chat_summary,self._encode_vector(vector),len(vector),
                      record_id,start_id,through_id,category,event_time,story_time,
                      effective_from,effective_to,participants_json,episode_ref,
-                     near_duplicate_of))
+                     near_duplicate_of,near_duplicate_reason))
                 # 新证据写入后递增世代并让知识页降级为 stale，前台会回落
                 # 到底层记忆补齐最新事实。
                 await connection.execute(
@@ -358,17 +390,35 @@ class MemoryStore:
 
     async def clear_session(self, session_id: str, *, memories=True, logs=True, operation_id=None):
         async def clear(connection):
-            await connection.execute("""INSERT INTO session_generations(session_id,generation) VALUES(?,1)
-                ON CONFLICT(session_id) DO UPDATE SET generation=generation+1""", (session_id,))
             result = {"memories": 0, "chat_logs": 0}
+            max_log_id = 0
+            if logs:
+                row = await (await connection.execute(
+                    "SELECT MAX(id) FROM chat_logs WHERE session_id=?", (session_id,))).fetchone()
+                max_log_id = int(row[0] or 0) if row else 0
             for table, enabled in (("memories", memories), ("chat_logs", logs)):
                 if enabled:
                     cursor = await connection.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
                     result[table] = max(0,cursor.rowcount)
             if memories:
                 await connection.execute(
+                    "INSERT INTO session_generations(session_id,generation) VALUES(?,1) "
+                    "ON CONFLICT(session_id) DO UPDATE SET generation=generation+1",
+                    (session_id,))
+                await connection.execute(
                     "UPDATE knowledge_pages SET freshness_status='stale',"
                     "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (session_id,))
+            elif logs and max_log_id:
+                # P2-6：只清日志时知识页所依据的记忆并未变化，不能推进
+                # generation 把页面无意义标旧；但必须把总结/反思水位推到
+                # 已删除日志上界，取消在途旧批次，防止它们回写幽灵记忆。
+                for table in ("summary_watermarks", "reflection_watermarks"):
+                    await connection.execute(
+                        f"INSERT INTO {table}(session_id,last_log_id) VALUES(?,?) "
+                        "ON CONFLICT(session_id) DO UPDATE SET "
+                        "last_log_id=MAX(last_log_id,excluded.last_log_id),"
+                        "updated_at=CURRENT_TIMESTAMP",
+                        (session_id, max_log_id))
             if logs:
                 # 新剧情从首轮重新暖场；长期记忆仍保留，但不应继承上一段剧情的
                 # “已暖场”状态。
@@ -588,22 +638,30 @@ class MemoryStore:
             (session_id,))
         return int(row[0] or 0) if row else 0
 
-    async def get_knowledge_evidence(self, session_id: str, limit: int = 200) -> list[dict]:
-        """知识页刷新用的证据集：只取本 session 的 active 记忆。"""
+    async def get_knowledge_evidence(self, session_id: str, limit: int = 200,
+                                     *, exclude_core: bool = False) -> list[dict]:
+        """知识页刷新用的证据集：只取本 session 的 active 记忆。
+
+        ``exclude_core=True`` 供前台 stale 回落使用：核心记忆已由
+        ``get_core_memories`` 无条件注入，不能再以证据身份重复进
+        ``<memories>``。
+        """
+        core_clause = " AND is_core = 0" if exclude_core else ""
         rows = await self._exec_fetchall(
-            "SELECT record_id,summary,chat_summary,category,timestamp,event_time,"
+            "SELECT id,record_id,summary,chat_summary,category,timestamp,event_time,"
             "story_time,source_start_id,source_end_id,near_duplicate_of,is_core,"
             "participants_json "
-            "FROM memories WHERE session_id=? AND status='active' "
+            "FROM memories WHERE session_id=? AND status='active'"
+            + core_clause + " "
             "ORDER BY timestamp DESC, id DESC LIMIT ?",
             (session_id, max(1, min(int(limit or 200), 500))),
         )
         return [
-            {"record_id": r[0], "summary": r[1], "chat_summary": r[2],
-             "category": r[3], "timestamp": r[4], "event_time": r[5],
-             "story_time": r[6], "source_start_id": r[7], "source_end_id": r[8],
-             "near_duplicate_of": r[9], "is_core": bool(r[10]),
-             "participants_json": r[11]}
+            {"id": r[0], "record_id": r[1], "summary": r[2], "chat_summary": r[3],
+             "category": r[4], "timestamp": r[5], "event_time": r[6],
+             "story_time": r[7], "source_start_id": r[8], "source_end_id": r[9],
+             "near_duplicate_of": r[10], "is_core": bool(r[11]),
+             "participants_json": r[12]}
             for r in rows
         ]
 
@@ -650,18 +708,21 @@ class MemoryStore:
         """刷新生成正文；pinned_section 永不在此路径被改写。"""
         page_id = page_id or uuid4().hex
         refs_json = json.dumps(source_refs or [], ensure_ascii=False)
+        # P3-2：失败只记录错误状态，不把 generation_version 当失败计数；
+        # 成功刷新时同步 title，避免重命名模板后页面仍显示旧标题。
+        version_increment = 0 if freshness_status == "failed" else 1
         async def upsert(connection):
             existing = await (await connection.execute(
                 "SELECT page_id FROM knowledge_pages WHERE session_id=? AND template_key=?",
                 (session_id, template_key))).fetchone()
             if existing:
                 await connection.execute(
-                    "UPDATE knowledge_pages SET generated_body=?,source_refs_json=?,"
-                    "covered_revision=?,generation_version=generation_version+1,"
+                    "UPDATE knowledge_pages SET title=?,generated_body=?,source_refs_json=?,"
+                    "covered_revision=?,generation_version=generation_version+?,"
                     "freshness_status=?,last_error=?,updated_at=CURRENT_TIMESTAMP "
                     "WHERE page_id=?",
-                    (generated_body, refs_json, int(covered_revision or 0),
-                     freshness_status, last_error, existing[0]))
+                    (title, generated_body, refs_json, int(covered_revision or 0),
+                     version_increment, freshness_status, last_error, existing[0]))
                 return existing[0]
             await connection.execute(
                 "INSERT INTO knowledge_pages(page_id,session_id,template_key,title,"
@@ -750,7 +811,8 @@ class MemoryStore:
                   chat_summary: str = "", *, record_id=None, source_ref="manual",
                   category="fact", near_duplicate_of=None, event_time=None,
                   story_time=None, effective_from=None, effective_to=None,
-                  participants=None, episode_ref=None):
+                  participants=None, episode_ref=None,
+                  near_duplicate_reason=None):
         """添加一条记忆。
 
         D4（M3.2）：底层失败抛 :class:`StorageError`（六类高频路径之一：add），
@@ -773,12 +835,13 @@ class MemoryStore:
                 cursor = await connection.execute(
                     "INSERT INTO memories (session_id,summary,chat_summary,vector,dim,"
                     "record_id,source_ref,created_at,category,status,near_duplicate_of,"
-                    "event_time,story_time,effective_from,effective_to,participants_json,"
-                    "episode_ref) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?,'active',?,?,?,?,?,?,?) "
+                    "near_duplicate_reason,event_time,story_time,effective_from,effective_to,"
+                    "participants_json,episode_ref) "
+                    "VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?,'active',?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(record_id) DO NOTHING",
                     (session_id, summary, chat_summary, blob, dim,
                      record_id or uuid4().hex, source_ref, category,
-                     near_duplicate_of, event_time, story_time,
+                     near_duplicate_of, near_duplicate_reason, event_time, story_time,
                      effective_from, effective_to, participants_json, episode_ref)
                 )
                 if cursor.rowcount > 0:
@@ -800,26 +863,31 @@ class MemoryStore:
             ) from e
 
 
-    async def _get_cached_vectors(self, session_id: str):
+    async def _get_cached_vectors(self, session_id: str, *, include_older: bool = False):
         # P1-15：读库与编码会释放锁；期间 clear_session/delete_memory 可能
         # 已推进世代。先记世代，写回缓存前再校验，避免旧矩阵回填成幽灵记忆。
+        # P2-3：普通检索保留 30 天活跃度窗口；明确解析到更早现实时间窗时
+        # 使用 include_older 变体，两种矩阵分别缓存，禁止互相串用。
+        cache_key = (session_id, bool(include_older))
         async with self._lock:
-            if session_id in self._cache:
-                self._cache.move_to_end(session_id)
-                return self._cache[session_id]
+            if cache_key in self._cache:
+                self._cache.move_to_end(cache_key)
+                return self._cache[cache_key]
             generation = self._generation
         
         # Load all active memories for session
+        age_clause = "" if include_older else (
+            " AND (is_core = 1 OR is_active = 1 "
+            "OR (julianday('now') - julianday(timestamp)) < 30)")
         rows = await self._exec_fetchall(
             '''SELECT id, summary, chat_summary, vector, dim, timestamp,
                       strength, useful_count, useful_score, is_active,
                       is_core, record_id, category, status,
                       source_start_id, source_end_id, near_duplicate_of,
-                      participants_json
+                      participants_json, event_time, story_time,
+                      effective_from, effective_to, episode_ref
                FROM memories
-               WHERE session_id = ?
-                 AND status = 'active'
-                 AND (is_core = 1 OR is_active = 1 OR (julianday('now') - julianday(timestamp)) < 30)
+               WHERE session_id = ? AND status = 'active' ''' + age_clause + '''
                ORDER BY timestamp DESC LIMIT 1000''',
             (session_id,)
         )
@@ -870,7 +938,7 @@ class MemoryStore:
         async with self._lock:
             if generation != self._generation:
                 return None, None
-            self._cache[session_id] = (valid_rows, matrix)
+            self._cache[cache_key] = (valid_rows, matrix)
             if len(self._cache) > getattr(self, '_MAX_CACHE', 50):
                 self._cache.popitem(last=False)
             
@@ -945,7 +1013,8 @@ class MemoryStore:
         return scores
 
     async def search(self, session_id: str, query_vector: list[float], top_k: int = 3,
-                     query_text: str = "", funnel: dict | None = None) -> list[dict]:
+                     query_text: str = "", funnel: dict | None = None,
+                     *, include_older: bool = False) -> list[dict]:
         """向量 × 艾宾浩斯衰减 × 引用频次 + FTS 的混合检索。
 
         ``funnel`` 为 M1b 模块 1 的可选出参：回填 ``candidates``（RRF 排序
@@ -967,7 +1036,8 @@ class MemoryStore:
         import numpy as np
         vec_ok = True
         try:
-            rows, matrix = await self._get_cached_vectors(session_id)
+            rows, matrix = await self._get_cached_vectors(
+                session_id, include_older=include_older)
         except Exception as e:
             logger.warning(
                 "[Quill Memory] 向量矩阵构建失败，降级为纯关键词检索: %s", e, exc_info=True
@@ -1058,6 +1128,11 @@ class MemoryStore:
                     "source_end_id": row[15],
                     "near_duplicate_of": row[16],
                     "participants_json": row[17],
+                    "event_time": row[18],
+                    "story_time": row[19],
+                    "effective_from": row[20],
+                    "effective_to": row[21],
+                    "episode_ref": row[22],
                     # B11：vec_score 是「相似度 × 时间衰减 + 引用频次加成」的**排序分**，
                     # 不是相似度本身。去重判定必须用原始余弦 sim，否则一条 cosine 0.80
                     # 但被高频引用的旧记忆（0.80 + 0.12 = 0.92）会把真正的新记忆挤掉。
@@ -1126,6 +1201,66 @@ class MemoryStore:
             ]
         return kept
 
+    async def find_dedup_candidates(self, session_id: str, vector: list[float],
+                                    norm_text: str, top_k: int = 10) -> list[dict]:
+        """去重专用候选：全量 active 记忆、纯余弦，不做时间衰减或 FTS。
+
+        普通 ``search`` 的 Top-K、活跃度窗口与引用加权会漏掉低分但精确
+        同文的旧记忆；近重复判断又需要稳定的原始余弦。这里单独取全量
+        active 行，先保证精确规范化同文入选，再按纯余弦补足 top_k。
+        """
+        if not session_id or not vector:
+            return []
+        rows = await self._exec_fetchall(
+            "SELECT id,summary,record_id,vector,dim,timestamp,"
+            "source_start_id,source_end_id FROM memories "
+            "WHERE session_id=? AND status='active' "
+            "ORDER BY timestamp DESC,id DESC",
+            (session_id,),
+        )
+        if not rows:
+            return []
+        try:
+            query = np.asarray(vector, dtype=np.float32)
+        except (TypeError, ValueError):
+            return []
+        query_norm = float(np.linalg.norm(query))
+        if query_norm <= np.finfo(np.float32).eps:
+            return []
+        query = query / query_norm
+
+        items = []
+        for row in rows:
+            sim = 0.0
+            blob, dim = row[3], int(row[4] or 0)
+            if blob and dim == int(query.shape[0]):
+                try:
+                    candidate = self._decode_vector(blob, dim)
+                    norm = float(np.linalg.norm(candidate))
+                    if norm > np.finfo(np.float32).eps:
+                        sim = float(np.dot(candidate / norm, query))
+                except Exception:
+                    sim = 0.0
+            item = {
+                "id": row[0],
+                "summary": row[1],
+                "record_id": row[2],
+                "timestamp": row[5],
+                "source_start_id": row[6],
+                "source_end_id": row[7],
+                "sim": sim,
+                "vec_score": sim,
+            }
+            items.append((norm_text and norm_text == _norm_for_dedup(row[1]), item))
+
+        exact = [item for matched, item in items if matched]
+        remaining = sorted(
+            (item for matched, item in items if not matched),
+            key=lambda item: item["sim"], reverse=True,
+        )
+        limit = max(1, min(int(top_k or 10), 100))
+        return (exact + remaining)[:max(limit, len(exact))]
+
     async def _fetch_memories_by_ids(
         self, session_id: str, ids: list, fts_scores: dict
     ) -> list[dict]:
@@ -1146,7 +1281,8 @@ class MemoryStore:
                     "SELECT id, summary, chat_summary, timestamp, strength, "
                     "useful_count, is_core, record_id, category, "
                     "source_start_id, source_end_id, near_duplicate_of, "
-                    "participants_json FROM memories "
+                    "participants_json, event_time, story_time, "
+                    "effective_from, effective_to, episode_ref FROM memories "
                     f"WHERE session_id = ? AND status = 'active' "
                     f"AND id IN ({placeholders})",
                     (session_id, *chunk),
@@ -1174,6 +1310,11 @@ class MemoryStore:
                     "source_end_id": r[10],
                     "near_duplicate_of": r[11],
                     "participants_json": r[12],
+                    "event_time": r[13],
+                    "story_time": r[14],
+                    "effective_from": r[15],
+                    "effective_to": r[16],
+                    "episode_ref": r[17],
                     "sim": 0.0,
                     "vec_score": 0.0,
                     "fts_score": fts_scores.get(r[0], 0.0),
@@ -1203,7 +1344,8 @@ class MemoryStore:
                     "SELECT id, summary, chat_summary, timestamp, strength, "
                     "useful_count, is_core, record_id, category, "
                     "source_start_id, source_end_id, near_duplicate_of, "
-                    "participants_json FROM memories "
+                    "participants_json, event_time, story_time, "
+                    "effective_from, effective_to, episode_ref FROM memories "
                     f"WHERE session_id = ? AND status = 'active' "
                     f"AND id IN ({placeholders})",
                     (session_id, *chunk),
@@ -1232,6 +1374,11 @@ class MemoryStore:
                     "source_end_id": r[10],
                     "near_duplicate_of": r[11],
                     "participants_json": r[12],
+                    "event_time": r[13],
+                    "story_time": r[14],
+                    "effective_from": r[15],
+                    "effective_to": r[16],
+                    "episode_ref": r[17],
                     # 无向量分：仅关键词分参与排序（sim 同理为 0，去重判定不会误命中）
                     "sim": 0.0,
                     "vec_score": 0.0,
@@ -1239,6 +1386,12 @@ class MemoryStore:
                     "degraded": True,
                 })
         results.sort(key=lambda x: x["fts_score"], reverse=True)
+        # P1-9：纯关键词降级没有向量名次，也必须给 temporal_query.rerank
+        # 一个与混合路径同量纲的 RRF 分数；此前缺该字段会让时间重排把
+        # 所有候选分数视为 0，FTS 名次被完全抹平。
+        for rank, row in enumerate(results, start=1):
+            row["fts_rank"] = rank
+            row["rrf_score"] = 1.0 / (60 + rank)
         # 核心记忆由 get_core_memories 无条件注入，不占 Top-K
         non_core = [r for r in results if not r["is_core"]]
         return non_core[:top_k]
@@ -1309,11 +1462,14 @@ class MemoryStore:
                     await connection.execute(
                         "UPDATE knowledge_pages SET freshness_status='stale',"
                         "updated_at=CURRENT_TIMESTAMP WHERE session_id=?", (sid,))
-                # 物理清理只处理已归档/已过期且超过 180 天的快照保留期数据。
+                # 物理清理只处理已归档/已过期且**状态改变**超过 180 天的
+                # 快照保留期数据。旧实现按 timestamp 起算，会把刚软失效的
+                # 老记忆当轮永久删除，恢复窗口形同虚设。
                 cleanup = await connection.execute("""
                     DELETE FROM memories
                     WHERE is_core = 0 AND status IN ('archived','expired')
-                      AND julianday('now') - julianday(timestamp) > 180""")
+                      AND julianday('now') - julianday(
+                          COALESCE(status_updated_at, timestamp)) > 180""")
                 return expired, max(0, cleanup.rowcount)
             expired, cleaned = await self._exec_tx(prune)
             if expired or cleaned:
@@ -1514,11 +1670,6 @@ class MemoryStore:
                     "OR session_id LIKE ? ESCAPE '\\'",
                     (target_id, pattern),
                 )
-                await connection.execute(
-                    "DELETE FROM session_warmup_flags WHERE session_id = ? "
-                    "OR session_id LIKE ? ESCAPE '\\'",
-                    (target_id, pattern),
-                )
                 return cursor.rowcount
 
             count = await self._exec_tx(delete)
@@ -1715,22 +1866,33 @@ class MemoryStore:
 
             async def delete(connection):
                 rows = await (await connection.execute(
-                    "SELECT DISTINCT session_id FROM chat_logs "
-                    "WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\'",
+                    "SELECT session_id, MAX(id) FROM chat_logs "
+                    "WHERE session_id = ? OR session_id LIKE ? ESCAPE '\\' "
+                    "GROUP BY session_id",
                     (target_id, pattern),
                 )).fetchall()
-                for (sid,) in rows:
-                    await connection.execute(
-                        "INSERT INTO session_generations(session_id,generation) "
-                        "VALUES(?,1) ON CONFLICT(session_id) DO UPDATE SET "
-                        "generation=generation+1", (sid,),
-                    )
+                for sid, max_log_id in rows:
+                    # P2-6：只删日志不推进 generation（知识页依据的记忆未变），
+                    # 但把总结/反思水位推进到删除上界，取消在途旧批次。
+                    for table in ("summary_watermarks", "reflection_watermarks"):
+                        await connection.execute(
+                            f"INSERT INTO {table}(session_id,last_log_id) VALUES(?,?) "
+                            "ON CONFLICT(session_id) DO UPDATE SET "
+                            "last_log_id=MAX(last_log_id,excluded.last_log_id),"
+                            "updated_at=CURRENT_TIMESTAMP",
+                            (sid, int(max_log_id or 0)),
+                        )
                 await connection.execute(
                     "UPDATE qp_turns SET status='reset' WHERE scope_id=?",
                     (target_id,),
                 )
                 cursor = await connection.execute(
                     "DELETE FROM chat_logs WHERE session_id = ? "
+                    "OR session_id LIKE ? ESCAPE '\\'",
+                    (target_id, pattern),
+                )
+                await connection.execute(
+                    "DELETE FROM session_warmup_flags WHERE session_id = ? "
                     "OR session_id LIKE ? ESCAPE '\\'",
                     (target_id, pattern),
                 )

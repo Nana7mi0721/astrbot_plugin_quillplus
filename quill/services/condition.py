@@ -119,6 +119,45 @@ def _as_number(value):
         return None
 
 
+_STRICT_NUMBER_RE = re.compile(
+    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
+_RATIO_RE = re.compile(
+    r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*/\s*"
+    r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*$")
+
+
+def _strict_number(text: str):
+    value = str(text or "").strip()
+    if not _STRICT_NUMBER_RE.fullmatch(value):
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _equal_compatible(actual, expected) -> bool:
+    """等值兼容纯数字与 ``分子/分母`` 展示值，不做任意子串提数。
+
+    ``50.0 == "50"`` 与 ``"50/100" == "50"`` 成立；``房间101`` 对
+    ``第101天`` 仍不成立——整串不是数字/比例时只做原字符串比较。
+    """
+    left, right = str(actual if actual is not None else "").strip(), str(
+        expected if expected is not None else "").strip()
+    if left == right:
+        return True
+    left_num, right_num = _strict_number(left), _strict_number(right)
+    if left_num is not None and right_num is not None:
+        return left_num == right_num
+    left_ratio, right_ratio = _RATIO_RE.fullmatch(left), _RATIO_RE.fullmatch(right)
+    if left_ratio and right_num is not None:
+        return _strict_number(left_ratio.group(1)) == right_num
+    if right_ratio and left_num is not None:
+        return _strict_number(right_ratio.group(1)) == left_num
+    return False
+
+
 def evaluate(condition: str, session_vars: dict | None):
     """求值条目条件。返回 ``(是否成立, 说明)``——成立时说明为空串，
     不成立时说明可直接拼进 ``condition_unmet(...)``（含变量现值或缺失原因）。
@@ -151,9 +190,9 @@ def evaluate(condition: str, session_vars: dict | None):
     if len(literal) >= 2 and literal[0] == literal[-1] and literal[0] in ("'", '"'):
         expected = literal[1:-1]
         if op == "==":
-            ok = str(actual) == expected
+            ok = _equal_compatible(actual, expected)
         elif op == "!=":
-            ok = str(actual) != expected
+            ok = not _equal_compatible(actual, expected)
         else:
             return False, f"字符串字面量不支持 {op}"
         return ok, "" if ok else f"{var}={actual!r} {op} {expected!r}"
@@ -171,9 +210,9 @@ def evaluate(condition: str, session_vars: dict | None):
 
     # 双方（至少一方）非数值：只有等值比较有意义
     if op == "==":
-        ok = str(actual).strip() == literal.strip()
+        ok = _equal_compatible(actual, literal)
     elif op == "!=":
-        ok = str(actual).strip() != literal.strip()
+        ok = not _equal_compatible(actual, literal)
     else:
         return False, f"{var}={actual!r} 非数值，不支持 {op}"
     return ok, "" if ok else f"{var}={actual!r} {op} {literal}"

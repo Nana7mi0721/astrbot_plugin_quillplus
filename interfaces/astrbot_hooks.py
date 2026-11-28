@@ -677,20 +677,6 @@ async def handle_llm_response(
     # 状态栏处理
     target_id = plugin._get_target_id(event)
     _platform = plugin._resolve_platform_name(event)
-    # M6 P1-11：普通回复路径也要走与工具消息同源的方言判定。此前只有
-    # send_message_to_user 路径剥 Markdown，纯文本平台直出时仍会看到
-    # `**` / 反引号等标记。
-    try:
-        _dialect, _ = _response_mod.resolve_dialect(
-            _platform,
-            overrides=getattr(plugin, "status_bar_dialect_overrides", None),
-            plain_platforms=getattr(plugin, "status_bar_plain_platforms", None),
-        )
-        if _response_mod.should_strip_markdown(_dialect) and resp.completion_text:
-            resp.completion_text = _response_mod.strip_markdown(resp.completion_text)
-    except Exception as e:
-        logger.debug(f"[Quill] 普通回复方言清洗跳过（{type(e).__name__}）")
-
     # 会话级最终开关（与请求侧同一个解析函数，保证前后一致）
     _sb_effective = await plugin._effective_status_bar_enabled(target_id)
     _bar_tpl = plugin._status_bar_template_for(_platform)
@@ -727,6 +713,19 @@ async def handle_llm_response(
         resp.completion_text = plugin._strip_status_artifacts(
             content, plugin.props.love_fields
         )
+
+    # M6 P2-13：必须先解析/剥离状态栏，再做 Markdown 方言清洗。反序会把
+    # L1 的 ``` 围栏先破坏，状态栏解析退化为 L4/L5，甚至漏掉整段。
+    try:
+        _dialect, _ = _response_mod.resolve_dialect(
+            _platform,
+            overrides=getattr(plugin, "status_bar_dialect_overrides", None),
+            plain_platforms=getattr(plugin, "status_bar_plain_platforms", None),
+        )
+        if _response_mod.should_strip_markdown(_dialect) and resp.completion_text:
+            resp.completion_text = _response_mod.strip_markdown(resp.completion_text)
+    except Exception as e:
+        logger.debug(f"[Quill] 普通回复方言清洗跳过（{type(e).__name__}）")
 
     # ── M1a trace：响应段收口（段 2 与段 2.5 之间——此时本轮状态栏级别
     # 已产生；未激活轮也走这里收口，gate 在其后才 return）。statusbar_level
@@ -1421,13 +1420,18 @@ async def handle_llm_request(
     skip_constants = False
 
     # M6.3：只有真正激活的轮次才算暖场；持久标记重启后不会重复触发。
-    first_warmup = False
-    try:
-        _mem_store = getattr(getattr(plugin, "rag_retriever", None), "memory_store", None)
-        if _mem_store is not None and mem_session_id:
-            first_warmup = await _mem_store.mark_warmed(mem_session_id)
-    except Exception as exc:
-        logger.debug("[Quill Memory] 首轮暖场标记失败（已忽略）: %s", exc)
+    # P1-8：同一事件可能二次进入本钩子，暖场判定必须事件级幂等；
+    # 否则第一次已消费 `mark_warmed=True`，第二次翻转成 False。
+    first_warmup = event.get_extra("_quill_first_warmup")
+    if first_warmup is None:
+        first_warmup = False
+        try:
+            _mem_store = getattr(getattr(plugin, "rag_retriever", None), "memory_store", None)
+            if _mem_store is not None and mem_session_id:
+                first_warmup = await _mem_store.mark_warmed(mem_session_id)
+        except Exception as exc:
+            logger.debug("[Quill Memory] 首轮暖场标记失败（已忽略）: %s", exc)
+        event.set_extra("_quill_first_warmup", bool(first_warmup))
 
     # 改写 send_message_to_user 描述（含状态栏强制要求）
     # 无角色卡仅跳过描述改写，仍保留请求级拒重终止保护。
@@ -1511,6 +1515,7 @@ async def handle_llm_request(
     # 作为独立消息插入对话历史（而不是并入 system prompt）。深度从最新消息
     # 往回数；越界时夹到首尾。多条目按深度由深到浅插入，避免下标漂移。
     _depth_injections = inject_stats.get("_depth_injections") or []
+    _depth_rule_alive = False
     if _depth_injections and isinstance(getattr(req, "contexts", None), list):
         for _di in sorted(
             (item for item in _depth_injections if isinstance(item, dict)),
@@ -1527,6 +1532,7 @@ async def handle_llm_request(
             if not _text:
                 continue
             req.contexts.insert(_idx, {"role": _role, "content": "\u3010\u4e16\u754c\u89c2\u3011\n" + _text})
+            _depth_rule_alive = True
 
     # M1a trace：步 16 世界书 + WR 命中（计数经既有 stats 出参透传；
     # 世界书总开关关闭记 degraded="disabled"——那是配置态而非检索失败）。
@@ -1919,6 +1925,30 @@ async def handle_llm_request(
                                     "est_tokens": (len(req.system_prompt) + cache_result["dynamic_chars"]
                                                    if capability.get("supported") else len(req.system_prompt)) // 2}
         _trace_note(plugin, target_id, _cache_trace)
+
+    # P1-4：规则粘性/冷却只能在最终 prompt 装配完成后确认。缓存路径看
+    # apply_layout 是否丢弃 layer2；旧路径看 _smart_truncate 的存活段。
+    _pending_layer2_rules = inject_stats.get("_wb_pending_layer2_commit") or []
+    _pending_depth_rules = inject_stats.get("_wb_pending_depth_commit") or []
+    if (_pending_layer2_rules or _pending_depth_rules) and _wb_for_request is not None:
+        if plugin.props.cache_enabled:
+            _wb_rules_alive = bool(
+                cache_result
+                and "layer2_scene_reference" not in cache_result.get("dropped", [])
+            )
+        else:
+            _wb_rules_alive = (
+                "layer2_scene_reference"
+                in (inject_stats.get("_sections_dynamic") or [])
+            )
+        _confirmed_rules = []
+        if _wb_rules_alive:
+            _confirmed_rules.extend(_pending_layer2_rules)
+        if _depth_rule_alive:
+            _confirmed_rules.extend(_pending_depth_rules)
+        if _confirmed_rules and hasattr(_wb_for_request, "confirm_rule_injection"):
+            await asyncio.to_thread(
+                _wb_for_request.confirm_rule_injection, _confirmed_rules)
 
     if event.get_extra('_quill_temporary_capability'):
         inject_stats['_temporary_capability'] = event.get_extra('_quill_temporary_capability')

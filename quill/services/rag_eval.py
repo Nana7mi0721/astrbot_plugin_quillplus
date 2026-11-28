@@ -9,6 +9,7 @@ Hit Rate / MRR / 平均延迟，避免把不同来源混成一个“总分”。
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -18,9 +19,55 @@ from pathlib import Path
 ROUTES = ("doc", "memory", "worldbook")
 _PREFIX = {"doc": ("doc:", "kb:", "grp:"), "memory": ("mem:",), "worldbook": ("wb:",)}
 
+# P2-8：评估索引是单文件 JSON，必须在校验层就限制规模与单字段长度，
+# 否则面板可以写入一个几百 MB 的用例问题/证据列表，拖垮读写与快照 Diff。
+MAX_CASES = 500
+_CASE_ID_MAX = 128
+_QUESTION_MAX = 2000
+_SCOPE_ID_MAX = 256
+_PERSONA_ID_MAX = 256
+_EXPECTED_SOURCE_MAX = 512
+_EXPECTED_SOURCES_MAX = 50
+_TAG_MAX = 64
+_TAGS_MAX = 30
+_NOTES_MAX = 2000
+_CREATED_AT_MAX = 64
+
+# 与 quill_rag.retrieval.RagResult 的失败协议同口径。这里只读属性而不 import
+# quill_rag，保持 quill/services 不反向依赖 RAG 组件包。
+_RAG_OK_ATTR = "_rag_ok"
+_RAG_ERROR_ATTR = "_rag_error"
+
+
+class EvalRootError(ValueError):
+    """评估数据根目录未配置；调用方应返回 503，而不是落到进程 CWD。"""
+
+
+# 用例与快照各自串行化：读-改-写必须在同一把锁内完成，否则两个面板请求
+# 可以互相覆盖；快照锁同时保护「读取上一份 → 写新文件 → 轮转」整段。
+_CASES_LOCK = asyncio.Lock()
+_SNAPSHOTS_LOCK = asyncio.Lock()
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _root_path(root: str | Path) -> Path:
+    """校验并返回数据根；空 root 明确失败，禁止 Path("")/CWD 兜底。"""
+    if root is None:
+        raise EvalRootError("检索评估数据目录未配置")
+    try:
+        raw = os.fspath(root)
+    except TypeError:
+        raw = str(root)
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "ignore")
+    text = str(raw).strip()
+    # Path("") == Path(".")：两者都会把评估数据写进进程 CWD，属于同一故障。
+    if not text or text == ".":
+        raise EvalRootError("检索评估数据目录未配置")
+    return Path(text)
 
 
 def _atomic_write(path: Path, payload) -> None:
@@ -41,42 +88,65 @@ def _atomic_write(path: Path, payload) -> None:
 
 
 def cases_path(root: str | Path) -> Path:
-    return Path(root) / "evals" / "index.json"
+    return _root_path(root) / "evals" / "index.json"
 
 
-def load_cases(root: str | Path) -> list[dict]:
-    path = cases_path(root)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+def snapshot_dir(root: str | Path) -> Path:
+    return _root_path(root) / "evals" / "snapshots"
+
+
+def _trim(value, limit: int) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _clean_str_list(raw, *, item_limit: int, max_items: int) -> list[str]:
+    if not isinstance(raw, (list, tuple)):
         return []
-    cases = data.get("cases") if isinstance(data, dict) else data
-    return [c for c in (cases or []) if isinstance(c, dict) and c.get("case_id")]
+    out: list[str] = []
+    for item in raw:
+        text = _trim(item, item_limit)
+        if text:
+            out.append(text)
+        if len(out) >= max_items:
+            break
+    return out
 
 
-def save_cases(root: str | Path, cases: list[dict]) -> None:
-    cleaned = []
+def _clean_case(item, *, for_save: bool) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    case_id = _trim(item.get("case_id"), _CASE_ID_MAX)
+    question = _trim(item.get("question"), _QUESTION_MAX)
+    if not case_id or not question:
+        return None
+    created_at = _trim(item.get("created_at"), _CREATED_AT_MAX)
+    if for_save and not created_at:
+        created_at = _now_iso()
+    return {
+        "case_id": case_id,
+        "question": question,
+        "scope_id": _trim(item.get("scope_id"), _SCOPE_ID_MAX),
+        "persona_id": _trim(item.get("persona_id"), _PERSONA_ID_MAX),
+        "expected_sources": _clean_str_list(
+            item.get("expected_sources"),
+            item_limit=_EXPECTED_SOURCE_MAX,
+            max_items=_EXPECTED_SOURCES_MAX,
+        ),
+        "tags": _clean_str_list(
+            item.get("tags"), item_limit=_TAG_MAX, max_items=_TAGS_MAX),
+        "notes": _trim(item.get("notes"), _NOTES_MAX),
+        "created_at": created_at,
+    }
+
+
+def _clean_cases(cases) -> list[dict]:
+    """规范化并按 case_id 去重；空 question 的条目不计入。"""
+    merged: dict[str, dict] = {}
     for item in cases or []:
-        if not isinstance(item, dict):
-            continue
-        case_id = str(item.get("case_id") or "").strip()
-        question = str(item.get("question") or "").strip()
-        if not case_id or not question:
-            continue
-        cleaned.append({
-            "case_id": case_id,
-            "question": question,
-            "scope_id": str(item.get("scope_id") or ""),
-            "persona_id": str(item.get("persona_id") or ""),
-            "expected_sources": [
-                str(src).strip() for src in (item.get("expected_sources") or [])
-                if str(src).strip()
-            ],
-            "tags": [str(tag) for tag in (item.get("tags") or []) if str(tag).strip()],
-            "notes": str(item.get("notes") or ""),
-            "created_at": str(item.get("created_at") or _now_iso()),
-        })
-    _atomic_write(cases_path(root), {"cases": cleaned, "updated_at": _now_iso()})
+        cleaned = _clean_case(item, for_save=True)
+        if cleaned:
+            merged[cleaned["case_id"]] = cleaned
+    return list(merged.values())
 
 
 def _session_id(case: dict) -> str:
@@ -104,11 +174,41 @@ def _expected_for_route(case: dict, route: str, group_resolver=None) -> list[str
     return out
 
 
+def _is_word_char(char: str) -> bool:
+    return bool(char) and (char.isalnum() or char == "_")
+
+
 def _match(expected: str, actual: str) -> bool:
-    expected, actual = str(expected or "").lower(), str(actual or "").lower()
+    """评估来源匹配：只允许 expected 作为 actual 的独立片段。
+
+    双向子串匹配会让 ``"1"`` 命中 ``"10"``、``"10"`` 命中 ``"1"``。这里保留
+    「路径/标题包含」的实用性（``foo`` 命中 ``docs/foo.md``），但要求命中片段
+    两侧不是字母、数字或下划线，避免编号前缀互相污染。
+    """
+    expected = str(expected or "").strip().lower()
+    actual = str(actual or "").strip().lower()
     if not expected or not actual:
         return False
-    return expected == actual or expected in actual or actual in expected
+    if expected == actual:
+        return True
+    start = 0
+    while True:
+        index = actual.find(expected, start)
+        if index < 0:
+            return False
+        before = actual[index - 1] if index > 0 else ""
+        after_index = index + len(expected)
+        after = actual[after_index] if after_index < len(actual) else ""
+        if not _is_word_char(before) and not _is_word_char(after):
+            return True
+        start = index + 1
+
+
+def _rag_failure(result) -> str:
+    """读取 RagResult 的失败标记；普通 list 按成功处理。"""
+    if bool(getattr(result, _RAG_OK_ATTR, True)):
+        return ""
+    return str(getattr(result, _RAG_ERROR_ATTR, "") or "rag_failed")
 
 
 async def _run_routes(retriever, wb_manager, case: dict, *,
@@ -127,6 +227,9 @@ async def _run_routes(retriever, wb_manager, case: dict, *,
                 {"source": str(row.get("source") or ""), "score": row.get("score")}
                 for row in docs
             ])
+            error = _rag_failure(docs)
+            if error:
+                out["doc"].append({"error": error})
         except Exception as exc:
             out["doc"].append({"error": type(exc).__name__})
     kb_source = getattr(retriever, "kb_source", None) if retriever else None
@@ -137,6 +240,9 @@ async def _run_routes(retriever, wb_manager, case: dict, *,
                 {"source": str(row.get("source") or ""), "score": row.get("score")}
                 for row in kb_rows
             ])
+            error = _rag_failure(kb_rows)
+            if error:
+                out["doc"].append({"error": error})
         except Exception as exc:
             out["doc"].append({"error": type(exc).__name__})
     out["doc_ms"] = round((time.perf_counter() - started) * 1000, 2)
@@ -146,10 +252,17 @@ async def _run_routes(retriever, wb_manager, case: dict, *,
             and getattr(retriever, "embedding", None) and session_id):
         try:
             emb = await retriever.embedding.embed([question])
+            analysis = (
+                temporal_query.analyze(question)
+                if getattr(getattr(retriever, "config", None),
+                           "rag_temporal_recall_enabled", True)
+                else {"kind": "none", "entities": []}
+            )
             rows = await retriever.memory_store.search(
                 session_id, emb[0], top_k=max(3, int(getattr(retriever, "top_k", 3) or 3)),
-                query_text=question)
-            analysis = temporal_query.analyze(question)
+                query_text=question,
+                include_older=temporal_query.requires_older_window(analysis))
+            error = _rag_failure(rows)
             if rows and (analysis.get("kind") != "none" or analysis.get("entities")):
                 rows = temporal_query.rerank(rows, analysis, top_k=len(rows))
             out["memory"] = [
@@ -157,6 +270,8 @@ async def _run_routes(retriever, wb_manager, case: dict, *,
                  "score": row.get("rrf_score")}
                 for row in rows
             ]
+            if error:
+                out["memory"].append({"error": error})
         except Exception as exc:
             out["memory"] = [{"error": type(exc).__name__}]
     else:
@@ -177,6 +292,9 @@ async def _run_routes(retriever, wb_manager, case: dict, *,
                  "score": row.get("_match_score")}
                 for row in rows
             ]
+            error = _rag_failure(rows)
+            if error:
+                out["worldbook"].append({"error": error})
         except Exception as exc:
             out["worldbook"] = [{"error": type(exc).__name__}]
     else:
@@ -186,17 +304,36 @@ async def _run_routes(retriever, wb_manager, case: dict, *,
 
 
 async def _maybe_thread(fn, *args, **kwargs):
-    import asyncio
     if asyncio.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
     return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 def _route_metric(expected: list[str], actual: list[dict], latency: float) -> dict:
+    failures = [
+        str(row.get("error"))
+        for row in actual
+        if isinstance(row, dict) and row.get("error")
+    ]
+    if failures:
+        # P2-7：检索失败不是「0 命中」。指标返回 None 让汇总跳过该用例，
+        # 同时把原始失败原因留在快照里供面板排查。
+        return {
+            "hit_rate": None,
+            "mrr": None,
+            "avg_latency_ms": latency,
+            "expected": len(expected),
+            "failed": True,
+            "error": "; ".join(failures),
+        }
     if not expected:
         return {"hit_rate": None, "mrr": None, "avg_latency_ms": latency,
                 "expected": 0}
-    sources = [str(row.get("source") or "") for row in actual if not row.get("error")]
+    sources = [
+        str(row.get("source") or "")
+        for row in actual
+        if isinstance(row, dict) and not row.get("error")
+    ]
     ranks = []
     for target in expected:
         rank = next((i + 1 for i, source in enumerate(sources) if _match(target, source)), 0)
@@ -245,10 +382,89 @@ def _diff(previous: dict | None, current: dict) -> dict:
     return {"previous": previous.get("created_at"), "cases": changes}
 
 
+async def load_cases(root: str | Path) -> list[dict]:
+    """读取用例集；文件 I/O 在线程池中执行并与其他读写串行化。"""
+    cases_path(root)  # 先校验 root，空值立即失败
+    async with _CASES_LOCK:
+        return await asyncio.to_thread(_load_cases_sync, root)
+
+
+def _load_cases_sync(root: str | Path) -> list[dict]:
+    path = cases_path(root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    cases = data.get("cases") if isinstance(data, dict) else data
+    if not isinstance(cases, list):
+        return []
+    out: list[dict] = []
+    for item in cases:
+        cleaned = _clean_case(item, for_save=False)
+        if cleaned:
+            out.append(cleaned)
+    return out
+
+
+def _write_cases_sync(root: str | Path, cases) -> list[dict]:
+    cleaned = _clean_cases(cases)
+    if len(cleaned) > MAX_CASES:
+        raise ValueError(f"评估用例最多 {MAX_CASES} 条")
+    _atomic_write(cases_path(root), {"cases": cleaned, "updated_at": _now_iso()})
+    return cleaned
+
+
+async def save_cases(root: str | Path, cases: list[dict]) -> list[dict]:
+    """覆盖写入用例集；返回实际落盘的合法条目（空 question 已剔除）。"""
+    cases_path(root)
+    async with _CASES_LOCK:
+        return await asyncio.to_thread(_write_cases_sync, root, cases)
+
+
+def _upsert_cases_sync(root: str | Path, updates: list[dict], max_cases: int) -> list[dict]:
+    existing = {case["case_id"]: case for case in _load_cases_sync(root)}
+    for item in updates:
+        cleaned = _clean_case(item, for_save=True)
+        if cleaned:
+            existing[cleaned["case_id"]] = cleaned
+    merged = list(existing.values())
+    if len(merged) > max_cases:
+        raise ValueError(
+            f"评估用例最多 {max_cases} 条（合并后为 {len(merged)} 条）")
+    _atomic_write(cases_path(root), {"cases": merged, "updated_at": _now_iso()})
+    return merged
+
+
+async def upsert_cases(root: str | Path, updates: list[dict], *,
+                       max_cases: int = MAX_CASES) -> list[dict]:
+    """合并保存用例；整个读-合并-写过程在同一把锁内完成。"""
+    cases_path(root)
+    if not isinstance(updates, list):
+        raise ValueError("cases 必须是数组")
+    limit = max(1, min(int(max_cases or MAX_CASES), MAX_CASES))
+    async with _CASES_LOCK:
+        return await asyncio.to_thread(_upsert_cases_sync, root, updates, limit)
+
+
+def _delete_case_sync(root: str | Path, case_id: str) -> list[dict]:
+    cases = _load_cases_sync(root)
+    remaining = [case for case in cases if case.get("case_id") != case_id]
+    if len(remaining) != len(cases):
+        _atomic_write(cases_path(root), {"cases": remaining, "updated_at": _now_iso()})
+    return remaining
+
+
+async def delete_case(root: str | Path, case_id: str) -> list[dict]:
+    cases_path(root)
+    async with _CASES_LOCK:
+        return await asyncio.to_thread(_delete_case_sync, root, case_id)
+
+
 async def run_eval(retriever, wb_manager, cases: list[dict], *,
                    root: str | Path, keep: int = 5, handle=None,
                    allow_llm_fallback: bool = False,
                    doc_groups=None) -> dict:
+    _root_path(root)  # 空 root 在跑任何检索之前就失败
     cfg = getattr(retriever, "config", None) if retriever else None
     settings = {
         "top_k": int(getattr(retriever, "top_k", 0) or 0) if retriever else 0,
@@ -281,8 +497,6 @@ async def run_eval(retriever, wb_manager, cases: list[dict], *,
             "metrics": metrics,
             "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
         })
-    snapshots = load_snapshots(root)
-    previous = snapshots[-1] if snapshots else None
     payload = {
         "created_at": _now_iso(),
         "case_count": len(run_rows),
@@ -291,17 +505,12 @@ async def run_eval(retriever, wb_manager, cases: list[dict], *,
         "metrics": _summarize(run_rows),
         "cases": run_rows,
     }
-    payload["diff"] = _diff(previous, payload)
-    _atomic_write(snapshot_dir(root) / f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json", payload)
-    _rotate_snapshots(root, keep=keep)
+    async with _SNAPSHOTS_LOCK:
+        await asyncio.to_thread(_persist_snapshot, root, payload, keep)
     return payload
 
 
-def snapshot_dir(root: str | Path) -> Path:
-    return Path(root) / "evals" / "snapshots"
-
-
-def load_snapshots(root: str | Path) -> list[dict]:
+def _load_snapshots_sync(root: str | Path) -> list[dict]:
     out = []
     for path in sorted(snapshot_dir(root).glob("*.json")):
         try:
@@ -312,6 +521,23 @@ def load_snapshots(root: str | Path) -> list[dict]:
         except (OSError, ValueError):
             continue
     return out
+
+
+def _persist_snapshot(root: str | Path, payload: dict, keep: int) -> dict:
+    snapshots = _load_snapshots_sync(root)
+    previous = snapshots[-1] if snapshots else None
+    payload["diff"] = _diff(previous, payload)
+    name = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+    _atomic_write(snapshot_dir(root) / name, payload)
+    _rotate_snapshots(root, keep=keep)
+    return payload
+
+
+async def load_snapshots(root: str | Path) -> list[dict]:
+    """读取快照；文件 I/O 在线程池中执行并与其他读写串行化。"""
+    snapshot_dir(root)
+    async with _SNAPSHOTS_LOCK:
+        return await asyncio.to_thread(_load_snapshots_sync, root)
 
 
 def _rotate_snapshots(root: str | Path, *, keep: int = 5) -> None:

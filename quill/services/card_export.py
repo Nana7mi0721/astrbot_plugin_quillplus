@@ -129,6 +129,20 @@ def _description(persona: dict, personality: str) -> str:
     return body or summary
 
 
+def _selective_logic(value: Any, legacy: Any = None) -> str:
+    """导出时把选择性逻辑收敛到 CCv2/V3 可回导的四种取值。"""
+    raw = str(value or legacy or "AND_ANY").strip().upper().replace("-", "_")
+    aliases = {
+        "ANY": "AND_ANY",
+        "ALL": "AND_ALL",
+        "PRIMARY_AND_SECONDARY": "AND_ANY",
+        "PRIMARY_OR_SECONDARY": "AND_ANY",
+        "SECONDARY_ONLY": "AND_ANY",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in ("AND_ANY", "AND_ALL", "NOT_ANY", "NOT_ALL") else "AND_ANY"
+
+
 def _entry_payload(entry: dict, index: int, book_name: str) -> dict:
     inject = entry.get("inject_position")
     try:
@@ -151,6 +165,9 @@ def _entry_payload(entry: dict, index: int, book_name: str) -> dict:
     secondary = [str(key) for key in secondary if _text(key).strip()] if isinstance(secondary, list) else []
     priority = _int(entry.get("priority", entry.get("order", 10)), 10)
     depth = _int(entry.get("depth", 4), 4)
+    delay = entry.get("delay")
+    if delay is None:
+        delay = entry.get("delay_rounds", 0)
     role = str(entry.get("role") or "system").strip().lower()
     if role not in ("system", "user", "assistant"):
         role = "system"
@@ -162,12 +179,19 @@ def _entry_payload(entry: dict, index: int, book_name: str) -> dict:
         "role": role,
         "sticky": _int(entry.get("sticky", entry.get("sticky_rounds", 0)), 0),
         "cooldown": _int(entry.get("cooldown", entry.get("cooldown_rounds", 0)), 0),
+        "delay": _int(delay, 0),
         "group": _text(entry.get("group")),
         "group_max": _int(entry.get("group_max", 1), 1),
         "group_weight": _int(entry.get("group_weight", 100), 100),
         "priority": priority,
         "recursive": _bool(entry.get("recursive")),
+        "exclude_recursion": _bool(entry.get("exclude_recursion")),
         "prevent_recursion": _bool(entry.get("prevent_recursion")),
+        "use_regex": _bool(entry.get("use_regex")),
+        "selective_logic": _selective_logic(
+            entry.get("selective_logic", entry.get("selectiveLogic")),
+            entry.get("key_mode"),
+        ),
         "scan_depth": _int(entry.get("scan_depth", entry.get("scan_window", 0)), 0),
     }
     return {
